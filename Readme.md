@@ -1,7 +1,7 @@
 # zotero-local-rag
 
 Zotero のローカル同期済み添付（PDF / Web Snapshot(HTML) / EPUB）と Notes から本文を抽出し、 **段落（必要に応じて分割）**単位で埋め込みして Chroma に格納します。  
-Claude Desktop から MCP ツールとして呼び出すことを念頭に設計されており、 **段落レベルのセマンティック検索** と **前後文脈（context）**を返します。
+ローカル環境でAIエージェントから MCP ツールとして呼び出すことを念頭に設計されており、 **段落レベルのセマンティック検索** と **前後文脈（context）**を返します。README は、ProプランのClaude Desktopを念頭に記述されていますが、例えば Cursor Agent などでも利用可能です。
 
 ---
 
@@ -21,16 +21,16 @@ Claude Desktop から MCP ツールとして呼び出すことを念頭に設計
 
 ## 前提
 
-- **pyenv を用いて Python のバージョンを固定して利用することを前提とします**
-  - 動作確認済み：Python 3.10.x（例: 3.10.17）
+- **pyenv を用いて Python のバージョンを固定して利用する**
+  - 動作確認済み：Python 3.10.x（例: 3.10.17 (macOS 環境)、3.10.1 (Windows 環境) ）
 - Zotero 7
 - 添付ファイルはローカルに同期済み（Zotero の `storage/` 配下）
-- Claude Desktop（MCP 経由でツール利用する場合）
+- Claude Desktop（最低でもProプランがローカルMCPの利用に必要）
 
 本プロジェクトでは、**依存関係をインストールした Python 実体と、 Claude Desktop が起動する MCP サーバの Python 実体が一致していること**が重要です。  
-そのため、 Python の実体を明示的に固定できる **pyenv の利用を強く推奨**します。 README は pyenv が事前に導入されている前提で書かれています。
+そのため、 Python の実体を明示的に固定できる **pyenv の利用を強く推奨**します。
 
-また、 README はユーザー名が `user` 、プロジェクトディレクトリが `/Users/user/Documents/zotero-local-rag` であることを前提に記述されています。環境が異なる場合は、例示しているパスを適宜読み替えてください。パスやコマンドはmacOSを前提に記述されています。 **Windows 環境を用いる場合は「 Windows 環境について」を参照してください。**
+また、 README はユーザー名が `user` 、プロジェクトディレクトリが `/Users/user/Documents/zotero-local-rag` であることを前提に記述されています。環境が異なる場合は、例示しているパスを適宜読み替えてください。
 
 ---
 
@@ -51,7 +51,35 @@ Claude Desktop から MCP ツールとして呼び出すことを念頭に設計
 
 ---
 
+## 事前準備
+
+### pyenv のインストール
+
+https://github.com/pyenv/pyenv?tab=readme-ov-file#installation
+
+* Windowsの場合はGit Bach上でpyenv-winを使います
+Git Bash:
+https://git-scm.com/install/windows
+pyenv-win:
+https://github.com/pyenv-win/pyenv-win?tab=readme-ov-file#installation
+
+### Zotero の設定
+
+Zotero の環境設定から"詳細"→"各種設定"内の
+□ Allow other applications on this computer to communicate with Zotero
+に☑をいれる。
+変更後は Zotero を再起動。再起動後に設定が反映されます。
+
+### Claude Desktop 設定ファイルの確認
+
+"設定"→"開発者"内の"ローカルMCPサーバー"から"設定を編集"をクリックし、 `claude_desktop_config.json` の場所を確認しておく。
+なお設定は設定ファイルの変更を保存後に Claude の再起動することで有効になります。Windows の場合は、 Claude の画面を閉じてもバックグランドで Claudeが生きているので、かならずタスクマネージャーで確認し、確実に終了してから再度起動するよう注意してください（コンピュータごと再起動してもよい）。
+
+---
+
 ## クイックスタート
+
+以下のパスやコマンドは macOS を前提に記述されています。 **Windows 環境を用いる場合は「 Windows 環境について」を参照してください。**
 
 #### 0. Python バージョンを pyenv で固定
 
@@ -104,7 +132,7 @@ Claude Desktop から MCP ツールとして呼び出すことを念頭に設計
 
 #### 4. Zotero 添付をインデックス（Zotero → Chroma）
 
-  添付（PDF / HTML / EPUB）から本文を抽出し、段落単位で Chroma に保存します。
+  添付（PDF / HTML / EPUB）から本文を抽出し、段落単位で Chroma に保存します。この際、Zoteroが起動していないとライブラリにアクセスできません。"Allow other application on this computer to communicate with Zotero"が有効な状態でZoteroを起動しておいてください。
   初回は時間がかかることがあります。
   ```bash
   make sync
