@@ -140,7 +140,7 @@ Zotero の環境設定から"詳細"→"各種設定"
   添付（PDF / HTML / EPUB）から本文を抽出し、段落単位で Chroma に保存します。この際、Zoteroが起動していないとライブラリにアクセスできません。"Allow other application on this computer to communicate with Zotero"が有効な状態でZoteroを起動しておいてください。
 
   初回は時間がかかることがあります。
-  
+
   ```bash
   make sync
   ```
@@ -152,9 +152,9 @@ Zotero の環境設定から"詳細"→"各種設定"
 
 #### 5. Claude Desktop の MCP 設定（起動時に自動でサーバ起動）
 
-  MCP サーバは Terminal から手動起動せず、`claude_desktop_config.json` に登録して **Claude 起動時に自動起動**させます。
+  MCP サーバは Terminal から手動起動せず、`claude_desktop_config.json` に登録して **Claude 起動時に自動起動** させます。
 
-  注意：`command` には **pyenv で固定した Python の実体（`sys.executable` で確認できる絶対パス）**を必ず指定してください。  
+  注意：`command` には **pyenv で固定した Python の実体（`sys.executable` で確認できる絶対パス）** を必ず指定してください。  
   `python` や `python3` のような相対指定は行わないでください。
 
   - `command` は **依存をインストールした Python** を絶対パスで指定
@@ -187,7 +187,7 @@ Zotero の環境設定から"詳細"→"各種設定"
 
 本プロジェクトは macOS / Linux を主対象としていますが、Windows でも **Git Bash** を使えば運用できます。
 
-- **PowerShell / cmd.exe は対象外**（この README は Bash 前提です）
+- **PowerShell / cmd.exe は対象外** （この README は Bash 前提です）
 - **Windows では make を使いません**
   - `make sync` 等の代わりに、下記のように Python スクリプトを直接実行してください。
 - `env.sh` は Bash 用なので、Git Bash で `source`（または `. ./env.sh`）して使います。
@@ -223,14 +223,14 @@ Zotero の環境設定から"詳細"→"各種設定"
   . ./env.sh
   ```
 
-  Zotero のデータディレクトリは Windows ではズレやすいので、**基本は明示指定**を推奨します。
+  Zotero のデータディレクトリは Windows ではズレやすいので、 **基本は明示指定** を推奨します。
 
   ```bash
   # 例: C:\Users\user\Zotero
   export ZOTERO_DATA_DIR="/c/Users/user/Zotero"
   ```
 
-  ※ `ZOTERO_DATA_DIR` は **必ず `storage/` と `zotero.sqlite` を含むディレクトリ**を指す必要があります。
+  ※ `ZOTERO_DATA_DIR` は **必ず `storage/` と `zotero.sqlite` を含むディレクトリ** を指す必要があります。
 
 #### 4. 埋め込みモデルを事前にキャッシュ（初回のみ・オンライン）
 
@@ -262,9 +262,9 @@ Zotero の環境設定から"詳細"→"各種設定"
 
 ### Claude Desktop の MCP 設定（Windows）
 
-- MCP サーバは Terminal から手動起動せず、`claude_desktop_config.json` に登録して **Claude 起動時に自動起動**させます。
-- `command` には、上の手順で確認した **Python 実体の絶対パス**（`sys.executable`）を指定してください。
-  - Git Bash の `python` をそのまま書くのではなく、**実体の `python.exe` への絶対パス**にするのが安全です。
+- MCP サーバは Terminal から手動起動せず、`claude_desktop_config.json` に登録して **Claude 起動時に自動起動** させます。
+- `command` には、上の手順で確認した **Python 実体の絶対パス** （`sys.executable`）を指定してください。
+  - Git Bash の `python` をそのまま書くのではなく、 **実体の `python.exe` への絶対パス** にするのが安全です。
 
 例（パスは自分の環境に合わせてください）：
 
@@ -357,10 +357,10 @@ python src/index_from_zotero.py --dump-attachments --progress
 
 ## 埋め込みモデルのキャッシュ
 
-このプロジェクトは **オフライン運用を基本**にしています（`env.sh` は `HF_HUB_OFFLINE=1` / `TRANSFORMERS_OFFLINE=1` をデフォルトで有効化）。
-そのため、埋め込みモデルは **事前に `./data/models/` 配下へ配置**しておきます。
+このプロジェクトは **オフライン運用を基本** にしています（`env.sh` は `HF_HUB_OFFLINE=1` / `TRANSFORMERS_OFFLINE=1` をデフォルトで有効化）。
+そのため、埋め込みモデルは **事前に `./data/models/` 配下へ配置** しておきます。
 
-モデルは 1 台（1 環境）につき **ひとつだけ**用意すれば十分です（`EMB_PROFILE` で選択）。
+モデルは 1 台（1 環境）につき **ひとつだけ** 用意すれば十分です（`EMB_PROFILE` で選択）。
 
 ### fast（既定）: paraphrase-multilingual-MiniLM-L12-v2
 
@@ -421,7 +421,7 @@ PY
 
 - `EMB_MODEL`（任意）：埋め込みモデルの指定（Hugging Face の repo id またはローカルディレクトリ）。
   - `EMB_MODEL` を明示した場合は `EMB_PROFILE` より優先されます。
-  - **オフライン運用（下記）ではローカルディレクトリ指定が最も確実**です。
+  - **オフライン運用（下記）ではローカルディレクトリ指定が最も確実** です。
 
 - `EMB_DEVICE`（任意）：推論デバイス（例: `cpu`, macOS でGPUを用いる場合 `mps`）。
   - `env.sh` は `EMB_PROFILE` に応じて妥当なデフォルトを選びます。
