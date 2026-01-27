@@ -1,0 +1,10 @@
+chromadb
+sentence-transformers
+huggingface-hub>=0.34.0,<1.0
+pymupdf
+fastmcp
+httpx
+typing_extensions
+trafilatura
+EbookLib
+pydantic>=2.12,<3
