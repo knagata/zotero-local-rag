@@ -333,21 +333,18 @@ make dump
 初回構築・更新
 
 ```bash
-. ./env.sh
 python src/index_from_zotero.py --progress
 ```
 
 強制再構築（Chroma と manifest を削除して全件再作成）：
 
 ```bash
-. ./env.sh
 python src/index_from_zotero.py --rebuild --progress
 ```
 
 添付解決状況のダンプ（デバッグ用）：
 
 ```bash
-. ./env.sh
 python src/index_from_zotero.py --dump-attachments --progress
 ```
 
