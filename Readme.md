@@ -3,7 +3,7 @@
 Zotero のローカル同期済み添付（PDF / Web Snapshot(HTML) / EPUB）と Notes から本文を抽出し、 **段落（必要に応じて分割）** 単位で埋め込みして Chroma に格納します。  
 ローカル環境でAIエージェントから MCP ツールとして呼び出すことを念頭に設計されており、 **段落レベルのセマンティック検索** と **前後文脈（context）** を返します。
 
-README は、ProプランのClaude Desktopを念頭に記述されていますが、例えば Cursor Agent や Ollama などでも利用可能です。無料版で試す場合は Cursor が、完全にローカル環境で実行したい場合は Ollama が選択肢になると思います。
+README は、ProプランのClaude Desktopを念頭に記述されていますが、例えば Cursor Agent や Ollama などでも利用可能です。無料で試したい場合には Cursor が、完全にローカル環境で実行したい場合には Ollama が選択肢になると思います。
 
 ---
 
