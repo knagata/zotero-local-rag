@@ -67,14 +67,17 @@ https://github.com/pyenv-win/pyenv-win?tab=readme-ov-file#installation
 
 ### Zotero の設定
 
-Zotero の環境設定から"詳細"→"各種設定"内の
+Zotero の環境設定から"詳細"→"各種設定"
+
 □ Allow other applications on this computer to communicate with Zotero
 に☑をいれる。
+
 変更後は Zotero を再起動。再起動後に設定が反映されます。
 
 ### Claude Desktop 設定ファイルの確認
 
 "設定"→"開発者"内の"ローカルMCPサーバー"から"設定を編集"をクリックし、 `claude_desktop_config.json` の場所を確認しておく。
+
 なお設定は設定ファイルの変更を保存後に Claude の再起動することで有効になります。Windows の場合は、 Claude の画面を閉じてもバックグランドで Claudeが生きているので、かならずタスクマネージャーで確認し、確実に終了してから再度起動するよう注意してください（コンピュータごと再起動してもよい）。
 
 ---
