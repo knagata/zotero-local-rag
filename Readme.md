@@ -3,7 +3,6 @@
 Zotero のローカル同期済み添付（PDF / Web Snapshot(HTML) / EPUB）と Notes から本文を抽出し、 **段落（必要に応じて分割）**単位で埋め込みして Chroma に格納します。  
 Claude Desktop から MCP ツールとして呼び出すことを念頭に設計されており、 **段落レベルのセマンティック検索** と **前後文脈（context）**を返します。
 
-
 ---
 
 ## できること
@@ -31,7 +30,7 @@ Claude Desktop から MCP ツールとして呼び出すことを念頭に設計
 本プロジェクトでは、**依存関係をインストールした Python 実体と、 Claude Desktop が起動する MCP サーバの Python 実体が一致していること**が重要です。  
 そのため、 Python の実体を明示的に固定できる **pyenv の利用を強く推奨**します。 README は pyenv が事前に導入されている前提で書かれています。
 
-また、 README はユーザー名が `user` 、プロジェクトディレクトリが `/Users/user/Documents/zotero-local-rag` であることを前提に記述しています。環境が異なる場合は、例示しているパスを適宜読み替えてください。
+また、 README はユーザー名が `user` 、プロジェクトディレクトリが `/Users/user/Documents/zotero-local-rag` であることを前提に記述されています。環境が異なる場合は、例示しているパスを適宜読み替えてください。パスやコマンドはmacOSを前提に記述されています。 **Windows 環境を用いる場合は「 Windows 環境について」を参照してください。**
 
 ---
 
@@ -54,97 +53,98 @@ Claude Desktop から MCP ツールとして呼び出すことを念頭に設計
 
 ## クイックスタート
 
-0. Python バージョンを pyenv で固定
+#### 0. Python バージョンを pyenv で固定
 
-   ```bash
-   pyenv install 3.10.17
-   pyenv local 3.10.17
-   ```
+  ```bash
+  pyenv install 3.10.17
+  pyenv local 3.10.17
+  ```
 
-   正しく切り替わっていることを確認します：
-   ```bash
-   python -c "import sys; print(sys.executable)"
-   ```
+  正しく切り替わっていることを確認します：
 
-   出力が `.pyenv/versions/3.10.17/bin/python` を指していればOKです。
+  ```bash
+  python -c "import sys; print(sys.executable)"
+  ```
 
-1. 依存関係をインストール
-   ```bash
-   cd /Users/user/Documents/zotero-local-rag
-   python -m pip install -U pip
-   python -m pip install -r requirements.txt
-   ```
+  出力が `.pyenv/versions/3.10.17/bin/python` を指していればOKです。
 
-2. 環境変数を読み込む（Zotero の場所・Chroma の保存先・オフライン設定など）
-   ```bash
-   . ./env.sh
-   ```
+#### 1. 依存関係をインストール
+  ```bash
+  cd /Users/user/Documents/zotero-local-rag
+  python -m pip install -U pip
+  python -m pip install -r requirements.txt
+  ```
 
-   Zotero のデータディレクトリが標準位置（`$HOME/Zotero`）ではない場合は、**先に手動で指定**してください：
-   ```bash
-   export ZOTERO_DATA_DIR="/ABS/PATH/TO/Zotero"
-   ```
-   ※ `ZOTERO_DATA_DIR` は `storage/` と `zotero.sqlite` を含むディレクトリです。 `/ABS/PATH/TO/Zotero` を自身の環境におけるZoteroのディレクトリの絶対パスに置き換えてください。
+#### 2. 環境変数を読み込む（Zotero の場所・Chroma の保存先・オフライン設定など）
+  ```bash
+  . ./env.sh
+  ```
 
-3. 埋め込みモデルを事前にキャッシュ（初回のみ・オンライン）
+  Zotero のデータディレクトリが標準位置（`$HOME/Zotero`）ではない場合は、**先に手動で指定**してください：
+  ```bash
+  export ZOTERO_DATA_DIR="/ABS/PATH/TO/Zotero"
+  ```
+  ※ `ZOTERO_DATA_DIR` は `storage/` と `zotero.sqlite` を含むディレクトリです。 `/ABS/PATH/TO/Zotero` を自身の環境におけるZoteroのディレクトリの絶対パスに置き換えてください。
 
-   既定の高速モデル（多言語）を `data/models/` に保存します。
-   ```bash
-   HF_HUB_OFFLINE=0 TRANSFORMERS_OFFLINE=0 \
-   python - <<'PY'
-   from huggingface_hub import snapshot_download
-   snapshot_download(
-     repo_id="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
-     local_dir="data/models/paraphrase-multilingual-MiniLM-L12-v2",
-     local_dir_use_symlinks=False,
-   )
-   print("cached: data/models/paraphrase-multilingual-MiniLM-L12-v2")
-   PY
-   ```
+#### 3. 埋め込みモデルを事前にキャッシュ（初回のみ・オンライン）
 
-4. Zotero 添付をインデックス（Zotero → Chroma）
+  既定の高速モデル（多言語）を `data/models/` に保存します。
+  ```bash
+  HF_HUB_OFFLINE=0 TRANSFORMERS_OFFLINE=0 \
+  python - <<'PY'
+  from huggingface_hub import snapshot_download
+  snapshot_download(
+    repo_id="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+    local_dir="data/models/paraphrase-multilingual-MiniLM-L12-v2",
+    local_dir_use_symlinks=False,
+  )
+  print("cached: data/models/paraphrase-multilingual-MiniLM-L12-v2")
+  PY
+  ```
 
-   添付（PDF / HTML / EPUB）から本文を抽出し、段落単位で Chroma に保存します。
-   初回は時間がかかることがあります。
-   ```bash
-   make sync
-   ```
+#### 4. Zotero 添付をインデックス（Zotero → Chroma）
 
-   うまくいかない場合は、まず以下で前提を確認できます：
-   ```bash
-   make check
-   ```
+  添付（PDF / HTML / EPUB）から本文を抽出し、段落単位で Chroma に保存します。
+  初回は時間がかかることがあります。
+  ```bash
+  make sync
+  ```
 
-5. Claude Desktop の MCP 設定（起動時に自動でサーバ起動）
+  うまくいかない場合は、まず以下で前提を確認できます：
+  ```bash
+  make check
+  ```
 
-   MCP サーバは Terminal から手動起動せず、`claude_desktop_config.json` に登録して **Claude 起動時に自動起動**させます。
+#### 5. Claude Desktop の MCP 設定（起動時に自動でサーバ起動）
 
-   注意：`command` には **pyenv で固定した Python の実体（`sys.executable` で確認できる絶対パス）**を必ず指定してください。  
-   `python` や `python3` のような相対指定は行わないでください。
+  MCP サーバは Terminal から手動起動せず、`claude_desktop_config.json` に登録して **Claude 起動時に自動起動**させます。
 
-   - `command` は **依存をインストールした Python** を絶対パスで指定
-   - `args` は `-u` 付きで `src/rag_mcp_server.py` を指定
-   - `env` には最低限 `CHROMA_DIR` と（必要なら）`EMB_PROFILE` / オフライン設定を指定
+  注意：`command` には **pyenv で固定した Python の実体（`sys.executable` で確認できる絶対パス）**を必ず指定してください。  
+  `python` や `python3` のような相対指定は行わないでください。
 
-   例：
-   ```json
-   {
-     "mcpServers": {
-       "zotero-rag": {
-         "command": "/Users/user/.pyenv/versions/3.10.17/bin/python",
-         "args": ["-u", "/Users/user/Documents/zotero-local-rag/src/rag_mcp_server.py"],
-         "env": {
-           "CHROMA_DIR": "/Users/user/Documents/zotero-local-rag/data/chroma",
-           "EMB_PROFILE": "fast",
-           "HF_HUB_OFFLINE": "1",
-           "TRANSFORMERS_OFFLINE": "1"
-         }
-       }
-     }
-   }
-   ```
+  - `command` は **依存をインストールした Python** を絶対パスで指定
+  - `args` は `-u` 付きで `src/rag_mcp_server.py` を指定
+  - `env` には最低限 `CHROMA_DIR` と（必要なら）`EMB_PROFILE` / オフライン設定を指定
 
-   設定後に Claude Desktop を再起動し、コネクタに `zotero-rag` が出るか確認してください。
+  例：
+  ```json
+  {
+    "mcpServers": {
+      "zotero-rag": {
+        "command": "/Users/user/.pyenv/versions/3.10.17/bin/python",
+        "args": ["-u", "/Users/user/Documents/zotero-local-rag/src/rag_mcp_server.py"],
+        "env": {
+          "CHROMA_DIR": "/Users/user/Documents/zotero-local-rag/data/chroma",
+          "EMB_PROFILE": "fast",
+          "HF_HUB_OFFLINE": "1",
+          "TRANSFORMERS_OFFLINE": "1"
+        }
+      }
+    }
+  }
+  ```
+
+  設定後に Claude Desktop を再起動し、コネクタに `zotero-rag` が出るか確認してください。
 
 ---
 
@@ -159,7 +159,7 @@ Claude Desktop から MCP ツールとして呼び出すことを念頭に設計
 
 ### クイックスタート（Windows / Git Bash）
 
-1. **Python 3.10 を用意（pyenv-win 前提）**
+#### 1. **Python 3.10 を用意（pyenv-win 前提）**
 
   - この README は **pyenv-win** で Python のバージョンを固定して使う前提です。
   - まず Git Bash でプロジェクトディレクトリへ移動します。
@@ -175,14 +175,14 @@ Claude Desktop から MCP ツールとして呼び出すことを念頭に設計
   python -c "import sys; print(sys.executable)"
   ```
 
-2. 依存関係をインストール
+#### 2. 依存関係をインストール
 
   ```bash
   python -m pip install -U pip
   python -m pip install -r requirements.txt
   ```
 
-3. 環境変数を読み込む（Zotero の場所・Chroma の保存先・オフライン設定など）
+#### 3. 環境変数を読み込む（Zotero の場所・Chroma の保存先・オフライン設定など）
 
   ```bash
   . ./env.sh
@@ -197,7 +197,7 @@ Claude Desktop から MCP ツールとして呼び出すことを念頭に設計
 
   ※ `ZOTERO_DATA_DIR` は **必ず `storage/` と `zotero.sqlite` を含むディレクトリ**を指す必要があります。
 
-4. 埋め込みモデルを事前にキャッシュ（初回のみ・オンライン）
+#### 4. 埋め込みモデルを事前にキャッシュ（初回のみ・オンライン）
 
   オフライン運用（`HF_HUB_OFFLINE=1` / `TRANSFORMERS_OFFLINE=1`）が既定のため、最初に一度だけオンラインでモデルを `data/models/` に保存します。
 
@@ -214,7 +214,7 @@ Claude Desktop から MCP ツールとして呼び出すことを念頭に設計
   PY
   ```
 
-5. インデックス作成（Zotero → Chroma）
+#### 5. インデックス作成（Zotero → Chroma）
 
   ```bash
   python src/index_from_zotero.py --progress
