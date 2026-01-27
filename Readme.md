@@ -138,7 +138,9 @@ Zotero の環境設定から"詳細"→"各種設定"
 #### 4. Zotero 添付をインデックス（Zotero → Chroma）
 
   添付（PDF / HTML / EPUB）から本文を抽出し、段落単位で Chroma に保存します。この際、Zoteroが起動していないとライブラリにアクセスできません。"Allow other application on this computer to communicate with Zotero"が有効な状態でZoteroを起動しておいてください。
+
   初回は時間がかかることがあります。
+  
   ```bash
   make sync
   ```
