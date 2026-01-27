@@ -73,7 +73,7 @@ https://github.com/pyenv-win/pyenv-win?tab=readme-ov-file#installation
 
 Zotero の環境設定から"詳細"→"各種設定"
 
-□ Allow other applications on this computer to communicate with Zotero
+`□ Allow other applications on this computer to communicate with Zotero`
 に☑をいれる。
 
 変更後は Zotero を再起動。再起動後に設定が反映されます。
