@@ -1,7 +1,7 @@
 # zotero-local-rag
 
-Zotero のローカル同期済み添付（PDF / Web Snapshot(HTML) / EPUB）と Notes から本文を抽出し、 **段落（必要に応じて分割）**単位で埋め込みして Chroma に格納します。  
-ローカル環境でAIエージェントから MCP ツールとして呼び出すことを念頭に設計されており、 **段落レベルのセマンティック検索** と **前後文脈（context）**を返します。README は、ProプランのClaude Desktopを念頭に記述されていますが、例えば Cursor Agent などでも利用可能です。
+Zotero のローカル同期済み添付（PDF / Web Snapshot(HTML) / EPUB）と Notes から本文を抽出し、 **段落（必要に応じて分割）** 単位で埋め込みして Chroma に格納します。  
+ローカル環境でAIエージェントから MCP ツールとして呼び出すことを念頭に設計されており、 **段落レベルのセマンティック検索** と **前後文脈（context）** を返します。README は、ProプランのClaude Desktopを念頭に記述されていますが、例えば Cursor Agent などでも利用可能です。
 
 ---
 
