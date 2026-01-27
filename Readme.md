@@ -58,8 +58,10 @@ Zotero のローカル同期済み添付（PDF / Web Snapshot(HTML) / EPUB）と
 https://github.com/pyenv/pyenv?tab=readme-ov-file#installation
 
 Windowsの場合はGit Bach上でpyenv-winを使います
+
 Git Bash:
 https://git-scm.com/install/windows
+
 pyenv-win:
 https://github.com/pyenv-win/pyenv-win?tab=readme-ov-file#installation
 
