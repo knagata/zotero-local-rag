@@ -57,7 +57,7 @@ Zotero のローカル同期済み添付（PDF / Web Snapshot(HTML) / EPUB）と
 
 https://github.com/pyenv/pyenv?tab=readme-ov-file#installation
 
-* Windowsの場合はGit Bach上でpyenv-winを使います
+Windowsの場合はGit Bach上でpyenv-winを使います
 Git Bash:
 https://git-scm.com/install/windows
 pyenv-win:
