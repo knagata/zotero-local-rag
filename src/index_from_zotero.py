@@ -176,7 +176,7 @@ MIN_CHUNK_CHARS_NO_SPACE = int(os.environ.get("MIN_CHUNK_CHARS_NO_SPACE", "120")
 # One knob: BATCH_SIZE
 # - When pending chunks reach this size, we flush (delete+upsert) to Chroma.
 # - We also use the same value as the sub-batch size for `col.upsert(...)` to reduce memory spikes.
-BATCH_SIZE = int((os.environ.get("BATCH_SIZE") or "256").strip())
+BATCH_SIZE = int((os.environ.get("BATCH_SIZE") or "128").strip())
 
 
 def _dedupe_by_id(
