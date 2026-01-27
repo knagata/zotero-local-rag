@@ -1,9 +1,14 @@
 # zotero-local-rag
 
+Zotero の文献データベースをベクトル化し、AIエージェントなどを用いて高速に横断検索を行うためのツールです。
+
 Zotero のローカル同期済み添付（PDF / Web Snapshot(HTML) / EPUB）と Notes から本文を抽出し、 **段落（必要に応じて分割）** 単位で埋め込みして Chroma に格納します。  
 ローカル環境でAIエージェントから MCP ツールとして呼び出すことを念頭に設計されており、 **段落レベルのセマンティック検索** と **前後文脈（context）** を返します。
 
-README は、ProプランのClaude Desktopを念頭に記述されていますが、例えば Cursor Agent や Ollama などでも利用可能です。無料で試したい場合には Cursor が、完全にローカル環境で実行したい場合には Ollama が選択肢になると思います。
+zotero-mcp を併用することで、文献の高精度な横断検索と、正確な書誌情報を高速に行うことができます。
+https://github.com/54yyyu/zotero-mcp
+
+README は、ProプランのClaude Desktopを念頭に記述されていますが、例えば Cursor Agent などでも利用可能です。Cursor は無料プランでのテストが確認できています。Ollama や LM Studio が選択肢になると思います。
 
 ---
 
