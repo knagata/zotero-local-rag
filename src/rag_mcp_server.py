@@ -270,14 +270,11 @@ def rag_search(
 ) -> RagSearchResponse:
     """
     Paragraph-level semantic search over local Zotero PDFs/HTML snapshots (+ optionally Notes).
-
     Args:
         query:
             Natural-language query string.
-
         k:
             Number of results to return (after filtering short fragments). Default: 10.
-
         where:
             Optional metadata filter (Chroma `where` filter). Use this to restrict eligible chunks.
 
@@ -293,32 +290,24 @@ def rag_search(
                 - noteKey: str (notes)
                 - source_type: "pdf" | "html" | "epub" | "note"
                 - locator: str (e.g., "p12:para3" / "html:para10" / "note:para2")
-
             Examples:
               - Restrict to one Zotero item:
                 {"itemKey": "BGZ9UFUJ"}
-
               - Only HTML snapshots:
                 {"source_type": "html"}
-
               - Only EPUB:
                 {"source_type": "epub"}
-
               - Only Notes:
                 {"source_type": "note"}   (or set include_notes=True)
-
               - Notes OR a specific item:
                 {"$or": [{"source_type": "note"}, {"itemKey": "BGZ9UFUJ"}]}
-
         context_window:
             Neighbor paragraphs to fetch around a hit. Default: 1.
             For PDF: neighbors are within the same page by para index.
             For HTML/Notes: neighbors are within the same doc by para index.
-
         include_notes:
             If True, include Zotero Notes chunks in the search space. Default: False.
             Notes are indexed but excluded by default.
-
     Returns:
         {"results": [ ... ]}
     """
