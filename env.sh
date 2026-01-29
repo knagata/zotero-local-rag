@@ -2,7 +2,17 @@
 set -euo pipefail
 
 # Project root (directory containing this script)
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Works in bash and zsh when the script is sourced.
+if [[ -n "${BASH_VERSION:-}" ]]; then
+  _ENV_SH_PATH="${BASH_SOURCE[0]}"
+elif [[ -n "${ZSH_VERSION:-}" ]]; then
+  _ENV_SH_PATH="${(%):-%N}"
+else
+  # Fallback: may be less accurate when sourced in other shells
+  _ENV_SH_PATH="$0"
+fi
+SCRIPT_DIR="$(cd "$(dirname "${_ENV_SH_PATH}")" && pwd)"
+unset _ENV_SH_PATH
 
 # Zotero data directory (must contain: storage/ and zotero.sqlite)
 export ZOTERO_DATA_DIR="${ZOTERO_DATA_DIR:-$HOME/Zotero}"
@@ -23,6 +33,27 @@ export PDF_CACHE_DIR="${PDF_CACHE_DIR:-${SCRIPT_DIR}/data/pdf_cache}"
 
 # Manifest path (indexer state)
 export MANIFEST_PATH="${MANIFEST_PATH:-${SCRIPT_DIR}/data/manifest.json}"
+
+# Chunking / overlap tuning (optional)
+# MAX_CHARS controls the maximum chunk size after splitting.
+# MIN_CHUNK_CHARS is the target minimum chunk size for space-delimited languages.
+# MIN_CHUNK_CHARS_NO_SPACE is the target minimum chunk size for CJK/no-space docs.
+# HARD_MIN_CHARS drops very short noise chunks even before merging.
+#
+# Overlap controls (characters):
+# - If OVERLAP_CHARS is set to a positive value, it overrides both language-specific settings.
+# - Otherwise, OVERLAP_CHARS_LATIN / OVERLAP_CHARS_CJK are used depending on document heuristic.
+#
+# Uncomment to pin values globally.
+# export MAX_CHARS="${MAX_CHARS:-1200}"
+# export MIN_CHUNK_CHARS="${MIN_CHUNK_CHARS:-200}"
+# export MIN_CHUNK_CHARS_NO_SPACE="${MIN_CHUNK_CHARS_NO_SPACE:-120}"
+# export HARD_MIN_CHARS="${HARD_MIN_CHARS:-40}"
+# export BATCH_SIZE="${BATCH_SIZE:-128}"              # Chroma upsert batch size
+#
+# export OVERLAP_CHARS="${OVERLAP_CHARS:-0}"          # global override (0 = disabled)
+# export OVERLAP_CHARS_LATIN="${OVERLAP_CHARS_LATIN:-80}"
+# export OVERLAP_CHARS_CJK="${OVERLAP_CHARS_CJK:-60}"
 
 # Optional: show progress logs by default when running via Make
 # export PROGRESS="${PROGRESS:-1}"

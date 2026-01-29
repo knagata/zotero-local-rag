@@ -168,9 +168,22 @@ def _resolve_embedder_settings() -> Tuple[str, str]:
 MAX_CHARS = int(os.environ.get("MAX_CHARS", "1200"))
 MIN_CHUNK_CHARS = int(os.environ.get("MIN_CHUNK_CHARS", "200"))
 
+#
+# Light overlap (characters) to improve retrieval around boundaries.
+# Backward compatible:
+# - If OVERLAP_CHARS is set, it acts as a global default.
+# - Otherwise, we use language-sensitive defaults below.
+OVERLAP_CHARS_DEFAULT = int(os.environ.get("OVERLAP_CHARS", "0"))
+OVERLAP_CHARS_LATIN = int(os.environ.get("OVERLAP_CHARS_LATIN", "80"))
+OVERLAP_CHARS_CJK = int(os.environ.get("OVERLAP_CHARS_CJK", "60"))
+
 # For languages that typically do not use whitespace word segmentation (e.g., Japanese/Chinese).
 # This is applied per-document based on a simple heuristic.
 MIN_CHUNK_CHARS_NO_SPACE = int(os.environ.get("MIN_CHUNK_CHARS_NO_SPACE", "120"))
+
+# Hard minimum to avoid indexing obvious noise (page numbers, single tokens, etc.).
+# Chunks shorter than this are still dropped even with short-chunk merging enabled.
+HARD_MIN_CHARS = int(os.environ.get("HARD_MIN_CHARS", "40"))
 
 # Batch sizing
 # One knob: BATCH_SIZE
@@ -423,7 +436,7 @@ def clean_extracted_text(s: str) -> str:
     return s
 
 
-def normalize_paragraphs(raw: str) -> List[str]:
+def normalize_paragraphs(raw: str, joiner: str = " ") -> List[str]:
     lines = raw.splitlines()
     paras: List[str] = []
     buf: List[str] = []
@@ -444,7 +457,8 @@ def normalize_paragraphs(raw: str) -> List[str]:
             else:
                 parts.append(ln)
 
-        merged = " ".join(parts).strip()
+        merged = joiner.join(parts)
+        merged = re.sub(r"\s+", " ", merged).strip()
         if merged:
             paras.append(merged)
         buf = []
@@ -472,6 +486,7 @@ def looks_like_gibberish(text: str) -> bool:
 
 
 # --- Heuristics for no-space (CJK) language detection ---
+
 def _cjk_ratio(text: str) -> float:
     """Return ratio of CJK (Han/Hiragana/Katakana) characters in text."""
     if not text:
@@ -495,8 +510,357 @@ def _cjk_ratio(text: str) -> float:
     return cjk / max(total, 1)
 
 
+def _latin_ratio(text: str) -> float:
+    """Return ratio of Latin alphabet characters in text (A-Z/a-z)."""
+    if not text:
+        return 0.0
+    total = 0
+    latin = 0
+    for ch in text:
+        if ch.isspace():
+            continue
+        total += 1
+        o = ord(ch)
+        if (0x0041 <= o <= 0x005A) or (0x0061 <= o <= 0x007A):
+            latin += 1
+    return latin / max(total, 1)
+
+
+def _joiner_for_text(text: str) -> str:
+    """Return the preferred joiner between segments for this text.
+
+    For CJK/no-space docs we avoid inserting ASCII spaces when joining lines/sentences,
+    because upstream extraction often introduces hard line breaks.
+    """
+    if not text:
+        return " "
+    # Use the same thresholds as `is_no_space_language_document`.
+    cjk = _cjk_ratio(text)
+    latin = _latin_ratio(text)
+    return "" if (cjk >= 0.20 and latin <= 0.40) else " "
+
+
+def _overlap_for_text(text: str) -> int:
+    """Return overlap chars for this text (CJK vs Latin tuned).
+
+    If OVERLAP_CHARS is set (non-zero), use it as a global override.
+    Otherwise choose between OVERLAP_CHARS_CJK and OVERLAP_CHARS_LATIN
+    using the same heuristic as `_joiner_for_text`.
+    """
+    if OVERLAP_CHARS_DEFAULT and OVERLAP_CHARS_DEFAULT > 0:
+        return int(OVERLAP_CHARS_DEFAULT)
+    if not text:
+        return int(OVERLAP_CHARS_LATIN)
+    cjk = _cjk_ratio(text)
+    latin = _latin_ratio(text)
+    return int(OVERLAP_CHARS_CJK) if (cjk >= 0.20 and latin <= 0.40) else int(OVERLAP_CHARS_LATIN)
+
+
+def normalize_block_text_to_paragraph(text: str) -> str:
+    """Normalize a single PDF text block into a paragraph.
+
+    PDF/OCR text often has hard line breaks; treat the entire block as one paragraph,
+    merging hyphenated line breaks similarly to `normalize_paragraphs`.
+    """
+    lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
+    if not lines:
+        return ""
+
+    parts: List[str] = []
+    for ln in lines:
+        if parts and parts[-1].endswith("-"):
+            parts[-1] = parts[-1][:-1] + ln
+        else:
+            parts.append(ln)
+
+    joiner = _joiner_for_text("".join(parts))
+    merged = joiner.join(parts)
+    merged = re.sub(r"\s+", " ", merged).strip()
+    return merged
+
+
+def extract_paragraphs_from_pdf_page(page: Any) -> List[str]:
+    """Extract paragraph-like units from a PDF page using layout blocks.
+
+    Blocks are clustered vertically to reduce over-fragmentation
+    (important for Japanese/CJK PDFs).
+    """
+    try:
+        blocks = page.get_text("blocks") or []
+
+        # collect normalized text blocks with geometry
+        norm_blocks: List[Tuple[float, float, float, str]] = []  # (y0, y1, x0, text)
+
+        for b in blocks:
+            if not b or len(b) < 5:
+                continue
+
+            x0 = float(b[0])
+            y0 = float(b[1])
+            y1 = float(b[3]) if len(b) >= 4 else y0
+            txt = b[4]
+            btype = b[6] if len(b) >= 7 else 0
+
+            # keep text blocks only
+            if btype not in (0,):
+                continue
+            if not isinstance(txt, str):
+                continue
+
+            t = clean_extracted_text(txt)
+            t = normalize_block_text_to_paragraph(t)
+            if t:
+                norm_blocks.append((y0, y1, x0, t))
+
+        if norm_blocks:
+            # sort top→bottom, left→right
+            norm_blocks.sort(key=lambda t: (t[0], t[2]))
+
+            merged: List[str] = []
+            cur_text = ""
+            cur_y1: Optional[float] = None
+
+            for y0, y1, x0, txt in norm_blocks:
+                if not cur_text:
+                    cur_text = txt
+                    cur_y1 = y1
+                    continue
+
+                # vertical gap heuristic (points)
+                gap = 0.0 if cur_y1 is None else (y0 - cur_y1)
+
+                # <=12pt → same paragraph cluster
+                if gap >= 0 and gap <= 12.0:
+                    joiner = _joiner_for_text(cur_text + txt)
+                    if joiner:
+                        cur_text = cur_text + joiner + txt
+                    else:
+                        cur_text = cur_text + txt
+                    cur_y1 = max(cur_y1 or y1, y1)
+                else:
+                    merged.append(cur_text.strip())
+                    cur_text = txt
+                    cur_y1 = y1
+
+            if cur_text:
+                merged.append(cur_text.strip())
+
+            return [m for m in merged if m]
+
+    except Exception:
+        pass
+
+    # fallback
+    try:
+        raw = page.get_text("text") or ""
+        raw = clean_extracted_text(raw)
+        joiner = _joiner_for_text(raw[:20000])
+        return normalize_paragraphs(raw, joiner=joiner)
+    except Exception:
+        return []
+
+
+# --- PDF header/footer (repeated line) detection/removal ---
+PDF_DROP_REPEATED_LINES = (os.environ.get("PDF_DROP_REPEATED_LINES") or "1").strip() != "0"
+PDF_REPEAT_MAX_LEN = int((os.environ.get("PDF_REPEAT_MAX_LEN") or "140").strip())
+PDF_REPEAT_MIN_COUNT = int((os.environ.get("PDF_REPEAT_MIN_COUNT") or "6").strip())
+PDF_REPEAT_MIN_FRAC = float((os.environ.get("PDF_REPEAT_MIN_FRAC") or "0.25").strip())
+
+# Some PDFs embed running heads into the *first paragraph* (title + a few words of body).
+# Exact-line matching won't catch them, so we also detect repeated *prefixes* and strip them
+# from the start of the first paragraph per page.
+PDF_STRIP_REPEATED_PREFIX = (os.environ.get("PDF_STRIP_REPEATED_PREFIX") or "1").strip() != "0"
+PDF_REPEAT_PREFIX_LEN = int((os.environ.get("PDF_REPEAT_PREFIX_LEN") or "90").strip())
+PDF_REPEAT_PREFIX_MIN_COUNT = int((os.environ.get("PDF_REPEAT_PREFIX_MIN_COUNT") or "6").strip())
+PDF_REPEAT_PREFIX_MIN_FRAC = float((os.environ.get("PDF_REPEAT_PREFIX_MIN_FRAC") or "0.25").strip())
+
+
+def _norm_repeat_line(s: str) -> str:
+    s = clean_extracted_text(s or "")
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
+def _is_cjk_char(ch: str) -> bool:
+    """Return True if a single character is in common CJK (Han/Hiragana/Katakana) ranges."""
+    if not ch:
+        return False
+    o = ord(ch)
+    return (
+        0x3040 <= o <= 0x30FF  # Hiragana/Katakana
+        or 0x3400 <= o <= 0x4DBF  # CJK Ext A
+        or 0x4E00 <= o <= 0x9FFF  # CJK Unified
+        or 0xF900 <= o <= 0xFAFF  # CJK Compatibility Ideographs
+        or 0xFF66 <= o <= 0xFF9D  # Halfwidth Katakana
+    )
+
+def _is_repeat_line_candidate(s: str) -> bool:
+    """Heuristic: repeated line candidates are typically short and low-content.
+
+    We keep this conservative to avoid deleting legitimate section headings.
+    """
+    s2 = _norm_repeat_line(s)
+    if not s2:
+        return False
+    if len(s2) > PDF_REPEAT_MAX_LEN:
+        return False
+
+    # Common PDF running-head / footer patterns.
+    # Keep these early and explicit so we can catch them even if punctuation is present.
+    s2_l = s2.lower()
+    if re.search(r"\bpage\s*\d+\s*(of\s*\d+)?\b", s2_l):
+        return True
+    if re.search(r"\b\d{1,4}_pi-\d+\b", s2_l) or "indd" in s2_l:
+        return True
+    if re.search(r"\bdoi\b\s*[:：]?\s*10\.", s2_l):
+        return True
+
+    # If it contains clear sentence-ending punctuation, treat it as content.
+    # (Still allow the explicit patterns above.)
+    if re.search(r"[。！？.!?]", s2):
+        return False
+
+    # Prefer lines with weak lexical content.
+    compact = re.sub(r"\s+", "", s2)
+    if not compact:
+        return False
+
+    total = len(compact)
+    letters = sum(ch.isalpha() for ch in compact)
+    cjk = sum(1 for ch in compact if _is_cjk_char(ch))
+    digits = sum(ch.isdigit() for ch in compact)
+    alnum = letters + cjk + digits
+
+    # A lot of punctuation/symbols or mostly digits tends to be headers/footers/page marks.
+    if alnum / max(total, 1) < 0.55:
+        return True
+    if digits / max(total, 1) > 0.35:
+        return True
+
+    # Often running heads are Title/Journal Name + page number.
+    # Allow short-ish lines with trailing digits.
+    if digits > 0 and len(s2) <= 110:
+        return True
+
+    return False
+
+
+def detect_repeated_lines(paras_by_page: List[List[str]]) -> set[str]:
+    """Detect repeated short lines across the whole PDF.
+
+    We only consider paragraphs that are short and look like headers/footers.
+    A line must appear at least:
+      - PDF_REPEAT_MIN_COUNT times, and
+      - PDF_REPEAT_MIN_FRAC fraction of pages (approx.)
+    """
+    from collections import Counter
+
+    page_count = len(paras_by_page)
+    if page_count <= 1:
+        return set()
+
+    cnt: Counter[str] = Counter()
+    for page_paras in paras_by_page:
+        if not page_paras:
+            continue
+        # Running heads/footers are usually near the top/bottom; limit to reduce false positives.
+        candidates = []
+        candidates.extend(page_paras[:2])
+        if len(page_paras) > 2:
+            candidates.extend(page_paras[-2:])
+        for p in candidates:
+            p2 = _norm_repeat_line(p)
+            if not p2:
+                continue
+            if len(p2) > PDF_REPEAT_MAX_LEN:
+                continue
+            if not _is_repeat_line_candidate(p2):
+                continue
+            cnt[p2] += 1
+
+    if not cnt:
+        return set()
+
+    min_count = max(PDF_REPEAT_MIN_COUNT, int(page_count * PDF_REPEAT_MIN_FRAC))
+    return {k for k, v in cnt.items() if v >= min_count}
+
+
+def drop_repeated_lines_from_paras(paras: List[str], repeated: set[str]) -> List[str]:
+    if not paras or not repeated:
+        return paras
+    out: List[str] = []
+    for p in paras:
+        p2 = _norm_repeat_line(p)
+        if p2 and p2 in repeated:
+            continue
+        out.append(p)
+    return out
+
+
+# --- PDF repeated prefix helpers ---
+def detect_repeated_prefixes(paras_by_page: List[List[str]]) -> set[str]:
+    """Detect repeated prefixes from the first paragraph on each page.
+
+    This catches running heads that are merged with the start of body text.
+    """
+    from collections import Counter
+
+    page_count = len(paras_by_page)
+    if page_count <= 1:
+        return set()
+
+    cnt: Counter[str] = Counter()
+    for page_paras in paras_by_page:
+        if not page_paras:
+            continue
+        first = _norm_repeat_line(page_paras[0])
+        if not first:
+            continue
+        # Normalize and truncate to a fixed prefix length.
+        pref = first[: max(1, PDF_REPEAT_PREFIX_LEN)].strip()
+        if not pref:
+            continue
+        if len(pref) < 25:
+            continue
+        cnt[pref] += 1
+
+    if not cnt:
+        return set()
+
+    min_count = max(PDF_REPEAT_PREFIX_MIN_COUNT, int(page_count * PDF_REPEAT_PREFIX_MIN_FRAC))
+    return {k for k, v in cnt.items() if v >= min_count}
+
+
+def strip_repeated_prefix_from_first_para(page_paras: List[str], prefixes: set[str]) -> List[str]:
+    """Strip a detected repeated prefix from the first paragraph of a page (best-effort)."""
+    if not page_paras or not prefixes:
+        return page_paras
+
+    first_norm = _norm_repeat_line(page_paras[0])
+    if not first_norm:
+        return page_paras
+
+    for pref in prefixes:
+        if first_norm.startswith(pref):
+            stripped = first_norm[len(pref) :].strip()
+            if stripped:
+                out = list(page_paras)
+                out[0] = stripped
+                return out
+            # If nothing remains, drop the first paragraph entirely.
+            return list(page_paras[1:])
+
+    return page_paras
+
+
 def is_no_space_language_document(sample: str) -> bool:
-    """Heuristic: treat as a no-whitespace language doc if CJK ratio is high and spaces are rare."""
+    """Heuristic: treat as a no-whitespace language doc (e.g., Japanese/Chinese).
+
+    NOTE:
+    - We avoid using a strict `space_ratio` gate because upstream normalization may insert
+      spaces when joining hard line breaks (common in PDFs/OCR), which would incorrectly
+      downgrade CJK documents.
+    """
     if not sample:
         return False
     s = sample.strip()
@@ -504,16 +868,21 @@ def is_no_space_language_document(sample: str) -> bool:
         return False
     # Measure on a bounded sample to avoid heavy loops.
     s = s[:20000]
-    # If the text is mostly CJK and has very few ASCII spaces, treat it as no-space language.
+
     cjk = _cjk_ratio(s)
-    space_ratio = s.count(" ") / max(len(s), 1)
-    return (cjk >= 0.20) and (space_ratio <= 0.02)
+    latin = _latin_ratio(s)
+
+    # Conservative rule: mostly CJK and not dominated by Latin letters.
+    # This avoids misclassifying English-heavy documents that contain some CJK tokens.
+    return (cjk >= 0.20) and (latin <= 0.40)
 
 
 def split_long_paragraph(p: str, max_chars: int = MAX_CHARS) -> List[str]:
     p = p.strip()
     if len(p) <= max_chars:
         return [p]
+
+    joiner = _joiner_for_text(p)
 
     # Prefer splitting on punctuation followed by whitespace (works well for English).
     # If that doesn't split (common in Japanese where punctuation may not be followed by whitespace),
@@ -527,8 +896,13 @@ def split_long_paragraph(p: str, max_chars: int = MAX_CHARS) -> List[str]:
         s = s.strip()
         if not s:
             continue
-        if len(cur) + len(s) + 1 <= max_chars:
-            cur = (cur + " " + s).strip()
+
+        add_len = len(joiner) if cur else 0
+        if len(cur) + add_len + len(s) <= max_chars:
+            if cur:
+                cur = (cur + joiner + s).strip()
+            else:
+                cur = s
         else:
             if cur:
                 parts.append(cur)
@@ -536,14 +910,135 @@ def split_long_paragraph(p: str, max_chars: int = MAX_CHARS) -> List[str]:
     if cur:
         parts.append(cur)
 
+    # Light overlap between adjacent parts to improve retrieval around boundaries.
+    overlap = max(0, int(_overlap_for_text(p)))
+    if overlap > 0 and len(parts) > 1:
+        for i in range(1, len(parts)):
+            prev = parts[i - 1]
+            cur_part = parts[i]
+            if not prev or not cur_part:
+                continue
+            # Prefix the current chunk with a tail from the previous chunk, trimmed to fit.
+            tail = prev[-overlap:]
+            keep = max(0, max_chars - len(cur_part))
+            if keep <= 0:
+                continue
+            if len(tail) > keep:
+                tail = tail[-keep:]
+            parts[i] = (tail + cur_part)
+
     final_parts: List[str] = []
     for part in parts:
         if len(part) <= max_chars:
             final_parts.append(part)
         else:
-            for i in range(0, len(part), max_chars):
-                final_parts.append(part[i : i + max_chars].strip())
+            # Overlapping fixed windows for extremely long segments.
+            overlap = max(0, int(_overlap_for_text(p)))
+            if overlap >= max_chars:
+                overlap = max(0, max_chars // 4)
+            step = max(1, max_chars - overlap)
+            for i in range(0, len(part), step):
+                window = part[i : i + max_chars].strip()
+                if window:
+                    final_parts.append(window)
+                if i + max_chars >= len(part):
+                    break
     return [x for x in final_parts if x]
+
+
+def merge_short_chunk_records(
+    chunks: List[Tuple[str, str, Dict[str, Any]]],
+    *,
+    min_chars: int,
+    max_chars: int,
+) -> List[Tuple[str, str, Dict[str, Any]]]:
+    """Merge consecutive short chunks until they reach `min_chars`.
+
+    - Keeps ordering.
+    - Uses a paragraph-style separator (`\n\n`) when concatenating.
+    - Preserves the first chunk's id/metadata; updates metadata when merges occur.
+    - Never grows a merged chunk beyond `max_chars`.
+    - Drops chunks below HARD_MIN_CHARS.
+    """
+    if not chunks:
+        return []
+
+    out: List[Tuple[str, str, Dict[str, Any]]] = []
+    buf_id: Optional[str] = None
+    buf_text: str = ""
+    buf_md: Optional[Dict[str, Any]] = None
+    merge_count: int = 0
+    locator_end: Optional[str] = None
+
+    def _finalize_buf() -> None:
+        nonlocal buf_id, buf_text, buf_md, merge_count, locator_end
+        if buf_id is None or buf_md is None:
+            return
+        if merge_count > 1:
+            buf_md["merged"] = True
+            buf_md["merge_count"] = int(merge_count)
+            if locator_end:
+                buf_md["locator_end"] = locator_end
+        out.append((buf_id, buf_text.strip(), buf_md))
+        buf_id = None
+        buf_text = ""
+        buf_md = None
+        merge_count = 0
+        locator_end = None
+
+    sep = "\n\n"
+
+    for cid, text, md in chunks:
+        t = (text or "").strip()
+        if not t:
+            continue
+        if len(t) < HARD_MIN_CHARS:
+            continue
+
+        if buf_id is None:
+            buf_id = cid
+            buf_text = t
+            buf_md = md
+            merge_count = 1
+            locator_end = md.get("locator") if isinstance(md, dict) else None
+            continue
+
+        # If the current buffer is short, try to grow it by appending the next chunk.
+        if len(buf_text) < min_chars:
+            if len(buf_text) + len(sep) + len(t) <= max_chars:
+                buf_text = buf_text + sep + t
+                merge_count += 1
+                loc = md.get("locator") if isinstance(md, dict) else None
+                if isinstance(loc, str) and loc:
+                    locator_end = loc
+                continue
+
+        # Otherwise, flush the buffer and start a new one.
+        _finalize_buf()
+        buf_id = cid
+        buf_text = t
+        buf_md = md
+        merge_count = 1
+        locator_end = md.get("locator") if isinstance(md, dict) else None
+
+    if buf_id is not None and buf_md is not None:
+        # If the last buffer is still short, try to append it to the previous chunk if it fits.
+        if len(buf_text) < min_chars and out:
+            prev_id, prev_text, prev_md = out[-1]
+            if len(prev_text) + len(sep) + len(buf_text) <= max_chars:
+                out[-1] = (prev_id, (prev_text + sep + buf_text).strip(), prev_md)
+                if isinstance(prev_md, dict):
+                    prev_md["merged"] = True
+                    prev_md["merge_count"] = int(prev_md.get("merge_count", 1)) + 1
+                    loc = locator_end
+                    if isinstance(loc, str) and loc:
+                        prev_md["locator_end"] = loc
+            else:
+                _finalize_buf()
+        else:
+            _finalize_buf()
+
+    return out
 
 
 def extract_chunks_from_html_snapshot(
@@ -570,7 +1065,8 @@ def extract_chunks_from_html_snapshot(
         return []
 
     raw_text = clean_extracted_text(extract_main_text_from_html(raw_html))
-    paras = normalize_paragraphs(raw_text)
+    joiner = _joiner_for_text(raw_text[:20000])
+    paras = normalize_paragraphs(raw_text, joiner=joiner)
     if not paras:
         return []
 
@@ -586,7 +1082,7 @@ def extract_chunks_from_html_snapshot(
         parts = split_long_paragraph(para_text, max_chars=MAX_CHARS)
         for part_index, part in enumerate(parts):
             part = part.strip()
-            if len(part) < local_min_chunk:
+            if len(part) < HARD_MIN_CHARS:
                 continue
             chunk_id = f"{attachment_key}:html:para{para_index}:part{part_index}"
             md = dict(meta_base)
@@ -602,6 +1098,7 @@ def extract_chunks_from_html_snapshot(
             )
             chunks.append((chunk_id, part, md))
 
+    chunks = merge_short_chunk_records(chunks, min_chars=local_min_chunk, max_chars=MAX_CHARS)
     ids = [cid for (cid, _, _) in chunks]
     if len(ids) != len(set(ids)):
         dup = len(ids) - len(set(ids))
@@ -648,7 +1145,8 @@ def extract_chunks_from_epub_snapshot(
             raw = item.get_content()  # bytes
             html = _decode_html_bytes(raw)
             txt = clean_extracted_text(extract_main_text_from_html(html))
-            paras = normalize_paragraphs(txt)
+            joiner = _joiner_for_text(txt[:20000])
+            paras = normalize_paragraphs(txt, joiner=joiner)
             for p in paras:
                 if p and p.strip():
                     all_paras.append((chap_idx, p))
@@ -680,7 +1178,7 @@ def extract_chunks_from_epub_snapshot(
         parts = split_long_paragraph(para_text, max_chars=MAX_CHARS)
         for part_index, part in enumerate(parts):
             part = part.strip()
-            if len(part) < local_min_chunk:
+            if len(part) < HARD_MIN_CHARS:
                 continue
 
             chunk_id = f"{attachment_key}:epub:para{global_para}:part{part_index}"
@@ -700,6 +1198,7 @@ def extract_chunks_from_epub_snapshot(
 
         global_para += 1
 
+    chunks = merge_short_chunk_records(chunks, min_chars=local_min_chunk, max_chars=MAX_CHARS)
     ids = [cid for (cid, _, _) in chunks]
     if len(ids) != len(set(ids)):
         dup = len(ids) - len(set(ids))
@@ -755,27 +1254,70 @@ def extract_chunks_from_pdf(
             r_fd = _r_fd
             doc = fitz.open(str(pdf_path))
             try:
+                # Phase 1: extract per-page paragraphs
+                paras_by_page: List[List[str]] = []
                 for pi in range(doc.page_count):
                     try:
                         page = doc.load_page(pi)
-                        raw = page.get_text("text") or ""
+                        paras = extract_paragraphs_from_pdf_page(page)
                     except Exception as e:
                         print(
-                            f"[WARN] Failed to extract page text: attachment={attachment_key} file={pdf_path} page={pi+1} err={e}",
+                            f"[WARN] Failed to extract page paragraphs: attachment={attachment_key} file={pdf_path} page={pi+1} err={e}",
                             file=sys.__stderr__,
                         )
+                        paras_by_page.append([])
                         continue
 
-                    raw = clean_extracted_text(raw)
-
-                    paras = normalize_paragraphs(raw)
                     if not paras:
+                        paras_by_page.append([])
                         continue
 
                     joined = "\n\n".join(paras)
                     if looks_like_gibberish(joined):
+                        paras_by_page.append([])
                         continue
+
+                    paras_by_page.append(paras)
+
+                repeated_lines: set[str] = set()
+                if PDF_DROP_REPEATED_LINES:
+                    repeated_lines = detect_repeated_lines(paras_by_page)
+                    if repeated_lines and os.environ.get("DEBUG_PDF_REPEAT") == "1":
+                        ex = list(sorted(repeated_lines))[:10]
+                        print(
+                            f"[DEBUG] repeated header/footer lines detected: attachment={attachment_key} file={pdf_path} n={len(repeated_lines)} ex={ex}",
+                            file=sys.__stderr__,
+                        )
+
+                repeated_prefixes: set[str] = set()
+                if PDF_STRIP_REPEATED_PREFIX:
+                    repeated_prefixes = detect_repeated_prefixes(paras_by_page)
+                    if repeated_prefixes and os.environ.get("DEBUG_PDF_REPEAT") == "1":
+                        ex = list(sorted(repeated_prefixes))[:10]
+                        print(
+                            f"[DEBUG] repeated header/footer prefixes detected: attachment={attachment_key} file={pdf_path} n={len(repeated_prefixes)} ex={ex}",
+                            file=sys.__stderr__,
+                        )
+
+                # Phase 2: generate chunks
+                for pi, paras in enumerate(paras_by_page):
+                    if not paras:
+                        continue
+
+                    if repeated_lines:
+                        paras = drop_repeated_lines_from_paras(paras, repeated_lines)
+                        if not paras:
+                            continue
+
+                    if repeated_prefixes:
+                        paras = strip_repeated_prefix_from_first_para(paras, repeated_prefixes)
+                        if not paras:
+                            continue
+
+                    joined = "\n\n".join(paras)
                     local_min_chunk = MIN_CHUNK_CHARS_NO_SPACE if is_no_space_language_document(joined) else MIN_CHUNK_CHARS
+
+                    page_chunks: List[Tuple[str, str, Dict[str, Any]]] = []
 
                     for para_index, para_text in enumerate(paras):
                         para_text = para_text.strip()
@@ -785,7 +1327,7 @@ def extract_chunks_from_pdf(
                         parts = split_long_paragraph(para_text, max_chars=MAX_CHARS)
                         for part_index, part in enumerate(parts):
                             part = part.strip()
-                            if len(part) < local_min_chunk:
+                            if len(part) < HARD_MIN_CHARS:
                                 continue
 
                             chunk_id = f"{attachment_key}:p{pi+1}:para{para_index}:part{part_index}"
@@ -803,7 +1345,10 @@ def extract_chunks_from_pdf(
                                 }
                             )
 
-                            chunks.append((chunk_id, part, md))
+                            page_chunks.append((chunk_id, part, md))
+
+                    page_chunks = merge_short_chunk_records(page_chunks, min_chars=local_min_chunk, max_chars=MAX_CHARS)
+                    chunks.extend(page_chunks)
             finally:
                 try:
                     doc.close()
@@ -1351,7 +1896,8 @@ async def main_async(args: argparse.Namespace) -> None:
 
         note_html = n.get("note_html") or ""
         note_text = clean_extracted_text(extract_main_text_from_html(note_html if isinstance(note_html, str) else ""))
-        paras = normalize_paragraphs(note_text)
+        joiner = _joiner_for_text(note_text[:20000])
+        paras = normalize_paragraphs(note_text, joiner=joiner)
         if not paras:
             notes_manifest[note_key] = {"version": ver}
             updated_notes += 1
@@ -1364,6 +1910,8 @@ async def main_async(args: argparse.Namespace) -> None:
             continue
         local_min_chunk = MIN_CHUNK_CHARS_NO_SPACE if is_no_space_language_document(joined) else MIN_CHUNK_CHARS
 
+        note_chunks: List[Tuple[str, str, Dict[str, Any]]] = []
+
         for para_index, para_text in enumerate(paras):
             para_text = para_text.strip()
             if not para_text:
@@ -1371,7 +1919,7 @@ async def main_async(args: argparse.Namespace) -> None:
             parts = split_long_paragraph(para_text, max_chars=MAX_CHARS)
             for part_index, part in enumerate(parts):
                 part = part.strip()
-                if len(part) < local_min_chunk:
+                if len(part) < HARD_MIN_CHARS:
                     continue
                 cid = f"{note_key}:note:para{para_index}:part{part_index}"
                 md = dict(meta_base)
@@ -1382,12 +1930,15 @@ async def main_async(args: argparse.Namespace) -> None:
                         "part_index": int(part_index),
                     }
                 )
-                pending_note_ids.append(cid)
-                pending_note_docs.append(part)
-                pending_note_metas.append(md)
+                note_chunks.append((cid, part, md))
 
-                if len(pending_note_ids) >= BATCH_SIZE:
-                    _flush_notes_batch()
+        note_chunks = merge_short_chunk_records(note_chunks, min_chars=local_min_chunk, max_chars=MAX_CHARS)
+        for cid, part, md in note_chunks:
+            pending_note_ids.append(cid)
+            pending_note_docs.append(part)
+            pending_note_metas.append(md)
+            if len(pending_note_ids) >= BATCH_SIZE:
+                _flush_notes_batch()
 
         _flush_notes_batch()
         notes_manifest[note_key] = {"version": ver}
