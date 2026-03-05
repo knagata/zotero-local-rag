@@ -1,0 +1,16 @@
+[project]
+name = "zotero-local-rag"
+version = "0.1.0"
+requires-python = ">=3.10,<3.11"
+dependencies = [
+    "chromadb",
+    "sentence-transformers",
+    "huggingface-hub>=0.34.0,<1.0",
+    "pymupdf",
+    "fastmcp",
+    "httpx",
+    "typing_extensions",
+    "trafilatura",
+    "ebooklib",
+    "pydantic>=2.12,<3",
+]
