@@ -4,3 +4,4 @@ data/manifest.json
 src/__pycache__
 scripts
 .DS_Store
+/.claude
