@@ -1,0 +1,2 @@
+[console_scripts]
+zotero-local-rag = rag_mcp_server:main

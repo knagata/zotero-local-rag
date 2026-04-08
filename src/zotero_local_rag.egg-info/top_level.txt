@@ -1,0 +1,9 @@
+embedder
+html_extract
+index_from_zotero
+manifest
+note_extract
+pdf_extract
+rag_mcp_server
+text_utils
+zotero_source_localapi

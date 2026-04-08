@@ -14,3 +14,6 @@ dependencies = [
     "ebooklib",
     "pydantic>=2.12,<3",
 ]
+
+[project.scripts]
+zotero-local-rag = "rag_mcp_server:main"

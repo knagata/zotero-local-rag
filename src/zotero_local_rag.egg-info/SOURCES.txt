@@ -1,0 +1,17 @@
+LICENSE
+pyproject.toml
+src/embedder.py
+src/html_extract.py
+src/index_from_zotero.py
+src/manifest.py
+src/note_extract.py
+src/pdf_extract.py
+src/rag_mcp_server.py
+src/text_utils.py
+src/zotero_source_localapi.py
+src/zotero_local_rag.egg-info/PKG-INFO
+src/zotero_local_rag.egg-info/SOURCES.txt
+src/zotero_local_rag.egg-info/dependency_links.txt
+src/zotero_local_rag.egg-info/entry_points.txt
+src/zotero_local_rag.egg-info/requires.txt
+src/zotero_local_rag.egg-info/top_level.txt

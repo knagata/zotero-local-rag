@@ -1,0 +1,16 @@
+Metadata-Version: 2.4
+Name: zotero-local-rag
+Version: 0.1.0
+Requires-Python: <3.11,>=3.10
+License-File: LICENSE
+Requires-Dist: chromadb
+Requires-Dist: sentence-transformers
+Requires-Dist: huggingface-hub<1.0,>=0.34.0
+Requires-Dist: pymupdf
+Requires-Dist: fastmcp
+Requires-Dist: httpx
+Requires-Dist: typing_extensions
+Requires-Dist: trafilatura
+Requires-Dist: ebooklib
+Requires-Dist: pydantic<3,>=2.12
+Dynamic: license-file

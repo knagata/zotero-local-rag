@@ -9,6 +9,7 @@ from typing_extensions import TypedDict
 import chromadb
 from chromadb.utils import embedding_functions
 from fastmcp import FastMCP
+from zotero_source_localapi import ZoteroLocalAPI
 
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -123,6 +124,7 @@ class RagMeta(TypedDict, total=False):
     year: Optional[int]
     creators: Optional[str]
     page: Optional[int]
+    page_label: Optional[str]  # book page label from PDF page label dictionary (e.g. "xii", "15")
     pdf_path: Optional[str]
     path: Optional[str]
     itemKey: Optional[str]
@@ -148,6 +150,7 @@ class RagHit(TypedDict, total=False):
 
     id: str
     distance: Optional[float]
+    rrf_score: Optional[float]
     citation: str
     text: str
     context: List[RagContextChunk]
@@ -247,14 +250,115 @@ def _col():
     return _COL
 
 
+_Z_API = None
+
+def parse_id(chunk_id: str):
+    try:
+        a0, seg1, perseg, partseg = chunk_id.split(":")
+        if seg1.startswith("p"):
+            source_type = "pdf"
+            page = int(seg1[1:])
+        elif seg1 == "html":
+            source_type = "html"
+            page = None
+        elif seg1 == "epub":
+            source_type = "epub"
+            page = None
+        elif seg1 == "note":
+            source_type = "note"
+            page = None
+        else:
+            return None
+        para = int(perseg[4:])
+        part = int(partseg[4:])
+        return a0, source_type, page, para, part
+    except Exception:
+        return None
+
+def neighbor_ids(chunk_id: str, w: int) -> List[str]:
+    parsed = parse_id(chunk_id)
+    if not parsed or w <= 0:
+        return []
+    a0, stype, page, para, _part = parsed
+    out_ids: List[str] = []
+    for dp in range(-w, w + 1):
+        pidx = para + dp
+        if pidx < 0:
+            continue
+        if stype == "pdf" and page is not None:
+            out_ids.append(f"{a0}:p{page}:para{pidx}:part0")
+        elif stype == "html":
+            out_ids.append(f"{a0}:html:para{pidx}:part0")
+        elif stype == "epub":
+            out_ids.append(f"{a0}:epub:para{pidx}:part0")
+        elif stype == "note":
+            out_ids.append(f"{a0}:note:para{pidx}:part0")
+    return out_ids
+
+
+RRF_K = 60
+
+def _where_requests_notes(w: Optional[Dict[str, Any]]) -> bool:
+    """Detect whether a Chroma `where` filter explicitly includes Notes."""
+    def _positive_note_stype(val: Any) -> bool:
+        if val == "note":
+            return True
+        if isinstance(val, dict):
+            if val.get("$eq") == "note":
+                return True
+            if "note" in (val.get("$in") or []):
+                return True
+        return False
+
+    def _walk(node: Any, negated: bool = False, depth: int = 0) -> bool:
+        if depth > 50 or node is None:
+            return False
+        if isinstance(node, dict):
+            if "$not" in node:
+                return _walk(node.get("$not"), not negated, depth + 1)
+            if "$and" in node and isinstance(node.get("$and"), list):
+                for sub in node.get("$and"):
+                    if _walk(sub, negated, depth + 1):
+                        return True
+            if "$or" in node and isinstance(node.get("$or"), list):
+                for sub in node.get("$or"):
+                    if _walk(sub, negated, depth + 1):
+                        return True
+            if "source_type" in node:
+                if _positive_note_stype(node.get("source_type")):
+                    return not negated
+            for v in node.values():
+                if isinstance(v, (dict, list)) and _walk(v, negated, depth + 1):
+                    return True
+            return False
+        if isinstance(node, list):
+            for sub in node:
+                if _walk(sub, negated, depth + 1):
+                    return True
+        return False
+    if not w or not isinstance(w, dict):
+        return False
+    return _walk(w)
+
+
+def _z_api():
+    global _Z_API
+    if _Z_API is None:
+        _Z_API = ZoteroLocalAPI()
+    return _Z_API
+
+
 def _make_citation(md: dict) -> str:
     title = md.get("title") or ""
     year = md.get("year")
     page = md.get("page")
-    if title and page and year:
-        return f"{title} ({year}) p.{page}"
-    if title and page:
-        return f"{title} p.{page}"
+    page_label = (md.get("page_label") or "").strip()
+    # Prefer the book's own page label (e.g. "xii", "15") over the sequential PDF page number.
+    page_display = page_label if page_label else (str(page) if page is not None else None)
+    if title and page_display and year:
+        return f"{title} ({year}) p.{page_display}"
+    if title and page_display:
+        return f"{title} p.{page_display}"
     if title and year:
         return f"{title} ({year})"
     return title or ""
@@ -262,19 +366,24 @@ def _make_citation(md: dict) -> str:
 
 @mcp.tool()
 def rag_search(
-    query: str,
-    k: int = 10,
+    query: str | List[str],
+    k: int = 5,
     where: Optional[Dict[str, Any]] = None,
-    context_window: int = 1,
+    context_window: int = 0,
     include_notes: bool = False,
+    include_item_keys: Optional[List[str]] = None,
+    exclude_chunk_ids: Optional[List[str]] = None,
 ) -> RagSearchResponse:
     """
     Paragraph-level semantic search over local Zotero PDFs/HTML snapshots (+ optionally Notes).
     Args:
         query:
-            Natural-language query string.
+            Natural-language query string OR a list of strings.
+            Providing a list (e.g. synonyms, different languages) allows for broader semantic
+            matching in a single call. Results are deduplicated by chunk ID (keeping the
+            best distance hit), saving tokens by avoiding redundant context.
         k:
-            Number of results to return (after filtering short fragments). Default: 10.
+            Number of results to return (after filtering short fragments and deduplication). Default: 5.
         where:
             Optional metadata filter (Chroma `where` filter). Use this to restrict eligible chunks.
 
@@ -282,7 +391,8 @@ def rag_search(
                 - title: str
                 - year: int
                 - creators: str (authors joined by '; ')
-                - page: int (PDF only)
+                - page: int (PDF only; sequential 1-based PDF page number)
+                - page_label: str (PDF only; book page label from PDF page label dictionary, e.g. "xii", "15"; empty string if not defined)
                 - pdf_path: str (PDF/HTML; kept for compatibility)
                 - path: str (PDF/HTML)
                 - itemKey: str (parent Zotero item key)
@@ -302,12 +412,17 @@ def rag_search(
               - Notes OR a specific item:
                 {"$or": [{"source_type": "note"}, {"itemKey": "BGZ9UFUJ"}]}
         context_window:
-            Neighbor paragraphs to fetch around a hit. Default: 1.
+            Neighbor paragraphs to fetch around a hit. Default: 0 (saves tokens).
             For PDF: neighbors are within the same page by para index.
             For HTML/Notes: neighbors are within the same doc by para index.
         include_notes:
             If True, include Zotero Notes chunks in the search space. Default: False.
             Notes are indexed but excluded by default.
+        include_item_keys:
+            Optional list of Zotero item keys (e.g. ['ABCDEF12', 'GHIJKL34']) to restrict the search to.
+        exclude_chunk_ids:
+            Optional list of chunk IDs to exclude from the results. Use this to avoid
+            seeing the same paragraphs across multiple turns.
     Returns:
         {"results": [ ... ]}
     """
@@ -316,73 +431,6 @@ def rag_search(
     if k <= 0:
         return {"results": []}
 
-    def _where_requests_notes(w: Optional[Dict[str, Any]]) -> bool:
-        """Detect whether a Chroma `where` filter explicitly includes Notes.
-
-        We treat Notes as "requested" only when the filter positively selects
-        source_type == "note" (or source_type $in includes "note"), accounting
-        for nested `$and`/`$or` (and `$not`) compositions.
-
-        This is intentionally conservative: negative constraints like
-        {"source_type": {"$ne": "note"}} or {"$not": {"source_type": "note"}}
-        do NOT count as requesting notes.
-        """
-
-        def _positive_note_stype(val: Any) -> bool:
-            if val == "note":
-                return True
-            if isinstance(val, dict):
-                if val.get("$eq") == "note":
-                    return True
-                if "note" in (val.get("$in") or []):
-                    return True
-            return False
-
-        def _walk(node: Any, negated: bool = False, depth: int = 0) -> bool:
-            # Depth guard against pathological input
-            if depth > 50:
-                return False
-            if node is None:
-                return False
-
-            if isinstance(node, dict):
-                # Handle logical composition operators
-                if "$not" in node:
-                    return _walk(node.get("$not"), not negated, depth + 1)
-
-                if "$and" in node and isinstance(node.get("$and"), list):
-                    for sub in node.get("$and"):
-                        if _walk(sub, negated, depth + 1):
-                            return True
-
-                if "$or" in node and isinstance(node.get("$or"), list):
-                    for sub in node.get("$or"):
-                        if _walk(sub, negated, depth + 1):
-                            return True
-
-                # Field-level check
-                if "source_type" in node:
-                    st = node.get("source_type")
-                    if _positive_note_stype(st):
-                        return not negated
-
-                # Recurse through any nested dict/list values to catch embeddings of where clauses
-                for v in node.values():
-                    if isinstance(v, (dict, list)) and _walk(v, negated, depth + 1):
-                        return True
-                return False
-
-            if isinstance(node, list):
-                for sub in node:
-                    if _walk(sub, negated, depth + 1):
-                        return True
-                return False
-
-            return False
-
-        if not w or not isinstance(w, dict):
-            return False
-        return _walk(w)
 
     effective_where = where
     if (not include_notes) and (not _where_requests_notes(where)):
@@ -392,67 +440,78 @@ def rag_search(
         else:
             effective_where = {"$and": [effective_where, note_excl]}
 
+    if include_item_keys:
+        item_filter = {"itemKey": {"$in": include_item_keys}}
+        if effective_where is None:
+            effective_where = item_filter
+        else:
+            effective_where = {"$and": [effective_where, item_filter]}
+
+    queries = [query] if isinstance(query, str) else query
+    
+    internal_k = max(k * 5, k)
+    if exclude_chunk_ids:
+        internal_k += len(exclude_chunk_ids)
+
     res = col.query(
-        query_texts=[query],
-        n_results=max(k * 5, k),
+        query_texts=queries,
+        n_results=internal_k,
         where=effective_where,
         include=["documents", "metadatas", "distances"],
     )
 
-    ids0 = (res.get("ids") or [[]])[0]
-    docs0 = (res.get("documents") or [[]])[0]
-    metas0 = (res.get("metadatas") or [[]])[0]
-    dists0 = (res.get("distances") or [[]])[0]
+    # Consolidated hits map: id -> {distance, rrf_score, document, metadata}
+    hits_combined = {}
+    all_q_ids = res.get("ids") or []
+    all_q_docs = res.get("documents") or []
+    all_q_metas = res.get("metadatas") or []
+    all_q_dists = res.get("distances") or []
 
-    def parse_id(chunk_id: str):
-        """Parse chunk ids for pdf/html/note.
+    for q_idx in range(len(all_q_ids)):
+        q_ids = all_q_ids[q_idx]
+        q_docs = all_q_docs[q_idx] if q_idx < len(all_q_docs) else []
+        q_metas = all_q_metas[q_idx] if q_idx < len(all_q_metas) else []
+        q_dists = all_q_dists[q_idx] if q_idx < len(all_q_dists) else []
 
-        pdf : {attachmentKey}:p{page}:para{para}:part{part}
-        html: {attachmentKey}:html:para{para}:part{part}
-        epub: {attachmentKey}:epub:para{para}:part{part}
-        note: {noteKey}:note:para{para}:part{part}
-        """
-        try:
-            a0, seg1, perseg, partseg = chunk_id.split(":")
-            if seg1.startswith("p"):
-                source_type = "pdf"
-                page = int(seg1[1:])
-            elif seg1 == "html":
-                source_type = "html"
-                page = None
-            elif seg1 == "epub":
-                source_type = "epub"
-                page = None
-            elif seg1 == "note":
-                source_type = "note"
-                page = None
+        for h_idx in range(len(q_ids)):
+            hid = q_ids[h_idx]
+            hdoc = q_docs[h_idx] if h_idx < len(q_docs) else ""
+            hmd = q_metas[h_idx] if h_idx < len(q_metas) else {}
+            hdist = q_dists[h_idx] if h_idx < len(q_dists) else 1.0
+            
+            # Reciprocal Rank Fusion contribution
+            # rank is h_idx + 1
+            rrf_val = 1.0 / (RRF_K + (h_idx + 1))
+
+            if hid not in hits_combined:
+                hits_combined[hid] = {
+                    "distance": hdist,
+                    "rrf_score": rrf_val,
+                    "document": hdoc,
+                    "metadata": hmd,
+                }
             else:
-                return None
-            para = int(perseg[4:])
-            part = int(partseg[4:])
-            return a0, source_type, page, para, part
-        except Exception:
-            return None
+                # Keep the smallest distance (highest similarity)
+                if hdist < hits_combined[hid]["distance"]:
+                    hits_combined[hid]["distance"] = hdist
+                # Accumulate RRF score
+                hits_combined[hid]["rrf_score"] += rrf_val
 
-    def neighbor_ids(chunk_id: str, w: int) -> List[str]:
-        parsed = parse_id(chunk_id)
-        if not parsed or w <= 0:
-            return []
-        a0, stype, page, para, _part = parsed
-        out_ids: List[str] = []
-        for dp in range(-w, w + 1):
-            pidx = para + dp
-            if pidx < 0:
-                continue
-            if stype == "pdf" and page is not None:
-                out_ids.append(f"{a0}:p{page}:para{pidx}:part0")
-            elif stype == "html":
-                out_ids.append(f"{a0}:html:para{pidx}:part0")
-            elif stype == "epub":
-                out_ids.append(f"{a0}:epub:para{pidx}:part0")
-            elif stype == "note":
-                out_ids.append(f"{a0}:note:para{pidx}:part0")
-        return out_ids
+    # Sort all consolidated hits by RRF score descending (highest first)
+    sorted_hits = sorted(hits_combined.items(), key=lambda x: x[1]["rrf_score"], reverse=True)
+
+    # Filtering out excluded IDs
+    if exclude_chunk_ids:
+        exclude_set = set(exclude_chunk_ids)
+        sorted_hits = [h for h in sorted_hits if h[0] not in exclude_set]
+
+    ids0 = [x[0] for x in sorted_hits]
+    docs0 = [x[1]["document"] for x in sorted_hits]
+    metas0 = [x[1]["metadata"] for x in sorted_hits]
+    dists0 = [x[1]["distance"] for x in sorted_hits]
+    rrfs0 = [x[1]["rrf_score"] for x in sorted_hits]
+
+
 
     MIN_RETURN_CHARS = int(os.environ.get("MIN_RETURN_CHARS", "200"))
 
@@ -506,7 +565,8 @@ def rag_search(
         out.append(
             {
                 "id": ids0[i],
-                "distance": dist,
+                "distance": dists0[i],
+                "rrf_score": rrfs0[i],
                 "citation": citation,
                 "text": text,
                 "context": ctx,
@@ -515,6 +575,7 @@ def rag_search(
                     "year": md.get("year"),
                     "creators": md.get("creators"),
                     "page": md.get("page"),
+                    "page_label": md.get("page_label"),
                     "pdf_path": md.get("pdf_path"),
                     "path": md.get("path"),
                     "itemKey": md.get("itemKey"),
@@ -534,7 +595,238 @@ def rag_search(
     return {"results": out}
 
 
-if __name__ == "__main__":
+@mcp.tool()
+async def get_item_details(item_key: str) -> Dict[str, Any]:
+    """
+    Fetch full bibliographic metadata for a specific Zotero item.
+
+    Args:
+        item_key: The Zotero item key (e.g., 'ABCDEFGH'). Found in search results as itemKey.
+    """
+    api = _z_api()
+    return await api.get_item(item_key)
+
+
+@mcp.tool()
+async def list_recent_items(limit: int = 20) -> List[Dict[str, Any]]:
+    """
+    List the most recently modified items in the Zotero library.
+
+    Args:
+        limit: Number of items to return. Default is 20.
+    """
+    api = _z_api()
+    # Fetch recent items. We use the internal _get_json to avoid adding too much boilerplate.
+    raw = await api._get_json(
+        "items", params={"limit": limit, "direction": "desc", "sort": "dateModified"}
+    )
+
+    out = []
+    if isinstance(raw, list):
+        for item in raw:
+            try:
+                # Use the existing unwrap logic from the API class
+                _, data = api._unwrap_item(item)
+                # Skip attachments to focus on top-level library items
+                if data.get("itemType") == "attachment":
+                    continue
+                out.append(
+                    {
+                        "key": data.get("key"),
+                        "itemType": data.get("itemType"),
+                        "title": data.get("title"),
+                        "creators": data.get("creators"),
+                        "date": data.get("date"),
+                        "dateModified": data.get("dateModified"),
+                    }
+                )
+            except Exception:
+                continue
+    return out
+
+
+@mcp.tool()
+def search_items(
+    query: str | List[str],
+    k: int = 10,
+    where: Optional[Dict[str, Any]] = None,
+    include_notes: bool = False,
+    include_item_keys: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """
+    Search for relevant Zotero documents (items) without returning full paragraph text.
+    Returns a list of unique items with their bibliographic metadata and relevance scores.
+    Items that match in multiple places or for multiple keywords will have higher RRF scores.
+
+    Args:
+        query:
+            Natural-language query string OR a list of strings.
+        k:
+            Number of unique materials to return. Default: 10.
+        where:
+            Optional metadata filter (Chroma `where` filter).
+        include_notes:
+            If True, include Zotero Notes chunks in the search space. Default: False.
+        include_item_keys:
+            Optional list of Zotero item keys to restrict the search to.
+    """
+    col = _col()
+    if k <= 0:
+        return {"items": []}
+
+    # Internally fetch more chunks to ensure we can find 'k' unique library items.
+    k_internal = max(k * 10, 100)
+
+
+
+    effective_where = where
+    if (not include_notes) and (not _where_requests_notes(where)):
+        note_excl = {"source_type": {"$ne": "note"}}
+        if effective_where is None:
+            effective_where = note_excl
+        else:
+            effective_where = {"$and": [effective_where, note_excl]}
+
+    if include_item_keys:
+        item_filter = {"itemKey": {"$in": include_item_keys}}
+        if effective_where is None:
+            effective_where = item_filter
+        else:
+            effective_where = {"$and": [effective_where, item_filter]}
+
+    queries = [query] if isinstance(query, str) else query
+    res = col.query(
+        query_texts=queries,
+        n_results=k_internal,
+        where=effective_where,
+        include=["metadatas", "distances"],
+    )
+
+    # itemKey -> {distance, rrf_score, title, year, creators, itemKey, source_type}
+    items_map = {}
+
+    all_q_ids = res.get("ids") or []
+    all_q_metas = res.get("metadatas") or []
+    all_q_dists = res.get("distances") or []
+
+    for q_idx in range(len(all_q_ids)):
+        q_ids = all_q_ids[q_idx]
+        q_metas = all_q_metas[q_idx] if q_idx < len(all_q_metas) else []
+        q_dists = all_q_dists[q_idx] if q_idx < len(all_q_dists) else []
+
+        for h_idx in range(len(q_ids)):
+            md = q_metas[h_idx] if h_idx < len(q_metas) else {}
+            dist = q_dists[h_idx] if h_idx < len(q_dists) else 1.0
+            ikey = md.get("itemKey")
+
+            if not ikey:
+                continue
+
+            # RRF contribution based on rank in THIS query's result list
+            rrf_contrib = 1.0 / (RRF_K + (h_idx + 1))
+
+            if ikey not in items_map:
+                items_map[ikey] = {
+                    "distance": dist,
+                    "rrf_score": rrf_contrib,
+                    "title": md.get("title"),
+                    "year": md.get("year"),
+                    "creators": md.get("creators"),
+                    "itemKey": ikey,
+                    "source_type": md.get("source_type"),
+                }
+            else:
+                # Minimum distance (best hit)
+                if dist < items_map[ikey]["distance"]:
+                    items_map[ikey]["distance"] = dist
+                # Accumulate RRF scores (density boost)
+                items_map[ikey]["rrf_score"] += rrf_contrib
+
+    # Sort items by accumulated RRF score descending
+    sorted_items = sorted(
+        items_map.values(), key=lambda x: x["rrf_score"], reverse=True
+    )
+
+    return {"items": sorted_items[:k]}
+
+
+@mcp.tool()
+def get_chunk_context(chunk_id: str, window: int = 2) -> Dict[str, Any]:
+    """
+    Fetch the surrounding paragraphs for a specific chunk ID to understand its context.
+    This avoids re-running a semantic search when you already have a relevant chunk ID.
+
+    Args:
+        chunk_id: The ID of the chunk (e.g., 'ABCDEFGH:p12:para3:part0') found in search results.
+        window: The number of paragraphs to fetch before and after the chunk. Default: 2 (fetches up to 5 paragraphs total).
+    
+    Returns:
+        A dictionary containing the combined text and metadata of the context region.
+    """
+    col = _col()
+    nids = neighbor_ids(chunk_id, window)
+    if not nids:
+        return {"error": "Invalid chunk_id format or window <= 0"}
+    
+    res = col.get(ids=nids, include=["documents", "metadatas"])
+    found_ids = res.get("ids") or []
+    
+    if not found_ids:
+        return {"error": "Chunk ID not found in database"}
+
+    # Sort results by the chunk index so they read chronologically
+    def _para_idx(cid: str) -> int:
+        parsed = parse_id(cid)
+        return parsed[3] if parsed else 0
+
+    combined = []
+    docs = res.get("documents") or []
+    metas = res.get("metadatas") or []
+    
+    for _, doc, meta in sorted(zip(found_ids, docs, metas), key=lambda x: _para_idx(x[0])):
+        combined.append(doc)
+
+    # Use the metadata of the requested chunk (or the first available if not found)
+    base_meta = {}
+    if chunk_id in found_ids:
+        idx = found_ids.index(chunk_id)
+        base_meta = metas[idx]
+    elif metas:
+        base_meta = metas[0]
+
+    return {
+        "context_text": "\n\n".join(combined),
+        "metadata": base_meta,
+        "chunk_ids_included": sorted(found_ids, key=lambda x: _para_idx(x))
+    }
+
+@mcp.resource("docs://zotero_rag_guide")
+def get_zotero_rag_guide_resource() -> str:
+    """
+    Zotero Local RAG MCP Reference Guide for AI Assistants.
+    Provides the best practices and tool usage instructions for querying the Zotero library as a resource.
+    """
+    guide_path = os.path.join(ROOT, "ZOTERO_RAG_GUIDE.md")
+    try:
+        with open(guide_path, "r", encoding="utf-8") as f:
+            return f.read()
+    except Exception as e:
+        return f"Guide file not found or could not be read: {e}"
+
+@mcp.prompt()
+def zotero_rag_guide() -> str:
+    """
+    Zotero Local RAG MCP Reference Guide for AI Assistants.
+    Provides the best practices and tool usage instructions for querying the Zotero library.
+    """
+    guide_path = os.path.join(ROOT, "ZOTERO_RAG_GUIDE.md")
+    try:
+        with open(guide_path, "r", encoding="utf-8") as f:
+            return f.read()
+    except Exception as e:
+        return f"Guide file not found or could not be read: {e}"
+
+def main():
     try:
         model_name, device = _resolve_embedder_settings()
         # Match the same auto-suffix logic used in _col()
@@ -565,3 +857,6 @@ if __name__ == "__main__":
 
         traceback.print_exc(file=sys.stderr)
         raise
+
+if __name__ == "__main__":
+    main()

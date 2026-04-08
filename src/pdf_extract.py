@@ -7,6 +7,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import signal
+
 import fitz  # PyMuPDF
 
 from text_utils import (
@@ -25,6 +27,9 @@ from text_utils import (
 
 PDF_DROP_REPEATED_LINES = (os.environ.get("PDF_DROP_REPEATED_LINES") or "1") == "1"
 PDF_STRIP_REPEATED_PREFIX = (os.environ.get("PDF_STRIP_REPEATED_PREFIX") or "1") == "1"
+
+# Per-page timeout (seconds). Set PAGE_TIMEOUT_SEC=0 to disable.
+PAGE_TIMEOUT_SEC = int((os.environ.get("PAGE_TIMEOUT_SEC") or "30").strip())
 
 
 def normalize_block_text_to_paragraph(text: str) -> str:
@@ -98,6 +103,8 @@ def extract_paragraphs_from_pdf_page(page: Any) -> List[str]:
 
             return [m for m in merged if m]
 
+    except TimeoutError:
+        raise
     except Exception:
         pass
 
@@ -107,6 +114,8 @@ def extract_paragraphs_from_pdf_page(page: Any) -> List[str]:
         raw = clean_extracted_text(raw)
         joiner = joiner_for_text(raw[:20000])
         return normalize_paragraphs(raw, joiner=joiner)
+    except TimeoutError:
+        raise
     except Exception:
         return []
 
@@ -228,6 +237,29 @@ def _read_fd_text(fd: int) -> str:
     return b"".join(chunks).decode("utf-8", errors="replace")
 
 
+@contextmanager
+def _page_timeout(seconds: int):
+    """Context manager that raises TimeoutError if the block exceeds `seconds`.
+
+    Uses SIGALRM (Unix/macOS only). If SIGALRM is unavailable or seconds <= 0,
+    the block runs without a timeout.
+    """
+    if seconds <= 0 or not hasattr(signal, "SIGALRM"):
+        yield
+        return
+
+    def _handler(signum, frame):
+        raise TimeoutError(f"PyMuPDF page.get_text() timed out after {seconds}s")
+
+    old_handler = signal.signal(signal.SIGALRM, _handler)
+    signal.alarm(seconds)
+    try:
+        yield
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, old_handler)
+
+
 def extract_chunks_from_pdf(
     pdf_path: Path,
     attachment_key: str,
@@ -243,10 +275,19 @@ def extract_chunks_from_pdf(
             doc = fitz.open(str(pdf_path))
             try:
                 paras_by_page: List[List[str]] = []
+                page_labels: Dict[int, str] = {}
                 for pi in range(doc.page_count):
                     try:
-                        page = doc.load_page(pi)
-                        paras = extract_paragraphs_from_pdf_page(page)
+                        with _page_timeout(PAGE_TIMEOUT_SEC):
+                            page = doc.load_page(pi)
+                            # Capture PDF page label (book page number, e.g. "xii", "15")
+                            try:
+                                lbl = page.get_label()
+                                if lbl:
+                                    page_labels[pi] = lbl
+                            except Exception:
+                                pass
+                            paras = extract_paragraphs_from_pdf_page(page)
                     except Exception as e:
                         print(
                             f"[WARN] Failed to extract page paragraphs: attachment={attachment_key} file={pdf_path} page={pi+1} err={e}",
@@ -322,6 +363,7 @@ def extract_chunks_from_pdf(
                                     "source_type": "pdf",
                                     "locator": f"p{pi+1}:para{para_index}",
                                     "page": int(pi + 1),
+                                    "page_label": page_labels.get(pi, ""),
                                     "pdf_path": str(pdf_path),
                                     "path": str(pdf_path),
                                     "para_index": int(para_index),
