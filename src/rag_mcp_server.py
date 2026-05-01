@@ -6,10 +6,13 @@ import sys
 from typing import Any, Dict, Optional, List
 from typing_extensions import TypedDict
 
+from pathlib import Path
 import chromadb
 from chromadb.utils import embedding_functions
 from fastmcp import FastMCP
 from zotero_source_localapi import ZoteroLocalAPI
+from manifest import load_manifest
+from chapter_detect import get_pdf_toc, get_epub_chapter_index_to_title
 
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -134,6 +137,8 @@ class RagMeta(TypedDict, total=False):
     locator: Optional[str]
     contentType: Optional[str]
     filename: Optional[str]
+    chapter: Optional[str]  # NEW: Level-1 chapter title
+    section: Optional[str]  # NEW: Level-2 section title (PDF only)
 
 
 class RagContextChunk(TypedDict, total=False):
@@ -353,12 +358,22 @@ def _make_citation(md: dict) -> str:
     year = md.get("year")
     page = md.get("page")
     page_label = (md.get("page_label") or "").strip()
+    chapter = (md.get("chapter") or "").strip()
+
     # Prefer the book's own page label (e.g. "xii", "15") over the sequential PDF page number.
     page_display = page_label if page_label else (str(page) if page is not None else None)
-    if title and page_display and year:
-        return f"{title} ({year}) p.{page_display}"
-    if title and page_display:
-        return f"{title} p.{page_display}"
+    
+    # [Chapter name] p.X style
+    loc_part = ""
+    if chapter:
+        loc_part = f"[{chapter}] "
+    if page_display:
+        loc_part += f"p.{page_display}"
+    
+    if title and loc_part and year:
+        return f"{title} ({year}) {loc_part}"
+    if title and loc_part:
+        return f"{title} {loc_part}"
     if title and year:
         return f"{title} ({year})"
     return title or ""
@@ -400,6 +415,8 @@ def rag_search(
                 - noteKey: str (notes)
                 - source_type: "pdf" | "html" | "epub" | "note"
                 - locator: str (e.g., "p12:para3" / "html:para10" / "note:para2")
+                - chapter: str (Chapter title, e.g., "Chapter 1", "第一章")
+                - section: str (Section title, e.g., "1.1 Introduction")
             Examples:
               - Restrict to one Zotero item:
                 {"itemKey": "BGZ9UFUJ"}
@@ -585,6 +602,8 @@ def rag_search(
                     "locator": md.get("locator"),
                     "contentType": md.get("contentType"),
                     "filename": md.get("filename"),
+                    "chapter": md.get("chapter"),
+                    "section": md.get("section"),
                 },
             }
         )
@@ -799,6 +818,45 @@ def get_chunk_context(chunk_id: str, window: int = 2) -> Dict[str, Any]:
         "metadata": base_meta,
         "chunk_ids_included": sorted(found_ids, key=lambda x: _para_idx(x))
     }
+
+@mcp.tool()
+def get_document_outline(attachment_key: str) -> Dict[str, Any]:
+    """
+    Retrieve the table of contents (chapter structure) of a PDF or EPUB document.
+    
+    Args:
+        attachment_key: The Zotero attachment key (e.g., 'ABCDEFGH').
+    """
+    manifest_path = os.path.join(ROOT, "data", "manifest.json")
+    manifest = load_manifest(Path(manifest_path))
+    
+    file_info = manifest.get("files", {}).get(attachment_key)
+    if not file_info:
+        return {"error": f"Attachment key '{attachment_key}' not found in manifest."}
+    
+    path = file_info.get("pdf_path")
+    if not path or not os.path.exists(path):
+        return {"error": f"File not found at path: {path}"}
+    
+    path_lower = path.lower()
+    if path_lower.endswith(".pdf"):
+        toc = get_pdf_toc(path)
+        return {
+            "source_type": "pdf",
+            "outline": [{"level": l, "title": t, "page": p} for l, t, p in toc]
+        }
+    elif path_lower.endswith(".epub"):
+        chap_map = get_epub_chapter_index_to_title(path)
+        # Convert dict to sorted list of objects
+        outline = []
+        for idx in sorted(chap_map.keys()):
+            outline.append({"index": idx, "title": chap_map[idx]})
+        return {
+            "source_type": "epub",
+            "outline": outline
+        }
+    else:
+        return {"error": f"Unsupported file type for outline extraction: {path}"}
 
 @mcp.resource("docs://zotero_rag_guide")
 def get_zotero_rag_guide_resource() -> str:

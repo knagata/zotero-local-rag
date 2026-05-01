@@ -36,6 +36,11 @@ except Exception:  # pragma: no cover
     ebooklib_epub = None
     ITEM_DOCUMENT = None
 
+try:
+    from chapter_detect import get_epub_chapter_index_to_title as _get_epub_toc_map
+except Exception:  # pragma: no cover
+    _get_epub_toc_map = None  # type: ignore
+
 
 HTML_SCRIPT_STYLE_RE = re.compile(r"(?is)<(script|style).*?>.*?(</\1>)")
 MAX_HTML_BYTES = int(os.environ.get("MAX_HTML_BYTES", "10000000"))  # guard for huge snapshots
@@ -205,6 +210,14 @@ def extract_chunks_from_epub_snapshot(
         )
         return []
 
+    # 章タイトルマップ（失敗しても処理続行）
+    _epub_toc_map: Dict[int, str] = {}
+    if _get_epub_toc_map is not None:
+        try:
+            _epub_toc_map = _get_epub_toc_map(str(epub_path))
+        except Exception:
+            pass
+
     all_paras: List[Tuple[int, str]] = []  # (chapter_index, paragraph_text)
     chap_idx = 0
     for item in book.get_items_of_type(ITEM_DOCUMENT):
@@ -250,6 +263,7 @@ def extract_chunks_from_epub_snapshot(
 
             chunk_id = f"{attachment_key}:epub:para{global_para}:part{part_index}"
             md = dict(meta_base)
+            chapter_title = _epub_toc_map.get(int(chapter_index), "")
             md.update(
                 {
                     "source_type": "epub",
@@ -259,6 +273,7 @@ def extract_chunks_from_epub_snapshot(
                     "chapter_index": int(chapter_index),
                     "para_index": int(global_para),
                     "part_index": int(part_index),
+                    **(({"chapter": chapter_title}) if chapter_title else {}),
                 }
             )
             chunks.append((chunk_id, part, md))

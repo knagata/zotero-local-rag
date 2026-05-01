@@ -24,6 +24,7 @@ from text_utils import (
     normalize_paragraphs,
     split_long_paragraph,
 )
+from chapter_detect import get_pdf_toc, build_pdf_page_chapter_lookup
 
 PDF_DROP_REPEATED_LINES = (os.environ.get("PDF_DROP_REPEATED_LINES") or "1") == "1"
 PDF_STRIP_REPEATED_PREFIX = (os.environ.get("PDF_STRIP_REPEATED_PREFIX") or "1") == "1"
@@ -267,6 +268,13 @@ def extract_chunks_from_pdf(
 ) -> List[Tuple[str, str, Dict[str, Any]]]:
     chunks: List[Tuple[str, str, Dict[str, Any]]] = []
 
+    # 章構造を事前に取得（失敗しても処理続行）
+    try:
+        _toc = get_pdf_toc(str(pdf_path))
+        _chapter_lookup = build_pdf_page_chapter_lookup(_toc) if _toc else None
+    except Exception:
+        _chapter_lookup = None
+
     captured_text = ""
     r_fd: Optional[int] = None
     try:
@@ -358,6 +366,16 @@ def extract_chunks_from_pdf(
 
                             chunk_id = f"{attachment_key}:p{pi+1}:para{para_index}:part{part_index}"
                             md = dict(meta_base)
+                            chapter_info: Dict[str, Any] = {}
+                            if _chapter_lookup is not None:
+                                try:
+                                    _ch, _sec = _chapter_lookup(pi + 1)
+                                    if _ch:
+                                        chapter_info["chapter"] = _ch
+                                    if _sec:
+                                        chapter_info["section"] = _sec
+                                except Exception:
+                                    pass
                             md.update(
                                 {
                                     "source_type": "pdf",
@@ -368,6 +386,7 @@ def extract_chunks_from_pdf(
                                     "path": str(pdf_path),
                                     "para_index": int(para_index),
                                     "part_index": int(part_index),
+                                    **chapter_info,
                                 }
                             )
                             page_chunks.append((chunk_id, part, md))
