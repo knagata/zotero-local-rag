@@ -136,8 +136,8 @@ def main():
 
     print("\n" + "=" * 60)
     print("3. Configure Claude Desktop MCP server")
-    ans = input("Register zotero-rag in Claude Desktop's MCP config? [Y/n]: ").strip().lower()
-    if ans != "n":
+    ans = input("Register zotero-rag in Claude Desktop's MCP config? [y/N]: ").strip().lower()
+    if ans == "y":
         configure_claude_mcp(root_dir, chroma_dir, emb_profile)
     else:
         print("\nSkipped MCP config.")

@@ -380,6 +380,66 @@ def _make_citation(md: dict) -> str:
 
 
 @mcp.tool()
+def server_status() -> Dict[str, Any]:
+    """
+    Check the health and configuration of the zotero-rag MCP server.
+    Use this to diagnose connection issues or verify the server is running correctly.
+
+    Returns a status report including:
+    - overall status ("ok" or "error")
+    - ChromaDB path and whether it exists on disk
+    - Collection name(s) found and document count
+    - Embedding model profile and resolved model path
+    - Whether the embedding model is already loaded in memory
+    """
+    report: Dict[str, Any] = {
+        "status": "ok",
+        "chroma_dir": CHROMA_DIR,
+        "chroma_dir_exists": os.path.isdir(CHROMA_DIR),
+        "emb_profile": (os.environ.get("EMB_PROFILE") or "fast"),
+        "emb_model_loaded": _COL is not None,
+        "collections": [],
+        "errors": [],
+    }
+
+    try:
+        model_name, device = _resolve_embedder_settings()
+        report["emb_model"] = model_name
+        report["emb_device"] = device
+    except Exception as e:
+        report["emb_model"] = None
+        report["errors"].append(f"EMB resolve error: {e}")
+
+    if not report["chroma_dir_exists"]:
+        report["status"] = "error"
+        report["errors"].append(
+            f"CHROMA_DIR does not exist: {CHROMA_DIR}. Run the indexer first."
+        )
+        return report
+
+    try:
+        client = chromadb.PersistentClient(path=CHROMA_DIR)
+        cols = client.list_collections()
+        for c in cols:
+            try:
+                count = client.get_collection(c.name).count()
+            except Exception:
+                count = None
+            report["collections"].append({"name": c.name, "count": count})
+    except Exception as e:
+        report["status"] = "error"
+        report["errors"].append(f"ChromaDB error: {e}")
+
+    if not report["collections"]:
+        report["status"] = "error"
+        report["errors"].append(
+            "No collections found in ChromaDB. Run the indexer to build the index."
+        )
+
+    return report
+
+
+@mcp.tool()
 def rag_search(
     query: str | List[str],
     k: int = 5,
