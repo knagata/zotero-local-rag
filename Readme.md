@@ -44,6 +44,15 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 
 > **埋め込みの更新**: Zoteroに新しい文献を追加した後は、ウィザードを再起動してEnterを連打するだけで差分インデックスが更新されます。
 
+### 3. アプリケーションの更新（新バージョンへの移行）
+
+GitHubから最新バージョンを自動でダウンロードして上書きする更新スクリプトを用意しています。`.env` とインデックスデータ（`data/`）は保持されます。
+
+- **Mac ユーザー**: `Zotero_Local_RAG_Update.command` をダブルクリック
+- **Windows ユーザー**: `Zotero_Local_RAG_Update.bat` をダブルクリック
+
+更新後はClaude Desktopを再起動してください。
+
 ### 3. 環境変数（手動設定の場合）
 
 手動でMCP設定を記述する場合に必要な環境変数です。
