@@ -187,6 +187,6 @@ def get_collection(
     col = client.get_or_create_collection(
         name=collection_name,
         embedding_function=ef,
-        metadata={"hnsw:space": "cosine"},
+        metadata={"hnsw:space": "cosine", "hnsw:sync_threshold": 100},
     )
     return col

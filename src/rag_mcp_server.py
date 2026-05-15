@@ -1,8 +1,11 @@
 # MCP server for paragraph-level Zotero RAG (local Chroma).
 from __future__ import annotations
 
+import logging
 import os
 import sys
+import time
+import traceback
 from typing import Any, Dict, Optional, List
 from typing_extensions import TypedDict
 
@@ -17,6 +20,26 @@ from chapter_detect import get_pdf_toc, get_epub_chapter_index_to_title
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CHROMA_DIR = os.environ.get("CHROMA_DIR", os.path.join(ROOT, "data", "chroma"))
+_LOG_PATH = os.path.join(ROOT, "data", "zotero-rag.log")
+
+
+def _setup_logger() -> logging.Logger:
+    logger = logging.getLogger("zotero-rag")
+    if logger.handlers:
+        return logger
+    logger.setLevel(logging.DEBUG)
+    try:
+        os.makedirs(os.path.join(ROOT, "data"), exist_ok=True)
+        fh = logging.FileHandler(_LOG_PATH, encoding="utf-8")
+        fh.setLevel(logging.DEBUG)
+        fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+        logger.addHandler(fh)
+    except Exception:
+        pass
+    return logger
+
+
+_log = _setup_logger()
 
 # Collection name is intentionally configurable.
 # IMPORTANT: Chroma collections are dimension-fixed. If you switch embedding models
@@ -169,44 +192,87 @@ class RagSearchResponse(TypedDict):
 
 
 _COL = None
+# Embedding function is cached separately so that collection resets do not force
+# a full model reload.
+_EMB_FN = None
+_EMB_COLLECTION_NAME: Optional[str] = None
+# mtime of chroma.sqlite3 at the time _COL was last initialized.
+# Used to proactively detect when the indexer has written new data.
+_COL_INIT_MTIME: float = 0.0
+
+
+def _chroma_db_mtime() -> float:
+    """Return the mtime of chroma.sqlite3 — a reliable proxy for 'indexer wrote data'."""
+    try:
+        return os.path.getmtime(os.path.join(CHROMA_DIR, "chroma.sqlite3"))
+    except OSError:
+        return 0.0
+
+
+def _reset_col() -> None:
+    """Invalidate the cached collection so it is re-initialized on the next call."""
+    global _COL
+    _COL = None
 
 
 def _col():
-    global _COL
+    global _COL, _EMB_FN, _EMB_COLLECTION_NAME, _COL_INIT_MTIME
+
+    # --- Proactive staleness check ---
+    # The HNSW index is memory-mapped, so when the indexer rewrites it the new
+    # entries become visible in the stale _COL without updating the label map,
+    # which causes "Error finding id".  We detect this by comparing the mtime of
+    # chroma.sqlite3 (always updated on commit) against the mtime recorded when
+    # _COL was last initialized.  If it changed, invalidate before any query runs.
+    if _COL is not None and _chroma_db_mtime() > _COL_INIT_MTIME:
+        _new_mtime = _chroma_db_mtime()
+        msg = f"ChromaDB modified since last init — reloading collection (prev_mtime={_COL_INIT_MTIME:.3f}, new_mtime={_new_mtime:.3f})"
+        print(f"[zotero-rag] {msg}", file=sys.stderr)
+        _log.info(msg)
+        _COL = None
+
     if _COL is not None:
         return _COL
 
-    model_name, device = _resolve_embedder_settings()
-    try:
-        emb_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
-            model_name=model_name,
-            device=device,
-            normalize_embeddings=True,
-        )
-    except Exception as e:
-        raise RuntimeError(
-            "Failed to initialize embedding model.\n"
-            f"EMB_MODEL={model_name}\n"
-            f"EMB_DEVICE={device}\n"
-            "If you are running offline, ensure the model is already cached for this Python environment.\n"
-            "Try once online (example): python -c 'from sentence_transformers import SentenceTransformer; SentenceTransformer(\"sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2\")'\n"
-            f"Original error: {e}"
-        )
-
-    # If CHROMA_COLLECTION is not explicitly set, automatically suffix the default
-    # collection name by embedding dimension to prevent dimension-mismatch when switching models.
-    collection_name = (COLLECTION_NAME_ENV or "").strip() or COLLECTION_NAME_DEFAULT
-    if not (COLLECTION_NAME_ENV or "").strip():
+    # --- Embedding function (cached across resets) ---
+    if _EMB_FN is None:
+        model_name, device = _resolve_embedder_settings()
         try:
-            probe_vecs = emb_fn(["collection probe"])
-            dim = None
-            if isinstance(probe_vecs, list) and probe_vecs and isinstance(probe_vecs[0], (list, tuple)):
-                dim = len(probe_vecs[0])
-            if isinstance(dim, int) and dim > 0:
-                collection_name = f"{COLLECTION_NAME_DEFAULT}_{dim}"
-        except Exception:
-            collection_name = COLLECTION_NAME_DEFAULT
+            _EMB_FN = embedding_functions.SentenceTransformerEmbeddingFunction(
+                model_name=model_name,
+                device=device,
+                normalize_embeddings=True,
+            )
+        except Exception as e:
+            raise RuntimeError(
+                "Failed to initialize embedding model.\n"
+                f"EMB_MODEL={model_name}\n"
+                f"EMB_DEVICE={device}\n"
+                "If you are running offline, ensure the model is already cached for this Python environment.\n"
+                "Try once online (example): python -c 'from sentence_transformers import SentenceTransformer; SentenceTransformer(\"sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2\")'\n"
+                f"Original error: {e}"
+            )
 
+    emb_fn = _EMB_FN
+
+    # --- Collection name (also cached; dimension probe is skipped after first run) ---
+    if _EMB_COLLECTION_NAME is None:
+        collection_name = (COLLECTION_NAME_ENV or "").strip() or COLLECTION_NAME_DEFAULT
+        if not (COLLECTION_NAME_ENV or "").strip():
+            try:
+                probe_vecs = emb_fn(["collection probe"])
+                dim = None
+                if isinstance(probe_vecs, list) and probe_vecs and isinstance(probe_vecs[0], (list, tuple)):
+                    dim = len(probe_vecs[0])
+                if isinstance(dim, int) and dim > 0:
+                    collection_name = f"{COLLECTION_NAME_DEFAULT}_{dim}"
+            except Exception:
+                collection_name = COLLECTION_NAME_DEFAULT
+        _EMB_COLLECTION_NAME = collection_name
+    else:
+        collection_name = _EMB_COLLECTION_NAME
+
+    # --- Fresh PersistentClient on every (re-)initialization ---
     client = chromadb.PersistentClient(path=CHROMA_DIR)
     _COL = client.get_or_create_collection(
         name=collection_name,
@@ -214,9 +280,7 @@ def _col():
         metadata={"hnsw:space": "cosine"},
     )
 
-    # Dimension compatibility check:
-    # If the collection already contains vectors, ensure the current embedder's dimension matches.
-    # This avoids confusing runtime errors like "expecting embedding with dimension X, got Y".
+    # Dimension compatibility check
     try:
         if hasattr(_COL, "count") and _COL.count() > 0 and hasattr(_COL, "peek"):
             peek = _COL.peek(1)
@@ -248,11 +312,24 @@ def _col():
                         "  (3) Rebuild the index for this collection (delete Chroma dir / run index_from_zotero.py --rebuild).\n"
                     )
     except Exception as e:
-        # If it's our deliberate mismatch error, re-raise; otherwise ignore (best-effort check).
         if isinstance(e, RuntimeError) and "Embedding dimension mismatch" in str(e):
             raise
 
+    # Record the DB mtime so we can detect future indexer writes.
+    _COL_INIT_MTIME = _chroma_db_mtime()
+    try:
+        _count = _COL.count()
+    except Exception:
+        _count = "?"
+    _log.info("Collection initialized: name=%s count=%s mtime=%.3f", collection_name, _count, _COL_INIT_MTIME)
     return _COL
+
+
+_INDEXER_BUSY_MSG = (
+    "ChromaDBが一時的に利用できません。インデクサーが実行中の可能性があります。"
+    "インデクサーの終了後、しばらくしてから再度お試しください。"
+    "（原因: HNSWインデックスが書き込み中に読み込まれ、内部IDが不整合になりました）"
+)
 
 
 _Z_API = None
@@ -525,17 +602,32 @@ def rag_search(
             effective_where = {"$and": [effective_where, item_filter]}
 
     queries = [query] if isinstance(query, str) else query
-    
+
     internal_k = max(k * 5, k)
     if exclude_chunk_ids:
         internal_k += len(exclude_chunk_ids)
 
-    res = col.query(
-        query_texts=queries,
-        n_results=internal_k,
-        where=effective_where,
-        include=["documents", "metadatas", "distances"],
-    )
+    for _attempt in range(2):
+        try:
+            res = col.query(
+                query_texts=queries,
+                n_results=internal_k,
+                where=effective_where,
+                include=["documents", "metadatas", "distances"],
+            )
+            break
+        except Exception as _exc:
+            _log.warning("rag_search query failed (attempt %d): %s\n%s", _attempt + 1, _exc, traceback.format_exc())
+            if _attempt == 0:
+                # Collection state may be stale (indexer ran while server was live).
+                # Wait briefly to let the indexer finish a write cycle, then
+                # reset the cache and re-initialize with a fresh PersistentClient.
+                _reset_col()
+                time.sleep(1)
+                col = _col()
+            else:
+                _log.error("rag_search: both attempts failed — returning busy message")
+                return {"results": [], "warning": _INDEXER_BUSY_MSG}
 
     # Consolidated hits map: id -> {distance, rrf_score, document, metadata}
     hits_combined = {}
@@ -774,12 +866,24 @@ def search_items(
             effective_where = {"$and": [effective_where, item_filter]}
 
     queries = [query] if isinstance(query, str) else query
-    res = col.query(
-        query_texts=queries,
-        n_results=k_internal,
-        where=effective_where,
-        include=["metadatas", "distances"],
-    )
+    for _attempt in range(2):
+        try:
+            res = col.query(
+                query_texts=queries,
+                n_results=k_internal,
+                where=effective_where,
+                include=["metadatas", "distances"],
+            )
+            break
+        except Exception as _exc:
+            _log.warning("search_items query failed (attempt %d): %s\n%s", _attempt + 1, _exc, traceback.format_exc())
+            if _attempt == 0:
+                _reset_col()
+                time.sleep(1)
+                col = _col()
+            else:
+                _log.error("search_items: both attempts failed — returning busy message")
+                return {"items": [], "warning": _INDEXER_BUSY_MSG}
 
     # itemKey -> {distance, rrf_score, title, year, creators, itemKey, source_type}
     items_map = {}
@@ -918,6 +1022,41 @@ def get_document_outline(attachment_key: str) -> Dict[str, Any]:
     else:
         return {"error": f"Unsupported file type for outline extraction: {path}"}
 
+@mcp.tool()
+def get_debug_logs(lines: int = 100) -> Dict[str, Any]:
+    """
+    Return the last N lines of the zotero-rag server log file.
+    Use this to diagnose issues such as ChromaDB errors, collection reload events,
+    or query failures with full tracebacks.
+
+    Args:
+        lines: Number of log lines to return (most recent). Default: 100.
+
+    Returns:
+        A dict with keys: log_path, total_lines, returned_lines, log (the text).
+    """
+    try:
+        with open(_LOG_PATH, "r", encoding="utf-8") as f:
+            all_lines = f.readlines()
+        tail = all_lines[-lines:] if len(all_lines) > lines else all_lines
+        return {
+            "log_path": _LOG_PATH,
+            "total_lines": len(all_lines),
+            "returned_lines": len(tail),
+            "log": "".join(tail),
+        }
+    except FileNotFoundError:
+        return {
+            "log_path": _LOG_PATH,
+            "total_lines": 0,
+            "returned_lines": 0,
+            "log": "",
+            "error": "Log file not found — server may not have written any logs yet.",
+        }
+    except Exception as e:
+        return {"log_path": _LOG_PATH, "total_lines": 0, "returned_lines": 0, "log": "", "error": str(e)}
+
+
 @mcp.resource("docs://zotero_rag_guide")
 def get_zotero_rag_guide_resource() -> str:
     """
@@ -961,18 +1100,17 @@ def main():
                     _coll = f"{COLLECTION_NAME_DEFAULT}_{_dim}"
             except Exception:
                 _coll = COLLECTION_NAME_DEFAULT
-        print(
-            f"[zotero-rag] starting (CHROMA_DIR={CHROMA_DIR}, COLLECTION={_coll}, EMB_MODEL={model_name}, EMB_DEVICE={device})",
-            file=sys.stderr,
-        )
+        _startup_msg = f"starting (CHROMA_DIR={CHROMA_DIR}, COLLECTION={_coll}, EMB_MODEL={model_name}, EMB_DEVICE={device})"
+        print(f"[zotero-rag] {_startup_msg}", file=sys.stderr)
+        _log.info(_startup_msg)
         mcp.run()
         print("[zotero-rag] mcp.run() returned (unexpected). Exiting.", file=sys.stderr)
+        _log.warning("mcp.run() returned unexpectedly")
     except KeyboardInterrupt:
         raise
     except Exception as e:
         print(f"[zotero-rag] FATAL: {e}", file=sys.stderr)
-        import traceback
-
+        _log.critical("FATAL: %s\n%s", e, traceback.format_exc())
         traceback.print_exc(file=sys.stderr)
         raise
 
