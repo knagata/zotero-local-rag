@@ -1022,37 +1022,6 @@ def get_document_outline(attachment_key: str) -> Dict[str, Any]:
     else:
         return {"error": f"Unsupported file type for outline extraction: {path}"}
 
-@mcp.tool()
-def restart_server() -> Dict[str, Any]:
-    """
-    Restart the zotero-rag MCP server process.
-
-    Use this when search tools (rag_search / search_items) keep returning
-    'Error finding id' even after retries.  This typically happens when the
-    indexer wrote new records but the HNSW label-map was not fully flushed.
-
-    Claude Desktop detects the process exit and automatically restarts the
-    server.  The server will be ready again in about 15-30 seconds
-    (embedding model reload).  After that, retry the search.
-    """
-    _log.info("restart_server called — scheduling process exit for clean restart")
-    import threading
-
-    def _exit():
-        time.sleep(1.0)  # Give FastMCP time to send the response back first
-        _log.info("Exiting process now (restart_server).")
-        os._exit(0)
-
-    threading.Thread(target=_exit, daemon=True).start()
-    return {
-        "status": "restarting",
-        "message": (
-            "MCPサーバーを再起動します。"
-            "約15〜30秒後にClaude Desktopが自動的に再接続します。"
-            "再接続後、ツールを再度呼び出してください。"
-        ),
-    }
-
 
 @mcp.tool()
 def get_debug_logs(lines: int = 100) -> Dict[str, Any]:
