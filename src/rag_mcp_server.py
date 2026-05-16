@@ -6,6 +6,7 @@ import os
 import sys
 import time
 import traceback
+import gc
 from typing import Any, Dict, Optional, List
 from typing_extensions import TypedDict
 
@@ -20,6 +21,7 @@ from chapter_detect import get_pdf_toc, get_epub_chapter_index_to_title
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CHROMA_DIR = os.environ.get("CHROMA_DIR", os.path.join(ROOT, "data", "chroma"))
+MANIFEST_PATH = os.environ.get("MANIFEST_PATH", os.path.join(ROOT, "data", "manifest.json"))
 _LOG_PATH = os.path.join(ROOT, "data", "zotero-rag.log")
 
 
@@ -192,44 +194,57 @@ class RagSearchResponse(TypedDict):
 
 
 _COL = None
+_CLIENT = None
 # Embedding function is cached separately so that collection resets do not force
 # a full model reload.
 _EMB_FN = None
 _EMB_COLLECTION_NAME: Optional[str] = None
-# mtime of chroma.sqlite3 at the time _COL was last initialized.
+# Combined mtime of chroma.sqlite3 and manifest.json at the time _COL was last initialized.
 # Used to proactively detect when the indexer has written new data.
 _COL_INIT_MTIME: float = 0.0
 
 
-def _chroma_db_mtime() -> float:
-    """Return the mtime of chroma.sqlite3 — a reliable proxy for 'indexer wrote data'."""
+def _db_mtime_sum() -> float:
+    """
+    Return the sum of mtimes for chroma.sqlite3 and manifest.json.
+    Watching both ensures we pick up the absolute final state of the indexer.
+    """
+    m = 0.0
     try:
-        return os.path.getmtime(os.path.join(CHROMA_DIR, "chroma.sqlite3"))
+        m += os.path.getmtime(os.path.join(CHROMA_DIR, "chroma.sqlite3"))
     except OSError:
-        return 0.0
+        pass
+    try:
+        m += os.path.getmtime(MANIFEST_PATH)
+    except OSError:
+        pass
+    return m
 
 
 def _reset_col() -> None:
-    """Invalidate the cached collection so it is re-initialized on the next call."""
-    global _COL
+    """Invalidate the cached collection and client so they are re-initialized on the next call."""
+    global _COL, _CLIENT
+    # Explicitly break references to help GC unmap memory segments
     _COL = None
+    _CLIENT = None
+    gc.collect()
 
 
 def _col():
-    global _COL, _EMB_FN, _EMB_COLLECTION_NAME, _COL_INIT_MTIME
+    global _COL, _CLIENT, _EMB_FN, _EMB_COLLECTION_NAME, _COL_INIT_MTIME
 
     # --- Proactive staleness check ---
     # The HNSW index is memory-mapped, so when the indexer rewrites it the new
     # entries become visible in the stale _COL without updating the label map,
     # which causes "Error finding id".  We detect this by comparing the mtime of
-    # chroma.sqlite3 (always updated on commit) against the mtime recorded when
-    # _COL was last initialized.  If it changed, invalidate before any query runs.
-    if _COL is not None and _chroma_db_mtime() > _COL_INIT_MTIME:
-        _new_mtime = _chroma_db_mtime()
-        msg = f"ChromaDB modified since last init — reloading collection (prev_mtime={_COL_INIT_MTIME:.3f}, new_mtime={_new_mtime:.3f})"
+    # both the SQLite DB and the manifest (the latter is updated last).
+    # If it changed, invalidate before any query runs.
+    current_mtime = _db_mtime_sum()
+    if _COL is not None and current_mtime > _COL_INIT_MTIME:
+        msg = f"ChromaDB/Manifest modified since last init (prev={_COL_INIT_MTIME:.3f}, new={current_mtime:.3f}) — reloading collection"
         print(f"[zotero-rag] {msg}", file=sys.stderr)
         _log.info(msg)
-        _COL = None
+        _reset_col()
 
     if _COL is not None:
         return _COL
@@ -273,8 +288,8 @@ def _col():
         collection_name = _EMB_COLLECTION_NAME
 
     # --- Fresh PersistentClient on every (re-)initialization ---
-    client = chromadb.PersistentClient(path=CHROMA_DIR)
-    _COL = client.get_or_create_collection(
+    _CLIENT = chromadb.PersistentClient(path=CHROMA_DIR)
+    _COL = _CLIENT.get_or_create_collection(
         name=collection_name,
         embedding_function=emb_fn,
         metadata={"hnsw:space": "cosine"},
@@ -316,7 +331,7 @@ def _col():
             raise
 
     # Record the DB mtime so we can detect future indexer writes.
-    _COL_INIT_MTIME = _chroma_db_mtime()
+    _COL_INIT_MTIME = _db_mtime_sum()
     try:
         _count = _COL.count()
     except Exception:
@@ -454,6 +469,28 @@ def _make_citation(md: dict) -> str:
     if title and year:
         return f"{title} ({year})"
     return title or ""
+
+
+@mcp.tool()
+def force_reload_index() -> Dict[str, Any]:
+    """
+    Forcefully reload the ChromaDB index and metadata.
+    Use this if you have just run the indexer and are seeing 'Error finding id' 
+    or missing results, and the automatic reload didn't seem to trigger.
+    """
+    prev_mtime = _COL_INIT_MTIME
+    _reset_col()
+    try:
+        _col()
+        new_mtime = _COL_INIT_MTIME
+        return {
+            "status": "reloaded",
+            "prev_mtime": prev_mtime,
+            "new_mtime": new_mtime,
+            "count": _COL.count() if _COL else None
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 
 @mcp.tool()

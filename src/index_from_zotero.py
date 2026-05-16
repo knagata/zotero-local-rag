@@ -545,21 +545,39 @@ async def main_async(args: argparse.Namespace) -> None:
     # with all records added during this run.
     #
     # Background: ChromaDB only writes index_metadata.pickle every
-    # sync_threshold records.  If the total added this run is not a
+    # sync_threshold records. If the total added this run is not a
     # multiple of sync_threshold, the last N < sync_threshold records
-    # end up in SQLite but NOT in the pickle.  On the next query the
+    # end up in SQLite but NOT in the pickle. On the next query the
     # Rust HNSW backend tries to look up those IDs and throws
     # "Error finding id".
     #
-    # Fix: temporarily lower sync_threshold to 1, upsert a sentinel
-    # document (which triggers an immediate flush of all pending
-    # entries), then delete it.
+    # Fix: temporarily lower sync_threshold to 1, upsert multiple
+    # sentinel documents (which triggers an immediate flush of all
+    # pending entries), then delete them.
     # ------------------------------------------------------------------
     try:
-        col.modify(configuration={"hnsw": {"sync_threshold": 1}})
-        _flush_id = "__hnsw_flush_sentinel__"
-        col.upsert(ids=[_flush_id], documents=["hnsw flush sentinel — safe to ignore"])
-        col.delete(ids=[_flush_id])
+        # Try both 'configuration' (newer Chroma) and 'metadata' (older/compat)
+        # and use both int and string for the value just in case.
+        for val in [1, "1"]:
+            try:
+                col.modify(configuration={"hnsw": {"sync_threshold": val}})
+            except Exception:
+                pass
+            try:
+                col.modify(metadata={"hnsw:sync_threshold": val})
+            except Exception:
+                pass
+
+        # Use multiple sentinels to ensure the threshold is crossed and a flush is triggered.
+        _flush_ids = [f"__hnsw_flush_sentinel_{i}__" for i in range(3)]
+        col.upsert(
+            ids=_flush_ids,
+            documents=["hnsw flush sentinel — safe to ignore"] * len(_flush_ids)
+        )
+        col.delete(ids=_flush_ids)
+        
+        # Small sleep to give the OS a chance to sync files before process exit.
+        time.sleep(0.5)
         print("[INFO] HNSW final flush complete.", file=sys.__stderr__)
     except Exception as e:
         print(f"[WARN] HNSW final flush failed (non-fatal): {e}", file=sys.__stderr__)
