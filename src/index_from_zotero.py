@@ -540,6 +540,30 @@ async def main_async(args: argparse.Namespace) -> None:
     skipped_notes = int(note_stats.get("skipped_notes", 0))
     deleted_stale_notes = int(note_stats.get("deleted_stale_notes", 0))
 
+    # ------------------------------------------------------------------
+    # Force a final HNSW flush so the pickle label-map is fully in sync
+    # with all records added during this run.
+    #
+    # Background: ChromaDB only writes index_metadata.pickle every
+    # sync_threshold records.  If the total added this run is not a
+    # multiple of sync_threshold, the last N < sync_threshold records
+    # end up in SQLite but NOT in the pickle.  On the next query the
+    # Rust HNSW backend tries to look up those IDs and throws
+    # "Error finding id".
+    #
+    # Fix: temporarily lower sync_threshold to 1, upsert a sentinel
+    # document (which triggers an immediate flush of all pending
+    # entries), then delete it.
+    # ------------------------------------------------------------------
+    try:
+        col.modify(configuration={"hnsw": {"sync_threshold": 1}})
+        _flush_id = "__hnsw_flush_sentinel__"
+        col.upsert(ids=[_flush_id], documents=["hnsw flush sentinel — safe to ignore"])
+        col.delete(ids=[_flush_id])
+        print("[INFO] HNSW final flush complete.", file=sys.__stderr__)
+    except Exception as e:
+        print(f"[WARN] HNSW final flush failed (non-fatal): {e}", file=sys.__stderr__)
+
     manifest["notes"] = notes_manifest
     manifest["files"] = files_manifest
     save_manifest(MANIFEST_PATH, manifest)

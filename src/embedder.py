@@ -189,4 +189,12 @@ def get_collection(
         embedding_function=ef,
         metadata={"hnsw:space": "cosine", "hnsw:sync_threshold": 100},
     )
+
+    # For existing collections, get_or_create_collection does NOT update metadata.
+    # Explicitly apply sync_threshold=100 so the indexer flushes more frequently.
+    try:
+        col.modify(configuration={"hnsw": {"sync_threshold": 100}})
+    except Exception:
+        pass  # Non-fatal: older ChromaDB versions may not support this
+
     return col
