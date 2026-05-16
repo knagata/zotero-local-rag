@@ -325,40 +325,11 @@ def _col():
     return _COL
 
 
-_RESTARTING_MSG = (
-    "HNSWインデックスの状態が不整合です。サーバーを自動再起動します。"
-    "約15〜30秒後にClaude Desktopが自動再接続しますので、その後もう一度お試しください。"
+_HNSW_ERROR_MSG = (
+    "検索インデックスの状態が不整合です（HNSWラベルマップとバイナリの不一致）。"
+    "Claude Desktop を再起動すると解消されます。"
+    "再起動後、もう一度検索をお試しください。"
 )
-
-# Cooldown to prevent restart loops (seconds).
-_RESTART_COOLDOWN = 120.0
-_LAST_RESTART_TIME: float = 0.0
-
-
-def _schedule_auto_restart(reason: str) -> None:
-    """Exit the process after a short delay so FastMCP can send the response first.
-    Claude Desktop will restart the server automatically.
-    Includes a cooldown to prevent restart loops."""
-    global _LAST_RESTART_TIME
-    now = time.time()
-    if now - _LAST_RESTART_TIME < _RESTART_COOLDOWN:
-        _log.warning(
-            "Auto-restart skipped (cooldown active, %.0fs remaining): %s",
-            _RESTART_COOLDOWN - (now - _LAST_RESTART_TIME),
-            reason,
-        )
-        return
-    _LAST_RESTART_TIME = now
-    _log.critical("Scheduling auto-restart: %s", reason)
-
-    import threading
-
-    def _exit():
-        time.sleep(1.5)
-        _log.info("Auto-restarting now (os._exit).")
-        os._exit(0)
-
-    threading.Thread(target=_exit, daemon=True).start()
 
 
 _Z_API = None
@@ -655,9 +626,8 @@ def rag_search(
                 time.sleep(1)
                 col = _col()
             else:
-                _log.error("rag_search: both attempts failed — scheduling auto-restart")
-                _schedule_auto_restart("rag_search persistent Error finding id")
-                return {"results": [], "warning": _RESTARTING_MSG}
+                _log.error("rag_search: both attempts failed — returning error message")
+                return {"results": [], "warning": _HNSW_ERROR_MSG}
 
     # Consolidated hits map: id -> {distance, rrf_score, document, metadata}
     hits_combined = {}
@@ -912,9 +882,8 @@ def search_items(
                 time.sleep(1)
                 col = _col()
             else:
-                _log.error("search_items: both attempts failed — scheduling auto-restart")
-                _schedule_auto_restart("search_items persistent Error finding id")
-                return {"items": [], "warning": _RESTARTING_MSG}
+                _log.error("search_items: both attempts failed — returning error message")
+                return {"items": [], "warning": _HNSW_ERROR_MSG}
 
     # itemKey -> {distance, rrf_score, title, year, creators, itemKey, source_type}
     items_map = {}
