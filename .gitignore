@@ -8,3 +8,4 @@ __pycache__/
 uv.lock
 .env
 .venv
+data/zotero-rag.log

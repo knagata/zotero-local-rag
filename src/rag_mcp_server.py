@@ -854,6 +854,54 @@ async def list_recent_items(limit: int = 20) -> List[Dict[str, Any]]:
 
 
 @mcp.tool()
+async def search_zotero_items(
+    query: str, limit: int = 20, qmode: str = "titleCreatorYear"
+) -> List[Dict[str, Any]]:
+    """
+    Search the Zotero library directly for items using Zotero's quick search API.
+    This queries the Zotero API directly (without relying on Chroma vector indices)
+    and is perfect for finding items by exact or partial title, author, or year.
+
+    Args:
+        query: The search term or phrase (e.g. title, author name, or year).
+        limit: Maximum number of results to return. Default is 20.
+        qmode: The quick search mode. Must be 'titleCreatorYear' (searches only title, creator/author, and year fields - default)
+               or 'everything' (searches all fields including indexed PDF attachments).
+    """
+    api = _z_api()
+    params = {
+        "q": query,
+        "qmode": qmode,
+        "limit": limit,
+    }
+    raw = await api._get_json("items", params=params)
+
+    out = []
+    if isinstance(raw, list):
+        for item in raw:
+            try:
+                # Use the existing unwrap logic from the API class
+                _, data = api._unwrap_item(item)
+                # Skip attachments to focus on top-level library items
+                if data.get("itemType") == "attachment":
+                    continue
+                out.append(
+                    {
+                        "key": data.get("key"),
+                        "itemType": data.get("itemType"),
+                        "title": data.get("title"),
+                        "creators": data.get("creators"),
+                        "date": data.get("date"),
+                        "dateModified": data.get("dateModified"),
+                    }
+                )
+            except Exception:
+                continue
+    return out
+
+
+
+@mcp.tool()
 def search_items(
     query: str | List[str],
     k: int = 10,
