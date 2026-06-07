@@ -130,7 +130,14 @@ def extract_chunks_from_html_snapshot(
     html_path: Path,
     attachment_key: str,
     meta_base: Dict[str, Any],
-) -> List[Tuple[str, str, Dict[str, Any]]]:
+) -> Tuple[List[Tuple[str, str, Dict[str, Any]]], Dict[str, Any]]:
+    default_quality = {
+        "is_scanned": False,
+        "is_corrupted": False,
+        "scanned_pages": [],
+        "corrupted_pages": [],
+        "total_pages": 1,
+    }
     chunks: List[Tuple[str, str, Dict[str, Any]]] = []
     try:
         with open(html_path, "rb") as f:
@@ -147,17 +154,17 @@ def extract_chunks_from_html_snapshot(
             f"[WARN] Failed to read HTML snapshot: attachment={attachment_key} file={html_path} err={e}",
             file=os.sys.__stderr__,
         )
-        return []
+        return [], default_quality
 
     raw_text = clean_extracted_text(extract_main_text_from_html(raw_html))
     joiner = joiner_for_text(raw_text[:20000])
     paras = normalize_paragraphs(raw_text, joiner=joiner)
     if not paras:
-        return []
+        return [], default_quality
 
     sample = "\n\n".join(paras[:20])[:5000]
     if looks_like_gibberish(sample):
-        return []
+        return [], default_quality
     local_min_chunk = MIN_CHUNK_CHARS_NO_SPACE if is_no_space_language_document(sample) else MIN_CHUNK_CHARS
 
     for para_index, para_text in enumerate(paras):
@@ -188,18 +195,26 @@ def extract_chunks_from_html_snapshot(
     if len(ids) != len(set(ids)):
         dup = len(ids) - len(set(ids))
         raise RuntimeError(f"Duplicate chunk ids generated for HTML ({dup}).")
-    return chunks
+    return chunks, default_quality
+
 
 
 def extract_chunks_from_epub_snapshot(
     epub_path: Path,
     attachment_key: str,
     meta_base: Dict[str, Any],
-) -> List[Tuple[str, str, Dict[str, Any]]]:
+) -> Tuple[List[Tuple[str, str, Dict[str, Any]]], Dict[str, Any]]:
+    default_quality = {
+        "is_scanned": False,
+        "is_corrupted": False,
+        "scanned_pages": [],
+        "corrupted_pages": [],
+        "total_pages": 1,
+    }
     if ebooklib_epub is None or ITEM_DOCUMENT is None:
         if os.environ.get("DEBUG_HTML") == "1":
             print("[DEBUG] EbookLib not installed; skipping EPUB.", file=os.sys.__stderr__)
-        return []
+        return [], default_quality
 
     try:
         book = ebooklib_epub.read_epub(str(epub_path))
@@ -208,7 +223,7 @@ def extract_chunks_from_epub_snapshot(
             f"[WARN] Failed to read EPUB: attachment={attachment_key} file={epub_path} err={e}",
             file=os.sys.__stderr__,
         )
-        return []
+        return [], default_quality
 
     # 章タイトルマップ（失敗しても処理続行）
     _epub_toc_map: Dict[int, str] = {}
@@ -240,11 +255,11 @@ def extract_chunks_from_epub_snapshot(
             chap_idx += 1
 
     if not all_paras:
-        return []
+        return [], default_quality
 
     sample = "\n\n".join([p for _ci, p in all_paras[:20]])[:5000]
     if looks_like_gibberish(sample):
-        return []
+        return [], default_quality
     local_min_chunk = MIN_CHUNK_CHARS_NO_SPACE if is_no_space_language_document(sample) else MIN_CHUNK_CHARS
 
     chunks: List[Tuple[str, str, Dict[str, Any]]] = []
@@ -285,4 +300,4 @@ def extract_chunks_from_epub_snapshot(
     if len(ids) != len(set(ids)):
         dup = len(ids) - len(set(ids))
         raise RuntimeError(f"Duplicate chunk ids generated for EPUB ({dup}).")
-    return chunks
+    return chunks, default_quality

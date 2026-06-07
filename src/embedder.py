@@ -3,6 +3,9 @@ from __future__ import annotations
 
 import json
 import os
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["RAYON_RS_NUM_CPUS"] = "1"
 import sys
 import time
 from pathlib import Path
@@ -186,9 +189,10 @@ def get_collection(
 
     col = client.get_or_create_collection(
         name=collection_name,
-        embedding_function=ef,
         metadata={"hnsw:space": "cosine", "hnsw:sync_threshold": 100},
     )
+    # Attach embedding function manually to avoid ChromaDB Rust FFI deadlocks on reads
+    col._embedding_function = ef
 
     # For existing collections, get_or_create_collection does NOT update metadata.
     # Explicitly apply sync_threshold=100 so the indexer flushes more frequently.

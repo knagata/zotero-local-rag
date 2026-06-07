@@ -8,3 +8,4 @@ typing_extensions
 trafilatura
 EbookLib
 pydantic>=2.12,<3
+docling

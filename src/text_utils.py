@@ -328,3 +328,41 @@ def merge_short_chunk_records(
             _finalize_buf()
 
     return out
+
+
+def analyze_text_quality(text: str) -> Dict[str, Any]:
+    """
+    Lightweight heuristics to detect scanned page (empty or minimal text)
+    and font map/CMap/OCR corruption (gibberish/non-sensical letter streams).
+    """
+    t = text.strip()
+    if len(t) < 40:
+        return {"is_scanned": True, "is_corrupted": False}
+
+    # Language detection
+    is_cjk = is_no_space_language_document(t)
+
+    if is_cjk:
+        # For CJK (Japanese/Chinese), check if it lacks common Japanese hiragana particles
+        # (の, に, は, を, た, て, が). If CJK ratio is high, but common hiragana is totally missing in a Japanese doc,
+        # it indicates corrupted font mapping or OCR junk.
+        cjk = _cjk_ratio(t)
+        if cjk >= 0.20:
+            hira_chars = [ch for ch in t if 0x3040 <= ord(ch) <= 0x309F]
+            hira_ratio = len(hira_chars) / len(t)
+            if hira_ratio > 0.01:
+                particles = ["の", "に", "は", "を", "た", "て", "が"]
+                has_any_particle = any(p in t for p in particles)
+                if not has_any_particle:
+                    return {"is_scanned": False, "is_corrupted": True}
+    else:
+        # For English/Latin text, check if it lacks common English words:
+        # the, of, and, to, a, in, is
+        t_lower = t.lower()
+        common_words = {"the", "of", "and", "to", "in", "is", "that", "for", "it", "on", "with", "as", "this", "by", "an", "at"}
+        found = sum(1 for w in common_words if f" {w} " in f" {t_lower} ")
+        words = t_lower.split()
+        if len(words) >= 15 and found == 0:
+            return {"is_scanned": False, "is_corrupted": True}
+
+    return {"is_scanned": False, "is_corrupted": False}

@@ -13,61 +13,68 @@ echo ========================================
 echo    Zotero Local RAG - Updater
 echo ========================================
 echo.
-echo 最新バージョンをGitHubからダウンロードして更新します。
-echo .env と data\ (インデックス・モデル) は保持されます。
+echo Downloading and updating to the latest version from GitHub.
+echo .env and data\ (indexes/models) will be preserved.
 echo.
-set /p "ans=続けますか？ [Y/n]: "
+set /p "ans=Do you want to continue? [Y/n]: "
 if /i "%ans%"=="n" (
-    echo 更新をキャンセルしました。
+    echo Update cancelled.
     pause
     exit /b 0
 )
 
 echo.
-echo [1/4] 最新バージョンをダウンロード中...
+echo [1/4] Downloading latest version...
 if exist "%TMP_ZIP%" del "%TMP_ZIP%"
 powershell -NoProfile -Command "Invoke-WebRequest -Uri '%REPO_ZIP%' -OutFile '%TMP_ZIP%'" 2>&1
 if not exist "%TMP_ZIP%" (
-    echo [!] ダウンロードに失敗しました。インターネット接続を確認してください。
+    echo [!] Download failed. Please check your internet connection.
     pause
     exit /b 1
 )
 
 echo.
-echo [2/4] 展開中...
+echo [2/4] Extracting...
 if exist "%TMP_DIR%" rmdir /s /q "%TMP_DIR%"
 mkdir "%TMP_DIR%"
 powershell -NoProfile -Command "Expand-Archive -Path '%TMP_ZIP%' -DestinationPath '%TMP_DIR%' -Force"
 if not exist "%EXTRACTED%" (
-    echo [!] 展開後のフォルダが見つかりません。
+    echo [!] Extracted folder not found.
     pause
     exit /b 1
 )
 
-echo [3/4] ファイルを更新中（.env と data\ は保持）...
-REM robocopy: /e=サブフォルダ含む /xd=除外ディレクトリ /xf=除外ファイル /NFL /NDL=ログ簡略化
+echo [3/4] Updating files (.env and data\ are preserved)...
+REM robocopy: /e=subfolders /xd=exclude dirs /xf=exclude files
 robocopy "%EXTRACTED%" "%SCRIPT_DIR%" /e ^
     /xd ".env" "data" ".venv" ".claude" ".git" ^
     /xf ".env" ^
     /NFL /NDL /NJH /NJS >nul
 
-echo [4/4] 一時ファイルを削除中...
+echo [4/4] Cleaning up temporary files...
 rmdir /s /q "%TMP_DIR%"
 del "%TMP_ZIP%"
 
 echo.
 echo ========================================
-echo    更新完了！
+echo    Update Complete!
 echo ========================================
 echo.
-echo Claude Desktop を再起動すると変更が反映されます。
+echo Please restart Claude Desktop to apply the changes.
 echo.
-set /p "run_idx=埋め込みインデクサーを再実行しますか？ [y/N]: "
+set /p "run_idx=Do you want to run the setup wizard now? [y/N]: "
 if /i "%run_idx%"=="y" (
     echo.
     uv run scripts/setup_wizard.py
 )
 
 echo.
-echo このウィンドウは閉じて構いません。
+set /p "run_chk=Do you want to run a quality check on the existing index? [y/N]: "
+if /i "%run_chk%"=="y" (
+    echo.
+    uv run src/index_from_zotero.py --check-quality --progress
+)
+
+echo.
+echo You can safely close this window.
 pause

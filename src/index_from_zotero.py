@@ -21,6 +21,7 @@ from html_extract import (
     extract_chunks_from_epub_snapshot,
 )
 from pdf_extract import extract_chunks_from_pdf
+from docling_extract import extract_chunks_from_pdf_with_docling
 from note_extract import index_notes
 
 from manifest import load_manifest, save_manifest
@@ -31,6 +32,32 @@ from manifest import load_manifest, save_manifest
 # Paths / Env
 # ----------------------------
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def load_dotenv_native() -> None:
+    env_file = PROJECT_ROOT / ".env"
+    if env_file.exists():
+        try:
+            with open(env_file, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        k, v = line.split("=", 1)
+                        k = k.strip()
+                        v = v.strip()
+                        if len(v) >= 2 and (
+                            (v.startswith('"') and v.endswith('"'))
+                            or (v.startswith("'") and v.endswith("'"))
+                        ):
+                            v = v[1:-1]
+                        if k and k not in os.environ:
+                            os.environ[k] = v
+        except Exception:
+            pass
+
+
+load_dotenv_native()
+
 DATA_DIR = PROJECT_ROOT / "data"
 CHROMA_DIR = Path(os.environ.get("CHROMA_DIR", str(DATA_DIR / "chroma")))
 PDF_CACHE_DIR = Path(os.environ.get("PDF_CACHE_DIR", str(DATA_DIR / "pdf_cache")))
@@ -171,6 +198,21 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Force rebuild: delete Chroma DB and manifest, then re-index everything.",
     )
+    p.add_argument(
+        "--check-quality",
+        action="store_true",
+        help="Scan existing indexed files in the manifest for scanned/corrupted pages (skips Chroma re-indexing) and update manifest.",
+    )
+    p.add_argument(
+        "--use-docling",
+        action="store_true",
+        help="Use high-fidelity IBM Docling instead of PyMuPDF to extract text from all PDFs in this run.",
+    )
+    p.add_argument(
+        "--reparse-corrupted",
+        action="store_true",
+        help="Automatically use IBM Docling to re-parse and re-index scanned or corrupted PDFs tracked in the manifest.",
+    )
     return p.parse_args()
 
 
@@ -260,18 +302,41 @@ async def main_async(args: argparse.Namespace) -> None:
                     file=sys.__stderr__,
                 )
 
+    if show_progress:
+        print("[PROGRESS] Fetching attachment metadata from Zotero (this may take a minute)...", file=sys.__stderr__)
+
     attachments: List[ZoteroAttachment] = await api.list_normalized_attachments(
         zotero_data_dir=zotero_data_dir,
         pdf_cache_dir=str(PDF_CACHE_DIR),
         collection_key=args.collection,
     )
     attachments = [a for a in attachments if getattr(a, "pdf_path", None)]
+
+    # If --reparse-corrupted is set, filter attachments upfront to show correct progress
+    if args.reparse_corrupted:
+        corrupted_attachments = []
+        for a in attachments:
+            prev = files_manifest.get(a.attachmentKey)
+            if prev and "quality" in prev:
+                q = prev["quality"]
+                is_problematic = q.get("is_scanned") or q.get("is_corrupted")
+                already_docling = q.get("parser") == "docling"
+                if is_problematic and not already_docling:
+                    corrupted_attachments.append(a)
+        attachments = corrupted_attachments
+
     total_attachments = len(attachments)
     if show_progress:
-        print(
-            f"[PROGRESS] Attachments resolved: {total_attachments} (collection={args.collection or 'ALL'})",
-            file=sys.__stderr__,
-        )
+        if args.reparse_corrupted:
+            print(
+                f"[PROGRESS] Found {total_attachments} scanned/corrupted PDF(s) requiring high-fidelity Docling parsing.",
+                file=sys.__stderr__,
+            )
+        else:
+            print(
+                f"[PROGRESS] Attachments resolved: {total_attachments} (collection={args.collection or 'ALL'})",
+                file=sys.__stderr__,
+            )
 
     if args.dump_attachments:
         dump = []
@@ -299,18 +364,19 @@ async def main_async(args: argparse.Namespace) -> None:
         chroma_collection_default=CHROMA_COLLECTION_DEFAULT,
     )
 
-    # Delete stale attachment items
-    current_keys = {a.attachmentKey for a in attachments}
-    stale_keys = set(files_manifest.keys()) - current_keys
-
+    # Delete stale attachment items (skipped during selective re-parsing)
     deleted_stale = 0
-    for stale_key in stale_keys:
-        try:
-            col.delete(where={"attachmentKey": stale_key})
-            deleted_stale += 1
-        except Exception:
-            pass
-        files_manifest.pop(stale_key, None)
+    if not args.reparse_corrupted:
+        current_keys = {a.attachmentKey for a in attachments}
+        stale_keys = set(files_manifest.keys()) - current_keys
+
+        for stale_key in stale_keys:
+            try:
+                col.delete(where={"attachmentKey": stale_key})
+                deleted_stale += 1
+            except Exception:
+                pass
+            files_manifest.pop(stale_key, None)
 
     updated_pdf = updated_html = updated_epub = 0
     skipped_pdf = skipped_html = skipped_epub = 0
@@ -362,19 +428,44 @@ async def main_async(args: argparse.Namespace) -> None:
         size = int(st.st_size)
 
         prev = files_manifest.get(a.attachmentKey)
-        if prev and float(prev.get("mtime", -1)) == mtime and int(prev.get("size", -1)) == size:
-            if stype == "html":
-                skipped_html += 1
-            elif stype == "epub":
-                skipped_epub += 1
+        has_quality = prev and "quality" in prev
+        quality_check_only = False
+
+        # Decide if we need to force Docling for this file
+        force_docling = False
+        if stype == "pdf":
+            if args.use_docling:
+                already_docling = has_quality and prev["quality"].get("parser") == "docling"
+                if not already_docling:
+                    force_docling = True
+            elif args.reparse_corrupted and has_quality:
+                q = prev["quality"]
+                is_problematic = q.get("is_scanned") or q.get("is_corrupted")
+                already_docling = q.get("parser") == "docling"
+                if is_problematic and not already_docling:
+                    force_docling = True
+
+        if prev and float(prev.get("mtime", -1)) == mtime and int(prev.get("size", -1)) == size and not force_docling:
+            if args.check_quality or not has_quality:
+                quality_check_only = True
+                if show_progress:
+                    print(
+                        f"[PROGRESS]   ↳ analyzing text quality of existing item: attachment={a.attachmentKey}",
+                        file=sys.__stderr__,
+                    )
             else:
-                skipped_pdf += 1
-            if show_progress:
-                print(
-                    f"[PROGRESS]   ↳ skipped (unchanged): attachment={a.attachmentKey}",
-                    file=sys.__stderr__,
-                )
-            continue
+                if stype == "html":
+                    skipped_html += 1
+                elif stype == "epub":
+                    skipped_epub += 1
+                else:
+                    skipped_pdf += 1
+                if show_progress:
+                    print(
+                        f"[PROGRESS]   ↳ skipped (unchanged): attachment={a.attachmentKey}",
+                        file=sys.__stderr__,
+                    )
+                continue
 
         creators_str = None
         if getattr(a, "creators", None):
@@ -418,11 +509,22 @@ async def main_async(args: argparse.Namespace) -> None:
 
         t_pdf = time.perf_counter()
         if stype == "html":
-            chunks = extract_chunks_from_html_snapshot(file_path, a.attachmentKey, meta_base)
+            chunks, quality_info = extract_chunks_from_html_snapshot(file_path, a.attachmentKey, meta_base)
         elif stype == "epub":
-            chunks = extract_chunks_from_epub_snapshot(file_path, a.attachmentKey, meta_base)
+            chunks, quality_info = extract_chunks_from_epub_snapshot(file_path, a.attachmentKey, meta_base)
         else:
-            chunks = extract_chunks_from_pdf(file_path, a.attachmentKey, meta_base)
+            use_docling_for_this_file = force_docling or args.use_docling
+            if use_docling_for_this_file:
+                if show_progress:
+                    print(
+                        f"[PROGRESS]   ↳ parsing with high-fidelity IBM Docling...",
+                        file=sys.__stderr__,
+                    )
+                chunks, quality_info = extract_chunks_from_pdf_with_docling(file_path, a.attachmentKey, meta_base)
+                # Force immediate PyTorch garbage collection and MPS/CUDA cache clearing
+                relieve_memory_pressure()
+            else:
+                chunks, quality_info = extract_chunks_from_pdf(file_path, a.attachmentKey, meta_base)
 
         dt = time.perf_counter() - t_pdf
         if show_progress:
@@ -441,6 +543,23 @@ async def main_async(args: argparse.Namespace) -> None:
             )
             continue
 
+        if quality_check_only:
+            # Only update manifest quality, do not write to ChromaDB
+            files_manifest[a.attachmentKey] = {
+                "mtime": mtime,
+                "size": size,
+                "pdf_path": str(file_path),
+                "title": a.title,
+                "quality": quality_info,
+            }
+            if stype == "html":
+                skipped_html += 1
+            elif stype == "epub":
+                skipped_epub += 1
+            else:
+                skipped_pdf += 1
+            continue
+
         pending_delete_attachment_keys.add(a.attachmentKey)
 
         for cid, text, md in chunks:
@@ -448,7 +567,13 @@ async def main_async(args: argparse.Namespace) -> None:
             pending_docs.append(text)
             pending_metas.append(md)
 
-        pending_manifest_updates[a.attachmentKey] = {"mtime": mtime, "size": size, "pdf_path": str(file_path)}
+        pending_manifest_updates[a.attachmentKey] = {
+            "mtime": mtime,
+            "size": size,
+            "pdf_path": str(file_path),
+            "title": a.title,
+            "quality": quality_info,
+        }
         pending_source_types[a.attachmentKey] = stype
 
         if len(pending_ids) >= BATCH_SIZE:
@@ -592,6 +717,38 @@ async def main_async(args: argparse.Namespace) -> None:
         f"Deleted stale={deleted_stale}, Failed extract(0 chunks)={failed_extract}"
         f" | Updated Notes={updated_notes}, Skipped Notes={skipped_notes}, Deleted stale Notes={deleted_stale_notes}"
     )
+
+    # Compile and print warnings for scanned or corrupted files
+    problematic_files = []
+    for k, entry in files_manifest.items():
+        q = entry.get("quality")
+        if q and isinstance(q, dict):
+            is_scanned = q.get("is_scanned", False)
+            is_corrupted = q.get("is_corrupted", False)
+            if is_scanned or is_corrupted:
+                title = entry.get("title") or entry.get("pdf_path", "").split("/")[-1] or k
+                reasons = []
+                if is_scanned:
+                    reasons.append("scanned/empty pages")
+                if is_corrupted:
+                    reasons.append("text layout/character encoding corruption")
+                problematic_files.append((k, title, reasons, q))
+
+    if problematic_files:
+        print("\n" + "=" * 80, file=sys.__stderr__)
+        print("⚠️  [RAG QUALITY WARNING] The following files might have poor retrieval quality:", file=sys.__stderr__)
+        for k, title, reasons, q in problematic_files:
+            reasons_str = " & ".join(reasons)
+            print(f"  - [{k}] \"{title}\"", file=sys.__stderr__)
+            print(f"    ↳ Issue: {reasons_str}", file=sys.__stderr__)
+            if q.get("scanned_pages"):
+                print(f"      scanned/empty pages: {q.get('scanned_pages')}", file=sys.__stderr__)
+            if q.get("corrupted_pages"):
+                print(f"      corrupted/garbled pages: {q.get('corrupted_pages')}", file=sys.__stderr__)
+        print("\nRecommendation: We highly recommend processing these files using high-fidelity", file=sys.__stderr__)
+        print("AI-based document layout parsers like Docling or Marker to improve RAG accuracy.", file=sys.__stderr__)
+        print("=" * 80 + "\n", file=sys.__stderr__)
+
     if show_progress:
         print(f"[PROGRESS] Total runtime: {time.perf_counter() - t0:.1f}s", file=sys.__stderr__)
 

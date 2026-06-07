@@ -1,0 +1,51 @@
+#!/bin/bash
+
+# Change the working directory to the folder containing this script
+cd "$(dirname "$0")"
+
+# Ensure common paths are included so `uv` can be found when double-clicking from GUI
+export PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$HOME/.local/bin:$HOME/.cargo/bin"
+
+echo "========================================"
+echo "   Zotero Local RAG - Library Update"
+echo "========================================"
+echo ""
+echo "Please select an action to perform:"
+echo "  [1] Sync library and run embedding (index new/modified files)"
+echo "  [2] Run quality check only (detect scanned pages or corrupted text)"
+echo "  [3] Run high-fidelity re-indexing on scanned/corrupted PDFs (requires Docling)"
+echo "  [4] Cancel"
+echo ""
+read -p "Choice [1-4, Default: 1]: " choice
+
+if [ -z "$choice" ]; then
+    choice="1"
+fi
+
+if [ "$choice" = "1" ]; then
+    echo ""
+    read -p "Use high-fidelity parsing (Docling) for all PDFs? [y/N]: " use_doc
+    use_doc=$(echo "$use_doc" | tr '[:upper:]' '[:lower:]')
+    if [ "$use_doc" = "y" ]; then
+        echo ""
+        echo ">> Syncing library and running high-fidelity embedding indexer (Docling)..."
+        uv run src/index_from_zotero.py --progress --use-docling
+    else
+        echo ""
+        echo ">> Syncing library and running standard embedding indexer..."
+        uv run src/index_from_zotero.py --progress
+    fi
+elif [ "$choice" = "2" ]; then
+    echo ""
+    echo ">> Running quality check on existing index..."
+    uv run src/index_from_zotero.py --check-quality --progress
+elif [ "$choice" = "3" ]; then
+    echo ""
+    echo ">> Re-indexing scanned/corrupted PDFs using high-fidelity parser (Docling)..."
+    uv run src/index_from_zotero.py --reparse-corrupted --progress
+else
+    echo "Operation cancelled."
+fi
+
+echo ""
+read -p "Press Enter to exit..."

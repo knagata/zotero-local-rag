@@ -14,44 +14,44 @@ echo "========================================"
 echo "   Zotero Local RAG - Updater"
 echo "========================================"
 echo ""
-echo "最新バージョンをGitHubからダウンロードして更新します。"
-echo ".env と data/ (インデックス・モデル) は保持されます。"
+echo "Downloading and updating to the latest version from GitHub."
+echo ".env and data/ (indexes/models) will be preserved."
 echo ""
-read -p "続けますか？ [Y/n]: " ans
+read -p "Do you want to continue? [Y/n]: " ans
 ans=$(echo "$ans" | tr '[:upper:]' '[:lower:]')
 if [ "$ans" = "n" ]; then
-    echo "更新をキャンセルしました。"
-    read -p "Enterを押して終了..."
+    echo "Update cancelled."
+    read -p "Press Enter to exit..."
     exit 0
 fi
 
 echo ""
-echo "[1/4] 最新バージョンをダウンロード中..."
+echo "[1/4] Downloading latest version..."
 rm -f "$TMP_ZIP"
 if ! curl -L --progress-bar -o "$TMP_ZIP" "$REPO_ZIP"; then
     echo ""
-    echo "[!] ダウンロードに失敗しました。インターネット接続を確認してください。"
-    read -p "Enterを押して終了..."
+    echo "[!] Download failed. Please check your internet connection."
+    read -p "Press Enter to exit..."
     exit 1
 fi
 
 echo ""
-echo "[2/4] 展開中..."
+echo "[2/4] Extracting..."
 rm -rf "$TMP_DIR"
 mkdir -p "$TMP_DIR"
 if ! unzip -q "$TMP_ZIP" -d "$TMP_DIR"; then
-    echo "[!] 展開に失敗しました。"
-    read -p "Enterを押して終了..."
+    echo "[!] Extraction failed."
+    read -p "Press Enter to exit..."
     exit 1
 fi
 
 if [ ! -d "$EXTRACTED" ]; then
-    echo "[!] 展開後のフォルダが見つかりません: $EXTRACTED"
-    read -p "Enterを押して終了..."
+    echo "[!] Extracted folder not found: $EXTRACTED"
+    read -p "Press Enter to exit..."
     exit 1
 fi
 
-echo "[3/4] ファイルを更新中（.env と data/ は保持）..."
+echo "[3/4] Updating files (.env and data/ are preserved)..."
 # rsync: preserve .env, data/, .venv/, .claude/ (user data)
 rsync -a \
     --exclude='.env' \
@@ -61,21 +61,22 @@ rsync -a \
     --exclude='.git/' \
     "$EXTRACTED/" "$SCRIPT_DIR/"
 
-# Ensure update script itself is executable
-chmod +x "$SCRIPT_DIR/Zotero_Local_RAG_Update.command"
-chmod +x "$SCRIPT_DIR/Zotero_Local_RAG_Setup.command"
+# Ensure update scripts are executable
+chmod +x "$SCRIPT_DIR/Software-Update.command"
+chmod +x "$SCRIPT_DIR/Setup.command"
+chmod +x "$SCRIPT_DIR/Library-Update.command"
 
-echo "[4/4] 一時ファイルを削除中..."
+echo "[4/4] Cleaning up temporary files..."
 rm -rf "$TMP_DIR" "$TMP_ZIP"
 
 echo ""
 echo "========================================"
-echo "   更新完了！"
+echo "   Update Complete!"
 echo "========================================"
 echo ""
-echo "Claude Desktopを再起動すると変更が反映されます。"
+echo "Please restart Claude Desktop to apply the changes."
 echo ""
-read -p "埋め込みインデクサーを再実行しますか？ [y/N]: " run_idx
+read -p "Do you want to run the setup wizard now? [y/N]: " run_idx
 run_idx=$(echo "$run_idx" | tr '[:upper:]' '[:lower:]')
 if [ "$run_idx" = "y" ]; then
     echo ""
@@ -83,4 +84,12 @@ if [ "$run_idx" = "y" ]; then
 fi
 
 echo ""
-echo "このウィンドウは閉じて構いません。"
+read -p "Do you want to run a quality check on the existing index? [y/N]: " run_chk
+run_chk=$(echo "$run_chk" | tr '[:upper:]' '[:lower:]')
+if [ "$run_chk" = "y" ]; then
+    echo ""
+    uv run src/index_from_zotero.py --check-quality --progress
+fi
+
+echo ""
+echo "You can safely close this terminal window."

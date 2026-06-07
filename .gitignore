@@ -1,11 +1,34 @@
-data/chroma
-data/models
-data/manifest.json
+# ── Python ──────────────────────────────────────────────
 __pycache__/
 *.py[cod]
-.DS_Store
-/.claude
+*.pyo
+.venv/
+src/*.egg-info/
+
+# ── uv ──────────────────────────────────────────────────
 uv.lock
+
+# ── 環境設定 ─────────────────────────────────────────────
 .env
-.venv
+
+# ── macOS ────────────────────────────────────────────────
+.DS_Store
+
+# ── Claude Code ──────────────────────────────────────────
+/.claude
+
+# ── データ生成物（インデックス・DB・ログ） ──────────────
+data/chroma/
+data/models/
+data/manifest.json
+data/relations.sqlite3
+data/relations.db
+data/zotero.sqlite3
+data/s2_rate.lock
 data/zotero-rag.log
+data/mapping_debug.log
+data/mapping_debug_ref.log
+data/pdf_cache/
+
+# ── ログ全般 ─────────────────────────────────────────────
+*.log

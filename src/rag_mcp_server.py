@@ -1,8 +1,14 @@
 # MCP server for paragraph-level Zotero RAG (local Chroma).
 from __future__ import annotations
 
-import logging
 import os
+os.environ["HF_HUB_OFFLINE"] = "1"
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+
+import logging
 import sys
 import time
 import traceback
@@ -11,6 +17,27 @@ from typing import Any, Dict, Optional, List
 from typing_extensions import TypedDict
 
 from pathlib import Path
+
+def load_dotenv_native() -> None:
+    env_file = Path(__file__).parent.parent / ".env"
+    if env_file.exists():
+        try:
+            with open(env_file, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        k, v = line.split("=", 1)
+                        k = k.strip()
+                        v = v.strip()
+                        if len(v) >= 2 and ((v.startswith('"') and v.endswith('"')) or (v.startswith("'") and v.endswith("'"))):
+                            v = v[1:-1]
+                        if k and k not in os.environ:
+                            os.environ[k] = v
+        except Exception:
+            pass
+
+load_dotenv_native()
+
 import chromadb
 from chromadb.utils import embedding_functions
 from fastmcp import FastMCP
@@ -253,6 +280,8 @@ def _col():
     if _EMB_FN is None:
         model_name, device = _resolve_embedder_settings()
         try:
+            import sys
+            print(f"[PROGRESS] Initializing local embedding model '{model_name}' (this takes 1-3 minutes to load into memory)...", file=sys.stderr)
             _EMB_FN = embedding_functions.SentenceTransformerEmbeddingFunction(
                 model_name=model_name,
                 device=device,
@@ -275,6 +304,8 @@ def _col():
         collection_name = (COLLECTION_NAME_ENV or "").strip() or COLLECTION_NAME_DEFAULT
         if not (COLLECTION_NAME_ENV or "").strip():
             try:
+                import sys
+                print("[PROGRESS] Initializing local embedding model (this may take a few minutes for the first run)...", file=sys.stderr)
                 probe_vecs = emb_fn(["collection probe"])
                 dim = None
                 if isinstance(probe_vecs, list) and probe_vecs and isinstance(probe_vecs[0], (list, tuple)):
@@ -291,9 +322,9 @@ def _col():
     _CLIENT = chromadb.PersistentClient(path=CHROMA_DIR)
     _COL = _CLIENT.get_or_create_collection(
         name=collection_name,
-        embedding_function=emb_fn,
         metadata={"hnsw:space": "cosine"},
     )
+    _COL._embedding_function = emb_fn
 
     # Dimension compatibility check
     try:
@@ -638,16 +669,24 @@ def rag_search(
         else:
             effective_where = {"$and": [effective_where, item_filter]}
 
-    queries = [query] if isinstance(query, str) else query
-
     internal_k = max(k * 5, k)
     if exclude_chunk_ids:
         internal_k += len(exclude_chunk_ids)
 
     for _attempt in range(2):
         try:
+            col = _col()
+            if not col:
+                raise ValueError("Chroma collection is empty or not initialized. Run the indexer first.")
+
+            # Ensure query is a list
+            queries = [query] if isinstance(query, str) else query
+            
+            # Manually compute embeddings to avoid Chroma FFI deadlock
+            query_embeddings = col._embedding_function(queries)
+
             res = col.query(
-                query_texts=queries,
+                query_embeddings=query_embeddings,
                 n_results=internal_k,
                 where=effective_where,
                 include=["documents", "metadatas", "distances"],
@@ -1168,6 +1207,290 @@ def zotero_rag_guide() -> str:
             return f.read()
     except Exception as e:
         return f"Guide file not found or could not be read: {e}"
+
+@mcp.tool()
+def get_chunk_citations(chunk_id: str) -> Dict[str, Any]:
+    """
+    Get the global Semantic Scholar citations for a specific Zotero paragraph chunk.
+    This shows you WHICH external papers cited this specific paragraph and in WHAT context.
+    
+    Args:
+        chunk_id: The ID of the chunk to query (e.g., 'BGZ9UFUJ:p12:para3:part0')
+    """
+    try:
+        from db_relations import get_citations_for_chunk
+        citations = get_citations_for_chunk(chunk_id)
+        return {
+            "chunk_id": chunk_id,
+            "citation_count": len(citations),
+            "citations": citations
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@mcp.tool()
+def get_cited_chunks_for_item(item_key: str, max_citations_per_chunk: int = 3) -> Dict[str, Any]:
+    """
+    Given a Zotero item key, returns all paragraphs (chunks) from that item 
+    that have been cited by external papers, along with the citation context.
+    
+    Args:
+        item_key: The parent Zotero item key (e.g., 'BGZ9UFUJ')
+        max_citations_per_chunk: Maximum number of representative citations to return per chunk.
+    """
+    try:
+        from db_relations import get_cited_chunks_for_item as get_chunks, get_citations_for_chunk
+        chunks = get_chunks(item_key)
+        
+        # Hydrate with actual chunk text (Bypass ChromaDB PersistentClient to avoid hangs/timeouts)
+        doc_map = {}
+        meta_map = {}
+        if chunks:
+            chunk_ids = [c["cited_chunk_id"] for c in chunks]
+            
+            import sqlite3
+            from pathlib import Path
+            db_path = Path(CHROMA_DIR) / "chroma.sqlite3"
+            if db_path.exists():
+                try:
+                    conn = sqlite3.connect(str(db_path))
+                    # Batch the chunk_ids (SQLite variable limit is 999)
+                    for i in range(0, len(chunk_ids), 500):
+                        batch = chunk_ids[i:i+500]
+                        placeholders = ','.join(['?'] * len(batch))
+                        query = f"""
+                            SELECT e.embedding_id, em.key, em.string_value, em.int_value, em.float_value
+                            FROM embeddings e
+                            JOIN embedding_metadata em ON em.id = e.id
+                            WHERE e.embedding_id IN ({placeholders})
+                        """
+                        cursor = conn.execute(query, tuple(batch))
+                        
+                        for row in cursor.fetchall():
+                            emb_id, key, s_val, i_val, f_val = row
+                            if emb_id not in meta_map:
+                                meta_map[emb_id] = {}
+                            
+                            if key == 'chroma:document':
+                                doc_map[emb_id] = s_val
+                            else:
+                                if s_val is not None:
+                                    meta_map[emb_id][key] = s_val
+                                elif i_val is not None:
+                                    meta_map[emb_id][key] = i_val
+                                elif f_val is not None:
+                                    meta_map[emb_id][key] = f_val
+                    conn.close()
+                except Exception as e:
+                    import logging
+                    logger = logging.getLogger("zotero-rag")
+                    logger.error(f"Error querying Chroma SQLite directly: {e}")
+            
+            for c in chunks:
+                cid = c["cited_chunk_id"]
+                c["text"] = doc_map.get(cid, "")
+                meta = meta_map.get(cid, {})
+                c["page"] = meta.get("page")
+                c["page_label"] = meta.get("page_label")
+                
+                # Fetch top citation snippets for context
+                c["top_citations"] = get_citations_for_chunk(cid, limit=max_citations_per_chunk)
+                
+        return {
+            "item_key": item_key,
+            "cited_chunks_count": len(chunks),
+            "cited_chunks": chunks
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+# Internal function (formerly exposed as MCP tool)
+async def extract_local_epub_references(item_key: str) -> Dict[str, Any]:
+    """
+    Extracts footnote and endnote references from an EPUB attachment in Zotero,
+    resolves them to Semantic Scholar where possible, and saves them to the global_references DB.
+    
+    Args:
+        item_key: The parent Zotero item key (e.g., 'BGZ9UFUJ')
+    """
+    try:
+        import os
+        from zotero_source_localapi import ZoteroLocalAPI
+        # Get children to find attachment
+        children = await _z_api()._get_json(f"items/{item_key}/children")
+        if not isinstance(children, list):
+            children = []
+        
+        epub_key = None
+        epub_data = None
+        for child in children:
+            _, att_data = ZoteroLocalAPI._unwrap_item(child)
+            filename = att_data.get("filename", "")
+            if filename.lower().endswith(".epub"):
+                epub_key = att_data.get("key")
+                epub_data = att_data
+                break
+                
+        if not epub_key:
+            return {"status": "error", "message": "No EPUB attachment found for this item."}
+            
+        zotero_data_dir = os.environ.get("ZOTERO_DATA_DIR", os.path.expanduser("~/Zotero"))
+        epub_path = _z_api().resolve_pdf_path_from_attachment(epub_key, epub_data, zotero_data_dir)
+        
+        if not epub_path or not os.path.exists(epub_path):
+            return {"status": "error", "message": f"EPUB file not found on disk for attachment {epub_key}."}
+            
+        from citation_mapper import map_item_local_references
+        return map_item_local_references(item_key, epub_path)
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@mcp.tool()
+def get_chunk_references(chunk_id: str) -> Dict[str, Any]:
+    """
+    Get the external references (outgoing citations) for a specific Zotero paragraph chunk.
+    This shows you WHICH external papers this specific paragraph is citing.
+    
+    Args:
+        chunk_id: The ID of the chunk to query (e.g., 'BGZ9UFUJ:p12:para3:part0')
+    """
+    try:
+        from db_relations import get_references_for_chunk
+        references = get_references_for_chunk(chunk_id)
+        return {
+            "chunk_id": chunk_id,
+            "reference_count": len(references),
+            "references": references
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@mcp.tool()
+def get_references_for_item(item_key: str) -> Dict[str, Any]:
+    """
+    List all paragraph chunks within a specific Zotero item that cite external papers.
+    Use this to see which parts of a document rely most heavily on external literature.
+
+    Args:
+        item_key: The parent Zotero item key (e.g., 'BGZ9UFUJ')
+    """
+    try:
+        from db_relations import get_references_for_item as get_ref_chunks, get_references_for_chunk
+        chunks = get_ref_chunks(item_key)
+
+        # Hydrate with chunk text via direct SQLite query (avoids ChromaDB lock/hang)
+        if chunks:
+            chunk_ids = [c["citing_chunk_id"] for c in chunks]
+            doc_map: Dict[str, str] = {}
+            meta_map: Dict[str, Dict] = {}
+
+            import sqlite3 as _sqlite3
+            db_path = Path(CHROMA_DIR) / "chroma.sqlite3"
+            if db_path.exists():
+                try:
+                    conn = _sqlite3.connect(str(db_path))
+                    for i in range(0, len(chunk_ids), 500):
+                        batch = chunk_ids[i : i + 500]
+                        placeholders = ",".join(["?"] * len(batch))
+                        cursor = conn.execute(
+                            f"""
+                            SELECT e.embedding_id, em.key, em.string_value, em.int_value, em.float_value
+                            FROM embeddings e
+                            JOIN embedding_metadata em ON em.id = e.id
+                            WHERE e.embedding_id IN ({placeholders})
+                            """,
+                            tuple(batch),
+                        )
+                        for emb_id, key, s_val, i_val, f_val in cursor.fetchall():
+                            if emb_id not in meta_map:
+                                meta_map[emb_id] = {}
+                            if key == "chroma:document":
+                                doc_map[emb_id] = s_val
+                            elif s_val is not None:
+                                meta_map[emb_id][key] = s_val
+                            elif i_val is not None:
+                                meta_map[emb_id][key] = i_val
+                            elif f_val is not None:
+                                meta_map[emb_id][key] = f_val
+                    conn.close()
+                except Exception as e:
+                    _log.error("get_references_for_item: SQLite query error: %s", e)
+
+            for c in chunks:
+                cid = c["citing_chunk_id"]
+                c["text"] = doc_map.get(cid, "")
+                meta = meta_map.get(cid, {})
+                c["page"] = meta.get("page")
+                c["page_label"] = meta.get("page_label")
+                c["top_references"] = get_references_for_chunk(cid)[:3]
+
+        return {
+            "item_key": item_key,
+            "citing_chunks_count": len(chunks),
+            "citing_chunks": chunks
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@mcp.tool()
+async def build_citation_network(item_key: str) -> Dict[str, Any]:
+    """
+    Builds the complete citation network for a Zotero item.
+    This runs BOTH:
+    1. Retrieval of incoming citations (Citations) from Semantic Scholar.
+    2. Extraction of outgoing references (References) from local EPUBs.
+
+    Call this single tool before querying for cited/citing chunks to ensure
+    the database is fully populated with both incoming and outgoing citation data.
+
+    Args:
+        item_key: The parent Zotero item key (e.g., 'BGZ9UFUJ')
+    """
+    res: Dict[str, Any] = {}
+
+    # Fetch Zotero item metadata so the mapper can look up the paper on S2.
+    title, year, creators, doi, isbn = "", "", "", "", ""
+    try:
+        raw = await _z_api().get_item(item_key)
+        _, item_data = ZoteroLocalAPI._unwrap_item(raw)
+        title = item_data.get("title") or ""
+        date = item_data.get("date") or ""
+        year = date[:4] if len(date) >= 4 and date[:4].isdigit() else ""
+        doi = item_data.get("DOI") or ""
+        isbn = item_data.get("ISBN") or ""
+        creators_list = item_data.get("creators") or []
+        creators = ", ".join(
+            (
+                (c.get("lastName", "") + " " + c.get("firstName", "")).strip().strip(", ")
+                if "lastName" in c
+                else c.get("name", "")
+            )
+            for c in creators_list
+            if isinstance(c, dict)
+        )
+        res["item_metadata"] = {"title": title, "year": year, "doi": doi, "isbn": isbn}
+    except Exception as e:
+        res["metadata_fetch_warning"] = str(e)
+
+    # 1. Global citation mapping (Citations from Semantic Scholar)
+    try:
+        from citation_mapper import map_item_global_citations as _mapper
+        res["citations_import"] = _mapper(
+            item_key, title=title, year=year, creators=creators, doi=doi, isbn=isbn,
+            max_citations=5000,
+        )
+    except Exception as e:
+        res["citations_import"] = {"status": "error", "message": str(e)}
+
+    # 2. Local EPUB reference extraction (outgoing References)
+    try:
+        res["references_import"] = await extract_local_epub_references(item_key)
+    except Exception as e:
+        res["references_import"] = {"status": "error", "message": str(e)}
+
+    res["status"] = "success"
+    res["message"] = "Completed citation network build process."
+    return res
 
 def main():
     try:

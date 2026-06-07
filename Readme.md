@@ -7,14 +7,21 @@
 ## ✨ 主な機能
 
 - **ローカル環境で実行**: ローカルZoteroストレージから直接段落を抽出し、インデックス化します。リモートへの依存は埋め込みモデル（HuggingFace等で完全オフライン・キャッシュ可能）のみです。
-- **段階的な検索**: RAGを3つのレイヤーに分割し、用途別に最適化しています。
-  1. `search_items`: 本文テキストを返さず、メタデータとRRF（密度ベース）スコアのみによる書誌スクリーニング。
-  2. `rag_search`: 意味検索による、ピンポイントな段落レベルのテキスト抽出。
-  3. `get_chunk_context`: 指定した段落前後の文脈をデータベースから直接取得。
+- **段階的な検索**: 用途に合わせて検索レイヤーを最適化しています。
+  1. `search_zotero_items`: ベクトルインデックスを介さず、Zotero Local APIからタイトル・著者名・出版年などを超高速で直接検索（部分一致など）できる書誌検索。
+  2. `search_items`: ベクトル検索を利用しつつ本文テキストを返さず、メタデータとRRF（密度ベース）スコアのみで関連資料をスクリーニング。
+  3. `rag_search`: 意味検索（セマンティック検索）による、ピンポイントな段落レベルのテキスト抽出。
+  4. `get_chunk_context`: 指定した段落前後の文脈をデータベースから直接取得。
+- **引用・被引用ネットワーク分析 (Semantic Scholar連携)**:
+  - `build_citation_network`: 指定した資料について、EPUBからの引用先抽出（References）とSemantic Scholarからの被引用取得（Citations）を両方とも一括で実行してデータベースを構築。
+  - `get_references_for_item` / `get_chunk_references`: 特定の段落チャンクが「どの文献を引用しているか」の参照先ネットワークを取得・分析。
+  - `get_cited_chunks_for_item` / `get_citations_for_chunk`: 特定の段落チャンクが「外部の論文からどのような文脈で引用されているか」の被引用ネットワークを取得・分析。
 - **高度な最適化**:
   - **Reciprocal Rank Fusion (RRF)**: 複数クエリからの検索結果をシームレスに統合し、「キーワードの密度が高い」資料や段落を上位に引き上げます。
   - **既知IDの除外 (`exclude_chunk_ids`)**: LLMが直前のやり取りで既に読んだテキストのチャンクIDを自動的にブラックリスト化し、毎回の検索で100%新しい情報だけを取得してトークンを節約します。
 - **サーバー状態の確認 (`server_status`)**: ChromaDBの接続状態・コレクション数・埋め込みモデルの設定をClaudeから直接確認できます。
+- **インデックスの強制リロード (`force_reload_index`)**: インデクサー実行後に検索結果が反映されない場合、ChromaDBのインデックスを強制再読み込みします。
+- **デバッグログの取得 (`get_debug_logs`)**: サーバーのログファイルを参照し、エラーやイベントのトレースバックをClaudeから直接確認できます。
 
 ## 🚀 インストールとセットアップ
 
@@ -32,8 +39,8 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 
 手動で環境変数を設定しなくても、ターミナルを開かずにダブルクリックだけでセットアップ可能なウィザードを用意しています。
 
-- **Mac ユーザー**: `Zotero_Local_RAG_Setup.command` をダブルクリック
-- **Windows ユーザー**: `Zotero_Local_RAG_Setup.bat` をダブルクリック
+- **Mac ユーザー**: `Setup.command` をダブルクリック
+- **Windows ユーザー**: `Setup.bat` をダブルクリック
 
 ウィザードでは以下のステップを順に案内します。Enterを押すだけで進めます（2回目以降の起動では設定変更をスキップできます）。
 
@@ -48,12 +55,23 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 
 GitHubから最新バージョンを自動でダウンロードして上書きする更新スクリプトを用意しています。`.env` とインデックスデータ（`data/`）は保持されます。
 
-- **Mac ユーザー**: `Zotero_Local_RAG_Update.command` をダブルクリック
-- **Windows ユーザー**: `Zotero_Local_RAG_Update.bat` をダブルクリック
+- **Mac ユーザー**: `Software-Update.command` をダブルクリック
+- **Windows ユーザー**: `Software-Update.bat` をダブルクリック
 
 更新後はClaude Desktopを再起動してください。
 
-### 3. 環境変数（手動設定の場合）
+### 4. 引用ネットワークの更新（Semantic Scholar連携）
+
+Zotero文献の被引用情報（どの論文に引用されているか）をSemantic Scholar APIから取得してデータベースに保存します。`build_citation_network` ツールをMCP経由でClaudeに依頼するか、以下のスクリプトから手動で実行できます。
+
+- **Mac ユーザー**: `Citation-Update.command` をダブルクリック
+- **Windows ユーザー**: `Citation-Update.bat` をダブルクリック
+
+実行時は対象（特定アイテム指定 / 全アイテム一括）を選択するメニューが表示されます。Semantic Scholar APIのレート制限（1リクエスト/秒）により、大規模ライブラリの全件更新は時間がかかります。
+
+> **S2 APIキー**: `S2_API_KEY` を `.env` に設定すると、レート制限が緩和されます（詳細は下記の環境変数表を参照）。
+
+### 5. 環境変数（手動設定の場合）
 
 手動でMCP設定を記述する場合に必要な環境変数です。
 
@@ -64,6 +82,10 @@ GitHubから最新バージョンを自動でダウンロードして上書き�
 | `EMB_MODEL` | 埋め込みモデルの明示的な指定（ローカルパスまたはHugging Face ID） | プロファイルから自動選択 |
 | `EMB_DEVICE` | 推論デバイス（`cpu`、`mps`、`cuda`） | `cpu`（bge: macは`mps`） |
 | `HF_HUB_OFFLINE` | `1` に設定するとHugging Faceへのアクセスを無効化 | — |
+| `ZOTERO_LOCAL_API_BASE` | Zotero Local HTTP APIのベースURL | `http://127.0.0.1:23119/api` |
+| `ZOTERO_LOCAL_API_PREFIX` | ZoteroローカルAPIのパスプレフィックス | `users/0` |
+| `ZOTERO_API_KEY` | ZoteroウェブAPIキー（ローカルAPI使用時は不要） | — |
+| `S2_API_KEY` | Semantic Scholar APIキー（引用ネットワーク構築時のレート制限緩和） | — |
 
 ---
 
@@ -162,3 +184,9 @@ Claudeからサーバーが応答しないと感じた場合は、`server_status
 ## 📖 LLM向けのベストプラクティス
 
 このパッケージには、提供されたツールをLLMが最適に活用するための指示書 `ZOTERO_RAG_GUIDE.md` が同梱されています。自律的な反復リサーチタスクを行わせるために、この手順書をシステムプロンプトに組み込むか、事前に読み込ませることを推奨します。
+
+---
+
+## 🗺 アーキテクチャ
+
+システムの全体図・処理パイプライン・モジュール一覧・データストア構成は [`ARCHITECTURE.md`](./ARCHITECTURE.md) を参照してください。

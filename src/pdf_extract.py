@@ -23,6 +23,7 @@ from text_utils import (
     merge_short_chunk_records,
     normalize_paragraphs,
     split_long_paragraph,
+    analyze_text_quality,
 )
 from chapter_detect import get_pdf_toc, build_pdf_page_chapter_lookup
 
@@ -265,8 +266,17 @@ def extract_chunks_from_pdf(
     pdf_path: Path,
     attachment_key: str,
     meta_base: Dict[str, Any],
-) -> List[Tuple[str, str, Dict[str, Any]]]:
+) -> Tuple[List[Tuple[str, str, Dict[str, Any]]], Dict[str, Any]]:
     chunks: List[Tuple[str, str, Dict[str, Any]]] = []
+    
+    # Safe default quality info in case of early exit/failure
+    quality_info = {
+        "is_scanned": False,
+        "is_corrupted": False,
+        "scanned_pages": [],
+        "corrupted_pages": [],
+        "total_pages": 1,
+    }
 
     # 章構造を事前に取得（失敗しても処理続行）
     try:
@@ -284,6 +294,10 @@ def extract_chunks_from_pdf(
             try:
                 paras_by_page: List[List[str]] = []
                 page_labels: Dict[int, str] = {}
+                scanned_pages = []
+                corrupted_pages = []
+                total_pages = doc.page_count
+
                 for pi in range(doc.page_count):
                     try:
                         with _page_timeout(PAGE_TIMEOUT_SEC):
@@ -302,18 +316,46 @@ def extract_chunks_from_pdf(
                             file=os.sys.__stderr__,
                         )
                         paras_by_page.append([])
+                        scanned_pages.append(pi + 1)
                         continue
 
                     if not paras:
                         paras_by_page.append([])
+                        try:
+                            has_images = len(page.get_images()) > 0
+                        except Exception:
+                            has_images = False
+                        if has_images:
+                            scanned_pages.append(pi + 1)
                         continue
 
                     joined = "\n\n".join(paras)
+                    
+                    # Analyze text quality per page
+                    quality = analyze_text_quality(joined)
+                    if quality["is_scanned"]:
+                        try:
+                            has_images = len(page.get_images()) > 0
+                        except Exception:
+                            has_images = False
+                        if has_images:
+                            scanned_pages.append(pi + 1)
+                    elif quality["is_corrupted"]:
+                        corrupted_pages.append(pi + 1)
+
                     if looks_like_gibberish(joined):
                         paras_by_page.append([])
                         continue
 
                     paras_by_page.append(paras)
+
+                quality_info = {
+                    "is_scanned": len(scanned_pages) / max(1, total_pages) >= 0.8,
+                    "is_corrupted": len(corrupted_pages) > 0,
+                    "scanned_pages": scanned_pages,
+                    "corrupted_pages": corrupted_pages,
+                    "total_pages": total_pages,
+                }
 
                 repeated_lines: set[str] = set()
                 if PDF_DROP_REPEATED_LINES:
@@ -413,7 +455,7 @@ def extract_chunks_from_pdf(
             f"[WARN] Failed to open/extract PDF: attachment={attachment_key} file={pdf_path} err={e}",
             file=os.sys.__stderr__,
         )
-        return []
+        return [], quality_info
 
     finally:
         if captured_text and "MuPDF error" in captured_text:
@@ -429,4 +471,4 @@ def extract_chunks_from_pdf(
         dup = len(ids) - len(set(ids))
         raise RuntimeError(f"Duplicate chunk ids generated ({dup}). This should not happen.")
 
-    return chunks
+    return chunks, quality_info
