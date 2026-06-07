@@ -377,7 +377,7 @@ def map_item_global_citations(item_key: str, title: str = "", year: str = "", cr
     s2_paper = find_s2_paper_id(title, year, creators, doi, isbn)
     print(f"[{time.time()}] find_s2_paper_id returned.", file=sys.stderr)
     if not s2_paper:
-        update_item_citation_status(item_key, "not_found")
+        update_item_citation_status(item_key, "s2_done")
         return {"status": "success", "message": "Item not found on Semantic Scholar.", "mapped_count": 0}
 
     paper_id = s2_paper["paperId"]
@@ -415,7 +415,7 @@ def map_item_global_citations(item_key: str, title: str = "", year: str = "", cr
         time.sleep(1) # Be gentle to the API
 
     if not data_items:
-        update_item_citation_status(item_key, "not_found")
+        update_item_citation_status(item_key, "s2_done")
         return {"status": "success", "message": "No citations with context found.", "mapped_count": 0, "s2_paper": s2_paper}
 
     mapped_count = 0
@@ -560,8 +560,8 @@ def map_item_global_citations(item_key: str, title: str = "", year: str = "", cr
                         f.write(f"Context: {ctx[:100]}...\n")
                         f.write("  -> No chunks found in DB for this item.\n")
 
-    update_item_citation_status(item_key, "mapped")
-    
+    update_item_citation_status(item_key, "s2_done")
+
     msg = f"Global Citations: {mapped_count}/{total_contexts} contexts mapped. Local References: {ref_mapped_count}/{ref_total_contexts} contexts mapped."
     with open(_DEBUG_LOG, "a") as f:
         f.write(f"Result for {item_key}: {msg}\n")

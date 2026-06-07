@@ -1488,6 +1488,13 @@ async def build_citation_network(item_key: str) -> Dict[str, Any]:
     except Exception as e:
         res["references_import"] = {"status": "error", "message": str(e)}
 
+    # Both steps complete → mark as fully mapped
+    try:
+        from db_relations import update_item_citation_status
+        update_item_citation_status(item_key, "mapped")
+    except Exception as e:
+        _log.warning("build_citation_network: failed to set mapped status: %s", e)
+
     res["status"] = "success"
     res["message"] = "Completed citation network build process."
     return res

@@ -4,6 +4,7 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["RAYON_RS_NUM_CPUS"] = "1"
 import sys
+import sqlite3
 import time
 import json
 import urllib.request
@@ -146,71 +147,14 @@ def query_openalex(title: str, author: str):
         print(f"    -> [OpenAlex] Error resolving: {e}", file=sys.stderr)
     return None
 
-def process_item(item_key: str, item_data: dict, zotero_data_dir: str, force: bool = False):
-    from db_relations import get_item_citation_status
-    
-    status = get_item_citation_status(item_key)
-    if status == "mapped" and not force:
-        print(f"[SKIP] Item {item_key} is already mapped.", file=sys.stderr)
-        return
-
-    print(f"========================================", file=sys.stderr)
-    print(f"[PROGRESS] Processing item: {item_key}", file=sys.stderr)
-    
-    title = item_data.get("title", "")
-    year = item_data.get("date", "")[:4] if item_data.get("date") else ""
-    doi = item_data.get("DOI", "")
-    isbn = item_data.get("ISBN", "")
-    
-    # Extract creators
-    creators_list = item_data.get("creators", [])
-    creators = ", ".join([
-        (c.get("lastName", "") + " " + c.get("firstName", "")).strip() 
-        if "lastName" in c else c.get("name", "") 
-        for c in creators_list
-    ])
-    
-    # DOI Lookup & Write-back
-    if not doi and not isbn and title:
-        author = creators_list[0].get("lastName", "") if creators_list else ""
-        resolved_doi = query_openalex(title, author)
-        if resolved_doi:
-            print(f"    -> Resolved DOI: {resolved_doi}. Updating Zotero...", file=sys.stderr)
-            patch_payload = {"DOI": resolved_doi}
-            version = item_data.get("version")
-            headers = {"If-Unmodified-Since-Version": str(version)} if version else {}
-            
-            patch_res = _zotero_request(f"items/{item_key}", method="PATCH", data=patch_payload, headers=headers)
-            if patch_res is not None:
-                print(f"    -> Successfully saved DOI to Zotero.", file=sys.stderr)
-                doi = resolved_doi
-            else:
-                print(f"    -> Failed to save DOI to Zotero.", file=sys.stderr)
-    
-    # 1. Global citations (Semantic Scholar)
-    print(f"  [1/2] Fetching incoming citations from Semantic Scholar...", file=sys.stderr)
-    try:
-        res1 = map_item_global_citations(item_key, title=title, year=year, creators=creators, doi=doi, isbn=isbn, max_citations=5000)
-        status = res1.get('status')
-        msg = res1.get('message', '')
-        if status == "success":
-            print(f"        -> Success: {msg}", file=sys.stderr)
-        elif status == "api_error":
-            print(f"        -> API Error: {msg}", file=sys.stderr)
-        elif status == "no_data_found":
-            print(f"        -> No Data: {msg}", file=sys.stderr)
-        else:
-            print(f"        -> Error: {msg}", file=sys.stderr)
-    except Exception as e:
-        print(f"        -> Exception: {e}", file=sys.stderr)
-
-    # 2. Local references (EPUB)
-    print(f"  [2/2] Checking for EPUB attachment to extract outgoing references...", file=sys.stderr)
+def _run_epub_step(item_key: str, item_data: dict, zotero_data_dir: str) -> None:
+    """EPUB参照抽出ステップ（step 2）を実行する。"""
+    print(f"  [EPUB] Checking for EPUB attachment to extract outgoing references...", file=sys.stderr)
     try:
         children = _zotero_request(f"items/{item_key}/children")
         if not isinstance(children, list):
             children = []
-            
+
         epub_key = None
         epub_data = None
         for child in children:
@@ -220,7 +164,7 @@ def process_item(item_key: str, item_data: dict, zotero_data_dir: str, force: bo
                 epub_key = att_data.get("key")
                 epub_data = att_data
                 break
-                
+
         if not epub_key:
             print(f"        -> Skip: No EPUB attachment found.", file=sys.stderr)
         else:
@@ -236,17 +180,115 @@ def process_item(item_key: str, item_data: dict, zotero_data_dir: str, force: bo
         traceback.print_exc(file=sys.stderr)
         print(f"        -> Exception: {e}", file=sys.stderr)
 
+
+def process_item(item_key: str, item_data: dict, zotero_data_dir: str, skip_s2: bool = False) -> None:
+    """
+    1アイテムの引用ネットワーク構築を実行する。
+    skip_s2=True の場合は S2 API ステップをスキップし EPUB 抽出のみ実行。
+    完了ステータス ("mapped") の書き込みは呼び出し元が行う。
+    """
+    title = item_data.get("title", "")
+    year = item_data.get("date", "")[:4] if item_data.get("date") else ""
+    doi = item_data.get("DOI", "")
+    isbn = item_data.get("ISBN", "")
+
+    creators_list = item_data.get("creators", [])
+    creators = ", ".join([
+        (c.get("lastName", "") + " " + c.get("firstName", "")).strip()
+        if "lastName" in c else c.get("name", "")
+        for c in creators_list
+    ])
+
+    # ── Step 1: S2 API（被引用取得） ──────────────────────────
+    if skip_s2:
+        print(f"  [1/2] S2 step: skipped (already done).", file=sys.stderr)
+    else:
+        # DOI Lookup & Write-back
+        if not doi and not isbn and title:
+            author = creators_list[0].get("lastName", "") if creators_list else ""
+            resolved_doi = query_openalex(title, author)
+            if resolved_doi:
+                print(f"    -> Resolved DOI: {resolved_doi}. Updating Zotero...", file=sys.stderr)
+                patch_payload = {"DOI": resolved_doi}
+                version = item_data.get("version")
+                headers = {"If-Unmodified-Since-Version": str(version)} if version else {}
+                patch_res = _zotero_request(f"items/{item_key}", method="PATCH", data=patch_payload, headers=headers)
+                if patch_res is not None:
+                    print(f"    -> Successfully saved DOI to Zotero.", file=sys.stderr)
+                    doi = resolved_doi
+                else:
+                    print(f"    -> Failed to save DOI to Zotero.", file=sys.stderr)
+
+        print(f"  [1/2] Fetching citations from Semantic Scholar...", file=sys.stderr)
+        try:
+            res1 = map_item_global_citations(
+                item_key, title=title, year=year, creators=creators,
+                doi=doi, isbn=isbn, max_citations=5000,
+            )
+            s1_status = res1.get('status')
+            msg = res1.get('message', '')
+            if s1_status == "success":
+                print(f"        -> Success: {msg}", file=sys.stderr)
+            else:
+                print(f"        -> {s1_status}: {msg}", file=sys.stderr)
+        except Exception as e:
+            print(f"        -> Exception: {e}", file=sys.stderr)
+
+    # ── Step 2: EPUB参照抽出 ─────────────────────────────────
+    print(f"  [2/2] Extracting references from EPUB...", file=sys.stderr)
+    _run_epub_step(item_key, item_data, zotero_data_dir)
+
+def _fmt_duration(seconds: float) -> str:
+    """Format seconds into a human-readable duration string."""
+    seconds = int(seconds)
+    if seconds < 60:
+        return f"{seconds}s"
+    elif seconds < 3600:
+        return f"{seconds // 60}m {seconds % 60}s"
+    else:
+        h = seconds // 3600
+        m = (seconds % 3600) // 60
+        return f"{h}h {m}m"
+
+
+def _get_chunk_count(item_key: str) -> int:
+    """ChromaDB SQLite から指定アイテムのチャンク数を返す。取得失敗時は -1。"""
+    try:
+        from citation_mapper import CHROMA_DIR, _get_segment_meta
+        db_path = os.path.join(CHROMA_DIR, "chroma.sqlite3")
+        if not os.path.exists(db_path):
+            return -1
+        seg = _get_segment_meta()
+        conn = sqlite3.connect(db_path, timeout=5)
+        try:
+            row = conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM embeddings e
+                JOIN embedding_metadata m ON m.id = e.id
+                    AND m.key = 'itemKey' AND m.string_value = ?
+                WHERE e.segment_id = ?
+                """,
+                (item_key, seg["metadata_segment_id"]),
+            ).fetchone()
+            return row[0] if row else 0
+        finally:
+            conn.close()
+    except Exception:
+        return -1
+
+
 def main():
     parser = argparse.ArgumentParser(description="Update citation relations for Zotero items.")
     parser.add_argument("--item", type=str, help="Item key to process")
     parser.add_argument("--all", action="store_true", help="Process all items in the database")
     parser.add_argument("--force", action="store_true", help="Force update even if item is already mapped")
     args = parser.parse_args()
-    
+
     if not args.item and not args.all:
         parser.print_help()
         sys.exit(0)
-            
+
     api_key = os.environ.get("S2_API_KEY", "")
     if not api_key:
         print("\n" + "="*60, file=sys.stderr)
@@ -254,9 +296,9 @@ def main():
         print("Without an API key, the rate limit is strictly enforced (1 request / 3 seconds).", file=sys.stderr)
         print("="*60 + "\n", file=sys.stderr)
         time.sleep(3)
-        
+
     zotero_data_dir = os.environ.get("ZOTERO_DATA_DIR", os.path.expanduser("~/Zotero"))
-    
+
     # Pre-initialize embedding model and validate ChromaDB data
     try:
         from citation_mapper import _get_emb_fn, _get_segment_meta
@@ -266,23 +308,115 @@ def main():
         print(f"[PROGRESS] Ready.", file=sys.stderr)
     except Exception as e:
         print(f"[WARNING] Initialization issue: {e}", file=sys.stderr)
-    
+
+    from db_relations import get_item_citation_status, update_item_citation_status
+
     if args.item:
         raw = _zotero_request(f"items/{args.item}")
         if raw:
             _, item_data = _unwrap_item(raw)
-            process_item(args.item, item_data, zotero_data_dir, force=args.force)
+            status = get_item_citation_status(args.item)
+            if status == "mapped" and not args.force:
+                print(f"[SKIP] Item {args.item} is already fully mapped. Use --force to re-process.", file=sys.stderr)
+            else:
+                skip_s2 = (status == "s2_done" and not args.force)
+                if skip_s2:
+                    print(f"[RESUME] S2 step already done. Running EPUB step only.", file=sys.stderr)
+                process_item(args.item, item_data, zotero_data_dir, skip_s2=skip_s2)
+                update_item_citation_status(args.item, "mapped")
+                print(f"[DONE] Item {args.item} marked as fully mapped.", file=sys.stderr)
         else:
             print(f"Error: Could not fetch item {args.item} from Zotero API.")
+
     elif args.all:
         items = get_all_items()
-        count = 0
         total = len(items)
-        for raw in items:
+        if total == 0:
+            print("[PROGRESS] No items found.", file=sys.stderr)
+            return
+
+        stats = {"processed": 0, "skipped": 0, "resumed": 0, "error": 0}
+        run_start = time.time()
+        processed_times: list[float] = []  # wall-clock seconds per non-skipped item
+
+        print(f"\n{'='*60}", file=sys.stderr)
+        print(f"  全 {total} 件を処理します（force={args.force}）", file=sys.stderr)
+        print(f"  ステータス凡例: スキップ=両ステップ完了済み / 再開=S2完了・EPUB未実行", file=sys.stderr)
+        print(f"{'='*60}\n", file=sys.stderr)
+
+        for idx, raw in enumerate(items, start=1):
             key, item_data = _unwrap_item(raw)
-            count += 1
-            print(f"\n[PROGRESS] Processing {count}/{total}...", file=sys.stderr)
-            process_item(key, item_data, zotero_data_dir, force=args.force)
+            title = item_data.get("title", "(no title)")
+            year  = (item_data.get("date") or "")[:4]
+            label = f"{title[:50]}…" if len(title) > 50 else title
+            label = f"{label} ({year})" if year else label
+
+            # ── ステータス確認 ───────────────────────────────────
+            status = get_item_citation_status(key)
+            if status == "mapped" and not args.force:
+                # 両ステップ完了済み → スキップ
+                stats["skipped"] += 1
+                # スキップは行数を節約してまとめて表示
+                if stats["skipped"] <= 3 or stats["skipped"] % 20 == 0:
+                    print(f"  [{idx}/{total}] SKIP {key}  ({stats['skipped']} skipped so far)", file=sys.stderr)
+                continue
+
+            skip_s2 = (status == "s2_done" and not args.force)
+
+            # ── progress header ──────────────────────────────────
+            elapsed_total = time.time() - run_start
+            remaining_items = total - idx
+            if processed_times:
+                avg_sec = sum(processed_times) / len(processed_times)
+                eta_sec = avg_sec * (remaining_items + 1)
+                eta_str = f"ETA {_fmt_duration(eta_sec)}"
+            else:
+                eta_str = "ETA --"
+
+            chunk_count = _get_chunk_count(key)
+            chunk_str = f"{chunk_count} chunks" if chunk_count >= 0 else "chunks: ?"
+            mode_str = "RESUME (S2済み・EPUBのみ)" if skip_s2 else "PROCESS"
+
+            print(f"\n[{idx}/{total}]  残り {remaining_items} 件  |  {key}  {chunk_str}  [{mode_str}]", file=sys.stderr)
+            print(f"  {label}", file=sys.stderr)
+            print(
+                f"  経過 {_fmt_duration(elapsed_total)}"
+                f"  ·  {eta_str}"
+                f"  ·  完了 {stats['processed']} / 再開 {stats['resumed']} / スキップ {stats['skipped']} / エラー {stats['error']}",
+                file=sys.stderr,
+            )
+            print(f"{'─'*60}", file=sys.stderr)
+
+            # ── 処理・計測 ───────────────────────────────────────
+            item_start = time.time()
+            try:
+                process_item(key, item_data, zotero_data_dir, skip_s2=skip_s2)
+                update_item_citation_status(key, "mapped")
+                if skip_s2:
+                    stats["resumed"] += 1
+                else:
+                    stats["processed"] += 1
+            except Exception as e:
+                print(f"  [ERROR] {e}", file=sys.stderr)
+                stats["error"] += 1
+            finally:
+                item_elapsed = time.time() - item_start
+                processed_times.append(item_elapsed)
+                print(f"  → 処理時間: {_fmt_duration(item_elapsed)}", file=sys.stderr)
+
+        # ── final summary ────────────────────────────────────────
+        total_time = time.time() - run_start
+        print(f"\n{'='*60}", file=sys.stderr)
+        print(f"  完了サマリー", file=sys.stderr)
+        print(f"{'='*60}", file=sys.stderr)
+        print(f"  合計件数  : {total}", file=sys.stderr)
+        print(f"  処理済み  : {stats['processed']}  (両ステップ新規実行)", file=sys.stderr)
+        print(f"  再開      : {stats['resumed']}  (S2済み・EPUBのみ実行)", file=sys.stderr)
+        print(f"  スキップ  : {stats['skipped']}  (両ステップ完了済み)", file=sys.stderr)
+        print(f"  エラー    : {stats['error']}", file=sys.stderr)
+        print(f"  総処理時間: {_fmt_duration(total_time)}", file=sys.stderr)
+        print(f"{'='*60}\n", file=sys.stderr)
+
 
 if __name__ == "__main__":
     main()
