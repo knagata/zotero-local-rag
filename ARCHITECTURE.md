@@ -138,7 +138,7 @@ flowchart LR
     CTX["文脈拡張\nget_chunk_context\n前後チャンク取得"]
   end
 
-  subgraph CHROMA3[("ChromaDB")]
+  subgraph CHROMA3["🗄 ChromaDB"]
     VEC["ベクトル近傍探索\n(HNSW)"]
     META["メタデータ取得\n(SQLite)"]
   end
