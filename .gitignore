@@ -25,6 +25,7 @@ data/*.db
 data/*.sqlite
 data/*.sqlite3
 data/s2_rate.lock
+data/layout_cache.json
 data/mapping_debug.log
 data/mapping_debug_ref.log
 data/pdf_cache/

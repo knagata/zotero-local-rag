@@ -229,53 +229,6 @@ def get_refs(conn: sqlite3.Connection, item_keys: list[str], per_item: int,
     return result
 
 
-def get_chunk_expand_data(
-    conn: sqlite3.Connection,
-    item_keys: list[str],
-    rendered_papers: dict[str, str],
-) -> dict:
-    """ダブルクリック展開用のチャンクレベル引用データを返す。
-
-    Returns:
-        { item_key: { "in_edges":  [[paper_node_id, chunk_id, width], ...],
-                      "out_edges": [[chunk_id, paper_node_id, width], ...] } }
-    """
-    if not item_keys or not rendered_papers:
-        return {}
-    placeholders = ",".join("?" * len(item_keys))
-
-    citer_rows = conn.execute(f"""
-        SELECT cited_item_key, cited_chunk_id, citing_paper_id, COUNT(*) AS ctx
-        FROM global_citations
-        WHERE cited_item_key IN ({placeholders})
-        GROUP BY cited_item_key, cited_chunk_id, citing_paper_id
-    """, item_keys).fetchall()
-
-    ref_rows = conn.execute(f"""
-        SELECT citing_item_key, citing_chunk_id, cited_paper_id, COUNT(*) AS ctx
-        FROM global_references
-        WHERE citing_item_key IN ({placeholders})
-          AND cited_paper_id IS NOT NULL
-        GROUP BY citing_item_key, citing_chunk_id, cited_paper_id
-    """, item_keys).fetchall()
-
-    result: dict = {k: {"in_edges": [], "out_edges": []} for k in item_keys}
-
-    for r in citer_rows:
-        nid = rendered_papers.get(r["citing_paper_id"])
-        if nid:
-            w = round(max(0.8, min(4.0, r["ctx"] * 0.5)), 2)
-            result[r["cited_item_key"]]["in_edges"].append([nid, r["cited_chunk_id"], w])
-
-    for r in ref_rows:
-        nid = rendered_papers.get(r["cited_paper_id"])
-        if nid:
-            w = round(max(0.8, min(3.0, r["ctx"] * 0.4)), 2)
-            result[r["citing_item_key"]]["out_edges"].append([r["citing_chunk_id"], nid, w])
-
-    return result
-
-
 # ── server-side FA2 layout ───────────────────────────────────────────────────
 
 def compute_layout(
@@ -542,7 +495,6 @@ def _tooltip(title: str, extra: list[tuple[str, str]]) -> str:
 
 def _build_sigma_html(
     graph_json: str,
-    expand_json: str,
     n_items: int,
     n_nodes: int,
     n_edges: int,
@@ -631,9 +583,24 @@ def _build_sigma_html(
     color: var(--on-surface-variant); text-align: right;
     width: 40px; white-space: nowrap;
   }
+  /* ── Sidebar resize handle (left edge) ── */
+  #sb-resize-x {
+    position: absolute; left: 0; top: 0; bottom: 0; width: 5px;
+    cursor: ew-resize; z-index: 10;
+  }
+  #sb-resize-x:hover, #sb-resize-x.dragging { background: var(--node-zotero); opacity: 0.5; }
+
+  /* ── Detail panel resize handle ── */
+  #sb-resize-y {
+    flex-shrink: 0; height: 5px; cursor: ns-resize;
+    border-top: 1px solid var(--outline-variant);
+    display: none;
+  }
+  #sb-resize-y.sb-active { display: block; }
+  #sb-resize-y:hover, #sb-resize-y.dragging { background: var(--node-zotero); opacity: 0.5; }
   #sb-detail {
-    flex-shrink: 0; border-top: 1px solid var(--outline-variant);
-    padding: 12px 14px; overflow-y: auto; max-height: 260px;
+    flex-shrink: 0;
+    padding: 12px 14px; overflow-y: auto; height: 260px;
     font-size: 12px; display: none;
   }
   #sb-detail.sb-active { display: block; }
@@ -671,9 +638,16 @@ def _build_sigma_html(
     border-radius: 4px; padding: 18px 20px 14px;
     color: var(--on-surface); font-size: 13px; min-width: 210px;
     box-shadow: 0 4px 8px rgba(0,0,0,0.5);
+    transition: padding 0.76s ease, min-width 0.76s ease;
   }
+  #legend-body {
+    overflow: hidden;
+    transition: max-height 0.76s ease, opacity 0.76s ease;
+    max-height: 800px; opacity: 1;
+  }
+  #rag-legend.minimized #legend-body { max-height: 0; opacity: 0; }
   #rag-legend h3 { margin: 0 0 14px; font-size: 14px; font-weight: 500;
-                   color: var(--on-surface); letter-spacing: .01em; }
+                   color: var(--on-surface); letter-spacing: .01em; padding-right: 20px; }
   .rl-row  { display: flex; align-items: center; gap: 10px; margin-bottom: 7px; }
   .rl-dot  { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
   .rl-label { font-size: 12px; color: var(--on-surface-variant); }
@@ -710,19 +684,17 @@ def _build_sigma_html(
   }
   .rl-filter-row input[type=number]:focus { border-color: var(--node-zotero); }
 
-  /* ── Title badge  (surface dp1) ── */
-  #rag-title {
-    position: fixed; top: 16px; right: calc(var(--sb-width) + 16px); z-index: 1000;
-    background: var(--surface-container-low);
-    border: 1px solid var(--outline-variant);
-    border-radius: 4px; padding: 10px 16px;
-    color: var(--on-surface-variant); font-size: 11px; text-align: right;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.4);
-    transition: right 0.25s ease;
+  /* ── Legend minimize ── */
+  #rag-legend.minimized { padding: 10px 14px; min-width: unset; }
+  #rag-legend.minimized h3 { margin: 0; }
+  #legend-minimize {
+    position: absolute; top: 8px; right: 8px;
+    width: 20px; height: 20px; border-radius: 4px;
+    background: none; border: none; cursor: pointer;
+    color: var(--on-surface-variant); font-size: 14px; line-height: 1;
+    display: flex; align-items: center; justify-content: center;
   }
-  body.sb-collapsed #rag-title { right: 16px; }
-  #rag-title strong { display: block; font-size: 14px; font-weight: 500;
-                      color: var(--on-surface); margin-bottom: 2px; }
+  #legend-minimize:hover { color: var(--on-surface); background: var(--surface-container-high); }
 
   /* ── Tooltip  (surface dp4) ── */
   #rag-tooltip {
@@ -739,7 +711,9 @@ def _build_sigma_html(
 
     # ── Legend HTML (f-string – uses Python vars) ─────────────────────────────
     legend = f"""<div id="rag-legend">
+  <button id="legend-minimize" title="最小化">−</button>
   <h3>Citation Network</h3>
+  <div id="legend-body">
   <div class="rl-row">
     <span class="rl-dot" style="background:{palette['nodeZotero']}"></span>
     <span class="rl-label">Zotero アイテム</span>
@@ -803,14 +777,14 @@ def _build_sigma_html(
   </div>
   <div class="rl-hint">
     スクロールでズーム · ドラッグで移動<br>
-    ホバーで詳細 · 青ノードをダブルクリックでチャンク展開
+    ホバーで詳細 · クリックでノード選択
+  </div>
   </div>
 </div>"""
 
     # ── Embedded data (f-string) ──────────────────────────────────────────────
     data_script = f"""<script>
 const GRAPH_DATA = {graph_json};
-const EXPAND_DATA = {expand_json};
 </script>"""
 
     # ── sigma.js logic (plain string – no Python vars, no brace escaping) ─────
@@ -925,6 +899,12 @@ var _selectionAnimId = null;
 var _SELECTION_DUR = 380;  // ms
 var _BG_COLOR      = THEME.surface || '#141218';
 
+// 解除アニメーション中に直前の選択状態を保持する変数
+var _prevSelectedNode    = null;
+var _prevSelectedNeighbors   = new Set();
+var _prevCiterNodes      = new Set();
+var _prevRefNodes        = new Set();
+
 // ── 起動フェードイン ─────────────────────────────────────────────────────────
 // _fadeInT: 0 → 1 (500ms) で nodeReducer/edgeReducer の色を背景色から補間する。
 // renderer 作成後に _fadeInRefresh に renderer.refresh を差し込む。
@@ -1008,6 +988,11 @@ function clearSelection() {
   // _selectionT を 0 へ向けて下げながら refresh すると非選択ノードが徐々に復帰する。
   var startT = _selectionT;
   var start  = Date.now();
+  // 直前の選択状態を保存（解除アニメーション中に参照）
+  _prevSelectedNode      = selectedNode;
+  _prevSelectedNeighbors = new Set(selectedNeighbors);
+  _prevCiterNodes        = new Set(selectedCiterNodes);
+  _prevRefNodes          = new Set(selectedRefNodes);
   selectedNode           = null;
   selectedNeighbors      = new Set();
   selectedChunkNodes     = new Set();
@@ -1015,14 +1000,14 @@ function clearSelection() {
   selectedCiterNodes     = new Set();
   selectedRefNodes       = new Set();
   // すでに完全解除済みなら即終了
-  if (startT <= 0) { _selectionT = 0; return; }
+  if (startT <= 0) { _selectionT = 0; _prevSelectedNode = null; return; }
   function step() {
-    var raw = Math.min(1, (Date.now() - start) / _SELECTION_DUR);
+    var raw = Math.min(1, (Date.now() - start) / (_SELECTION_DUR * 2));
     var eased = 1 - (1 - raw) * (1 - raw);
     _selectionT = startT * (1 - eased);
     renderer.refresh();
     if (raw < 1) { _selectionAnimId = requestAnimationFrame(step); }
-    else { _selectionT = 0; _selectionAnimId = null; }
+    else { _selectionT = 0; _selectionAnimId = null; _prevSelectedNode = null; }
   }
   _selectionAnimId = requestAnimationFrame(step);
 }
@@ -1125,29 +1110,47 @@ function nodeReducer(node, data) {
   // nodes regardless of WebGL draw order.
   // _selectionT > 0 なら選択中 or 解除トランジション中
   if (selectedNode !== null || _selectionT > 0) {
-    if (node === selectedNode) {
-      res.highlighted = true;
-      res.zIndex = 2;
-    } else if (selectedNeighbors.has(node) || selectedChunkNeighbors.has(node)) {
-      res.zIndex = 1;
-      // 辺の向きに応じて色を上書き（chunk/zotero ノードは元色を保持）
-      var grp = data.group;
-      if (grp === 'external' || grp === 'reference') {
-        if (selectedCiterNodes.has(node)) {
-          res.color = THEME.nodeCiter;
-        } else if (selectedRefNodes.has(node)) {
-          res.color = THEME.nodeRef;
+    if (selectedNode !== null) {
+      // ── 選択中 ──────────────────────────────────────────────
+      if (node === selectedNode) {
+        res.highlighted = true;
+        res.zIndex = 2;
+      } else if (selectedNeighbors.has(node) || selectedChunkNeighbors.has(node)) {
+        res.zIndex = 1;
+        var grp = data.group;
+        if (grp === 'external' || grp === 'reference') {
+          if (selectedCiterNodes.has(node)) res.color = THEME.nodeCiter;
+          else if (selectedRefNodes.has(node)) res.color = THEME.nodeRef;
         }
+      } else {
+        if (_selectionT >= 1) { res.hidden = true; }
+        else {
+          res.color = _hexLerp(data.color || res.color, _BG_COLOR, _selectionT);
+          res.size  = res.size * (1 - _selectionT * 0.8);
+        }
+        res.label = '';
       }
     } else {
-      // 選択中: 完全適用なら hidden、トランジション中は色補間
-      if (_selectionT >= 1) {
-        res.hidden = true;
+      // ── 解除アニメーション中（selectedNode === null, _selectionT > 0）──
+      // 直前の選択ノード・隣接は表示したまま色だけ元に戻す
+      if (node === _prevSelectedNode) {
+        res.zIndex = 2;
+        // highlighted色 → 通常色へ補間（_selectionT: 1→0）
+      } else if (_prevSelectedNeighbors.has(node)) {
+        res.zIndex = 1;
+        var grp2 = data.group;
+        if (grp2 === 'external' || grp2 === 'reference') {
+          var fromColor = _prevCiterNodes.has(node) ? THEME.nodeCiter
+                        : _prevRefNodes.has(node)   ? THEME.nodeRef
+                        : data.color;
+          res.color = _hexLerp(data.color || res.color, fromColor, _selectionT);
+        }
       } else {
+        // 非選択ノード: 背景色から通常色へフェードイン
         res.color = _hexLerp(data.color || res.color, _BG_COLOR, _selectionT);
         res.size  = res.size * (1 - _selectionT * 0.8);
+        res.label = '';
       }
-      res.label = '';
     }
   }
   // ── 起動フェードイン ────────────────────────────────────────────────────────
@@ -1176,17 +1179,26 @@ function edgeReducer(edge, data) {
     }
   } catch(_) {}
   if (selectedNode !== null) {
+    // ── 選択中 ──────────────────────────────────────────────────────────────
     if (src === selectedNode || tgt === selectedNode ||
         selectedChunkNodes.has(src) || selectedChunkNodes.has(tgt)) {
       res.zIndex = 1;
-      // 辺の向きで色を上書き:
-      //   other → selectedNode : citation edge (amber)
-      //   selectedNode → other : reference edge (rose)
       if (tgt === selectedNode || selectedChunkNodes.has(tgt)) {
         res.color = THEME.edgeCitation;
       } else if (src === selectedNode || selectedChunkNodes.has(src)) {
         res.color = THEME.edgeReference;
       }
+    } else {
+      res.hidden = true;
+    }
+  } else if (_prevSelectedNode !== null && _selectionT > 0) {
+    // ── 解除アニメーション中: 直前の選択エッジは表示したまま色を戻す ──────
+    if (src === _prevSelectedNode || tgt === _prevSelectedNode) {
+      res.zIndex = 1;
+      var fromColor = (tgt === _prevSelectedNode) ? THEME.edgeCitation
+                    : (src === _prevSelectedNode)  ? THEME.edgeReference
+                    : data.color;
+      res.color = _hexLerp(data.color || res.color, fromColor, _selectionT);
     } else {
       res.hidden = true;
     }
@@ -1260,17 +1272,16 @@ renderer.on('leaveNode', function () {
 renderer.on('clickNode', function (ev) {
   // ドラッグ後のmouseupではなく、純粋なクリックのみ選択を行う
   if (hasDragged) return;
-  if (selectedNode === ev.node) { clearSelection(); renderer.refresh(); }
+  if (selectedNode === ev.node) { clearSelection(); }
   else {
     recomputeSelection(ev.node);
-    renderer.refresh();
     if (window._panToNode) window._panToNode(ev.node);
   }
 });
 
 // Click on empty canvas → deselect
 renderer.on('clickStage', function () {
-  if (selectedNode !== null) { clearSelection(); renderer.refresh(); }
+  if (selectedNode !== null) { clearSelection(); }
 });
 
 /* ── 5. Smooth zoom ─────────────────────────────────────── */
@@ -1394,7 +1405,6 @@ window.addEventListener('mouseup', function () {
    Otherwise we fall back to progressive batch loading. */
 
 var gup = 8;
-var chunkSz = 3;  // chunk node size — kept small so rings stay compact
 
 var nNodes = GRAPH_DATA.nodes.length;
 // ノードサイズに比例した斥力（大きいノードほど周囲を広く押しのける）
@@ -1599,239 +1609,17 @@ if (_hasPrecomputedLayout) {
 }
 
 /* ── 8. Chunk drill-down ─────────────────────────────────── */
-var expandedItems = new Set();
-var expandedState = new Map();
 
-function chunkLabel(id) {
-  var p = id.split(':'); if (p.length < 2) return '?';
-  var loc = p[1], para = p[2] || '', part = p[3] || '';
-  var paraNum = para.startsWith('para') ? parseInt(para.slice(4)) + 1 : '';
-  var partNum = part.startsWith('part') ? parseInt(part.slice(4)) : 0;
-  var base;
-  if      (loc[0] === 'p') base = 'p.'  + loc.slice(1);
-  else if (loc[0] === 'c') base = 'ch.' + loc.slice(1);
-  else if (loc[0] === 'h') base = 'HTML';
-  else if (loc[0] === 'n') base = 'Note';
-  else                     base = loc;
-  var suffix     = paraNum > 1 ? '-' + paraNum       : '';
-  var partSuffix = partNum > 0 ? '/' + (partNum + 1) : '';
-  return base + suffix + partSuffix;
-}
-
-function chunkTooltip(id) {
-  var p = id.split(':'), loc = p[1]||'', para = p[2]||'', part = p[3]||'';
-  var ls = loc;
-  if      (loc[0]==='p') ls = 'Page '    + loc.slice(1);
-  else if (loc[0]==='c') ls = 'Chapter ' + loc.slice(1);
-  else if (loc[0]==='h') ls = 'HTML snapshot';
-  else if (loc[0]==='n') ls = 'Note';
-  var paraNum = para.startsWith('para') ? parseInt(para.slice(4))+1 : para;
-  var partNum = part.startsWith('part') ? parseInt(part.slice(4)) : 0;
-  var partStr = partNum > 0 ? ' (part ' + (partNum+1) + ')' : '';
-  return 'Chunk\\n──────────────────────\\nLocation: ' + ls
-       + '\\nParagraph: ' + paraNum + partStr;
-}
-
-function computeRadius(pos) {
-  var total = 0, cnt = 0;
-  graph.forEachNode(function (n, a) {
-    if (n.startsWith('chunk:')) return;
-    var dx = a.x - pos.x, dy = a.y - pos.y;
-    total += Math.sqrt(dx*dx + dy*dy); cnt++;
+// ── Legend minimize ──────────────────────────────────────────────────────────
+(function() {
+  var legend = document.getElementById('rag-legend');
+  var btn    = document.getElementById('legend-minimize');
+  btn.addEventListener('click', function() {
+    var minimized = legend.classList.toggle('minimized');
+    btn.textContent = minimized ? '+' : '−';
+    btn.title       = minimized ? '展開' : '最小化';
   });
-  var avg = cnt > 0 ? total / cnt : 100;
-  return Math.max(avg * 0.12, 30);
-}
-
-function expandItem(nodeId, itemKey, data) {
-  var attrs = graph.getNodeAttributes(nodeId);
-  var pos   = { x: attrs.x, y: attrs.y };
-  var r     = computeRadius(pos);
-  var chunkSet = new Set();
-  data.in_edges.forEach(function(e)  { chunkSet.add(e[1]); });
-  data.out_edges.forEach(function(e) { chunkSet.add(e[0]); });
-  var chunkIds = Array.from(chunkSet);
-
-  var hiddenEdges = [];
-  graph.forEachEdge(nodeId, function (edge) {
-    if (!graph.getEdgeAttribute(edge, '_structural')) {
-      graph.setEdgeAttribute(edge, 'hidden', true);
-      hiddenEdges.push(edge);
-    }
-  });
-
-  var origColor = attrs.color;
-  graph.setNodeAttribute(nodeId, 'color', THEME.nodeZoteroExpanded);
-
-  // Ring radius: adjacent chunks just touch at their collision boundary.
-  // collision radius = chunkSz * gup * 1.6 (same formula as forceCollide)
-  // For n chunks in a ring:  r = n * collisionDiameter / (2π) = n * chunkSz * gup * 1.6 / π
-  // minR: ring must be larger than the parent node + one chunk radius so chunks sit outside.
-  var parentSz = attrs.size || 10;
-  var minR = parentSz * gup + chunkSz * gup * 2;  // parent radius + 1 chunk diameter margin
-  r = Math.max(chunkIds.length * chunkSz * gup * 1.6 / Math.PI, minR);
-
-  // ── debug: expose position info ──────────────────────────────────────────
-  var allXY = [];
-  graph.forEachNode(function(n, a) { if (!n.startsWith('chunk:')) allXY.push({id:n.slice(0,20), x:Math.round(a.x), y:Math.round(a.y)}); });
-  var dists = allXY.map(function(a) { var dx=a.x-pos.x, dy=a.y-pos.y; return Math.sqrt(dx*dx+dy*dy); });
-  var avgDist = dists.length ? dists.reduce(function(s,d){return s+d;},0)/dists.length : 0;
-  console.log('[expand] nodeId:', nodeId, '| pos:', JSON.stringify(pos), '| chunkCount:', chunkIds.length, '| computedR:', Math.round(r), '| avgNeighborDist:', Math.round(avgDist), '| gup:', gup);
-  window.__lastExpand = { nodeId: nodeId, pos: pos, r: Math.round(r), chunkCount: chunkIds.length, avgDist: Math.round(avgDist), bboxR: bboxR };
-  // ─────────────────────────────────────────────────────────────────────────
-
-  var step = (2*Math.PI) / Math.max(chunkIds.length, 1);
-  var addedNodes = [], addedEdges = [];
-
-  chunkIds.forEach(function (cid, i) {
-    var angle = step*i - Math.PI/2;
-    var cnid  = 'chunk:' + cid;
-    if (graph.hasNode(cnid)) return;
-    var cx = pos.x + r*Math.cos(angle);
-    var cy = pos.y + r*Math.sin(angle);
-    graph.addNode(cnid, {
-      x: cx, y: cy,
-      size: chunkSz, color: THEME.nodeChunk,
-      label: chunkLabel(cid), tooltip: chunkTooltip(cid), group: 'chunk',
-    });
-    addedNodes.push(cnid);
-    var seid = graph.addEdge(nodeId, cnid, {
-      size: 0.5, color: THEME.edgeStructural, type: 'line', _structural: true,
-    });
-    addedEdges.push(seid);
-  });
-
-  data.in_edges.forEach(function (e) {
-    if (!graph.hasNode(e[0]) || !graph.hasNode('chunk:'+e[1])) return;
-    try { addedEdges.push(graph.addEdge(e[0], 'chunk:'+e[1], { size:e[2], color:THEME.edgeDefault, type:'arrow' })); } catch(_){}
-  });
-  data.out_edges.forEach(function (e) {
-    if (!graph.hasNode('chunk:'+e[0]) || !graph.hasNode(e[1])) return;
-    try { addedEdges.push(graph.addEdge('chunk:'+e[0], e[1], { size:e[2], color:THEME.edgeDefault, type:'arrow' })); } catch(_){}
-  });
-
-  expandedItems.add(itemKey);
-  expandedState.set(itemKey, { addedNodes:addedNodes, addedEdges:addedEdges,
-                               hiddenEdges:hiddenEdges, origColor:origColor,
-                               ringR: r });
-  // If this node is currently selected, include the new chunk nodes in the selection
-  if (selectedNode === nodeId) { recomputeSelection(nodeId); renderer.refresh(); }
-
-  // ── Pin the parent node so the ring stays centered on it during reheat ──
-  var parentD3 = d3nodeById[nodeId];
-  if (parentD3) { parentD3.fx = parentD3.x; parentD3.fy = parentD3.y; }
-
-  // ── Add chunk nodes to D3 simulation with fixed positions ──────────────
-  // Chunks are pinned (fx/fy) so charge/collide cannot scatter them.
-  var newD3Nodes = [];
-  addedNodes.forEach(function(cnid) {
-    if (!d3nodeById[cnid] && graph.hasNode(cnid)) {
-      var a = graph.getNodeAttributes(cnid);
-      var dn = { id: cnid, x: a.x, y: a.y, fx: a.x, fy: a.y };  // pinned
-      d3nodes.push(dn); d3nodeById[cnid] = dn;
-      newD3Nodes.push(dn);
-    }
-  });
-  if (newD3Nodes.length > 0) {
-    d3links = [];
-    graph.forEachEdge(function(edge, attrs, src, tgt) {
-      if (graph.hasNode(src) && graph.hasNode(tgt)) {
-        d3links.push({ source: src, target: tgt });
-      }
-    });
-    simulation.nodes(d3nodes);
-    simulation.force('link').links(d3links);
-    // ── Ring exclusion force: push non-chunk nodes outside the ring ──────
-    // This runs during reheat and keeps other nodes from drifting into
-    // the expanded ring area.
-    _updateRingExclusionForce();
-    // Gentle reheat so citers/refs can adjust without major layout change.
-    console.log('[expand] firing reheat, newD3Nodes=' + newD3Nodes.length + ' layoutDone-before=' + layoutDone);
-    layoutDone = false;
-    simulation.alpha(0.3);
-    badge.style.display = 'block';
-    requestAnimationFrame(layoutStep);
-    console.log('[expand] after RAF, layoutDone=' + layoutDone + ' alpha=' + simulation.alpha().toFixed(3));
-  }
-}
-
-// ── Ring exclusion force ────────────────────────────────────────────────────
-// Keeps non-chunk nodes outside all active ring radii.
-function _updateRingExclusionForce() {
-  simulation.force('ringExclude', function(alpha) {
-    // Build list of active rings from expandedState
-    expandedState.forEach(function(st, ikey) {
-      var parentId = 'item:' + ikey;
-      if (!d3nodeById[parentId]) return;
-      var pd = d3nodeById[parentId];
-      var ringR = st.ringR || 0;
-      var buffer = chunkSz * gup * 1.6;  // one collision radius as buffer
-      var minDist = ringR + buffer;
-      d3nodes.forEach(function(nd) {
-        if (nd.id === parentId) return;          // skip parent itself
-        if (nd.id && nd.id.startsWith('chunk:')) return;  // skip chunks
-        if (nd.fx != null) return;               // skip other pinned nodes
-        var dx = nd.x - pd.x, dy = nd.y - pd.y;
-        var dist = Math.sqrt(dx*dx + dy*dy) || 1;
-        if (dist < minDist) {
-          // Push the node radially outward past the ring
-          var force = (minDist - dist) / dist * alpha * 8;
-          nd.vx += dx * force;
-          nd.vy += dy * force;
-        }
-      });
-    });
-  });
-}
-
-function collapseItem(nodeId, itemKey) {
-  var st = expandedState.get(itemKey); if (!st) return;
-  st.addedEdges.forEach(function(e)  { if(graph.hasEdge(e)) graph.dropEdge(e); });
-  st.addedNodes.forEach(function(n)  {
-    if (d3nodeById[n]) { d3nodes.splice(d3nodes.indexOf(d3nodeById[n]), 1); delete d3nodeById[n]; }
-    if (graph.hasNode(n)) graph.dropNode(n);
-  });
-  st.hiddenEdges.forEach(function(e) { if(graph.hasEdge(e)) graph.setEdgeAttribute(e,'hidden',false); });
-  graph.setNodeAttribute(nodeId, 'color', st.origColor);
-  // Unpin the parent node so it can drift back to equilibrium after collapse.
-  var parentD3 = d3nodeById[nodeId];
-  if (parentD3) { delete parentD3.fx; delete parentD3.fy; }
-  expandedItems.delete(itemKey); expandedState.delete(itemKey);
-  // If this node is selected, refresh selection now that chunks are gone
-  if (selectedNode === nodeId) { recomputeSelection(nodeId); renderer.refresh(); }
-  // Rebuild D3 links after node removal and do a short reheat
-  d3links = [];
-  graph.forEachEdge(function(edge, attrs, src, tgt) {
-    if (graph.hasNode(src) && graph.hasNode(tgt)) {
-      d3links.push({ source: src, target: tgt });
-    }
-  });
-  simulation.nodes(d3nodes);
-  simulation.force('link').links(d3links);
-  // Update ring exclusion force (removes this ring; keeps others if any).
-  // If no rings remain, remove the force entirely so it doesn't waste CPU.
-  if (expandedState.size === 0) {
-    simulation.force('ringExclude', null);
-  } else {
-    _updateRingExclusionForce();
-  }
-  // Reheat so nodes around the collapsed item can drift back into place.
-  layoutDone = false;
-  simulation.alpha(0.3);
-  badge.style.display = 'block';
-  requestAnimationFrame(layoutStep);
-}
-
-renderer.on('doubleClickNode', function (ev) {
-  ev.event.original.preventDefault(); ev.event.original.stopPropagation();
-  var node = ev.node;
-  if (!String(node).startsWith('item:')) return;
-  var itemKey = String(node).slice(5);
-  var data = EXPAND_DATA[itemKey];
-  if (!data || (data.in_edges.length===0 && data.out_edges.length===0)) return;
-  if (expandedItems.has(itemKey)) { collapseItem(node, itemKey); }
-  else { try { expandItem(node, itemKey, data); } catch(err){ console.error('[RAG]', err); } }
-});
+})();
 
 // ── CC filter inputs ──────────────────────────────────────────────────────────
 (function() {
@@ -1898,6 +1686,11 @@ renderer.on('doubleClickNode', function (ev) {
   var zoteroOnlyEl = document.getElementById('sb-zotero-only');
   var tbody        = document.getElementById('sb-list-body');
   var detail       = document.getElementById('sb-detail');
+  var detailResizeHnd = document.getElementById('sb-resize-y');
+  function _setDetailActive(active) {
+    detail.className          = active ? 'sb-active' : '';
+    detailResizeHnd.className = active ? 'sb-active' : '';
+  }
 
   // ── トグル ──────────────────────────────────────────────
   toggle.addEventListener('click', function() {
@@ -2073,7 +1866,7 @@ renderer.on('doubleClickNode', function (ev) {
   // ── 詳細パネル表示 ────────────────────────────────────
   function showDetail(nodeId) {
     var n = GRAPH_DATA.nodes.find(function(nd) { return nd.id === nodeId; });
-    if (!n) { detail.className = ''; detail.innerHTML = ''; return; }
+    if (!n) { _setDetailActive(false); detail.innerHTML = ''; return; }
     var doi  = n.doi  || '';
     var isbn = n.isbn || '';
     var doiHtml  = doi
@@ -2082,16 +1875,20 @@ renderer.on('doubleClickNode', function (ev) {
     var isbnHtml = isbn
       ? '<a href="https://openlibrary.org/isbn/' + esc(isbn) + '" target="_blank">' + esc(isbn) + '</a>'
       : '—';
-    detail.className = 'sb-active';
-    detail.innerHTML =
-      '<div id="sb-detail-title">' + esc(n.fullTitle || n.label) + '</div>' +
-      kv('著者',   n.authors || '—') +
-      kv('年',     n.year    || '—') +
-      kvH('DOI',  doiHtml) +
-      kvH('ISBN', isbnHtml) +
-      kv('被引用数', n.citations != null ? Number(n.citations).toLocaleString() : '—') +
-      kv('参照数',   n.refCount  ? Number(n.refCount).toLocaleString() : '—') +
-      kv('Key',   n.itemKey || '');
+    var isExternal = (n.group === 'external' || n.group === 'reference');
+    _setDetailActive(true);
+    var html = '<div id="sb-detail-title">' + esc(n.fullTitle || n.label) + '</div>';
+    if (n.authors) html += kv('著者', n.authors);
+    html += kv('年', n.year || '—');
+    html += kvH('DOI', doiHtml);
+    if (!isExternal) html += kvH('ISBN', isbnHtml);
+    html += kv('被引用数', n.citations != null ? Number(n.citations).toLocaleString()
+                         : n.cc        != null ? Number(n.cc).toLocaleString() : '—');
+    if (!isExternal) {
+      html += kv('参照数', n.refCount ? Number(n.refCount).toLocaleString() : '—');
+      html += kv('Key', n.itemKey || '');
+    }
+    detail.innerHTML = html;
   }
   function kv(k, v) {
     return '<div class="sb-kv"><span class="sb-k">' + esc(k) + '</span><span class="sb-v">' + esc(v) + '</span></div>';
@@ -2103,7 +1900,7 @@ renderer.on('doubleClickNode', function (ev) {
   // ── グラフクリックとサイドバーを同期 ─────────────────
   renderer.on('clickNode', function(ev) {
     if (hasDragged) return;
-    if (ev.node && graph.getNodeAttribute(ev.node, 'group') === 'zotero') {
+    if (ev.node) {
       // 主ハンドラー実行後、selectedNode が更新されてから動く
       setTimeout(function() {
         if (selectedNode === ev.node) {
@@ -2111,7 +1908,7 @@ renderer.on('doubleClickNode', function (ev) {
           showDetail(ev.node);
         } else {
           sbActiveId = null;
-          detail.className = '';
+          _setDetailActive(false);
           detail.innerHTML = '';
         }
         renderList();
@@ -2120,7 +1917,7 @@ renderer.on('doubleClickNode', function (ev) {
   });
   renderer.on('clickStage', function() {
     sbActiveId = null;
-    detail.className = '';
+    _setDetailActive(false);
     detail.innerHTML = '';
     renderList();
   });
@@ -2128,6 +1925,53 @@ renderer.on('doubleClickNode', function (ev) {
   // 初期ソート表示（引用数降順）
   document.querySelector('#sb-list thead th[data-col="citations"]').className = 'sort-desc';
   renderList();
+
+  // ── サイドバー幅リサイズ ──────────────────────────────────────────────────
+  (function() {
+    var hnd = document.getElementById('sb-resize-x');
+    var sb  = document.getElementById('sidebar');
+    var MIN_W = 200, MAX_W = 700;
+    hnd.addEventListener('mousedown', function(e) {
+      e.preventDefault();
+      hnd.classList.add('dragging');
+      var startX = e.clientX;
+      var startW = sb.offsetWidth;
+      function onMove(e) {
+        var w = Math.max(MIN_W, Math.min(MAX_W, startW - (e.clientX - startX)));
+        document.documentElement.style.setProperty('--sb-width', w + 'px');
+      }
+      function onUp() {
+        hnd.classList.remove('dragging');
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup',   onUp);
+      }
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup',   onUp);
+    });
+  })();
+
+  // ── 詳細パネル高さリサイズ ───────────────────────────────────────────────
+  (function() {
+    var hnd   = detailResizeHnd;
+    var MIN_H = 80, MAX_H = 600;
+    hnd.addEventListener('mousedown', function(e) {
+      e.preventDefault();
+      hnd.classList.add('dragging');
+      var startY = e.clientY;
+      var startH = detail.offsetHeight;
+      function onMove(e) {
+        var h = Math.max(MIN_H, Math.min(MAX_H, startH - (e.clientY - startY)));
+        detail.style.height = h + 'px';
+      }
+      function onUp() {
+        hnd.classList.remove('dragging');
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup',   onUp);
+      }
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup',   onUp);
+    });
+  })();
 })();
 
 console.log('[RAG] sigma ready – nodes:', graph.order, 'edges:', graph.size,
@@ -2161,6 +2005,7 @@ console.log('[RAG] sigma ready – nodes:', graph.order, 'edges:', graph.size,
 
   <!-- Sidebar: 資料一覧 + 詳細 -->
   <div id="sidebar">
+    <div id="sb-resize-x"></div>
     <div id="sb-header">
       <span>資料一覧</span>
       <span id="sb-count"></span>
@@ -2185,6 +2030,7 @@ console.log('[RAG] sigma ready – nodes:', graph.order, 'edges:', graph.size,
         <tbody id="sb-list-body"></tbody>
       </table>
     </div>
+    <div id="sb-resize-y"></div>
     <div id="sb-detail"></div>
   </div>
 
@@ -2195,11 +2041,6 @@ console.log('[RAG] sigma ready – nodes:', graph.order, 'edges:', graph.size,
   </div>
 
   {legend}
-
-  <div id="rag-title">
-    <strong>Zotero Local RAG</strong>
-    Citation Network
-  </div>
 
   <!-- Tooltip (positioned by JS) -->
   <div id="rag-tooltip"></div>
@@ -2219,14 +2060,12 @@ def build_html(
     output_path: Path,
     item_meta: dict[str, dict] | None = None,
     item_ref_counts: dict[str, int] | None = None,
-    chunk_data: dict | None = None,
 ) -> None:
     import json as _json
     import re  as _re
 
     meta       = item_meta or {}
     item_rcnt  = item_ref_counts or {}
-    chunk_data = chunk_data or {}
 
     # ── Color palette (single source of truth) ──────────────────────────────
     # Edit values here.  CSS :root variables and the JS THEME object are
@@ -2245,15 +2084,12 @@ def build_html(
         "nodeExternal":       "#A0A0A0",   # Grey — unified external (citer+ref) normal state
         "nodeCiter":          "#DFA040",   # Amber hsl(38,72%,56%)  — citer highlight (selection)
         "nodeRef":            "#7498DC",   # Blue  hsl(220,60%,65%) — ref highlight (selection)
-        "nodeChunk":          "#E8A0B0",   # Rose lighter — chunks (same hue, lighter)
-        "nodeZoteroExpanded": "#E8C0CC",   # Rose lightest — expanded
         "nodeUnknown":        "#8E8A98",   # Neutral muted
         "nodeDim":            "#2B2930",   # surface-container-high — non-selected fade
         # ── Visualization edge colors ────────────────────────────────────────
         "edgeDefault":        "#707070",   # Grey — unified edge normal state
         "edgeCitation":       "#C8882A",   # Amber-brown — citer edge (selection highlight)
         "edgeReference":      "#7498DC",   # Blue  — ref edge (selection highlight)
-        "edgeStructural":     "rgba(201,112,144,0.12)",  # Rose @ 12 %
         # ── M3 dark surface system (spec values) ────────────────────────────
         # surface          = Neutral tone  6  (#141218)
         # surface-container-low  = Neutral tone 10  (#1D1B20) — legend / badges
@@ -2292,13 +2128,47 @@ def build_html(
     C_UNK       = PALETTE["nodeUnknown"]
 
     # ── Server-side layout (FA2 + sector placement) ─────────────────────────
-    import sys as _sys, time as _time
+    import sys as _sys, time as _time, hashlib as _hashlib, json as _json
     _t0 = _time.time()
     _print = lambda *a, **kw: print(*a, file=_sys.stderr, **kw)
-    _print("Computing layout (FA2)…", end=" ", flush=True)
     item_keys_for_layout = [d["item_key"] for d in items]
-    layout_positions = compute_layout(item_keys_for_layout, citers, refs)
-    _print(f"done in {_time.time()-_t0:.1f}s  ({len(layout_positions)} nodes placed)")
+
+    # キャッシュキー: ノードIDのソート済みリストをSHA1ハッシュ化
+    _all_node_ids = sorted(
+        [f"item:{d['item_key']}" for d in items] +
+        [f"paper:{d['citing_paper_id']}" for d in citers] +
+        list({f"paper:{d['cited_paper_id']}" if f"paper:{d['cited_paper_id']}" not in
+              {f"paper:{c['citing_paper_id']}" for c in citers} else f"ref:{d['cited_paper_id']}"
+              for d in refs})
+    )
+    _cache_key = _hashlib.sha1("\n".join(_all_node_ids).encode()).hexdigest()[:16]
+    _cache_path = Path(__file__).parent.parent / "data" / "layout_cache.json"
+
+    layout_positions: dict = {}
+    _cache_hit = False
+    if _cache_path.exists():
+        try:
+            _cached = _json.loads(_cache_path.read_text())
+            if _cached.get("key") == _cache_key:
+                layout_positions = {k: tuple(v) for k, v in _cached["positions"].items()}
+                _cache_hit = True
+                _print(f"Layout cache hit ({len(layout_positions)} nodes, key={_cache_key})")
+        except Exception as _e:
+            _print(f"Layout cache load error: {_e}")
+
+    if not _cache_hit:
+        _print("Computing layout (FA2)…", end=" ", flush=True)
+        layout_positions = compute_layout(item_keys_for_layout, citers, refs)
+        _print(f"done in {_time.time()-_t0:.1f}s  ({len(layout_positions)} nodes placed)")
+        # キャッシュ保存
+        try:
+            _cache_path.write_text(_json.dumps({
+                "key":       _cache_key,
+                "positions": {k: list(v) for k, v in layout_positions.items()},
+            }))
+            _print(f"Layout cache saved → {_cache_path.name}")
+        except Exception as _e:
+            _print(f"Layout cache save error: {_e}")
 
     nodes: list[dict] = []
     edges: list[dict] = []
@@ -2452,10 +2322,9 @@ def build_html(
 
     graph_json  = _json.dumps({"nodes": nodes, "edges": edges},
                               ensure_ascii=False, separators=(",", ":"))
-    expand_json = _json.dumps(chunk_data, ensure_ascii=False, separators=(",", ":"))
 
     html = _build_sigma_html(
-        graph_json, expand_json,
+        graph_json,
         n_items=len(items),
         n_nodes=n_nodes,
         n_edges=n_edges,
@@ -2583,8 +2452,6 @@ def main() -> None:
     for d in refs:
         pid = d["cited_paper_id"]
         rendered_papers[pid] = f"paper:{pid}" if pid in citer_pids else f"ref:{pid}"
-    chunk_data = get_chunk_expand_data(conn, item_keys, rendered_papers)
-
     conn.close()
 
     unique_citers = len(set(d["citing_paper_id"] for d in citers))
@@ -2594,7 +2461,7 @@ def main() -> None:
           f"{unique_citers} unique citers, {unique_refs} unique refs…")
 
     build_html(items, citers, refs, output_path,
-               item_meta=item_meta, item_ref_counts=item_rcnt, chunk_data=chunk_data)
+               item_meta=item_meta, item_ref_counts=item_rcnt)
 
     if not args.no_open:
         _serve(output_path)
