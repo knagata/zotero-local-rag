@@ -219,6 +219,11 @@ def process_item(item_key: str, item_data: dict, zotero_data_dir: str, skip_s2: 
                 else:
                     print(f"    -> Failed to save DOI to Zotero.", file=sys.stderr)
 
+        # DOI/ISBN を DB に保存（S2処理前の確定値として記録）
+        if doi or isbn:
+            from db_relations import update_item_citation_status
+            update_item_citation_status(item_key, "mapped", doi=doi or None, isbn=isbn or None)
+
         print(f"  [1/2] Fetching citations from Semantic Scholar...", file=sys.stderr)
         try:
             res1 = map_item_global_citations(

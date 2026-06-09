@@ -21,11 +21,10 @@ uv.lock
 data/chroma/
 data/models/
 data/manifest.json
-data/relations.sqlite3
-data/relations.db
-data/zotero.sqlite3
+data/*.db
+data/*.sqlite
+data/*.sqlite3
 data/s2_rate.lock
-data/zotero-rag.log
 data/mapping_debug.log
 data/mapping_debug_ref.log
 data/pdf_cache/

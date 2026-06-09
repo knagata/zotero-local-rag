@@ -1,8 +1,19 @@
 import os
+import sys
 import zipfile
 import re
 from typing import List, Dict, Any, Optional
 from bs4 import BeautifulSoup
+
+
+def _pbar(current: int, total: int, label: str = "", width: int = 30) -> None:
+    """1行でインプレース更新するプログレスバー。完了時は改行を出す。"""
+    filled = int(width * current / total) if total else width
+    bar = "█" * filled + "░" * (width - filled)
+    pct = current / total * 100 if total else 100
+    end = "\n" if current >= total else "\r"
+    print(f"        [{bar}] {current:>5}/{total}  {pct:5.1f}%  {label}",
+          end=end, file=sys.stderr, flush=True)
 
 
 def extract_epub_references(epub_path: str, item_key: str) -> List[Dict[str, Any]]:
@@ -32,72 +43,52 @@ def extract_epub_references(epub_path: str, item_key: str) -> List[Dict[str, Any
     for filename, content in html_files.items():
         parsed_files[filename] = BeautifulSoup(content, 'html.parser')
 
-    # Scan for footnote links in the body.
-    # Typically, a footnote link looks like <a href="some_file.xhtml#note1">1</a> or is wrapped in <sup>
+    # Phase 1: 脚注候補を収集（HTMLスキャン、高速）
+    candidates: List[tuple] = []  # (context_snippet, raw_reference_text)
     for filename, soup in parsed_files.items():
-        # Find all anchors that might be footnotes
         for a_tag in soup.find_all('a', href=True):
             href = a_tag['href']
             text = a_tag.get_text(strip=True)
-            
-            # Simple heuristic: if the link text is just a number or wrapped in brackets like [1]
             if not re.match(r'^\[?\d+\]?$', text):
                 continue
-                
-            # It's likely a footnote link. Let's get the context (the parent paragraph)
             parent_p = a_tag.find_parent(['p', 'div'])
             if not parent_p:
                 continue
-                
-            # We don't want the footnote section itself. The body usually has the link.
-            # We skip if the parent paragraph itself looks like a footnote list item.
-            # But let's just grab the text for now.
             context_snippet = parent_p.get_text(separator=' ', strip=True)
-            
-            # Now let's follow the href to find the footnote text
             target_file = filename
             target_id = None
             if '#' in href:
                 parts = href.split('#', 1)
-                if parts[0]: # link to another file
-                    # resolve relative path
+                if parts[0]:
                     base_dir = os.path.dirname(filename)
                     target_file = os.path.normpath(os.path.join(base_dir, parts[0]))
                 target_id = parts[1]
             else:
-                continue # If no anchor, it might just link to a whole bibliography file, harder to parse exactly
-
+                continue
             if target_file not in parsed_files:
                 continue
-
             target_soup = parsed_files[target_file]
             target_elem = target_soup.find(id=target_id)
             if not target_elem:
-                # Sometimes the id is on an <a> tag with name="target_id"
                 target_elem = target_soup.find('a', attrs={'name': target_id})
-                
             if not target_elem:
                 continue
-                
-            # The actual footnote text is usually the parent paragraph of the target element, or the element itself.
             target_p = target_elem.find_parent(['p', 'div', 'li']) if target_elem.name not in ['p', 'div', 'li'] else target_elem
             if not target_p:
                 target_p = target_elem
-
             raw_reference_text = target_p.get_text(separator=' ', strip=True)
-            
-            # Skip if the raw_reference_text is identical to the context_snippet (circular link)
             if raw_reference_text == context_snippet or len(raw_reference_text) < 10:
                 continue
+            candidates.append((context_snippet, raw_reference_text))
 
-            print(f"Found footnote reference. Searching for matching chunk...", flush=True)
-            # Use lightweight search that bypasses ChromaDB (avoids MCP server lock conflict)
-            from citation_mapper import search_chunks
-            hits = search_chunks(context_snippet, item_key, n_results=1)
-            print(f"Search complete.", flush=True)
-            
-            if hits and hits[0]["distance"] < 0.4:
-                references.append({
+    # Phase 2: チャンク検索（重い処理）をプログレスバー付きで実行
+    from citation_mapper import search_chunks
+    total_cands = len(candidates)
+    for i, (context_snippet, raw_reference_text) in enumerate(candidates):
+        _pbar(i + 1, total_cands, "epub ref  ")
+        hits = search_chunks(context_snippet, item_key, n_results=1)
+        if hits and hits[0]["distance"] < 0.4:
+            references.append({
                     "context_snippet": context_snippet,
                     "raw_reference_text": raw_reference_text,
                     "citing_chunk_id": hits[0]["id"],

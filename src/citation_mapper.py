@@ -19,6 +19,15 @@ from pathlib import Path
 ROOT = Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 CHROMA_DIR = Path(os.environ.get("CHROMA_DIR", str(ROOT / "data" / "chroma")))
 
+
+def _pbar(current: int, total: int, label: str = "", width: int = 30, file=sys.stderr) -> None:
+    """1行でインプレース更新するプログレスバー。完了時は改行を出す。"""
+    filled = int(width * current / total) if total else width
+    bar = "█" * filled + "░" * (width - filled)
+    pct = current / total * 100 if total else 100
+    end = "\n" if current >= total else "\r"
+    print(f"        [{bar}] {current:>5}/{total}  {pct:5.1f}%  {label}", end=end, file=file, flush=True)
+
 # Cross-process S2 rate-limit coordination via shared file lock.
 # Both rag_mcp_server.py and update_citations.py import this module,
 # so _LAST_REQUEST_TIME was previously per-process and caused 429s when
@@ -380,6 +389,14 @@ def map_item_global_citations(item_key: str, title: str = "", year: str = "", cr
         update_item_citation_status(item_key, "s2_done")
         return {"status": "success", "message": "Item not found on Semantic Scholar.", "mapped_count": 0}
 
+    # S2 メタ情報を DB に保存（以降の処理でも参照できるよう早めに記録）
+    update_item_citation_status(
+        item_key, "mapped",
+        s2_paper_id=s2_paper.get("paperId"),
+        s2_year=s2_paper.get("year"),
+        s2_citation_count=s2_paper.get("citationCount"),
+    )
+
     paper_id = s2_paper["paperId"]
 
     # 3. Fetch citations (with pagination)
@@ -388,7 +405,7 @@ def map_item_global_citations(item_key: str, title: str = "", year: str = "", cr
     limit = 1000  # Max limit per request for S2 graph API
     
     while True:
-        citations_url = f"https://api.semanticscholar.org/graph/v1/paper/{paper_id}/citations?fields=title,year,contexts,intents,citationCount,influentialCitationCount&limit={limit}&offset={offset}"
+        citations_url = f"https://api.semanticscholar.org/graph/v1/paper/{paper_id}/citations?fields=title,year,contexts,intents,citationCount,influentialCitationCount,externalIds&limit={limit}&offset={offset}"
         citations_res = s2_request(citations_url)
         
         if citations_res is None:
@@ -421,10 +438,11 @@ def map_item_global_citations(item_key: str, title: str = "", year: str = "", cr
     mapped_count = 0
     total_contexts = 0
 
-    print(f"        -> Found {len(data_items)} citing papers on Semantic Scholar. Mapping to local chunks...", file=sys.stderr)
+    n_cit = len(data_items)
+    print(f"        -> Found {n_cit} citing papers on Semantic Scholar. Mapping to local chunks...", file=sys.stderr)
 
     for i, item in enumerate(data_items):
-        print(f"          -> Analyzing citing paper {i+1}/{len(data_items)}...", file=sys.stderr)
+        _pbar(i + 1, n_cit, "  citing  ", file=sys.stderr)
 
         citing_paper = item.get("citingPaper", {})
         contexts = item.get("contexts", [])
@@ -436,6 +454,7 @@ def map_item_global_citations(item_key: str, title: str = "", year: str = "", cr
         c_year = citing_paper.get("year")
         c_citation_count = citing_paper.get("citationCount", 0)
         c_influential_count = citing_paper.get("influentialCitationCount", 0)
+        c_doi = (citing_paper.get("externalIds") or {}).get("DOI")
 
         for ctx in contexts:
             total_contexts += 1
@@ -444,33 +463,42 @@ def map_item_global_citations(item_key: str, title: str = "", year: str = "", cr
             if page_match:
                 page_hint = page_match.group(1)
 
-            # Use our lightweight search instead of ChromaDB
+            # チャンクマッチを試みる（失敗しても引用自体は必ず記録する）
             hits = search_chunks(ctx, item_key, n_results=1)
+            matched_chunk_id = None
+            matched_dist = None
+            cit_status = 'no_chunk'
 
             if hits:
                 best_dist = hits[0]["distance"]
                 with open(_DEBUG_LOG, "a") as f:
                     f.write(f"Global Context: {ctx[:100]}...\n")
                     f.write(f"  -> Best Hit Distance: {best_dist:.4f}\n")
-
                 if best_dist < _MAX_COSINE_DISTANCE:
-                    insert_citation(
-                        citing_paper_id=c_paper_id,
-                        citing_title=c_title,
-                        citing_year=c_year,
-                        context_snippet=ctx,
-                        cited_item_key=item_key,
-                        cited_chunk_id=hits[0]["id"],
-                        similarity_distance=best_dist,
-                        page_hint=page_hint,
-                        citing_citation_count=c_citation_count,
-                        citing_influential_count=c_influential_count
-                    )
+                    matched_chunk_id = hits[0]["id"]
+                    matched_dist = best_dist
+                    cit_status = 'matched'
                     mapped_count += 1
             else:
                 with open(_DEBUG_LOG, "a") as f:
                     f.write(f"Global Context: {ctx[:100]}...\n")
                     f.write("  -> No chunks found in DB for this item.\n")
+
+            # チャンクマッチの成否に関わらず引用を記録
+            insert_citation(
+                citing_paper_id=c_paper_id,
+                citing_title=c_title,
+                citing_year=c_year,
+                context_snippet=ctx,
+                cited_item_key=item_key,
+                cited_chunk_id=matched_chunk_id,
+                similarity_distance=matched_dist,
+                page_hint=page_hint,
+                citing_citation_count=c_citation_count,
+                citing_influential_count=c_influential_count,
+                chunk_status=cit_status,
+                citing_doi=c_doi,
+            )
 
     # 4. Fetch References (Outgoing, with pagination)
     from db_relations import insert_reference
@@ -478,7 +506,7 @@ def map_item_global_citations(item_key: str, title: str = "", year: str = "", cr
     offset = 0
     
     while True:
-        references_url = f"https://api.semanticscholar.org/graph/v1/paper/{paper_id}/references?fields=title,year,contexts,citationCount,influentialCitationCount&limit={limit}&offset={offset}"
+        references_url = f"https://api.semanticscholar.org/graph/v1/paper/{paper_id}/references?fields=title,year,contexts,citationCount,influentialCitationCount,externalIds&limit={limit}&offset={offset}"
         r_res = s2_request(references_url)
         
         if r_res is None:
@@ -505,24 +533,43 @@ def map_item_global_citations(item_key: str, title: str = "", year: str = "", cr
     ref_total_contexts = 0
 
     if r_data_items:
-        print(f"        -> Found {len(r_data_items)} referenced papers on Semantic Scholar. Mapping to local chunks...", file=sys.stderr)
+        n_ref = len(r_data_items)
+        print(f"        -> Found {n_ref} referenced papers on Semantic Scholar. Mapping to local chunks...", file=sys.stderr)
     else:
         print("        -> No referenced papers found on Semantic Scholar (data was empty).", file=sys.stderr)
 
     if r_data_items:
         for i, item in enumerate(r_data_items):
-            print(f"          -> Analyzing referenced paper {i+1}/{len(r_data_items)}...", file=sys.stderr)
+            _pbar(i + 1, n_ref, "  reference", file=sys.stderr)
 
             cited_paper = item.get("citedPaper", {})
             contexts = item.get("contexts", [])
-            if not contexts:
-                continue
 
             c_paper_id = cited_paper.get("paperId", "")
             c_title = cited_paper.get("title", "")
             c_year = cited_paper.get("year")
             c_citation_count = cited_paper.get("citationCount", 0)
             c_influential_count = cited_paper.get("influentialCitationCount", 0)
+            c_doi = (cited_paper.get("externalIds") or {}).get("DOI")
+
+            if not contexts:
+                # S2にコンテキストなし → 論文情報だけ記録・AI解析候補としてマーク
+                insert_reference(
+                    cited_paper_id=c_paper_id,
+                    cited_title=c_title,
+                    cited_year=c_year,
+                    context_snippet=None,
+                    citing_item_key=item_key,
+                    citing_chunk_id=None,
+                    similarity_distance=None,
+                    page_hint=None,
+                    source='s2',
+                    s2_status='no_context',
+                    cited_citation_count=c_citation_count,
+                    cited_influential_count=c_influential_count,
+                    cited_doi=c_doi,
+                )
+                continue
 
             for ctx in contexts:
                 ref_total_contexts += 1
@@ -531,34 +578,43 @@ def map_item_global_citations(item_key: str, title: str = "", year: str = "", cr
                 if page_match:
                     page_hint = page_match.group(1)
 
-                # Use our lightweight search instead of ChromaDB
+                # チャンクマッチを試みる（失敗しても参照自体は必ず記録する）
                 hits = search_chunks(ctx, item_key, n_results=1)
+                matched_chunk_id = None
+                matched_dist = None
+                ref_status = 'no_chunk'
 
                 if hits:
                     best_dist = hits[0]["distance"]
                     with open(_DEBUG_REF_LOG, "a") as f:
                         f.write(f"Local Context: {ctx[:100]}...\n")
                         f.write(f"  -> Best Hit Distance: {best_dist:.4f}\n")
-
                     if best_dist < _MAX_COSINE_DISTANCE:
-                        insert_reference(
-                            cited_paper_id=c_paper_id,
-                            cited_title=c_title,
-                            cited_year=c_year,
-                            context_snippet=ctx,
-                            citing_item_key=item_key,
-                            citing_chunk_id=hits[0]["id"],
-                            similarity_distance=best_dist,
-                            page_hint=page_hint,
-                            source='s2',
-                            cited_citation_count=c_citation_count,
-                            cited_influential_count=c_influential_count
-                        )
+                        matched_chunk_id = hits[0]["id"]
+                        matched_dist = best_dist
+                        ref_status = 'matched'
                         ref_mapped_count += 1
                 else:
                     with open(_DEBUG_REF_LOG, "a") as f:
                         f.write(f"Context: {ctx[:100]}...\n")
                         f.write("  -> No chunks found in DB for this item.\n")
+
+                # チャンクマッチの成否に関わらず参照を記録
+                insert_reference(
+                    cited_paper_id=c_paper_id,
+                    cited_title=c_title,
+                    cited_year=c_year,
+                    context_snippet=ctx,
+                    citing_item_key=item_key,
+                    citing_chunk_id=matched_chunk_id,
+                    similarity_distance=matched_dist,
+                    page_hint=page_hint,
+                    source='s2',
+                    s2_status=ref_status,
+                    cited_citation_count=c_citation_count,
+                    cited_influential_count=c_influential_count,
+                    cited_doi=c_doi,
+                )
 
     update_item_citation_status(item_key, "s2_done")
 
@@ -595,7 +651,7 @@ def map_item_local_references(item_key: str, epub_path: str) -> Dict[str, Any]:
     print(f"        -> Found {total} references in EPUB. Resolving via Semantic Scholar...", file=sys.stderr)
 
     for i, ref in enumerate(local_refs):
-        print(f"          -> Resolving reference {i+1}/{total}...", file=sys.stderr)
+        _pbar(i + 1, total, "  epub ref ", file=sys.stderr)
 
         raw_text = ref["raw_reference_text"]
         context_snippet = ref["context_snippet"]

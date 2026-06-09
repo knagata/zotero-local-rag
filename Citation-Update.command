@@ -61,5 +61,7 @@ case "$choice" in
 esac
 
 echo ""
+uv run scripts/db_summary.py
+
 echo "Done. Press any key to exit..."
 read -n 1 -s

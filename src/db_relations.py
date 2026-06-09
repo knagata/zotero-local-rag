@@ -27,7 +27,10 @@ def init_db():
             similarity_distance REAL,
             page_hint TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(citing_paper_id, cited_chunk_id, context_snippet)
+            citing_citation_count INTEGER DEFAULT 0,
+            citing_influential_count INTEGER DEFAULT 0,
+            chunk_status TEXT DEFAULT 'matched',
+            UNIQUE(citing_paper_id, cited_item_key, context_snippet)
         )
     ''')
     
@@ -49,29 +52,35 @@ def init_db():
             page_hint TEXT,
             source TEXT DEFAULT 's2',
             raw_reference_text TEXT,
-            s2_status TEXT DEFAULT 'mapped',
+            s2_status TEXT DEFAULT 'matched',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(cited_paper_id, citing_chunk_id, context_snippet, raw_reference_text)
+            cited_citation_count INTEGER DEFAULT 0,
+            cited_influential_count INTEGER DEFAULT 0,
+            UNIQUE(cited_paper_id, citing_item_key, context_snippet, raw_reference_text)
         )
     ''')
     
-    try:
-        cursor.execute("ALTER TABLE global_references ADD COLUMN s2_status TEXT DEFAULT 'mapped'")
-    except sqlite3.OperationalError:
-        pass
-        
-    # Migrations for citation counts
-    try:
-        cursor.execute("ALTER TABLE global_citations ADD COLUMN citing_citation_count INTEGER DEFAULT 0")
-        cursor.execute("ALTER TABLE global_citations ADD COLUMN citing_influential_count INTEGER DEFAULT 0")
-    except sqlite3.OperationalError:
-        pass
-
-    try:
-        cursor.execute("ALTER TABLE global_references ADD COLUMN cited_citation_count INTEGER DEFAULT 0")
-        cursor.execute("ALTER TABLE global_references ADD COLUMN cited_influential_count INTEGER DEFAULT 0")
-    except sqlite3.OperationalError:
-        pass
+    # Migrations（既存DBへの後方互換カラム追加）
+    _migrations = [
+        "ALTER TABLE global_references ADD COLUMN s2_status TEXT DEFAULT 'matched'",
+        "ALTER TABLE global_citations ADD COLUMN citing_citation_count INTEGER DEFAULT 0",
+        "ALTER TABLE global_citations ADD COLUMN citing_influential_count INTEGER DEFAULT 0",
+        "ALTER TABLE global_citations ADD COLUMN chunk_status TEXT DEFAULT 'matched'",
+        "ALTER TABLE global_citations ADD COLUMN citing_doi TEXT",
+        "ALTER TABLE global_references ADD COLUMN cited_citation_count INTEGER DEFAULT 0",
+        "ALTER TABLE global_references ADD COLUMN cited_influential_count INTEGER DEFAULT 0",
+        "ALTER TABLE global_references ADD COLUMN cited_doi TEXT",
+        "ALTER TABLE item_citation_status ADD COLUMN s2_paper_id TEXT",
+        "ALTER TABLE item_citation_status ADD COLUMN s2_year INTEGER",
+        "ALTER TABLE item_citation_status ADD COLUMN s2_citation_count INTEGER",
+        "ALTER TABLE item_citation_status ADD COLUMN doi TEXT",
+        "ALTER TABLE item_citation_status ADD COLUMN isbn TEXT",
+    ]
+    for sql in _migrations:
+        try:
+            cursor.execute(sql)
+        except sqlite3.OperationalError:
+            pass
         
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_citing_chunk_id ON global_references(citing_chunk_id)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_citing_item_key ON global_references(citing_item_key)')
@@ -87,17 +96,31 @@ def init_db():
     conn.commit()
     conn.close()
 
-def update_item_citation_status(item_key: str, s2_status: str):
+def update_item_citation_status(
+    item_key: str,
+    s2_status: str,
+    s2_paper_id: Optional[str] = None,
+    s2_year: Optional[int] = None,
+    s2_citation_count: Optional[int] = None,
+    doi: Optional[str] = None,
+    isbn: Optional[str] = None,
+):
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
         cursor.execute('''
-            INSERT INTO item_citation_status (item_key, s2_status, last_checked_at)
-            VALUES (?, ?, CURRENT_TIMESTAMP)
-            ON CONFLICT(item_key) DO UPDATE SET 
-            s2_status = excluded.s2_status,
-            last_checked_at = CURRENT_TIMESTAMP
-        ''', (item_key, s2_status))
+            INSERT INTO item_citation_status
+                (item_key, s2_status, last_checked_at, s2_paper_id, s2_year, s2_citation_count, doi, isbn)
+            VALUES (?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?)
+            ON CONFLICT(item_key) DO UPDATE SET
+                s2_status         = excluded.s2_status,
+                last_checked_at   = CURRENT_TIMESTAMP,
+                s2_paper_id       = COALESCE(excluded.s2_paper_id,       s2_paper_id),
+                s2_year           = COALESCE(excluded.s2_year,           s2_year),
+                s2_citation_count = COALESCE(excluded.s2_citation_count, s2_citation_count),
+                doi               = COALESCE(excluded.doi,               doi),
+                isbn              = COALESCE(excluded.isbn,              isbn)
+        ''', (item_key, s2_status, s2_paper_id, s2_year, s2_citation_count, doi, isbn))
         conn.commit()
     finally:
         conn.close()
@@ -118,20 +141,26 @@ def insert_citation(
     citing_year: Optional[int],
     context_snippet: str,
     cited_item_key: str,
-    cited_chunk_id: str,
-    similarity_distance: float,
+    cited_chunk_id: Optional[str],
+    similarity_distance: Optional[float],
     page_hint: Optional[str],
     citing_citation_count: int = 0,
-    citing_influential_count: int = 0
+    citing_influential_count: int = 0,
+    chunk_status: str = 'matched',
+    citing_doi: Optional[str] = None,
 ):
     conn = get_db_connection()
     cursor = conn.cursor()
     try:
         cursor.execute('''
-            INSERT OR REPLACE INTO global_citations 
-            (citing_paper_id, citing_title, citing_year, context_snippet, cited_item_key, cited_chunk_id, similarity_distance, page_hint, citing_citation_count, citing_influential_count)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (citing_paper_id, citing_title, citing_year, context_snippet, cited_item_key, cited_chunk_id, similarity_distance, page_hint, citing_citation_count, citing_influential_count))
+            INSERT OR REPLACE INTO global_citations
+            (citing_paper_id, citing_title, citing_year, context_snippet, cited_item_key,
+             cited_chunk_id, similarity_distance, page_hint,
+             citing_citation_count, citing_influential_count, chunk_status, citing_doi)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (citing_paper_id, citing_title, citing_year, context_snippet, cited_item_key,
+              cited_chunk_id, similarity_distance, page_hint,
+              citing_citation_count, citing_influential_count, chunk_status, citing_doi))
         conn.commit()
     finally:
         conn.close()
@@ -160,8 +189,9 @@ def get_cited_chunks_for_item(item_key: str) -> List[Dict[str, Any]]:
     cursor = conn.cursor()
     cursor.execute('''
         SELECT cited_chunk_id, COUNT(*) as citation_count, MIN(similarity_distance) as best_distance
-        FROM global_citations 
-        WHERE cited_item_key = ? 
+        FROM global_citations
+        WHERE cited_item_key = ?
+          AND cited_chunk_id IS NOT NULL
         GROUP BY cited_chunk_id
         ORDER BY citation_count DESC, best_distance ASC
     ''', (item_key,))
@@ -169,15 +199,19 @@ def get_cited_chunks_for_item(item_key: str) -> List[Dict[str, Any]]:
     conn.close()
     return [dict(row) for row in rows]
 
-def insert_reference(cited_paper_id: str, cited_title: str, cited_year: int, context_snippet: str, citing_item_key: str, citing_chunk_id: str, similarity_distance: float, page_hint: Optional[str] = None, source: str = 's2', raw_reference_text: Optional[str] = None, s2_status: str = 'mapped', cited_citation_count: int = 0, cited_influential_count: int = 0):
+def insert_reference(cited_paper_id: Optional[str], cited_title: Optional[str], cited_year: Optional[int], context_snippet: Optional[str], citing_item_key: str, citing_chunk_id: Optional[str], similarity_distance: Optional[float], page_hint: Optional[str] = None, source: str = 's2', raw_reference_text: Optional[str] = None, s2_status: str = 'matched', cited_citation_count: int = 0, cited_influential_count: int = 0, cited_doi: Optional[str] = None):
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
         cursor.execute('''
-            INSERT OR REPLACE INTO global_references 
-            (cited_paper_id, cited_title, cited_year, context_snippet, citing_item_key, citing_chunk_id, similarity_distance, page_hint, source, raw_reference_text, s2_status, cited_citation_count, cited_influential_count)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (cited_paper_id, cited_title, cited_year, context_snippet, citing_item_key, citing_chunk_id, similarity_distance, page_hint, source, raw_reference_text, s2_status, cited_citation_count, cited_influential_count))
+            INSERT OR REPLACE INTO global_references
+            (cited_paper_id, cited_title, cited_year, context_snippet, citing_item_key, citing_chunk_id,
+             similarity_distance, page_hint, source, raw_reference_text, s2_status,
+             cited_citation_count, cited_influential_count, cited_doi)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (cited_paper_id, cited_title, cited_year, context_snippet, citing_item_key, citing_chunk_id,
+              similarity_distance, page_hint, source, raw_reference_text, s2_status,
+              cited_citation_count, cited_influential_count, cited_doi))
         conn.commit()
     finally:
         conn.close()
