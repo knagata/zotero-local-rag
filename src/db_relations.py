@@ -5,15 +5,20 @@ from typing import List, Dict, Any, Optional
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DB_PATH = os.environ.get("RELATIONS_DB_PATH", os.path.join(ROOT, "data", "relations.db"))
+_db_initialized = False
+
 
 def get_db_connection():
+    global _db_initialized
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
+    if not _db_initialized:
+        _init_db(conn)
+        _db_initialized = True
     return conn
 
-def init_db():
-    conn = get_db_connection()
+def _init_db(conn: sqlite3.Connection) -> None:
     cursor = conn.cursor()
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS global_citations (
@@ -120,7 +125,7 @@ def init_db():
     ''')
     
     conn.commit()
-    conn.close()
+
 
 def update_item_citation_status(
     item_key: str,
@@ -463,5 +468,3 @@ def update_reference_s2_data(
         conn.close()
 
 
-# Initialize DB on import
-init_db()

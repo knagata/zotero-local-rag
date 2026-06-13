@@ -19,28 +19,9 @@ from citation_mapper import map_item_global_citations, map_item_local_references
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
-def load_dotenv_native() -> None:
-    env_file = PROJECT_ROOT / ".env"
-    if env_file.exists():
-        try:
-            with open(env_file, "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if line and not line.startswith("#") and "=" in line:
-                        k, v = line.split("=", 1)
-                        k = k.strip()
-                        v = v.strip()
-                        if len(v) >= 2 and (
-                            (v.startswith('"') and v.endswith('"'))
-                            or (v.startswith("'") and v.endswith("'"))
-                        ):
-                            v = v[1:-1]
-                        if k and k not in os.environ:
-                            os.environ[k] = v
-        except Exception:
-            pass
+from env_utils import load_dotenv_native
 
-load_dotenv_native()
+load_dotenv_native(PROJECT_ROOT)
 
 API_BASE = os.environ.get("ZOTERO_LOCAL_API_BASE", "http://127.0.0.1:8080").rstrip("/")
 API_PREFIX = os.environ.get("ZOTERO_LOCAL_API_PREFIX", "").strip("/")

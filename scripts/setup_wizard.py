@@ -20,7 +20,8 @@ def get_claude_config_path() -> Path | None:
     return None
 
 
-def configure_claude_mcp(root_dir: Path, chroma_dir: Path, emb_profile: str) -> bool:
+def configure_claude_mcp(root_dir: Path, chroma_dir: Path, emb_profile: str,
+                         env_overrides: dict | None = None) -> bool:
     config_path = get_claude_config_path()
     if config_path is None:
         print("[!] Unsupported OS — could not determine Claude config path. Skipping MCP setup.")
@@ -43,6 +44,8 @@ def configure_claude_mcp(root_dir: Path, chroma_dir: Path, emb_profile: str) -> 
             "EMB_PROFILE": emb_profile,
         },
     }
+    if env_overrides:
+        new_entry["env"].update(env_overrides)
 
     if config_path.exists():
         try:
@@ -96,10 +99,11 @@ def main():
     print("=" * 60)
 
     modify = True
+    prev_emb_profile = existing_config.get("EMB_PROFILE", "fast")
     if "ZOTERO_DATA_DIR" in existing_config:
         print("\n[Current Configuration]")
         print(f"  ZOTERO_DATA_DIR : {existing_config['ZOTERO_DATA_DIR']}")
-        print(f"  EMB_PROFILE     : {existing_config.get('EMB_PROFILE', 'fast')}")
+        print(f"  EMB_PROFILE     : {prev_emb_profile}")
         ans = input("\nExisting settings found. Do you want to change them? [y/N]: ").strip().lower()
         if ans != "y":
             modify = False
@@ -119,9 +123,38 @@ def main():
         print("\n2. Which Embedding Model Profile do you want to use?")
         print("   [1] fast (Default, smaller/faster, good for standard text)")
         print("   [2] bge  (BGE-M3, heavier, supports extensive multilingual text)")
-        emb_choice = input("Select [1 or 2, default is 1]: ").strip()
+        print("   [3] gemini (Google Gemini Embedding API, requires GEMINI_API_KEY)")
+        emb_choice = input("Select [1, 2, or 3, default is 1]: ").strip()
 
-        if emb_choice == "2":
+        if emb_choice == "3":
+            print("\n" + "=" * 60)
+            print("   [Gemini Embedding Notice]")
+            print("=" * 60)
+            print("   - Uses Google Gemini Embedding API (internet connection required)")
+            print("   - Batch API for indexing: $0.075 / 1M input tokens (50% cheaper)")
+            print("   - Online API for queries: $0.0001 / 1K input tokens")
+            print("   - Batch jobs may take 5 minutes to several hours (max 24h)")
+            print("   - Free tier available: https://ai.google.dev/pricing")
+            print("   - API key sign-up: https://aistudio.google.com/apikey")
+            print("   - Model: gemini-embedding-001 (768-dim)")
+            print()
+
+            current_key = existing_config.get("GEMINI_API_KEY", "")
+            if current_key:
+                masked = current_key[:8] + "..." if len(current_key) > 8 else "(set)"
+                print(f"   Current GEMINI_API_KEY: {masked}")
+                change_key = input("   Change API key? [y/N]: ").strip().lower()
+                if change_key == "y":
+                    new_key = input("   Enter new GEMINI_API_KEY: ").strip()
+                    if new_key:
+                        existing_config["GEMINI_API_KEY"] = new_key
+            else:
+                new_key = input("   Enter your GEMINI_API_KEY (or leave blank to set later): ").strip()
+                if new_key:
+                    existing_config["GEMINI_API_KEY"] = new_key
+
+            existing_config["EMB_PROFILE"] = "gemini"
+        elif emb_choice == "2":
             existing_config["EMB_PROFILE"] = "bge"
         else:
             existing_config["EMB_PROFILE"] = "fast"
@@ -132,17 +165,27 @@ def main():
         print("\n[+] Configuration successfully saved to .env")
 
     emb_profile = existing_config.get("EMB_PROFILE", "fast")
+    profile_changed = modify and emb_profile != prev_emb_profile
     chroma_dir = Path(existing_config.get("CHROMA_DIR", str(root_dir / "data" / "chroma")))
 
     print("\n" + "=" * 60)
     print("3. Configure Claude Desktop MCP server")
     ans = input("Register zotero-rag in Claude Desktop's MCP config? [y/N]: ").strip().lower()
     if ans == "y":
-        configure_claude_mcp(root_dir, chroma_dir, emb_profile)
+        env_overrides = {}
+        if emb_profile == "gemini" and existing_config.get("GEMINI_API_KEY"):
+            env_overrides["GEMINI_API_KEY"] = existing_config["GEMINI_API_KEY"]
+        configure_claude_mcp(root_dir, chroma_dir, emb_profile, env_overrides)
     else:
         print("\nSkipped MCP config.")
         print("To set up manually, add the following to claude_desktop_config.json:")
         uv_path = shutil.which("uv") or "uv"
+        manual_env = {
+            "CHROMA_DIR": str(chroma_dir),
+            "EMB_PROFILE": emb_profile,
+        }
+        if emb_profile == "gemini" and existing_config.get("GEMINI_API_KEY"):
+            manual_env["GEMINI_API_KEY"] = existing_config["GEMINI_API_KEY"]
         manual = {
             "zotero-rag": {
                 "command": uv_path,
@@ -154,16 +197,77 @@ def main():
                     "-u",
                     "src/rag_mcp_server.py",
                 ],
-                "env": {
-                    "CHROMA_DIR": str(chroma_dir),
-                    "EMB_PROFILE": emb_profile,
-                },
+                "env": manual_env,
             }
         }
         print(json.dumps(manual, indent=2))
 
+    # Check for Tesseract OCR (optional, improves Japanese PDF extraction)
     print("\n" + "=" * 60)
-    run_idx = input("Do you want to run the Embedding Indexer now? (Y/n): ").strip().lower()
+    print("4. Tesseract OCR (optional, improves Japanese PDF text extraction)")
+    tesseract_bin = shutil.which("tesseract")
+    if not tesseract_bin:
+        # Homebrew on Apple Silicon installs to /opt/homebrew/bin,
+        # which may not be on PATH when invoked via uv run.
+        for candidate in ["/opt/homebrew/bin/tesseract", "/usr/local/bin/tesseract"]:
+            if Path(candidate).exists():
+                tesseract_bin = candidate
+                break
+
+    tesseract_ok = False
+    tesseract_jpn = False
+    if tesseract_bin:
+        try:
+            result = subprocess.run(
+                [tesseract_bin, "--list-langs"], capture_output=True, text=True, timeout=5
+            )
+            installed = set(
+                line.strip() for line in result.stdout.splitlines()
+                if line.strip() and not line.startswith("List")
+            )
+            if "eng" in installed:
+                tesseract_ok = True
+            if "jpn" in installed:
+                tesseract_jpn = True
+        except Exception:
+            pass
+
+    if tesseract_jpn:
+        print("   ✅ Tesseract with Japanese support detected.")
+        print("      OCR fallback is ready for Japanese PDFs.")
+    elif tesseract_ok:
+        print("   ⚠️  Tesseract found but Japanese language data is missing.")
+        print("      Extraction failures in Japanese PDFs will use English OCR,")
+        print("      which may produce garbled results.")
+        print("      Install: brew install tesseract-lang")
+    else:
+        print("   ℹ️  Tesseract not found. OCR fallback will be unavailable.")
+        print("      Japanese PDFs with custom fonts may produce garbled text.")
+        print("      Install: brew install tesseract tesseract-lang")
+        print("      (Linux: sudo apt install tesseract-ocr tesseract-ocr-jpn)")
+
+    do_rebuild = False
+    if profile_changed:
+        print("\n" + "=" * 60)
+        print("   ⚠️  Embedding model profile changed!")
+        print(f"   Previous: {prev_emb_profile} → Current: {emb_profile}")
+        print()
+        print("   Different embedding models produce vectors of different")
+        print("   dimensions. A new ChromaDB collection will be created")
+        print("   automatically (e.g., zotero_paragraphs_384 → zotero_paragraphs_1024).")
+        print()
+        print("   The OLD collection will remain on disk and consume space.")
+        ans = input("   Delete old ChromaDB and rebuild from scratch? [y/N]: ").strip().lower()
+        if ans == "y":
+            do_rebuild = True
+
+    print("\n" + "=" * 60)
+    if do_rebuild:
+        run_idx = "y"
+        print("Will rebuild ChromaDB from scratch.")
+    else:
+        run_idx = input("Do you want to run the Embedding Indexer now? (Y/n): ").strip().lower()
+
     if run_idx != "n":
         print("\n[+] Starting Embedding process (this may download models if first time)...")
         print("[+] This process reads your Zotero local database and vectorizes PDFs/HTMLs.\n")
@@ -171,9 +275,11 @@ def main():
         env = os.environ.copy()
         env.update(existing_config)
 
-        process = subprocess.run(
-            ["uv", "run", "src/index_from_zotero.py", "--progress"], env=env, cwd=root_dir
-        )
+        args = ["uv", "run", "src/index_from_zotero.py", "--progress"]
+        if do_rebuild:
+            args.append("--rebuild")
+
+        process = subprocess.run(args, env=env, cwd=root_dir)
 
         if process.returncode == 0:
             print("\n[+] Indexing completed successfully!")

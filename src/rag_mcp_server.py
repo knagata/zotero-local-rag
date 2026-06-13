@@ -8,6 +8,7 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
 
+import json
 import logging
 import sys
 import time
@@ -18,28 +19,11 @@ from typing_extensions import TypedDict
 
 from pathlib import Path
 
-def load_dotenv_native() -> None:
-    env_file = Path(__file__).parent.parent / ".env"
-    if env_file.exists():
-        try:
-            with open(env_file, "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if line and not line.startswith("#") and "=" in line:
-                        k, v = line.split("=", 1)
-                        k = k.strip()
-                        v = v.strip()
-                        if len(v) >= 2 and ((v.startswith('"') and v.endswith('"')) or (v.startswith("'") and v.endswith("'"))):
-                            v = v[1:-1]
-                        if k and k not in os.environ:
-                            os.environ[k] = v
-        except Exception:
-            pass
+from env_utils import load_dotenv_native
 
 load_dotenv_native()
 
 import chromadb
-from chromadb.utils import embedding_functions
 from fastmcp import FastMCP
 from zotero_source_localapi import ZoteroLocalAPI
 from manifest import load_manifest
@@ -73,96 +57,15 @@ _log = _setup_logger()
 # Collection name is intentionally configurable.
 # IMPORTANT: Chroma collections are dimension-fixed. If you switch embedding models
 # (e.g., 384-d MiniLM <-> 1024-d bge-m3), use a different collection name or rebuild.
-COLLECTION_NAME_ENV = os.environ.get("CHROMA_COLLECTION")
 COLLECTION_NAME_DEFAULT = "zotero_paragraphs"
 
-# Embedding model selection
-# - If EMB_MODEL is explicitly set, use it.
-# - Otherwise, pick a default based on EMB_PROFILE.
-#   - fast: multilingual + lighter
-#   - bge : bge-m3 (heavier; recommended to use a local path and cache offline)
-def _resolve_embedder_settings():
-    profile = (os.environ.get("EMB_PROFILE") or "fast").strip().lower()
-    offline = (os.environ.get("HF_HUB_OFFLINE") == "1") or (os.environ.get("TRANSFORMERS_OFFLINE") == "1")
-
-    def _pick_device(default: str = "cpu") -> str:
-        return (os.environ.get("EMB_DEVICE") or default).strip()
-
-    def _is_local_path(p: str) -> bool:
-        try:
-            return os.path.exists(os.path.expanduser(p))
-        except Exception:
-            return False
-
-    # Optional: resolve cached Hugging Face model snapshots (offline-friendly)
-    try:
-        from huggingface_hub import snapshot_download  # type: ignore
-    except Exception:  # pragma: no cover
-        snapshot_download = None
-
-    def _try_resolve_hf_cached_snapshot(model_id: str):
-        if snapshot_download is None:
-            return None
-        try:
-            p = snapshot_download(repo_id=model_id, local_files_only=True)
-            if p and os.path.exists(p):
-                return p
-        except Exception:
-            return None
-        return None
-
-    def _offline_resolve_or_exit(model: str) -> str:
-        if not offline:
-            return model
-        if _is_local_path(model):
-            return os.path.expanduser(model)
-        cached = _try_resolve_hf_cached_snapshot(model)
-        if cached:
-            return cached
-        raise RuntimeError(
-            "Offline mode is enabled (HF_HUB_OFFLINE=1 or TRANSFORMERS_OFFLINE=1), "
-            f"but the requested embedding model is not available locally: {model}\n\n"
-            "Fix options:\n"
-            "  (1) Temporarily go online and cache it, then rerun offline:\n"
-            "      HF_HUB_OFFLINE=0 TRANSFORMERS_OFFLINE=0 python -c \"from sentence_transformers import SentenceTransformer; SentenceTransformer('" + model + "')\"\n"
-            "  (2) Or set EMB_MODEL to a local directory path containing the model files.\n"
-        )
-
-    # Explicit override wins.
-    if (os.environ.get("EMB_MODEL") or "").strip():
-        model = os.environ["EMB_MODEL"].strip()
-        model = _offline_resolve_or_exit(model)
-        return model, _pick_device("cpu")
-
-    # Profile-based defaults.
-    if profile == "bge":
-        model = os.path.join(ROOT, "data", "models", "bge-m3")
-        device_default = "mps" if sys.platform == "darwin" else "cpu"
-        model = _offline_resolve_or_exit(model)
-        return model, _pick_device(device_default)
-
-    # fast (default): multilingual MiniLM
-    remote_model = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
-    local_model = os.path.join(ROOT, "data", "models", "paraphrase-multilingual-MiniLM-L12-v2")
-
-    if offline:
-        if _is_local_path(local_model):
-            return local_model, _pick_device("cpu")
-        cached = _try_resolve_hf_cached_snapshot(remote_model)
-        if cached:
-            return cached, _pick_device("cpu")
-        raise RuntimeError(
-            "Offline mode is enabled (HF_HUB_OFFLINE=1 or TRANSFORMERS_OFFLINE=1) but the default fast model "
-            "is not available locally.\n"
-            f"Expected local model dir (project-local): {local_model}\n"
-            "Also checked Hugging Face cache for: sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2\n\n"
-            "Fix options:\n"
-            "  A) Temporarily download/cache it (online):\n"
-            "     HF_HUB_OFFLINE=0 TRANSFORMERS_OFFLINE=0 python -c \"from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2')\"\n"
-            "  B) Or download into the project-local directory and keep using offline mode afterwards (set EMB_MODEL to the local dir).\n"
-        )
-
-    return remote_model, _pick_device("cpu")
+# Embedding model selection — delegated to embedder module (single source of truth).
+from embedder import (
+    resolve_embedder_settings,
+    create_embedding_function,
+    resolve_collection_name,
+    open_chroma_collection,
+)
 
 
 mcp = FastMCP("zotero-paragraph-rag")
@@ -221,7 +124,6 @@ class RagSearchResponse(TypedDict):
 
 
 _COL = None
-_CLIENT = None
 # Embedding function is cached separately so that collection resets do not force
 # a full model reload.
 _EMB_FN = None
@@ -250,15 +152,14 @@ def _db_mtime_sum() -> float:
 
 def _reset_col() -> None:
     """Invalidate the cached collection and client so they are re-initialized on the next call."""
-    global _COL, _CLIENT
     # Explicitly break references to help GC unmap memory segments
+    global _COL
     _COL = None
-    _CLIENT = None
     gc.collect()
 
 
 def _col():
-    global _COL, _CLIENT, _EMB_FN, _EMB_COLLECTION_NAME, _COL_INIT_MTIME
+    global _COL, _EMB_FN, _EMB_COLLECTION_NAME, _COL_INIT_MTIME
 
     # --- Proactive staleness check ---
     # The HNSW index is memory-mapped, so when the indexer rewrites it the new
@@ -278,73 +179,73 @@ def _col():
 
     # --- Embedding function (cached across resets) ---
     if _EMB_FN is None:
-        model_name, device = _resolve_embedder_settings()
+        cfg = resolve_embedder_settings(Path(ROOT))
         try:
-            import sys
-            print(f"[PROGRESS] Initializing local embedding model '{model_name}' (this takes 1-3 minutes to load into memory)...", file=sys.stderr)
-            _EMB_FN = embedding_functions.SentenceTransformerEmbeddingFunction(
-                model_name=model_name,
-                device=device,
-                normalize_embeddings=True,
-            )
+            if cfg.provider == "gemini":
+                provider_label = f"Gemini API ({cfg.model_name})"
+            else:
+                provider_label = f"local model '{cfg.model_name}'"
+            print(f"[PROGRESS] Initializing {provider_label} (this may take a moment)...", file=sys.stderr)
+            _EMB_FN = create_embedding_function(cfg, task_type="RETRIEVAL_QUERY")
         except Exception as e:
-            raise RuntimeError(
-                "Failed to initialize embedding model.\n"
-                f"EMB_MODEL={model_name}\n"
-                f"EMB_DEVICE={device}\n"
-                "If you are running offline, ensure the model is already cached for this Python environment.\n"
-                "Try once online (example): python -c 'from sentence_transformers import SentenceTransformer; SentenceTransformer(\"sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2\")'\n"
-                f"Original error: {e}"
-            )
+            if cfg.provider == "gemini":
+                raise RuntimeError(
+                    "Failed to initialize Gemini embedding function.\n"
+                    f"Model: {cfg.model_name}\n"
+                    "Check that GEMINI_API_KEY is correctly set and the model name is valid.\n"
+                    f"Original error: {e}"
+                )
+            else:
+                raise RuntimeError(
+                    "Failed to initialize local embedding model.\n"
+                    f"EMB_MODEL={cfg.model_name}\n"
+                    f"EMB_DEVICE={cfg.device}\n"
+                    "If you are running offline, ensure the model is already cached for this Python environment.\n"
+                    "Try once online (example): python -c 'from sentence_transformers import SentenceTransformer; SentenceTransformer(\"sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2\")'\n"
+                    f"Original error: {e}"
+                )
 
     emb_fn = _EMB_FN
 
-    # --- Collection name (also cached; dimension probe is skipped after first run) ---
+    # --- Collection name (cached; dimension probe is skipped after first run) ---
     if _EMB_COLLECTION_NAME is None:
-        collection_name = (COLLECTION_NAME_ENV or "").strip() or COLLECTION_NAME_DEFAULT
-        if not (COLLECTION_NAME_ENV or "").strip():
-            try:
-                import sys
-                print("[PROGRESS] Initializing local embedding model (this may take a few minutes for the first run)...", file=sys.stderr)
-                probe_vecs = emb_fn(["collection probe"])
-                dim = None
-                if isinstance(probe_vecs, list) and probe_vecs and isinstance(probe_vecs[0], (list, tuple)):
-                    dim = len(probe_vecs[0])
-                if isinstance(dim, int) and dim > 0:
-                    collection_name = f"{COLLECTION_NAME_DEFAULT}_{dim}"
-            except Exception:
-                collection_name = COLLECTION_NAME_DEFAULT
-        _EMB_COLLECTION_NAME = collection_name
-    else:
-        collection_name = _EMB_COLLECTION_NAME
+        _EMB_COLLECTION_NAME = resolve_collection_name(
+            emb_fn,
+            env_value=os.environ.get("CHROMA_COLLECTION"),
+            default=COLLECTION_NAME_DEFAULT,
+        )
+    collection_name = _EMB_COLLECTION_NAME
 
     # --- Fresh PersistentClient on every (re-)initialization ---
-    _CLIENT = chromadb.PersistentClient(path=CHROMA_DIR)
-    _COL = _CLIENT.get_or_create_collection(
-        name=collection_name,
+    _COL = open_chroma_collection(
+        CHROMA_DIR, collection_name, emb_fn,
         metadata={"hnsw:space": "cosine"},
     )
-    _COL._embedding_function = emb_fn
 
-    # Dimension compatibility check
+    # Dimension compatibility check — uses ChromaDB get() with explicit
+    # None checks (not truthiness) because the Rust backend returns numpy
+    # arrays that cannot be evaluated as booleans.
     try:
-        if hasattr(_COL, "count") and _COL.count() > 0 and hasattr(_COL, "peek"):
-            peek = _COL.peek(1)
-            peek_ids = (peek or {}).get("ids") or []
-            if peek_ids:
-                first_id = peek_ids[0]
-                got = _COL.get(ids=[first_id], include=["embeddings"])
-                stored = (got or {}).get("embeddings") or []
-                stored_dim = len(stored[0]) if stored and stored[0] is not None else None
+        probe = emb_fn(["dimension probe"])
+        probe_dim = None
+        if probe is not None and len(probe) > 0 and probe[0] is not None:
+            probe_dim = len(probe[0])
 
-                probe = emb_fn(["dimension probe"])
-                probe_dim = len(probe[0]) if probe and probe[0] is not None else None
+        if isinstance(probe_dim, int) and probe_dim > 0 and hasattr(_COL, "count") and _COL.count() > 0:
+            # Use peek to get a sample ID, then get() to fetch the stored vector.
+            # We avoid truthiness checks on the returned dicts/arrays.
+            peek = _COL.peek(1)
+            peek_ids = peek.get("ids") if peek is not None else None
+            if peek_ids is not None and len(peek_ids) > 0:
+                got = _COL.get(ids=[peek_ids[0]], include=["embeddings"])
+                stored = got.get("embeddings") if got is not None else None
+                stored_dim = None
+                if stored is not None and hasattr(stored, "shape"):
+                    stored_dim = stored.shape[1] if len(stored.shape) > 1 else stored.shape[0]
 
                 if (
                     isinstance(stored_dim, int)
-                    and isinstance(probe_dim, int)
                     and stored_dim > 0
-                    and probe_dim > 0
                     and stored_dim != probe_dim
                 ):
                     raise RuntimeError(
@@ -353,13 +254,15 @@ def _col():
                         f"COLLECTION={collection_name}\n"
                         f"Stored dimension={stored_dim}, embedder dimension={probe_dim}\n\n"
                         "Fix options:\n"
-                        "  (1) Use a different CHROMA_COLLECTION name for this embedding model, OR\n"
-                        "  (2) Unset CHROMA_COLLECTION to enable auto-suffix by dimension (recommended), OR\n"
+                        "  (1) Set EMB_PROFILE to match the model used when indexing, OR\n"
+                        "  (2) Use a different CHROMA_COLLECTION name for this embedding model, OR\n"
                         "  (3) Rebuild the index for this collection (delete Chroma dir / run index_from_zotero.py --rebuild).\n"
                     )
     except Exception as e:
         if isinstance(e, RuntimeError) and "Embedding dimension mismatch" in str(e):
             raise
+        # Other errors (e.g. collection not fully initialized) are non-fatal;
+        # the query itself will fail with a specific error message.
 
     # Record the DB mtime so we can detect future indexer writes.
     _COL_INIT_MTIME = _db_mtime_sum()
@@ -376,6 +279,51 @@ _HNSW_ERROR_MSG = (
     "Claude Desktop を再起動すると解消されます。"
     "再起動後、もう一度検索をお試しください。"
 )
+
+
+def _hydrate_chunks_from_sqlite(chunk_ids: List[str]) -> tuple[Dict[str, str], Dict[str, dict]]:
+    """Fetch chunk text and metadata directly from ChromaDB's SQLite store.
+
+    Bypasses ChromaDB PersistentClient to avoid potential hangs/timeouts on
+    the Rust HNSW index when many chunks are requested.
+    """
+    import sqlite3
+    doc_map: Dict[str, str] = {}
+    meta_map: Dict[str, dict] = {}
+    db_path = Path(CHROMA_DIR) / "chroma.sqlite3"
+    if not db_path.exists():
+        return doc_map, meta_map
+    try:
+        conn = sqlite3.connect(str(db_path))
+        try:
+            for i in range(0, len(chunk_ids), 500):
+                batch = chunk_ids[i : i + 500]
+                placeholders = ",".join(["?"] * len(batch))
+                cursor = conn.execute(
+                    f"""
+                    SELECT e.embedding_id, em.key, em.string_value, em.int_value, em.float_value
+                    FROM embeddings e
+                    JOIN embedding_metadata em ON em.id = e.id
+                    WHERE e.embedding_id IN ({placeholders})
+                    """,
+                    tuple(batch),
+                )
+                for emb_id, key, s_val, i_val, f_val in cursor.fetchall():
+                    if emb_id not in meta_map:
+                        meta_map[emb_id] = {}
+                    if key == "chroma:document":
+                        doc_map[emb_id] = s_val
+                    elif s_val is not None:
+                        meta_map[emb_id][key] = s_val
+                    elif i_val is not None:
+                        meta_map[emb_id][key] = i_val
+                    elif f_val is not None:
+                        meta_map[emb_id][key] = f_val
+        finally:
+            conn.close()
+    except Exception as e:
+        _log.error("SQLite chunk hydration error: %s", e)
+    return doc_map, meta_map
 
 
 _Z_API = None
@@ -407,20 +355,28 @@ def neighbor_ids(chunk_id: str, w: int) -> List[str]:
     parsed = parse_id(chunk_id)
     if not parsed or w <= 0:
         return []
-    a0, stype, page, para, _part = parsed
+    a0, stype, page, para, part = parsed
     out_ids: List[str] = []
+    # Long paragraphs are split into multiple parts; probe up to a
+    # reasonable limit so we don't miss split-para neighbors.
+    max_parts = 15
     for dp in range(-w, w + 1):
         pidx = para + dp
         if pidx < 0:
             continue
-        if stype == "pdf" and page is not None:
-            out_ids.append(f"{a0}:p{page}:para{pidx}:part0")
-        elif stype == "html":
-            out_ids.append(f"{a0}:html:para{pidx}:part0")
-        elif stype == "epub":
-            out_ids.append(f"{a0}:epub:para{pidx}:part0")
-        elif stype == "note":
-            out_ids.append(f"{a0}:note:para{pidx}:part0")
+        for pi in range(max_parts):
+            if stype == "pdf" and page is not None:
+                cid = f"{a0}:p{page}:para{pidx}:part{pi}"
+            elif stype == "html":
+                cid = f"{a0}:html:para{pidx}:part{pi}"
+            elif stype == "epub":
+                cid = f"{a0}:epub:para{pidx}:part{pi}"
+            elif stype == "note":
+                cid = f"{a0}:note:para{pidx}:part{pi}"
+            else:
+                continue
+            if cid != chunk_id:
+                out_ids.append(cid)
     return out_ids
 
 
@@ -548,11 +504,13 @@ def server_status() -> Dict[str, Any]:
     }
 
     try:
-        model_name, device = _resolve_embedder_settings()
-        report["emb_model"] = model_name
-        report["emb_device"] = device
+        cfg = resolve_embedder_settings(Path(ROOT))
+        report["emb_model"] = cfg.model_name
+        report["emb_device"] = cfg.device
+        report["emb_provider"] = cfg.provider
     except Exception as e:
         report["emb_model"] = None
+        report["emb_provider"] = None
         report["errors"].append(f"EMB resolve error: {e}")
 
     if not report["chroma_dir_exists"]:
@@ -584,15 +542,46 @@ def server_status() -> Dict[str, Any]:
     return report
 
 
+def _build_effective_where(
+    where: Any, *, include_notes: bool, include_item_keys: Any
+) -> Any:
+    """Merge note-exclusion and item-key filters into a Chroma ``where`` clause."""
+    effective = where
+    if (not include_notes) and (not _where_requests_notes(where)):
+        note_excl = {"source_type": {"$ne": "note"}}
+        effective = note_excl if effective is None else {"$and": [effective, note_excl]}
+    if include_item_keys:
+        item_filter = {"itemKey": {"$in": include_item_keys}}
+        effective = item_filter if effective is None else {"$and": [effective, item_filter]}
+    return effective
+
+
+def _coerce_json(value: Any) -> Any:
+    """If *value* is a JSON string, parse it; otherwise return as-is.
+
+    MCP clients may serialize list/dict parameters as JSON strings. This
+    helper lets us accept ``Any`` in the tool signature while still getting
+    the correct Python object at runtime.
+    """
+    if value is not None and isinstance(value, str):
+        stripped = value.strip()
+        if stripped.startswith(("[", "{")):
+            try:
+                return json.loads(stripped)
+            except (json.JSONDecodeError, TypeError):
+                pass
+    return value
+
+
 @mcp.tool()
 def rag_search(
     query: str | List[str],
     k: int = 5,
-    where: Optional[Dict[str, Any]] = None,
+    where: Any = None,
     context_window: int = 0,
     include_notes: bool = False,
-    include_item_keys: Optional[List[str]] = None,
-    exclude_chunk_ids: Optional[List[str]] = None,
+    include_item_keys: Any = None,
+    exclude_chunk_ids: Any = None,
 ) -> RagSearchResponse:
     """
     Paragraph-level semantic search over local Zotero PDFs/HTML snapshots (+ optionally Notes).
@@ -649,25 +638,18 @@ def rag_search(
         {"results": [ ... ]}
     """
 
+    where = _coerce_json(where)
+    include_item_keys = _coerce_json(include_item_keys)
+    exclude_chunk_ids = _coerce_json(exclude_chunk_ids)
+
     col = _col()
     if k <= 0:
         return {"results": []}
 
 
-    effective_where = where
-    if (not include_notes) and (not _where_requests_notes(where)):
-        note_excl = {"source_type": {"$ne": "note"}}
-        if effective_where is None:
-            effective_where = note_excl
-        else:
-            effective_where = {"$and": [effective_where, note_excl]}
-
-    if include_item_keys:
-        item_filter = {"itemKey": {"$in": include_item_keys}}
-        if effective_where is None:
-            effective_where = item_filter
-        else:
-            effective_where = {"$and": [effective_where, item_filter]}
+    effective_where = _build_effective_where(
+        where, include_notes=include_notes, include_item_keys=include_item_keys
+    )
 
     internal_k = max(k * 5, k)
     if exclude_chunk_ids:
@@ -703,7 +685,7 @@ def rag_search(
                 col = _col()
             else:
                 _log.error("rag_search: both attempts failed — returning error message")
-                return {"results": [], "warning": _HNSW_ERROR_MSG}
+                return {"results": [], "warning": _HNSW_ERROR_MSG, "error": str(_exc)}
 
     # Consolidated hits map: id -> {distance, rrf_score, document, metadata}
     hits_combined = {}
@@ -944,9 +926,9 @@ async def search_zotero_items(
 def search_items(
     query: str | List[str],
     k: int = 10,
-    where: Optional[Dict[str, Any]] = None,
+    where: Any = None,
     include_notes: bool = False,
-    include_item_keys: Optional[List[str]] = None,
+    include_item_keys: Any = None,
 ) -> Dict[str, Any]:
     """
     Search for relevant Zotero documents (items) without returning full paragraph text.
@@ -965,6 +947,9 @@ def search_items(
         include_item_keys:
             Optional list of Zotero item keys to restrict the search to.
     """
+    where = _coerce_json(where)
+    include_item_keys = _coerce_json(include_item_keys)
+
     col = _col()
     if k <= 0:
         return {"items": []}
@@ -974,20 +959,9 @@ def search_items(
 
 
 
-    effective_where = where
-    if (not include_notes) and (not _where_requests_notes(where)):
-        note_excl = {"source_type": {"$ne": "note"}}
-        if effective_where is None:
-            effective_where = note_excl
-        else:
-            effective_where = {"$and": [effective_where, note_excl]}
-
-    if include_item_keys:
-        item_filter = {"itemKey": {"$in": include_item_keys}}
-        if effective_where is None:
-            effective_where = item_filter
-        else:
-            effective_where = {"$and": [effective_where, item_filter]}
+    effective_where = _build_effective_where(
+        where, include_notes=include_notes, include_item_keys=include_item_keys
+    )
 
     queries = [query] if isinstance(query, str) else query
     for _attempt in range(2):
@@ -1007,7 +981,7 @@ def search_items(
                 col = _col()
             else:
                 _log.error("search_items: both attempts failed — returning error message")
-                return {"items": [], "warning": _HNSW_ERROR_MSG}
+                return {"items": [], "warning": _HNSW_ERROR_MSG, "error": str(_exc)}
 
     # itemKey -> {distance, rrf_score, title, year, creators, itemKey, source_type}
     items_map = {}
@@ -1115,8 +1089,7 @@ def get_document_outline(attachment_key: str) -> Dict[str, Any]:
     Args:
         attachment_key: The Zotero attachment key (e.g., 'ABCDEFGH').
     """
-    manifest_path = os.path.join(ROOT, "data", "manifest.json")
-    manifest = load_manifest(Path(manifest_path))
+    manifest = load_manifest(Path(MANIFEST_PATH))
     
     file_info = manifest.get("files", {}).get(attachment_key)
     if not file_info:
@@ -1242,50 +1215,11 @@ def get_cited_chunks_for_item(item_key: str, max_citations_per_chunk: int = 3) -
         from db_relations import get_cited_chunks_for_item as get_chunks, get_citations_for_chunk
         chunks = get_chunks(item_key)
         
-        # Hydrate with actual chunk text (Bypass ChromaDB PersistentClient to avoid hangs/timeouts)
-        doc_map = {}
-        meta_map = {}
+        # Hydrate with actual chunk text via direct SQLite (avoids ChromaDB lock/hang)
         if chunks:
             chunk_ids = [c["cited_chunk_id"] for c in chunks]
-            
-            import sqlite3
-            from pathlib import Path
-            db_path = Path(CHROMA_DIR) / "chroma.sqlite3"
-            if db_path.exists():
-                try:
-                    conn = sqlite3.connect(str(db_path))
-                    # Batch the chunk_ids (SQLite variable limit is 999)
-                    for i in range(0, len(chunk_ids), 500):
-                        batch = chunk_ids[i:i+500]
-                        placeholders = ','.join(['?'] * len(batch))
-                        query = f"""
-                            SELECT e.embedding_id, em.key, em.string_value, em.int_value, em.float_value
-                            FROM embeddings e
-                            JOIN embedding_metadata em ON em.id = e.id
-                            WHERE e.embedding_id IN ({placeholders})
-                        """
-                        cursor = conn.execute(query, tuple(batch))
-                        
-                        for row in cursor.fetchall():
-                            emb_id, key, s_val, i_val, f_val = row
-                            if emb_id not in meta_map:
-                                meta_map[emb_id] = {}
-                            
-                            if key == 'chroma:document':
-                                doc_map[emb_id] = s_val
-                            else:
-                                if s_val is not None:
-                                    meta_map[emb_id][key] = s_val
-                                elif i_val is not None:
-                                    meta_map[emb_id][key] = i_val
-                                elif f_val is not None:
-                                    meta_map[emb_id][key] = f_val
-                    conn.close()
-                except Exception as e:
-                    import logging
-                    logger = logging.getLogger("zotero-rag")
-                    logger.error(f"Error querying Chroma SQLite directly: {e}")
-            
+            doc_map, meta_map = _hydrate_chunks_from_sqlite(chunk_ids)
+
             for c in chunks:
                 cid = c["cited_chunk_id"]
                 c["text"] = doc_map.get(cid, "")
@@ -1314,8 +1248,6 @@ async def extract_local_epub_references(item_key: str) -> Dict[str, Any]:
         item_key: The parent Zotero item key (e.g., 'BGZ9UFUJ')
     """
     try:
-        import os
-        from zotero_source_localapi import ZoteroLocalAPI
         # Get children to find attachment
         children = await _z_api()._get_json(f"items/{item_key}/children")
         if not isinstance(children, list):
@@ -1381,40 +1313,7 @@ def get_references_for_item(item_key: str) -> Dict[str, Any]:
         # Hydrate with chunk text via direct SQLite query (avoids ChromaDB lock/hang)
         if chunks:
             chunk_ids = [c["citing_chunk_id"] for c in chunks]
-            doc_map: Dict[str, str] = {}
-            meta_map: Dict[str, Dict] = {}
-
-            import sqlite3 as _sqlite3
-            db_path = Path(CHROMA_DIR) / "chroma.sqlite3"
-            if db_path.exists():
-                try:
-                    conn = _sqlite3.connect(str(db_path))
-                    for i in range(0, len(chunk_ids), 500):
-                        batch = chunk_ids[i : i + 500]
-                        placeholders = ",".join(["?"] * len(batch))
-                        cursor = conn.execute(
-                            f"""
-                            SELECT e.embedding_id, em.key, em.string_value, em.int_value, em.float_value
-                            FROM embeddings e
-                            JOIN embedding_metadata em ON em.id = e.id
-                            WHERE e.embedding_id IN ({placeholders})
-                            """,
-                            tuple(batch),
-                        )
-                        for emb_id, key, s_val, i_val, f_val in cursor.fetchall():
-                            if emb_id not in meta_map:
-                                meta_map[emb_id] = {}
-                            if key == "chroma:document":
-                                doc_map[emb_id] = s_val
-                            elif s_val is not None:
-                                meta_map[emb_id][key] = s_val
-                            elif i_val is not None:
-                                meta_map[emb_id][key] = i_val
-                            elif f_val is not None:
-                                meta_map[emb_id][key] = f_val
-                    conn.close()
-                except Exception as e:
-                    _log.error("get_references_for_item: SQLite query error: %s", e)
+            doc_map, meta_map = _hydrate_chunks_from_sqlite(chunk_ids)
 
             for c in chunks:
                 cid = c["citing_chunk_id"]
@@ -1501,22 +1400,14 @@ async def build_citation_network(item_key: str) -> Dict[str, Any]:
 
 def main():
     try:
-        model_name, device = _resolve_embedder_settings()
-        # Match the same auto-suffix logic used in _col()
-        _coll = (COLLECTION_NAME_ENV or "").strip() or COLLECTION_NAME_DEFAULT
-        if not (COLLECTION_NAME_ENV or "").strip():
-            try:
-                _probe = embedding_functions.SentenceTransformerEmbeddingFunction(
-                    model_name=model_name,
-                    device=device,
-                    normalize_embeddings=True,
-                )(["collection probe"])
-                _dim = len(_probe[0]) if _probe and isinstance(_probe[0], (list, tuple)) else None
-                if isinstance(_dim, int) and _dim > 0:
-                    _coll = f"{COLLECTION_NAME_DEFAULT}_{_dim}"
-            except Exception:
-                _coll = COLLECTION_NAME_DEFAULT
-        _startup_msg = f"starting (CHROMA_DIR={CHROMA_DIR}, COLLECTION={_coll}, EMB_MODEL={model_name}, EMB_DEVICE={device})"
+        cfg = resolve_embedder_settings(Path(ROOT))
+        _probe_fn = create_embedding_function(cfg, task_type="RETRIEVAL_QUERY")
+        _coll = resolve_collection_name(
+            _probe_fn,
+            env_value=os.environ.get("CHROMA_COLLECTION"),
+            default=COLLECTION_NAME_DEFAULT,
+        )
+        _startup_msg = f"starting (CHROMA_DIR={CHROMA_DIR}, COLLECTION={_coll}, EMB_MODEL={cfg.model_name}, EMB_DEVICE={cfg.device}, PROVIDER={cfg.provider})"
         print(f"[zotero-rag] {_startup_msg}", file=sys.stderr)
         _log.info(_startup_msg)
         mcp.run()

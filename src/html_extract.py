@@ -10,6 +10,9 @@ from typing import Any, Dict, List, Tuple
 from text_utils import (
     HARD_MIN_CHARS,
     MAX_CHARS,
+    TARGET_CHARS,
+    MAX_CHARS_CJK,
+    TARGET_CHARS_CJK,
     MIN_CHUNK_CHARS,
     MIN_CHUNK_CHARS_NO_SPACE,
     clean_extracted_text,
@@ -44,6 +47,25 @@ except Exception:  # pragma: no cover
 
 HTML_SCRIPT_STYLE_RE = re.compile(r"(?is)<(script|style).*?>.*?(</\1>)")
 MAX_HTML_BYTES = int(os.environ.get("MAX_HTML_BYTES", "10000000"))  # guard for huge snapshots
+
+
+def _strip_unclosed_script_style(html: str) -> str:
+    """Remove unclosed <style> / <script> content caused by HTML truncation.
+
+    When a large HTML file is truncated (MAX_HTML_BYTES), a closing
+    </style> or </script> tag may be cut off.  This strips the orphaned
+    opening tag and everything after it so that CSS / JS does not leak
+    into extracted text.
+    """
+    for tag in ("style", "script"):
+        open_marker = f"<{tag}"
+        close_marker = f"</{tag}>"
+        last_open = html.rfind(open_marker)
+        if last_open >= 0:
+            last_close = html.rfind(close_marker)
+            if last_open > last_close:
+                html = html[:last_open]
+    return html
 
 
 def _decode_html_bytes(raw: bytes) -> str:
@@ -99,6 +121,7 @@ def html_to_text(html: str) -> str:
             print("[DEBUG] No <body> tag found; using full HTML.", file=os.sys.__stderr__)
 
     html = HTML_SCRIPT_STYLE_RE.sub("", html)
+    html = _strip_unclosed_script_style(html)
     html = html.replace("</p>", "\n\n").replace("<br>", "\n").replace("<br/>", "\n").replace("<br />", "\n")
     text = _strip_tags_fast(html)
     text = unescape(text)
@@ -126,6 +149,93 @@ def extract_main_text_from_html(raw_html: str) -> str:
     return html_to_text(raw_html)
 
 
+def _read_html_skip_styles(path: Path) -> str:
+    """Read an HTML file, skipping <style> and <script> blocks.
+
+    Returns at most MAX_HTML_BYTES of cleaned HTML bytes (decoded to str).
+    Large base64 font data inside <style> tags does not count toward the
+    limit, so the actual page content is reached even when fonts are
+    inlined by tools like SingleFile.
+    """
+    CHUNK = 1 << 20  # 1 MiB
+
+    # Detect charset from the first read
+    charset = "utf-8"
+    cleaned_parts: List[str] = []
+    cleaned_len = 0
+    in_skip = False
+    skip_close = b""
+    leftover = b""
+
+    with open(path, "rb") as f:
+        while cleaned_len < MAX_HTML_BYTES:
+            chunk = f.read(CHUNK)
+            if not chunk:
+                break
+            chunk = leftover + chunk
+            leftover = b""
+
+            # Detect charset from the first few bytes
+            if charset == "utf-8" and len(chunk) >= 512:
+                m = re.search(
+                    rb"charset\s*=\s*['\"]?\s*([A-Za-z0-9_\-]+)",
+                    chunk[:8192], flags=re.IGNORECASE,
+                )
+                if m:
+                    charset = m.group(1).decode("ascii", errors="ignore")
+
+            i = 0
+            while i < len(chunk):
+                if in_skip:
+                    end = chunk.find(skip_close, i)
+                    if end >= 0:
+                        i = end + len(skip_close)
+                        in_skip = False
+                    else:
+                        leftover = chunk[-len(skip_close):] if len(chunk) > len(skip_close) else chunk
+                        break
+                else:
+                    lt = chunk.find(b"<", i)
+                    if lt < 0:
+                        add = chunk[i:]
+                        decoded = add.decode(charset, errors="replace")
+                        cleaned_parts.append(decoded)
+                        cleaned_len += len(decoded)
+                        break
+
+                    if lt > i:
+                        add = chunk[i:lt]
+                        decoded = add.decode(charset, errors="replace")
+                        cleaned_parts.append(decoded)
+                        cleaned_len += len(decoded)
+
+                    tag_start = chunk[lt:lt + 7].lower()
+                    if tag_start.startswith(b"<style") or tag_start.startswith(b"<scrip"):
+                        gt = chunk.find(b">", lt)
+                        if gt < 0:
+                            leftover = chunk[lt:]
+                            break
+                        tag_name = b"style" if tag_start.startswith(b"<style") else b"script"
+                        in_skip = True
+                        skip_close = b"</" + tag_name + b">"
+                        i = gt + 1
+                    else:
+                        gt = chunk.find(b">", lt)
+                        if gt < 0:
+                            leftover = chunk[lt:]
+                            break
+                        add = chunk[lt:gt + 1]
+                        decoded = add.decode(charset, errors="replace")
+                        cleaned_parts.append(decoded)
+                        cleaned_len += len(decoded)
+                        i = gt + 1
+
+                if cleaned_len >= MAX_HTML_BYTES:
+                    break
+
+    return "".join(cleaned_parts)
+
+
 def extract_chunks_from_html_snapshot(
     html_path: Path,
     attachment_key: str,
@@ -140,15 +250,7 @@ def extract_chunks_from_html_snapshot(
     }
     chunks: List[Tuple[str, str, Dict[str, Any]]] = []
     try:
-        with open(html_path, "rb") as f:
-            raw_bytes = f.read(MAX_HTML_BYTES + 1)
-        truncated = len(raw_bytes) > MAX_HTML_BYTES
-        raw_html = _decode_html_bytes(raw_bytes[:MAX_HTML_BYTES])
-        if truncated and os.environ.get("DEBUG_HTML") == "1":
-            print(
-                f"[DEBUG] HTML snapshot truncated to {MAX_HTML_BYTES} bytes: attachment={attachment_key} file={html_path}",
-                file=os.sys.__stderr__,
-            )
+        raw_html = _read_html_skip_styles(html_path)
     except Exception as e:
         print(
             f"[WARN] Failed to read HTML snapshot: attachment={attachment_key} file={html_path} err={e}",
@@ -165,13 +267,16 @@ def extract_chunks_from_html_snapshot(
     sample = "\n\n".join(paras[:20])[:5000]
     if looks_like_gibberish(sample):
         return [], default_quality
-    local_min_chunk = MIN_CHUNK_CHARS_NO_SPACE if is_no_space_language_document(sample) else MIN_CHUNK_CHARS
+    is_cjk = is_no_space_language_document(sample)
+    local_min_chunk = MIN_CHUNK_CHARS_NO_SPACE if is_cjk else MIN_CHUNK_CHARS
+    local_max_chars = MAX_CHARS_CJK if is_cjk else MAX_CHARS
+    local_target_chars = TARGET_CHARS_CJK if is_cjk else TARGET_CHARS
 
     for para_index, para_text in enumerate(paras):
         para_text = para_text.strip()
         if not para_text:
             continue
-        parts = split_long_paragraph(para_text, max_chars=MAX_CHARS)
+        parts = split_long_paragraph(para_text, max_chars=local_max_chars, target_chars=local_target_chars)
         for part_index, part in enumerate(parts):
             part = part.strip()
             if len(part) < HARD_MIN_CHARS:
@@ -190,7 +295,7 @@ def extract_chunks_from_html_snapshot(
             )
             chunks.append((chunk_id, part, md))
 
-    chunks = merge_short_chunk_records(chunks, min_chars=local_min_chunk, max_chars=MAX_CHARS)
+    chunks = merge_short_chunk_records(chunks, min_chars=local_min_chunk, max_chars=local_max_chars)
     ids = [cid for (cid, _, _) in chunks]
     if len(ids) != len(set(ids)):
         dup = len(ids) - len(set(ids))
@@ -260,7 +365,10 @@ def extract_chunks_from_epub_snapshot(
     sample = "\n\n".join([p for _ci, p in all_paras[:20]])[:5000]
     if looks_like_gibberish(sample):
         return [], default_quality
-    local_min_chunk = MIN_CHUNK_CHARS_NO_SPACE if is_no_space_language_document(sample) else MIN_CHUNK_CHARS
+    is_cjk = is_no_space_language_document(sample)
+    local_min_chunk = MIN_CHUNK_CHARS_NO_SPACE if is_cjk else MIN_CHUNK_CHARS
+    local_max_chars = MAX_CHARS_CJK if is_cjk else MAX_CHARS
+    local_target_chars = TARGET_CHARS_CJK if is_cjk else TARGET_CHARS
 
     chunks: List[Tuple[str, str, Dict[str, Any]]] = []
     global_para = 0
@@ -270,7 +378,7 @@ def extract_chunks_from_epub_snapshot(
             global_para += 1
             continue
 
-        parts = split_long_paragraph(para_text, max_chars=MAX_CHARS)
+        parts = split_long_paragraph(para_text, max_chars=local_max_chars, target_chars=local_target_chars)
         for part_index, part in enumerate(parts):
             part = part.strip()
             if len(part) < HARD_MIN_CHARS:
@@ -295,7 +403,7 @@ def extract_chunks_from_epub_snapshot(
 
         global_para += 1
 
-    chunks = merge_short_chunk_records(chunks, min_chars=local_min_chunk, max_chars=MAX_CHARS)
+    chunks = merge_short_chunk_records(chunks, min_chars=local_min_chunk, max_chars=local_max_chars)
     ids = [cid for (cid, _, _) in chunks]
     if len(ids) != len(set(ids)):
         dup = len(ids) - len(set(ids))

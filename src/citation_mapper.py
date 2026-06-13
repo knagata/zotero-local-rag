@@ -25,25 +25,7 @@ class S2RetryExhaustedError(Exception):
 ROOT = Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 CHROMA_DIR = Path(os.environ.get("CHROMA_DIR", str(ROOT / "data" / "chroma")))
 
-def _load_dotenv() -> None:
-    env_file = ROOT / ".env"
-    if not env_file.exists():
-        return
-    try:
-        with open(env_file, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                k, v = line.split("=", 1)
-                k, v = k.strip(), v.strip()
-                if len(v) >= 2 and ((v.startswith('"') and v.endswith('"')) or
-                                    (v.startswith("'") and v.endswith("'"))):
-                    v = v[1:-1]
-                if k and k not in os.environ:
-                    os.environ[k] = v
-    except Exception:
-        pass
+from env_utils import load_dotenv_native as _load_dotenv
 
 _load_dotenv()
 _s2_key_at_import = os.environ.get("S2_API_KEY", "")
@@ -108,23 +90,22 @@ _MAX_COSINE_DISTANCE = 0.4
 
 
 def _get_emb_fn():
-    """Get or create the SentenceTransformer embedding function (cached)."""
+    """Get or create the embedding function (cached)."""
     global _EMB_FN_CACHE
     if _EMB_FN_CACHE is not None:
         return _EMB_FN_CACHE
 
-    from chromadb.utils import embedding_functions as chroma_ef
-    from embedder import _resolve_embedder_settings
-    model_name, device = _resolve_embedder_settings(ROOT)
-    print(f"[citation_mapper] Loading embedding model '{model_name}' on {device}...", file=sys.stderr)
-    _EMB_FN_CACHE = chroma_ef.SentenceTransformerEmbeddingFunction(
-        model_name=model_name,
-        device=device,
-        normalize_embeddings=True,
-    )
+    from embedder import resolve_embedder_settings, create_embedding_function
+    cfg = resolve_embedder_settings(ROOT)
+    if cfg.provider == "gemini":
+        provider_label = f"Gemini API ({cfg.model_name})"
+    else:
+        provider_label = f"'{cfg.model_name}' on {cfg.device}"
+    print(f"[citation_mapper] Loading embedding function: {provider_label} ...", file=sys.stderr)
+    _EMB_FN_CACHE = create_embedding_function(cfg)
     # Warmup
     _ = _EMB_FN_CACHE(["warmup"])
-    print(f"[citation_mapper] Embedding model ready.", file=sys.stderr)
+    print(f"[citation_mapper] Embedding function ready.", file=sys.stderr)
     return _EMB_FN_CACHE
 
 

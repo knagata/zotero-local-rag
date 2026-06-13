@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -14,6 +15,9 @@ import fitz  # PyMuPDF
 from text_utils import (
     HARD_MIN_CHARS,
     MAX_CHARS,
+    TARGET_CHARS,
+    MAX_CHARS_CJK,
+    TARGET_CHARS_CJK,
     MIN_CHUNK_CHARS,
     MIN_CHUNK_CHARS_NO_SPACE,
     clean_extracted_text,
@@ -33,6 +37,82 @@ PDF_STRIP_REPEATED_PREFIX = (os.environ.get("PDF_STRIP_REPEATED_PREFIX") or "1")
 # Per-page timeout (seconds). Set PAGE_TIMEOUT_SEC=0 to disable.
 PAGE_TIMEOUT_SEC = int((os.environ.get("PAGE_TIMEOUT_SEC") or "30").strip())
 
+# Tesseract OCR fallback for font-encoding mismatch pages.
+# Requires tesseract binary on PATH. Set PDF_OCR_FALLBACK=0 to disable.
+PDF_OCR_FALLBACK = (os.environ.get("PDF_OCR_FALLBACK") or "1") == "1"
+PDF_OCR_DPI = int((os.environ.get("PDF_OCR_DPI") or "300").strip())
+
+
+def _find_tesseract() -> Optional[str]:
+    """Return the path to the tesseract binary, or None if not found.
+
+    Checks PATH first, then common Homebrew locations which may not be
+    on PATH when invoked via ``uv run``.
+    """
+    path = shutil.which("tesseract")
+    if path:
+        return path
+    for candidate in ["/opt/homebrew/bin/tesseract", "/usr/local/bin/tesseract"]:
+        if Path(candidate).exists():
+            return candidate
+    return None
+
+
+def _resolve_ocr_lang() -> str:
+    """Return the best available Tesseract language string.
+
+    If PDF_OCR_LANG is explicitly set, use it verbatim.
+    Otherwise, probe the installed Tesseract languages and prefer
+    ``jpn+eng`` when Japanese data is available, falling back to
+    ``eng`` with a one-time diagnostic message.
+
+    To install Japanese Tesseract data:
+      macOS:  brew install tesseract-lang
+      Linux:  apt install tesseract-ocr-jpn
+    """
+    explicit = os.environ.get("PDF_OCR_LANG", "").strip()
+    if explicit:
+        return explicit
+
+    tesseract_bin = _find_tesseract()
+    if not tesseract_bin:
+        return "eng"
+
+    # Probe available languages once
+    try:
+        import subprocess
+        result = subprocess.run(
+            [tesseract_bin, "--list-langs"],
+            capture_output=True, text=True, timeout=5,
+        )
+        installed = set(
+            line.strip() for line in result.stdout.splitlines()
+            if line.strip() and not line.startswith("List")
+        )
+    except Exception:
+        return "eng"
+
+    if "jpn" in installed:
+        return "jpn+eng"
+    else:
+        # Warn once per process about missing Japanese OCR support
+        if not getattr(_resolve_ocr_lang, "_warned", False):
+            _resolve_ocr_lang._warned = True  # type: ignore[attr-defined]
+            print(
+                "[NOTE] Tesseract Japanese language data not found.\n"
+                "       Extraction failures in Japanese PDFs will use English OCR,\n"
+                "       which may produce garbled results.\n"
+                "       Install Japanese support:\n"
+                "         macOS:  brew install tesseract-lang\n"
+                "         Linux:  apt install tesseract-ocr-jpn\n"
+                "       Then set: PDF_OCR_LANG=jpn+eng",
+                file=os.sys.__stderr__,
+            )
+        return "eng"
+
+
+PDF_OCR_LANG = _resolve_ocr_lang()
+
 
 def normalize_block_text_to_paragraph(text: str) -> str:
     lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
@@ -50,6 +130,86 @@ def normalize_block_text_to_paragraph(text: str) -> str:
     merged = joiner.join(parts)
     merged = re.sub(r"\s+", " ", merged).strip()
     return merged
+
+
+def _detect_column_boundaries(
+    blocks: List[Tuple[float, float, float, str]], page_width: float
+) -> Optional[float]:
+    """Detect a column boundary x-coordinate, or None if single-column.
+
+    Uses block x0 positions. If blocks cluster into two distinct horizontal
+    regions with a clear gap between the rightmost left block and the leftmost
+    right block, returns the midpoint of the gap.
+    """
+    if len(blocks) < 3:
+        return None
+
+    # Collect x0 positions of blocks that are not spanning most of the page.
+    # Wide blocks (title, full-width paragraphs) are excluded — they span
+    # both columns and should not participate in column detection.
+    x0s: List[float] = []
+    for y0, y1, x0, txt in blocks:
+        # Exclude blocks starting very close to the left margin or spanning
+        # most of the page — these are full-width elements.
+        if x0 > page_width * 0.15:
+            x0s.append(x0)
+
+    if len(x0s) < 3:
+        return None
+
+    x0s.sort()
+    mid = page_width / 2
+
+    left_x0s = [x for x in x0s if x < mid]
+    right_x0s = [x for x in x0s if x >= mid]
+
+    # Need at least one block on each side to detect columns
+    if not left_x0s or not right_x0s:
+        return None
+
+    left_max = max(left_x0s)
+    right_min = min(right_x0s)
+    gap = right_min - left_max
+
+    # Split if there's a meaningful gap (> 12% of page width)
+    if gap > page_width * 0.12:
+        return (left_max + right_min) / 2
+
+    return None
+
+
+def _merge_blocks_vertically(
+    blocks: List[Tuple[float, float, float, str]],
+) -> List[str]:
+    """Merge vertically adjacent blocks into paragraphs (single-column)."""
+    if not blocks:
+        return []
+
+    merged: List[str] = []
+    cur_text = ""
+    cur_y1: Optional[float] = None
+
+    for y0, y1, _x0, txt in blocks:
+        if not cur_text:
+            cur_text = txt
+            cur_y1 = y1
+            continue
+
+        gap = 0.0 if cur_y1 is None else (y0 - cur_y1)
+
+        if gap >= 0 and gap <= 12.0:
+            joiner = joiner_for_text(cur_text + txt)
+            cur_text = (cur_text + joiner + txt) if joiner else (cur_text + txt)
+            cur_y1 = max(cur_y1 or y1, y1)
+        else:
+            merged.append(cur_text.strip())
+            cur_text = txt
+            cur_y1 = y1
+
+    if cur_text:
+        merged.append(cur_text.strip())
+
+    return [m for m in merged if m]
 
 
 def extract_paragraphs_from_pdf_page(page: Any) -> List[str]:
@@ -77,33 +237,27 @@ def extract_paragraphs_from_pdf_page(page: Any) -> List[str]:
                 norm_blocks.append((y0, y1, x0, t))
 
         if norm_blocks:
-            norm_blocks.sort(key=lambda t: (t[0], t[2]))
+            page_width = page.rect.width
+            col_boundary = _detect_column_boundaries(norm_blocks, page_width)
 
-            merged: List[str] = []
-            cur_text = ""
-            cur_y1: Optional[float] = None
+            if col_boundary is not None:
+                # Multi-column: split into left and right columns
+                left_blocks = [(y0, y1, x0, txt) for (y0, y1, x0, txt) in norm_blocks
+                               if x0 < col_boundary]
+                right_blocks = [(y0, y1, x0, txt) for (y0, y1, x0, txt) in norm_blocks
+                                if x0 >= col_boundary]
 
-            for y0, y1, _x0, txt in norm_blocks:
-                if not cur_text:
-                    cur_text = txt
-                    cur_y1 = y1
-                    continue
+                left_blocks.sort(key=lambda t: (t[0], t[2]))
+                right_blocks.sort(key=lambda t: (t[0], t[2]))
 
-                gap = 0.0 if cur_y1 is None else (y0 - cur_y1)
+                left_paras = _merge_blocks_vertically(left_blocks)
+                right_paras = _merge_blocks_vertically(right_blocks)
 
-                if gap >= 0 and gap <= 12.0:
-                    joiner = joiner_for_text(cur_text + txt)
-                    cur_text = (cur_text + joiner + txt) if joiner else (cur_text + txt)
-                    cur_y1 = max(cur_y1 or y1, y1)
-                else:
-                    merged.append(cur_text.strip())
-                    cur_text = txt
-                    cur_y1 = y1
-
-            if cur_text:
-                merged.append(cur_text.strip())
-
-            return [m for m in merged if m]
+                return left_paras + right_paras
+            else:
+                # Single column
+                norm_blocks.sort(key=lambda t: (t[0], t[2]))
+                return _merge_blocks_vertically(norm_blocks)
 
     except TimeoutError:
         raise
@@ -262,6 +416,82 @@ def _page_timeout(seconds: int):
         signal.signal(signal.SIGALRM, old_handler)
 
 
+def _ocr_page_with_tesseract(page: Any) -> List[str]:
+    """Render a PDF page to an image and OCR it with Tesseract.
+
+    Used as a fallback when PyMuPDF text extraction fails due to
+    custom font encodings without ToUnicode CMaps. The rendered
+    image contains correct glyphs that Tesseract can read.
+
+    Returns a list of paragraph strings, or an empty list on failure.
+    """
+    import subprocess
+    import tempfile
+
+    try:
+        mat = fitz.Matrix(PDF_OCR_DPI / 72, PDF_OCR_DPI / 72)
+        pix = page.get_pixmap(matrix=mat)
+        img_bytes = pix.tobytes("png")
+    except Exception:
+        return []
+
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+            f.write(img_bytes)
+            tmp_path = f.name
+
+        tesseract_bin = _find_tesseract()
+        if not tesseract_bin:
+            return []
+
+        result = subprocess.run(
+            [tesseract_bin, tmp_path, "stdout", "-l", PDF_OCR_LANG, "--psm", "6"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode != 0:
+            stderr_msg = (result.stderr or "").strip()
+            if stderr_msg:
+                # Only log the first error per process to avoid spam
+                if not getattr(_ocr_page_with_tesseract, "_logged_error", False):
+                    _ocr_page_with_tesseract._logged_error = True  # type: ignore[attr-defined]
+                    print(
+                        f"[WARN] Tesseract OCR failed (lang={PDF_OCR_LANG}): {stderr_msg[:200]}\n"
+                        f"       Install the language data or set PDF_OCR_LANG to an available language.",
+                        file=os.sys.__stderr__,
+                    )
+            return []
+
+        text = result.stdout.strip()
+        if not text:
+            return []
+
+        # Parse OCR output into paragraphs
+        joiner = joiner_for_text(text[:20000])
+        paras = normalize_paragraphs(text, joiner=joiner)
+        return [p for p in paras if p.strip()]
+    except FileNotFoundError:
+        # tesseract not installed — not an error, just unavailable
+        if not getattr(_ocr_page_with_tesseract, "_logged_missing", False):
+            _ocr_page_with_tesseract._logged_missing = True  # type: ignore[attr-defined]
+            print(
+                "[NOTE] Tesseract not found on PATH. OCR fallback unavailable.\n"
+                "       Install: brew install tesseract (macOS) / apt install tesseract-ocr (Linux)",
+                file=os.sys.__stderr__,
+            )
+        return []
+    except Exception:
+        return []
+    finally:
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
+
+
 def extract_chunks_from_pdf(
     pdf_path: Path,
     attachment_key: str,
@@ -275,7 +505,20 @@ def extract_chunks_from_pdf(
         "is_corrupted": False,
         "scanned_pages": [],
         "corrupted_pages": [],
+        "extraction_failure_pages": [],
+        "content_corruption_pages": [],
+        "ocr_fallback_pages": [],
+        "low_text_pages": [],
+        "empty_pages": [],
         "total_pages": 1,
+        "scanned_ratio": 0.0,
+        "corrupted_ratio": 0.0,
+        "extraction_failure_ratio": 0.0,
+        "ocr_fallback_ratio": 0.0,
+        "avg_corruption_score": 0.0,
+        "max_corruption_score": 0.0,
+        "avg_extraction_failure_score": 0.0,
+        "page_scores": {},
     }
 
     # 章構造を事前に取得（失敗しても処理続行）
@@ -294,9 +537,19 @@ def extract_chunks_from_pdf(
             try:
                 paras_by_page: List[List[str]] = []
                 page_labels: Dict[int, str] = {}
-                scanned_pages = []
-                corrupted_pages = []
+                scanned_pages = []          # image-only pages (needs Docling)
+                corrupted_pages = []        # above corruption threshold
+                extraction_failure_pages = []  # font-encoding mismatch → Tesseract fallback
+                content_corruption_pages = []  # OCR / linguistic corruption
+                ocr_fallback_pages = []     # pages where Tesseract fallback was used
+                ocr_notified = False        # one-time "OCR started" message
+                low_text_pages = []         # very little text but not image-only
+                empty_pages = []            # no text, no images
+                page_scores: Dict[int, Dict[str, Any]] = {}  # per-page scores
                 total_pages = doc.page_count
+
+                SCAN_THRESHOLD = float(os.environ.get("TEXT_QUALITY_SCAN_THRESHOLD", "0.8"))
+                CORRUPTION_THRESHOLD = float(os.environ.get("TEXT_QUALITY_CORRUPTION_THRESHOLD", "0.6"))
 
                 for pi in range(doc.page_count):
                     try:
@@ -316,7 +569,14 @@ def extract_chunks_from_pdf(
                             file=os.sys.__stderr__,
                         )
                         paras_by_page.append([])
-                        scanned_pages.append(pi + 1)
+                        try:
+                            has_images = len(page.get_images()) > 0
+                        except Exception:
+                            has_images = False
+                        if has_images:
+                            scanned_pages.append(pi + 1)
+                        else:
+                            empty_pages.append(pi + 1)
                         continue
 
                     if not paras:
@@ -327,12 +587,57 @@ def extract_chunks_from_pdf(
                             has_images = False
                         if has_images:
                             scanned_pages.append(pi + 1)
+                        else:
+                            empty_pages.append(pi + 1)
                         continue
 
                     joined = "\n\n".join(paras)
-                    
-                    # Analyze text quality per page
+
+                    # Analyze text quality per page (score-based)
                     quality = analyze_text_quality(joined)
+
+                    # Tesseract OCR fallback for font-encoding mismatch.
+                    # When PyMuPDF can't decode custom fonts, we render the
+                    # page to an image and OCR it — much lighter than Docling.
+                    ocr_used = False
+                    if (
+                        PDF_OCR_FALLBACK
+                        and quality["corruption_type"] == "extraction_failure"
+                        and quality["extraction_failure_score"] >= 0.5
+                    ):
+                        if not ocr_notified:
+                            ocr_notified = True
+                            print(
+                                f"[PROGRESS]   OCR fallback activated for "
+                                f"attachment={attachment_key} "
+                                f"(font-encoding mismatch detected). "
+                                f"This may take ~1 sec per affected page...",
+                                file=os.sys.__stderr__,
+                            )
+                        ocr_paras = _ocr_page_with_tesseract(page)
+                        if ocr_paras:
+                            paras = ocr_paras
+                            joined = "\n\n".join(paras)
+                            quality = analyze_text_quality(joined)
+                            ocr_used = True
+
+                    page_scores[pi + 1] = {
+                        "scan_score": quality["scan_score"],
+                        "extraction_failure_score": quality["extraction_failure_score"],
+                        "content_corruption_score": quality["content_corruption_score"],
+                        "corruption_score": quality["corruption_score"],
+                    }
+                    if ocr_used:
+                        page_scores[pi + 1]["ocr_fallback"] = True
+                        ocr_fallback_pages.append(pi + 1)
+                        # Progress every 10 pages (after append so count is current)
+                        if len(ocr_fallback_pages) % 10 == 0:
+                            print(
+                                f"[PROGRESS]   ↳ OCR fallback: {len(ocr_fallback_pages)} pages done "
+                                f"(page {pi+1}/{total_pages})",
+                                file=os.sys.__stderr__,
+                            )
+
                     if quality["is_scanned"]:
                         try:
                             has_images = len(page.get_images()) > 0
@@ -340,8 +645,14 @@ def extract_chunks_from_pdf(
                             has_images = False
                         if has_images:
                             scanned_pages.append(pi + 1)
+                        else:
+                            low_text_pages.append(pi + 1)
                     elif quality["is_corrupted"]:
                         corrupted_pages.append(pi + 1)
+                        if quality["corruption_type"] == "extraction_failure":
+                            extraction_failure_pages.append(pi + 1)
+                        elif quality["corruption_type"] == "content_corruption":
+                            content_corruption_pages.append(pi + 1)
 
                     if looks_like_gibberish(joined):
                         paras_by_page.append([])
@@ -349,12 +660,46 @@ def extract_chunks_from_pdf(
 
                     paras_by_page.append(paras)
 
+                # Compute aggregate scores
+                scanned_ratio = len(scanned_pages) / max(1, total_pages)
+                corrupted_ratio = len(corrupted_pages) / max(1, total_pages)
+                extraction_failure_ratio = len(extraction_failure_pages) / max(1, total_pages)
+
+                # Aggregate per-page scores
+                avg_corruption_score = 0.0
+                max_corruption_score = 0.0
+                avg_extraction_failure_score = 0.0
+                if page_scores:
+                    avg_corruption_score = sum(s["corruption_score"] for s in page_scores.values()) / len(page_scores)
+                    max_corruption_score = max(s["corruption_score"] for s in page_scores.values())
+                    avg_extraction_failure_score = sum(s["extraction_failure_score"] for s in page_scores.values()) / len(page_scores)
+
+                if ocr_fallback_pages:
+                    print(
+                        f"[PROGRESS]   OCR fallback summary: "
+                        f"{len(ocr_fallback_pages)}/{total_pages} pages processed with OCR",
+                        file=os.sys.__stderr__,
+                    )
+
                 quality_info = {
-                    "is_scanned": len(scanned_pages) / max(1, total_pages) >= 0.8,
-                    "is_corrupted": len(corrupted_pages) > 0,
+                    "is_scanned": scanned_ratio >= SCAN_THRESHOLD,
+                    "is_corrupted": corrupted_ratio >= CORRUPTION_THRESHOLD,
                     "scanned_pages": scanned_pages,
                     "corrupted_pages": corrupted_pages,
+                    "extraction_failure_pages": extraction_failure_pages,
+                    "content_corruption_pages": content_corruption_pages,
+                    "ocr_fallback_pages": ocr_fallback_pages,
+                    "low_text_pages": low_text_pages,
+                    "empty_pages": empty_pages,
                     "total_pages": total_pages,
+                    "scanned_ratio": round(scanned_ratio, 3),
+                    "corrupted_ratio": round(corrupted_ratio, 3),
+                    "extraction_failure_ratio": round(extraction_failure_ratio, 3),
+                    "ocr_fallback_ratio": round(len(ocr_fallback_pages) / max(1, total_pages), 3),
+                    "avg_corruption_score": round(avg_corruption_score, 3),
+                    "max_corruption_score": round(max_corruption_score, 3),
+                    "avg_extraction_failure_score": round(avg_extraction_failure_score, 3),
+                    "page_scores": page_scores,
                 }
 
                 repeated_lines: set[str] = set()
@@ -392,7 +737,10 @@ def extract_chunks_from_pdf(
                             continue
 
                     joined = "\n\n".join(paras)
-                    local_min_chunk = MIN_CHUNK_CHARS_NO_SPACE if is_no_space_language_document(joined) else MIN_CHUNK_CHARS
+                    is_cjk = is_no_space_language_document(joined)
+                    local_min_chunk = MIN_CHUNK_CHARS_NO_SPACE if is_cjk else MIN_CHUNK_CHARS
+                    local_max_chars = MAX_CHARS_CJK if is_cjk else MAX_CHARS
+                    local_target_chars = TARGET_CHARS_CJK if is_cjk else TARGET_CHARS
 
                     page_chunks: List[Tuple[str, str, Dict[str, Any]]] = []
                     for para_index, para_text in enumerate(paras):
@@ -400,7 +748,7 @@ def extract_chunks_from_pdf(
                         if not para_text:
                             continue
 
-                        parts = split_long_paragraph(para_text, max_chars=MAX_CHARS)
+                        parts = split_long_paragraph(para_text, max_chars=local_max_chars, target_chars=local_target_chars)
                         for part_index, part in enumerate(parts):
                             part = part.strip()
                             if len(part) < HARD_MIN_CHARS:
@@ -433,7 +781,7 @@ def extract_chunks_from_pdf(
                             )
                             page_chunks.append((chunk_id, part, md))
 
-                    page_chunks = merge_short_chunk_records(page_chunks, min_chars=local_min_chunk, max_chars=MAX_CHARS)
+                    page_chunks = merge_short_chunk_records(page_chunks, min_chars=local_min_chunk, max_chars=local_max_chars)
                     chunks.extend(page_chunks)
 
             finally:
@@ -459,12 +807,18 @@ def extract_chunks_from_pdf(
 
     finally:
         if captured_text and "MuPDF error" in captured_text:
-            for line in captured_text.splitlines():
-                if "MuPDF error" in line:
-                    print(
-                        f"[WARN] PyMuPDF reported error: attachment={attachment_key} file={pdf_path} {line}",
-                        file=os.sys.__stderr__,
-                    )
+            # Deduplicate: group identical messages, show each once with count
+            from collections import Counter
+            error_lines = [line.strip() for line in captured_text.splitlines()
+                          if "MuPDF error" in line]
+            counts = Counter(error_lines)
+            for msg, count in counts.most_common():
+                suffix = f" (x{count})" if count > 1 else ""
+                print(
+                    f"[WARN] PyMuPDF: {msg}{suffix} "
+                    f"[attachment={attachment_key}]",
+                    file=os.sys.__stderr__,
+                )
 
     ids = [cid for (cid, _, _) in chunks]
     if len(ids) != len(set(ids)):

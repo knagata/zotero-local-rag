@@ -6,6 +6,9 @@ from html_extract import extract_main_text_from_html
 from text_utils import (
     HARD_MIN_CHARS,
     MAX_CHARS,
+    TARGET_CHARS,
+    MAX_CHARS_CJK,
+    TARGET_CHARS_CJK,
     MIN_CHUNK_CHARS,
     MIN_CHUNK_CHARS_NO_SPACE,
     clean_extracted_text,
@@ -140,7 +143,10 @@ def index_notes(
             updated_notes += 1
             continue
 
-        local_min_chunk = MIN_CHUNK_CHARS_NO_SPACE if is_no_space_language_document(joined) else MIN_CHUNK_CHARS
+        is_cjk = is_no_space_language_document(joined)
+        local_min_chunk = MIN_CHUNK_CHARS_NO_SPACE if is_cjk else MIN_CHUNK_CHARS
+        local_max_chars = MAX_CHARS_CJK if is_cjk else MAX_CHARS
+        local_target_chars = TARGET_CHARS_CJK if is_cjk else TARGET_CHARS
 
         note_chunks: list[tuple[str, str, dict[str, Any]]] = []
 
@@ -149,7 +155,7 @@ def index_notes(
             if not para_text:
                 continue
 
-            parts = split_long_paragraph(para_text, max_chars=MAX_CHARS)
+            parts = split_long_paragraph(para_text, max_chars=local_max_chars, target_chars=local_target_chars)
             for part_index, part in enumerate(parts):
                 part = part.strip()
                 if len(part) < HARD_MIN_CHARS:
@@ -166,7 +172,7 @@ def index_notes(
                 )
                 note_chunks.append((cid, part, md))
 
-        note_chunks = merge_short_chunk_records(note_chunks, min_chars=local_min_chunk, max_chars=MAX_CHARS)
+        note_chunks = merge_short_chunk_records(note_chunks, min_chars=local_min_chunk, max_chars=local_max_chars)
 
         for cid, part, md in note_chunks:
             pending_ids.append(cid)

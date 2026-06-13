@@ -60,7 +60,21 @@ GitHubから最新バージョンを自動でダウンロードして上書き�
 
 更新後はClaude Desktopを再起動してください。
 
-### 4. 引用ネットワークの更新（Semantic Scholar連携）
+### 4. 日本語PDFのテキスト抽出品質を上げる（任意）
+
+一部のPDF（独自フォントを使用しているもの）では、PyMuPDF がテキストを正しく抽出できない場合があります。そのような場合、Tesseract OCR をフォールバックとして使用することで、ページを画像化してOCRし、正しいテキストを取得できます。
+
+```bash
+# macOS
+brew install tesseract tesseract-lang
+
+# Linux
+sudo apt install tesseract-ocr tesseract-ocr-jpn
+```
+
+インストール後は自動的に日本語＋英語のOCRが有効になります。Tesseract が無い場合もエラーにはならず、通常のPyMuPDF抽出のみで動作します。
+
+### 5. 引用ネットワークの更新（Semantic Scholar連携）
 
 Zotero文献の被引用情報（どの論文に引用されているか）をSemantic Scholar APIから取得してデータベースに保存します。`build_citation_network` ツールをMCP経由でClaudeに依頼するか、以下のスクリプトから手動で実行できます。
 
@@ -73,7 +87,7 @@ Zotero文献の被引用情報（どの論文に引用されているか）をSe
 
 > **詳細ヘルプ**: メニューの選び方、ステータスの意味、429エラーやエラー回復の仕組みについては [`CITATION_UPDATE_GUIDE.md`](./CITATION_UPDATE_GUIDE.md) を参照してください。エラーが出た場合も Force rebuild は不要で、メニュー3の再実行だけで該当分が自動回収されます。
 
-### 5. 環境変数（手動設定の場合）
+### 6. 環境変数（手動設定の場合）
 
 手動でMCP設定を記述する場合に必要な環境変数です。
 

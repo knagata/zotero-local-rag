@@ -7,6 +7,10 @@
 #   "uvicorn[standard]",
 #   "requests",
 #   "python-dotenv",
+#   "chromadb",
+#   "umap-learn",
+#   "scikit-learn",
+#   "scipy",
 # ]
 # ///
 """
@@ -41,6 +45,7 @@ import random
 import re
 import sqlite3
 import sys
+import time
 import webbrowser
 from pathlib import Path
 
@@ -364,6 +369,210 @@ LAYOUT_VERSION = "v2-sem-noverlap"
 SEM_KNN_K = 5            # 各Zoteroアイテムから張る意味エッジの本数
 SEM_SIM_THRESHOLD = 0.35 # コサイン類似度がこれ未満の近傍にはエッジを張らない
 SEM_EDGE_WEIGHT = 0.4    # 引用エッジ(weight=1.0)に対する意味エッジの相対重み係数
+
+# 意味空間マップ用の次元削減手法
+SEMANTIC_LAYOUT_METHODS = ["umap", "tsne", "pca", "mds"]
+
+
+def compute_semantic_layout(
+    vectors: dict[str, list[float]],
+    method: str = "umap",
+    *,
+    random_state: int = 42,
+) -> dict[str, tuple[float, float]]:
+    """次元削減で資料ベクトルを2次元に縮約し、意味空間マップ座標を返す。
+
+    Args:
+        vectors: {item_key: embedding_vector} の辞書
+        method: "umap" | "tsne" | "pca" | "mds"
+        random_state: 乱数シード
+
+    Returns:
+        {item_key: (x, y)} の辞書。座標はスケーリング済み。
+    """
+    import numpy as np
+
+    if not vectors or len(vectors) < 2:
+        return {}
+
+    keys = list(vectors.keys())
+    X = np.array([vectors[k] for k in keys], dtype=np.float32)
+
+    _print = lambda *a, **kw: print(*a, file=sys.stderr, **kw)
+    t0 = time.time()
+    _print(f"  [semantic-layout] method={method}, n={len(keys)}")
+
+    if method == "pca":
+        from sklearn.decomposition import PCA
+        reducer = PCA(n_components=2, random_state=random_state)
+        coords = reducer.fit_transform(X)
+    elif method == "tsne":
+        from sklearn.manifold import TSNE
+        reducer = TSNE(
+            n_components=2, perplexity=min(30, len(keys) - 1),
+            random_state=random_state, metric="cosine", n_jobs=1,
+        )
+        coords = reducer.fit_transform(X)
+    elif method == "mds":
+        from sklearn.manifold import MDS
+        # コサイン距離で前計算 (正規化済みベクトルなら dot で類似度 → 1 - similarity = cosine distance)
+        # ただしメモリ節約のため、metric MDS にユークリッド距離を渡す（PCA初期化 + cosine距離の代替）
+        reducer = MDS(
+            n_components=2, random_state=random_state,
+            dissimilarity="precomputed", normalized_stress="auto",
+            n_init=1, max_iter=300,
+        )
+        # コサイン距離行列
+        D = 1.0 - (X @ X.T)
+        np.fill_diagonal(D, 0.0)
+        D = np.maximum(D, 0.0)  # 浮動小数点誤差対策
+        coords = reducer.fit_transform(D)
+    else:  # umap (default)
+        from umap import UMAP
+        reducer = UMAP(
+            n_components=2, n_neighbors=min(15, len(keys) - 1),
+            min_dist=0.1, metric="cosine", random_state=random_state,
+            verbose=False,
+        )
+        coords = reducer.fit_transform(X)
+
+    elapsed = time.time() - t0
+    _print(f"  [semantic-layout] method={method} done in {elapsed:.1f}s")
+
+    # スケーリング: sigma.js の bboxR ≈ span * 0.65 で正規化されるので、
+    # 十分な広がりを持たせる（FA2 と同様に ~24000 units）
+    cx = (coords[:, 0].max() + coords[:, 0].min()) / 2
+    cy = (coords[:, 1].max() + coords[:, 1].min()) / 2
+    span = max(
+        coords[:, 0].max() - coords[:, 0].min(),
+        coords[:, 1].max() - coords[:, 1].min(),
+        1.0,
+    )
+    scale = 24000.0 / span
+
+    result: dict[str, tuple[float, float]] = {}
+    for i, key in enumerate(keys):
+        x = float((coords[i, 0] - cx) * scale)
+        y = float((coords[i, 1] - cy) * scale)
+        result[key] = (round(x, 1), round(y, 1))
+
+    return result
+
+
+def compute_clusters(
+    vectors: dict[str, list[float]],
+    positions: dict[str, tuple[float, float]],
+    *,
+    distance_threshold: float = 0.5,
+) -> list[dict]:
+    """Zotero 資料の埋め込みベクトルをクラスタリングし、ConvexHull 領域を返す。
+
+    Args:
+        vectors: {item_key: embedding_vector}
+        positions: {item_key: (x, y)}  — 2D 座標（次元削減後）
+        min_cluster_size: これ未満のクラスタは「その他」に統合
+        distance_threshold: AgglomerativeClustering の距離閾値（cosine 距離）
+
+    Returns:
+        [{"id": 0, "label": "A", "item_keys": [...], "hull": [[x,y],...], "color": "#xxx"}, ...]
+    """
+    import numpy as np
+    from sklearn.cluster import AgglomerativeClustering
+    from scipy.spatial import ConvexHull
+
+    if len(vectors) < 5:
+        return []
+
+    keys = list(vectors.keys())
+    X = np.array([vectors[k] for k in keys], dtype=np.float32)
+
+    # AgglomerativeClustering with cosine distance
+    clustering = AgglomerativeClustering(
+        n_clusters=None,
+        distance_threshold=distance_threshold,
+        metric="cosine",
+        linkage="average",
+    )
+    labels = clustering.fit_predict(X)
+
+    # クラスタごとにグループ化
+    groups: dict[int, list[str]] = {}
+    for key, label in zip(keys, labels):
+        groups.setdefault(int(label), []).append(key)
+
+    # クラスタサイズ降順にソート
+    sorted_clusters = sorted(groups.items(), key=lambda x: -len(x[1]))
+
+    # カラーパレット（視認性の高い色）
+    palette = [
+        "#4C78A8", "#F58518", "#E45756", "#72B7B2", "#54A24B",
+        "#EECA3B", "#B279A2", "#FF9DA6", "#9D755D", "#BAB0AC",
+        "#A0CBE8", "#FFBE7D", "#F28E2B", "#86BCB6", "#59A14F",
+        "#8CD17D", "#B6992D", "#499894", "#D37295", "#F1CE63",
+    ]
+
+    result = []
+    for idx, (gid, members) in enumerate(sorted_clusters):
+        if len(result) >= len(palette):
+            break
+
+        if idx < 26:
+            label = chr(65 + idx)  # A-Z
+        else:
+            label = chr(65 + (idx - 26) // 26) + chr(65 + (idx - 26) % 26)
+
+        # ConvexHull を 2D 座標から計算
+        hull: list[list[float]] = []
+        cluster_2d = np.array([positions[k] for k in members if k in positions], dtype=np.float32)
+        if len(cluster_2d) >= 3:
+            try:
+                ch = ConvexHull(cluster_2d)
+                # 頂点数を制限（最大32点）
+                verts = cluster_2d[ch.vertices]
+                if len(verts) > 32:
+                    step = max(1, len(verts) // 32)
+                    verts = verts[::step]
+                hull = [[round(float(v[0]), 1), round(float(v[1]), 1)] for v in verts]
+            except Exception:
+                hull = []
+
+        result.append({
+            "id": idx,
+            "label": label,
+            "item_keys": members,
+            "hull": hull,
+            "color": palette[idx],
+        })
+
+    return result
+
+
+def _get_semantic_layout_cache_path(method: str) -> Path:
+    return PROJECT_ROOT / "data" / f"semantic_layout_{method}.json"
+
+
+def _load_semantic_layout_cache(method: str) -> dict[str, tuple[float, float]] | None:
+    cache_path = _get_semantic_layout_cache_path(method)
+    if not cache_path.exists():
+        return None
+    try:
+        data = json.loads(cache_path.read_text())
+        return {k: tuple(v) for k, v in data.get("positions", {}).items()}
+    except Exception:
+        return None
+
+
+def _save_semantic_layout_cache(method: str, positions: dict[str, tuple[float, float]]) -> None:
+    cache_path = _get_semantic_layout_cache_path(method)
+    try:
+        tmp = cache_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps({
+            "method": method,
+            "positions": {k: list(v) for k, v in positions.items()},
+        }))
+        tmp.replace(cache_path)
+    except Exception:
+        pass
 
 
 def compute_layout(
@@ -825,6 +1034,68 @@ def _build_sigma_html(
     background: var(--surface); transition: right 0.25s ease;
   }
   body.sb-collapsed #sigma-container { right: 0; }
+
+  /* ── View mode tabs (bottom-left floating pill) ── */
+  #view-tabs {
+    position: fixed; bottom: 16px; left: 16px; z-index: 600;
+    display: flex; gap: 0;
+    background: var(--surface-container-high);
+    border: 1px solid var(--outline-variant);
+    border-radius: 8px;
+    overflow: hidden;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.5);
+  }
+  .view-tab {
+    padding: 6px 14px; font-size: 11.5px; cursor: pointer;
+    border: none; background: none; color: var(--on-surface-variant);
+    transition: color 0.15s, background 0.15s;
+    white-space: nowrap;
+  }
+  .view-tab + .view-tab { border-left: 1px solid var(--outline-variant); }
+  .view-tab.active {
+    color: #fff; background: var(--node-zotero); font-weight: 500;
+  }
+  .view-tab:hover:not(.active) { color: var(--on-surface); background: var(--surface-container-low); }
+  /* 意味マップモード用プルダウン（凡例カード内） */
+  #semantic-method-wrap {
+    display: none; margin-top: 12px;
+  }
+  #semantic-method-wrap.show { display: block; }
+  #semantic-method-wrap label {
+    display: block; font-size: 10.5px; color: var(--text-dis); margin-bottom: 4px;
+  }
+  #semantic-method-select {
+    width: 100%; padding: 4px 6px; font-size: 11.5px;
+    background: var(--surface-container-high); color: var(--on-surface);
+    border: 1px solid var(--outline-variant); border-radius: 4px; cursor: pointer;
+    outline: none;
+  }
+  #semantic-method-select:focus { border-color: var(--node-zotero); }
+
+  /* ── Cluster overlay canvas ── */
+  #cluster-overlay {
+    position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+    pointer-events: none; z-index: 10;
+  }
+
+  /* ── Cluster legend (in legend card) ── */
+  #cluster-legend { display: none; margin-top: 12px; }
+  #cluster-legend.show { display: block; }
+  #cluster-legend .cl-header {
+    font-size: 10.5px; color: var(--text-dis); margin-bottom: 6px;
+  }
+  #cluster-legend .cl-row {
+    display: flex; align-items: center; gap: 6px; margin-bottom: 3px;
+    cursor: pointer; padding: 2px 4px; border-radius: 3px;
+    font-size: 11px; color: var(--on-surface-variant);
+  }
+  #cluster-legend .cl-row:hover { background: var(--surface-container-high); }
+  #cluster-legend .cl-row.active { background: var(--surface-container-high); color: var(--on-surface); }
+  #cluster-legend .cl-dot {
+    width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0;
+  }
+  #cluster-legend .cl-label { flex: 1; }
+  #cluster-legend .cl-count { font-size: 10.5px; color: var(--text-dis); }
 
   /* ── Sidebar ── */
   #sidebar {
@@ -1422,6 +1693,21 @@ def _build_sigma_html(
     スクロールでズーム · ドラッグで移動<br>
     ホバーで詳細 · クリックでノード選択
   </div>
+  <div id="semantic-method-wrap">
+    <hr class="rl-divider">
+    <label>次元削減手法</label>
+    <select id="semantic-method-select">
+      <option value="umap">UMAP</option>
+      <option value="tsne">t-SNE</option>
+      <option value="pca">PCA</option>
+      <option value="mds">MDS (cosine)</option>
+    </select>
+  </div>
+  <div id="cluster-legend">
+    <hr class="rl-divider">
+    <div class="cl-header">クラスタ（クリックで絞り込み）</div>
+    <div id="cluster-legend-list"></div>
+  </div>
   </div>
 </div>"""
 
@@ -1481,6 +1767,310 @@ fetch('/api/graph')
     var _elRefVis   = document.getElementById('stat-ref-vis');
     if (_elCiterVis) { _elCiterVis.textContent = _nC; _elCiterVis.parentElement.lastChild.textContent = '('+_nC+')'; }
     if (_elRefVis)   { _elRefVis.textContent   = _nR; _elRefVis.parentElement.lastChild.textContent   = '('+_nR+')'; }
+
+    // ── Semantic map state ─────────────────────────────────────────────────
+    var _viewMode = 'citation';                     // 'citation' | 'semantic'
+    var _semanticMethod = 'umap';                   // 選択中の次元削減手法
+    var _semanticPositions = {};                    // { node_id: [x, y] }
+    var _citationNodePositions = {};                // 引用ネットワークのノード位置バックアップ
+    var _semanticAbort = null;                      // 進行中の fetch をキャンセルするための AbortController
+    var _semanticLayoutReady = false;
+    var _semanticReqId = 0;                         // リクエスト識別子（古いレスポンスを破棄）
+    var _clusterData = [];                          // クラスタ情報 [{id, label, item_keys, hull, color}, ...]
+    var _selectedClusterId = -1;                    // -1 = 未選択
+    var _clusterItemMap = {};                       // item_key → cluster_id
+
+    // ── Save citation positions immediately (deep copy from graphology) ──
+    // Wait for graph to be available, then save.  This runs after the graph is built.
+    function _saveCitationPositionsNow() {
+      _citationNodePositions = {};
+      try {
+        graph.forEachNode(function (id, attrs) {
+          if (attrs.x != null) {
+            _citationNodePositions[id] = [attrs.x, attrs.y];
+          }
+        });
+        console.log('[RAG] saved citation positions: ' + Object.keys(_citationNodePositions).length + ' nodes');
+      } catch(e) {
+        // graph not ready yet — will retry on first use
+        console.warn('[RAG] could not save citation positions (graph not ready):', e);
+      }
+    }
+
+    function _loadSemanticLayout(method) {
+      // 進行中のリクエストがあればキャンセル
+      if (_semanticAbort) { _semanticAbort.abort(); }
+      _semanticAbort = new AbortController();
+      var signal = _semanticAbort.signal;
+      var reqId = ++_semanticReqId;
+
+      // badgePct の参照を壊さないよう、label テキストは data-label 属性で管理
+      var badge = document.getElementById('layout-badge');
+      var badgePctEl = document.getElementById('layout-pct');
+      if (badge) {
+        badge.style.display = 'block';
+        badge.setAttribute('data-label', '意味マップ計算中 (' + method.toUpperCase() + ')');
+        if (badgePctEl) badgePctEl.textContent = badge.getAttribute('data-label');
+      }
+      console.log('[RAG] loading semantic layout: method=' + method + ' reqId=' + reqId);
+      fetch('/api/semantic-layout?method=' + encodeURIComponent(method), { signal: signal })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          // 古いリクエストの結果は無視
+          if (reqId !== _semanticReqId) {
+            console.log('[RAG] discarding stale response: reqId=' + reqId + ' current=' + _semanticReqId);
+            return;
+          }
+          _semanticPositions = data.positions || {};
+          _semanticLayoutReady = true;
+          _semanticMethod = method;
+
+          // クラスタデータ
+          _clusterData = data.clusters || [];
+          _clusterItemMap = {};
+          _clusterData.forEach(function(c) {
+            c.item_keys.forEach(function(ik) { _clusterItemMap[ik] = c.id; });
+          });
+          _buildClusterLegend();
+          _drawClusterHulls();
+
+          console.log('[RAG] semantic layout loaded: method=' + method +
+                      ' totalPositions=' + Object.keys(_semanticPositions).length +
+                      ' nItems=' + (data.n_items || 0) +
+                      ' clusters=' + _clusterData.length);
+          if (_viewMode === 'semantic') {
+            _applySemanticPositions();
+          }
+          var _b = document.getElementById('layout-badge');
+          if (_b) _b.style.display = 'none';
+        })
+        .catch(function(e) {
+          if (e.name === 'AbortError') return;  // キャンセルは無視
+          console.error('[RAG] semantic layout fetch failed:', e);
+          var _b = document.getElementById('layout-badge');
+          if (_b) _b.style.display = 'none';
+        });
+    }
+
+    function _applySemanticPositions() {
+      // Save citation positions on first switch (if not already saved)
+      if (Object.keys(_citationNodePositions).length === 0) {
+        _saveCitationPositionsNow();
+      }
+      var pos = _semanticPositions;
+      var count = 0;
+      graph.forEachNode(function (id, attrs) {
+        if (pos[id]) {
+          graph.setNodeAttribute(id, 'x', pos[id][0]);
+          graph.setNodeAttribute(id, 'y', pos[id][1]);
+          count++;
+        }
+      });
+      console.log('[RAG] applied semantic positions: ' + count + ' nodes updated');
+      renderer.refresh();
+
+      // ビューポートフィット
+      if (selectedNode && typeof window._panToNode === 'function') {
+        window._panToNode(selectedNode);
+      } else if (typeof _fitView === 'function') {
+        _fitView(true);
+      }
+    }
+
+    function _restoreCitationPositions() {
+      // Ensure we have saved positions
+      if (Object.keys(_citationNodePositions).length === 0) {
+        console.warn('[RAG] no citation positions saved, cannot restore');
+        return;
+      }
+      var cpos = _citationNodePositions;
+      var count = 0;
+      graph.forEachNode(function (id, attrs) {
+        if (cpos[id]) {
+          graph.setNodeAttribute(id, 'x', cpos[id][0]);
+          graph.setNodeAttribute(id, 'y', cpos[id][1]);
+          count++;
+        }
+      });
+      console.log('[RAG] restored citation positions: ' + count + ' nodes');
+      renderer.refresh();
+
+      // D3 シミュレーションを再開し、物理演算レイアウトを収束させる
+      if (typeof simulation !== 'undefined' && simulation && typeof _addD3Nodes === 'function') {
+        // バッジラベルを「再レイアウト中」に
+        var _rb = document.getElementById('layout-badge');
+        if (_rb) {
+          _rb.setAttribute('data-label', '再レイアウト中');
+          var _rp = document.getElementById('layout-pct');
+          if (_rp) _rp.textContent = '再レイアウト中 0%';
+        }
+        // d3 state を全ノードで再構築（コレクションフィルタ後でも正しく動作）
+        d3nodeById = {};
+        d3nodes = [];
+        activeNodeIds = new Set();
+        graph.forEachNode(function (id) { _addD3Nodes([id]); });
+        _rebuildLinks();
+        simulation.nodes(d3nodes);
+        simulation.force('link').links(d3links);
+        layoutDone = false;
+        simulation.alpha(0.3);
+        var badge = document.getElementById('layout-badge');
+        if (badge) badge.style.display = 'block';
+        requestAnimationFrame(layoutStep);
+      } else {
+        if (selectedNode && typeof window._panToNode === 'function') {
+          window._panToNode(selectedNode);
+        } else if (typeof _fitView === 'function') {
+          _fitView(true);
+        }
+      }
+    }
+
+    function switchViewMode(mode) {
+      if (mode === _viewMode) return;
+      _viewMode = mode;
+
+      document.querySelectorAll('.view-tab').forEach(function(t) {
+        t.classList.toggle('active', t.dataset.view === mode);
+      });
+
+      var methodWrap = document.getElementById('semantic-method-wrap');
+      var clusterLegend = document.getElementById('cluster-legend');
+      if (mode === 'semantic') {
+        if (methodWrap) methodWrap.classList.add('show');
+        if (clusterLegend && _clusterData.length > 0) clusterLegend.classList.add('show');
+        _drawClusterHulls();
+        if (_semanticLayoutReady) {
+          _applySemanticPositions();
+        } else {
+          _loadSemanticLayout(_semanticMethod);
+        }
+      } else {
+        if (methodWrap) methodWrap.classList.remove('show');
+        if (clusterLegend) clusterLegend.classList.remove('show');
+        _selectedClusterId = -1;
+        if (window._colItemKeys !== null) {
+          // クラスタフィルタを解除（コレクションフィルタはそのまま）
+          window._colItemKeys = null;
+          if (typeof _applyColFilter === 'function') _applyColFilter();
+        }
+        _restoreCitationPositions();
+      }
+    }
+
+    // ── Cluster hull drawing ───────────────────────────────────────────────
+    function _drawClusterHulls() {
+      var canvas = document.getElementById('cluster-overlay');
+      if (!canvas || !_clusterData.length) return;
+      var dim = renderer.getDimensions();
+      canvas.width = dim.width; canvas.height = dim.height;
+      var ctx = canvas.getContext('2d');
+      ctx.clearRect(0, 0, dim.width, dim.height);
+
+      _clusterData.forEach(function(c) {
+        if (!c.hull || c.hull.length < 3) return;
+        ctx.beginPath();
+        var first = true;
+        c.hull.forEach(function(pt) {
+          var sp = renderer.graphToViewport({ x: pt[0], y: pt[1] });
+          var sx = sp.x * dim.width, sy = sp.y * dim.height;
+          if (first) { ctx.moveTo(sx, sy); first = false; }
+          else { ctx.lineTo(sx, sy); }
+        });
+        ctx.closePath();
+        ctx.fillStyle = c.color + '18';  // 10% opacity
+        ctx.strokeStyle = c.color + '66'; // 40% opacity
+        ctx.lineWidth = 2;
+        ctx.fill();
+        ctx.stroke();
+      });
+    }
+
+    // ── Cluster legend builder ─────────────────────────────────────────────
+    function _buildClusterLegend() {
+      var wrap = document.getElementById('cluster-legend');
+      var list = document.getElementById('cluster-legend-list');
+      if (!wrap || !list) return;
+      if (_viewMode === 'semantic' && _clusterData.length > 0) {
+        wrap.classList.add('show');
+      } else {
+        wrap.classList.remove('show');
+        return;
+      }
+      list.innerHTML = '';
+      _clusterData.forEach(function(c) {
+        var row = document.createElement('div');
+        row.className = 'cl-row' + (c.id === _selectedClusterId ? ' active' : '');
+        row.innerHTML = '<span class="cl-dot" style="background:' + c.color + '"></span>' +
+                        '<span class="cl-label">' + c.label + '</span>' +
+                        '<span class="cl-count">' + c.item_keys.length + '</span>';
+        row.addEventListener('click', function() {
+          _selectCluster(c.id === _selectedClusterId ? -1 : c.id);
+        });
+        list.appendChild(row);
+      });
+    }
+
+    function _selectCluster(clusterId) {
+      _selectedClusterId = clusterId;
+      _buildClusterLegend();
+      _drawClusterHulls();
+
+      if (clusterId >= 0) {
+        var cluster = _clusterData.find(function(c) { return c.id === clusterId; });
+        if (cluster && cluster.item_keys) {
+          window._colItemKeys = new Set(cluster.item_keys);
+        }
+      } else {
+        window._colItemKeys = null;
+      }
+      if (typeof _applyColFilter === 'function') _applyColFilter();
+      renderer.refresh();
+    }
+
+    // ── Cluster click detection (via sigma clickStage) ──────────────────────
+    // Canvas overlay は pointer-events: none のまま。パン/ズームは sigma が処理する。
+    var _lastCanvasClick = { x: 0, y: 0 };
+    document.getElementById('sigma-container').addEventListener('click', function(ev) {
+      _lastCanvasClick.x = ev.offsetX;
+      _lastCanvasClick.y = ev.offsetY;
+    });
+
+    // カメラ移動時に hull 再描画
+    if (typeof camera !== 'undefined' && camera) {
+      camera.on('updated', function() {
+        if (_viewMode === 'semantic' && _clusterData.length) _drawClusterHulls();
+      });
+    }
+
+    function _pointInPolygon(x, y, polygon) {
+      var inside = false;
+      for (var i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+        var xi = polygon[i][0], yi = polygon[i][1];
+        var xj = polygon[j][0], yj = polygon[j][1];
+        if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) {
+          inside = !inside;
+        }
+      }
+      return inside;
+    }
+
+    // View tab click handlers
+    document.querySelectorAll('.view-tab').forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        switchViewMode(tab.dataset.view);
+      });
+    });
+
+    // Semantic method dropdown handler
+    var _semanticMethodSelect = document.getElementById('semantic-method-select');
+    if (_semanticMethodSelect) {
+      _semanticMethodSelect.addEventListener('change', function() {
+        _semanticMethod = this.value;
+        _semanticLayoutReady = false;  // キャッシュがなければ再計算
+        _loadSemanticLayout(_semanticMethod);
+      });
+    }
 
 /* ── 0. Layout geometry – computed first so sections 2 & 3 can use it.
         bboxR:    half-size of the fixed normalisation bounding box.
@@ -1561,6 +2151,9 @@ if (_hasPrecomputedLayout) {
   });
   console.log('[RAG] using fallback phyllotaxis layout');
 }
+
+// Save initial FA2/phyllotaxis positions for citation-network restore
+_saveCitationPositionsNow();
 
 /* ── 3. Create sigma renderer ───────────────────────────── */
 const SigmaClass = (typeof Sigma === 'function') ? Sigma
@@ -1822,6 +2415,19 @@ function nodeReducer(node, data) {
     return res;
   }
 
+  // ── Semantic map mode: hide external/reference nodes, color by cluster ────
+  if (_viewMode === 'semantic') {
+    if (data.group === 'external' || data.group === 'reference') {
+      res.hidden = true;
+      return res;
+    }
+    // Zotero ノードをクラスタ色で着色
+    if (data.group === 'zotero' && data.itemKey && _clusterItemMap[data.itemKey] !== undefined) {
+      var cl = _clusterData.find(function(c) { return c.id === _clusterItemMap[data.itemKey]; });
+      if (cl) res.color = cl.color;
+    }
+  }
+
   // ── Zoom-adaptive size ────────────────────────────────────────────────────
   // sigma node sizes are fixed screen-pixels, unaffected by camera zoom.
   // When zoomed OUT (ratio > 1): shrink nodes aggressively to prevent blob.
@@ -1914,6 +2520,19 @@ function edgeReducer(edge, data) {
       return res;
     }
   } catch(_) {}
+
+  // ── Semantic map mode: hide edges involving external nodes ────────────────
+  if (_viewMode === 'semantic') {
+    try {
+      var _sga = graph.getNodeAttributes(src), _tga = graph.getNodeAttributes(tgt);
+      if (_sga.group === 'external' || _sga.group === 'reference' ||
+          _tga.group === 'external' || _tga.group === 'reference') {
+        res.hidden = true;
+        return res;
+      }
+    } catch(_) {}
+  }
+
   if (selectedNode !== null) {
     // ── 選択中 ──────────────────────────────────────────────────────────────
     if (src === selectedNode || tgt === selectedNode ||
@@ -2176,9 +2795,28 @@ renderer.on('clickNode', function (ev) {
   }
 });
 
-// Click on empty canvas → deselect
+// Click on empty canvas → deselect, or cluster-filter in semantic mode
 renderer.on('clickStage', function () {
   _activeEdge = null;
+
+  // 意味マップモード: クラスタクリック検出
+  if (_viewMode === 'semantic' && _clusterData.length) {
+    var dim = renderer.getDimensions();
+    var rx = _lastCanvasClick.x / dim.width;
+    var ry = _lastCanvasClick.y / dim.height;
+    var gpos = renderer.viewportToGraph({ x: rx, y: ry });
+    for (var ci = 0; ci < _clusterData.length; ci++) {
+      var hull = _clusterData[ci].hull;
+      if (!hull || hull.length < 3) continue;
+      if (_pointInPolygon(gpos.x, gpos.y, hull)) {
+        _selectCluster(_selectedClusterId === _clusterData[ci].id ? -1 : _clusterData[ci].id);
+        return;
+      }
+    }
+    if (_selectedClusterId >= 0) _selectCluster(-1);
+    return;
+  }
+
   if (selectedNode !== null) { clearSelection(); }
 });
 
@@ -2206,8 +2844,9 @@ var hasDragged  = false;  // ドラッグが実際に起きたかのフラグ（
 var dragDownX   = 0, dragDownY = 0;
 var mc = renderer.getMouseCaptor();
 
-// ノードのdown: ドラッグ開始準備
+// ノードのdown: ドラッグ開始準備（意味マップモードでは無効）
 renderer.on('downNode', function (ev) {
+  if (_viewMode === 'semantic') return;  // 意味マップではドラッグ不可
   draggedNode = ev.node;
   hasDragged  = false;
   dragDownX   = ev.event.x;
@@ -2253,7 +2892,7 @@ mc.on('mousemovebody', function (ev) {
     ev.original.preventDefault();
     ev.original.stopPropagation();
     renderer.refresh();
-    if (layoutDone) {
+    if (layoutDone && _viewMode !== 'semantic') {
       layoutDone = false;
       simulation.alpha(0.2).restart();
       requestAnimationFrame(layoutStep);
@@ -2430,7 +3069,11 @@ function layoutStep() {
   });
   renderer.refresh();
   var pct = Math.round((1 - simulation.alpha()) * 100);
-  badgePct.textContent = pct + '%';
+  var _label = badge.getAttribute('data-label') || 'レイアウト計算中';
+  badgePct.textContent = _label + ' ' + pct + '%';
+  // skipボタンはレイアウト中のみ表示
+  var _skip = document.getElementById('layout-skip');
+  if (_skip) _skip.style.display = '';
   // 90% 到達時に最終フィット（ユーザー操作なしの場合のみ）
   if (!_finalFitDone && pct >= 80 && !_layoutUserInteracted) {
     _finalFitDone = true;
@@ -2494,10 +3137,11 @@ if (_hasPrecomputedLayout) {
       }
     });
     renderer.refresh();
+    var _lbl2 = badge.getAttribute('data-label') || 'レイアウト計算中';
     if (_batchQueue.length > 0) {
-      badgePct.textContent = Math.round(d3nodes.length / nNodes * 100) + '%';
+      badgePct.textContent = _lbl2 + ' ' + Math.round(d3nodes.length / nNodes * 100) + '%';
     } else {
-      badgePct.textContent = Math.round((1 - simulation.alpha()) * 100) + '%';
+      badgePct.textContent = _lbl2 + ' ' + Math.round((1 - simulation.alpha()) * 100) + '%';
     }
     if (_batchQueue.length === 0 && simulation.alpha() <= simulation.alphaMin()) {
       finishLayout(); return;
@@ -3918,8 +4562,16 @@ console.log('[RAG] sigma ready – nodes:', graph.order, 'edges:', graph.size,
   {css}
 </head>
 <body>
+  <!-- ── View mode tabs ── -->
+  <div id="view-tabs">
+    <button class="view-tab active" data-view="citation">引用ネットワーク</button>
+    <button class="view-tab" data-view="semantic">意味マップ</button>
+  </div>
+
   <!-- sigma.js renders into this div -->
-  <div id="sigma-container"></div>
+  <div id="sigma-container">
+    <canvas id="cluster-overlay"></canvas>
+  </div>
 
   <!-- Sidebar toggle button -->
   <button id="sb-toggle" title="資料一覧を表示/非表示">›</button>
@@ -4017,8 +4669,8 @@ console.log('[RAG] sigma ready – nodes:', graph.order, 'edges:', graph.size,
     </div>
   </div>
 
-  <div id="layout-badge">
-    レイアウト計算中<span id="layout-pct">0%</span>
+  <div id="layout-badge" data-label="レイアウト計算中">
+    <span id="layout-pct">0%</span>
     <button id="layout-skip" style="margin-left:10px;background:none;border:1px solid rgba(59,130,246,0.4);border-radius:4px;color:#93c5fd;font-size:10px;padding:2px 7px;cursor:pointer;">スキップ</button>
   </div>
   <div id="col-layout-badge">再レイアウト中<span id="col-layout-pct">0%</span></div>
@@ -4682,6 +5334,108 @@ def _route_collections() -> JSONResponse:
                         "Zotero が起動中の場合はしばらく待ってから再試行してください。"},
             status_code=503,
         )
+
+
+@app.get("/api/semantic-layout")
+def _route_semantic_layout(method: str = "umap") -> JSONResponse:
+    """資料ベクトルを次元削減して2D意味空間マップ座標を返す。
+
+    Query params:
+        method: "umap" (default) | "tsne" | "pca" | "mds"
+
+    Returns:
+        { positions: { item_key: [x, y], ... }, method, n_items, cached }
+    """
+    if method not in SEMANTIC_LAYOUT_METHODS:
+        return JSONResponse(
+            {"error": "invalid_method",
+             "message": f"Unknown method '{method}'. Supported: {', '.join(SEMANTIC_LAYOUT_METHODS)}"},
+            status_code=400,
+        )
+
+    # グラフ構築中なら待機
+    _rebuild_done.wait(timeout=120)
+    if _state["graph"] is None:
+        return JSONResponse(
+            {"error": "no_graph", "message": "Graph not yet built. Please wait."},
+            status_code=503,
+        )
+
+    # Zotero アイテムキーのセット（キャッシュ検証用）
+    _graph = _state["graph"]
+    _zotero_item_keys = set()
+    for n in _graph.get("nodes", []):
+        if n.get("group") == "zotero" and n.get("itemKey"):
+            _zotero_item_keys.add(n["itemKey"])
+
+    # キャッシュ確認（node ID 形式 "item:XXX" で保存されている）
+    cached = _load_semantic_layout_cache(method)
+    if cached:
+        # キャッシュから Zotero の itemKey だけ抽出して検証
+        _cached_zotero = set()
+        for k in cached:
+            if k.startswith("item:"):
+                _cached_zotero.add(k.split(":", 1)[1])
+        if _cached_zotero == _zotero_item_keys:
+            # キャッシュヒット時もクラスタリングは毎回計算（軽量）
+            item_keys_for_cluster = sorted(_zotero_item_keys)
+            vectors_cached = get_item_vectors(item_keys_for_cluster)
+            positions_cached = {k: v for k, v in cached.items() if k.startswith("item:")}
+            _raw_positions = {k.split(":", 1)[1]: v for k, v in positions_cached.items()}
+            clusters_cached = compute_clusters(vectors_cached, _raw_positions) if len(vectors_cached) >= 5 else []
+
+            return JSONResponse({
+                "positions": {k: list(v) for k, v in cached.items()},
+                "clusters": clusters_cached,
+                "method": method,
+                "n_items": len(_cached_zotero),
+                "cached": True,
+            })
+        print(f"  [semantic-layout] cache miss (item set changed), recomputing {method}",
+              file=sys.stderr)
+
+    # ベクトルロード
+    item_keys_for_layout = sorted(_zotero_item_keys)
+    vectors = get_item_vectors(item_keys_for_layout)
+    if len(vectors) < 2:
+        return JSONResponse({
+            "positions": {},
+            "method": method,
+            "n_items": 0,
+            "cached": False,
+            "warning": "Not enough item vectors (need >= 2). Run the indexer first.",
+        })
+
+    positions = compute_semantic_layout(vectors, method=method)
+    if not positions:
+        return JSONResponse({
+            "positions": {},
+            "method": method,
+            "n_items": 0,
+            "cached": False,
+            "warning": "Dimensionality reduction produced no results.",
+        })
+
+    # item:KEY → (x, y) のマップを構築（node ID 形式で統一）
+    # 外部論文は意味マップモードでは非表示のため、Zotero 資料のみ返す
+    _item_pos: dict[str, tuple[float, float]] = {}
+    for item_key, (x, y) in positions.items():
+        _item_pos[f"item:{item_key}"] = (x, y)
+
+    # キャッシュに保存
+    if _item_pos:
+        _save_semantic_layout_cache(method, _item_pos)
+
+    # クラスタリング
+    clusters = compute_clusters(vectors, positions)
+
+    return JSONResponse({
+        "positions": {k: list(v) for k, v in _item_pos.items()},
+        "clusters": clusters,
+        "method": method,
+        "n_items": len(_item_pos),
+        "cached": False,
+    })
 
 
 class _TranslateBatchRequest(BaseModel):

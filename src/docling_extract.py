@@ -11,6 +11,9 @@ from text_utils import (
     MIN_CHUNK_CHARS,
     MIN_CHUNK_CHARS_NO_SPACE,
     MAX_CHARS,
+    TARGET_CHARS,
+    MAX_CHARS_CJK,
+    TARGET_CHARS_CJK,
     HARD_MIN_CHARS,
     is_no_space_language_document,
     split_long_paragraph,
@@ -149,7 +152,10 @@ def extract_chunks_from_pdf_with_docling(
             continue
 
         joined_text = "\n\n".join(item["text"] for item in items_on_page)
-        local_min_chunk = MIN_CHUNK_CHARS_NO_SPACE if is_no_space_language_document(joined_text) else MIN_CHUNK_CHARS
+        is_cjk = is_no_space_language_document(joined_text)
+        local_min_chunk = MIN_CHUNK_CHARS_NO_SPACE if is_cjk else MIN_CHUNK_CHARS
+        local_max_chars = MAX_CHARS_CJK if is_cjk else MAX_CHARS
+        local_target_chars = TARGET_CHARS_CJK if is_cjk else TARGET_CHARS
 
         page_chunks: List[Tuple[str, str, Dict[str, Any]]] = []
         for para_index, item_data in enumerate(items_on_page):
@@ -157,7 +163,7 @@ def extract_chunks_from_pdf_with_docling(
             chapter = item_data["chapter"]
             section = item_data["section"]
 
-            parts = split_long_paragraph(para_text, max_chars=MAX_CHARS)
+            parts = split_long_paragraph(para_text, max_chars=local_max_chars, target_chars=local_target_chars)
             for part_index, part in enumerate(parts):
                 part = part.strip()
                 if len(part) < HARD_MIN_CHARS:
@@ -185,7 +191,7 @@ def extract_chunks_from_pdf_with_docling(
                 })
                 page_chunks.append((chunk_id, part, md))
 
-        page_chunks = merge_short_chunk_records(page_chunks, min_chars=local_min_chunk, max_chars=MAX_CHARS)
+        page_chunks = merge_short_chunk_records(page_chunks, min_chars=local_min_chunk, max_chars=local_max_chars)
         chunks.extend(page_chunks)
 
     return chunks, quality_info
