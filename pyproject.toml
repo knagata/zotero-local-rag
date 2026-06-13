@@ -12,9 +12,15 @@ dependencies = [
     "typing_extensions",
     "trafilatura",
     "ebooklib",
+    "beautifulsoup4",
     "pydantic>=2.12,<3",
     "fa2-modified>=0.4",
     "networkx>=3.4.2",
+    "fastapi>=0.136.3",
+    "uvicorn[standard]>=0.47.0",
+    "deepl>=1.30.0",
+    "requests>=2.34.2",
+    "python-dotenv>=1.2.2",
 ]
 
 [project.scripts]

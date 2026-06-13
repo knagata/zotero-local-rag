@@ -44,7 +44,16 @@ def extract_epub_references(epub_path: str, item_key: str) -> List[Dict[str, Any
         parsed_files[filename] = BeautifulSoup(content, 'html.parser')
 
     # Phase 1: 脚注候補を収集（HTMLスキャン、高速）
-    candidates: List[tuple] = []  # (context_snippet, raw_reference_text)
+    # target_id ごとのリンク出現回数を数える（= 本文中での引用頻度 = 重要度の代理指標）
+    from collections import Counter
+    target_link_counts: Counter = Counter()
+    for soup in parsed_files.values():
+        for a_tag in soup.find_all('a', href=True):
+            href = a_tag['href']
+            if '#' in href:
+                target_link_counts[href.split('#', 1)[1]] += 1
+
+    candidates: List[tuple] = []  # (context_snippet, raw_reference_text, target_id)
     for filename, soup in parsed_files.items():
         for a_tag in soup.find_all('a', href=True):
             href = a_tag['href']
@@ -79,12 +88,12 @@ def extract_epub_references(epub_path: str, item_key: str) -> List[Dict[str, Any
             raw_reference_text = target_p.get_text(separator=' ', strip=True)
             if raw_reference_text == context_snippet or len(raw_reference_text) < 10:
                 continue
-            candidates.append((context_snippet, raw_reference_text))
+            candidates.append((context_snippet, raw_reference_text, target_id))
 
     # Phase 2: チャンク検索（重い処理）をプログレスバー付きで実行
     from citation_mapper import search_chunks
     total_cands = len(candidates)
-    for i, (context_snippet, raw_reference_text) in enumerate(candidates):
+    for i, (context_snippet, raw_reference_text, target_id) in enumerate(candidates):
         _pbar(i + 1, total_cands, "epub ref  ")
         hits = search_chunks(context_snippet, item_key, n_results=1)
         if hits and hits[0]["distance"] < 0.4:
@@ -92,7 +101,8 @@ def extract_epub_references(epub_path: str, item_key: str) -> List[Dict[str, Any
                     "context_snippet": context_snippet,
                     "raw_reference_text": raw_reference_text,
                     "citing_chunk_id": hits[0]["id"],
-                    "similarity_distance": hits[0]["distance"]
+                    "similarity_distance": hits[0]["distance"],
+                    "cite_count": target_link_counts.get(target_id, 1),
                 })
 
     return references

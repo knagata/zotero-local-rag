@@ -30,6 +30,8 @@ flowchart TB
   subgraph EXT["🌐 外部リソース"]
     ZAPP["Zotero Desktop App\n(ローカル API :23119)"]
     S2API["Semantic Scholar API\n(被引用データ)"]
+    OAAPI["OpenAlex API\n(DOI解決)"]
+    ZWAPI["Zotero Web API\n(api.zotero.org)"]
     HF["HuggingFace モデル\n(埋め込みベクトル)"]
     FILES["ローカルファイル\nPDF / EPUB / HTML / Note"]
   end
@@ -52,6 +54,8 @@ flowchart TB
 
   UCT -- "引用DB書き込み" --> RELS
   UCT -- "被引用取得" --> S2API
+  UCT -- "DOI解決" --> OAAPI
+  UCT -- "DOI書き戻し" --> ZWAPI
   UCT -- "チャンク参照" --> CHROMA
   UCT -- "レート管理" --> S2L
 
@@ -161,37 +165,48 @@ flowchart LR
 
 ## 4. 引用ネットワーク構築フロー
 
-`build_citation_network` ツール（または `Citation-Update.command`）の処理フロー。
+`build_citation_network` ツール（または `Citation-Update.command`）の処理フロー。`--resume-skipped` モードでスキップ済み EPUB 参照を後から再解決できます。
 
 ```mermaid
 flowchart TD
-  START["build_citation_network\n(item_key)"] --> ZITEM
+  START["Citation-Update / build_citation_network\n(item_key)"] --> ZITEM
+  RESUME["--resume-skipped モード"] --> RESUME_FIND
 
-  subgraph PREP["準備"]
-    ZITEM["Zotero API\nタイトル・DOI・ISBN取得"]
+  subgraph PREP["準備 (update_citations.py)"]
+    ZITEM["Zotero Local API\nタイトル・DOI・ISBN取得\n(複数ISBN: 先頭のみ使用)"]
+    DOIS["query_openalex()\nDOI 未設定時に Title → DOI 解決\n類似度 < 0.6 / 非ASCII > 30% はスキップ"]
+    WEBPATCH["_zotero_web_patch_doi()\nZotero Web API へ DOI 書き戻し\n(ZOTERO_USER_ID + ZOTERO_API_KEY 必須)"]
     EPUBP["EPUB ファイルパス解決"]
   end
 
-  subgraph LOCAL["ローカル参照抽出\n(epub_reference_extractor.py)"]
-    EFOOTNOTE["EPUB 脚注・章末注テキスト抽出"]
-    CMATCH["citation_mapper.py\nmap_item_local_references()\nチャンクとのコサイン類似度照合"]
-    RINSERT["db_relations.py\ninsert_reference()\n参照レコード保存"]
+  subgraph LOCAL["ローカル参照抽出"]
+    EFOOTNOTE["epub_reference_extractor.py\n脚注・章末注テキスト抽出\ncite_count: リンク先の参照頻度を集計"]
+    CMATCH["map_item_local_references()\nコサイン類似度照合\ncite_count 降順→distance 昇順でソート\n上位 budget=50 のみ S2 検索\n超過分は s2_status='skipped' で保存"]
+    RINSERT["insert_reference()\n参照レコード保存"]
   end
 
-  subgraph GLOBAL["グローバル被引用取得\n(citation_mapper.py)"]
-    FIND["find_s2_paper_id()\nS2 API で論文ID特定\n(DOI/タイトル/著者で検索)"]
-    S2REQ["s2_request()\nS2 Citations エンドポイント\n(1 req/sec レート管理)"]
-    RETRY["429 時 指数バックオフ\n5s → 10s → 20s"]
-    CEMBED["_load_chunks_for_item()\nアイテムチャンクを SQLite から取得\n(オンザフライ埋め込み + キャッシュ)"]
-    CINSERT["db_relations.py\ninsert_citation()\n被引用レコード保存"]
+  subgraph SKIP_RESUME["スキップ済み参照の再解決\n(--resume-skipped)"]
+    RESUME_FIND["get_items_with_skipped_epub_refs()"]
+    RESOLVE["resolve_skipped_epub_refs()\nDB の 'skipped' 行のみ取得\nEPUB 再読込不要\nbudget=200 で S2 再検索"]
+    UPDATE_REF["update_reference_s2_data()\n既存 DB 行を S2 結果で更新"]
+  end
+
+  subgraph GLOBAL["グローバル被引用取得 (citation_mapper.py)"]
+    FIND["find_s2_paper_id()\nDOI / ISBN / タイトル+著者 で S2 検索\n非ASCII比率 > 30% はスキップ"]
+    S2REQ["s2_request()\n/paper/{id}/citations + /references\nAPI鍵あり: 2.5s 間隔\nAPI鍵なし: 3.5s 間隔"]
+    RETRY["429 時: 指数バックオフ + ジッター\nRetry-After ヘッダ対応\nmax_retries=3, 上限45s\n3連続枯渇でサーキットブレーカー発動\n→5分間 S2 をスキップし error 記録\n（実行終盤・次回実行で自動再試行）"]
+    CEMBED["_load_chunks_for_item()\nアイテムチャンクをキャッシュ取得\n(オンザフライ埋め込み)"]
+    CINSERT["insert_citation()\n被引用レコード保存"]
   end
 
   subgraph RATELOCK["レート管理\n(fcntl.flock)"]
     S2LOCK2["s2_rate.lock\n_s2_wait_and_claim()\nプロセス間排他制御"]
   end
 
+  ZITEM --> DOIS
+  DOIS -- "DOI 解決成功" --> WEBPATCH
   ZITEM --> EPUBP
-  ZITEM --> FIND
+  DOIS --> FIND
   EPUBP --> EFOOTNOTE
   EFOOTNOTE --> CMATCH
   CMATCH --> RINSERT
@@ -204,6 +219,11 @@ flowchart TD
   CEMBED --> CINSERT
   CINSERT --> RELS2
 
+  RESUME_FIND --> RESOLVE
+  RESOLVE <-- "レート管理" --> S2LOCK2
+  RESOLVE --> UPDATE_REF
+  UPDATE_REF --> RELS2
+
   RELS2[("relations.sqlite3\n引用・参照テーブル")]
 ```
 
@@ -215,16 +235,16 @@ flowchart TD
 |---|---|---|
 | `rag_mcp_server.py` | MCPサーバー本体。ツール定義・クエリ処理・Chroma接続管理 | 全 MCP ツール関数、`_col()`, `_z_api()` |
 | `index_from_zotero.py` | インデックス構築 CLI。Zotero 添付ファイルを全件処理 | `main_async()`, `_upsert_in_subbatches()` |
-| `update_citations.py` | 引用ネットワーク更新 CLI（Citation-Update 用） | `main()`, `process_item()`, `get_all_items()` |
-| `citation_mapper.py` | S2 API 連携・引用チャンク照合・レート管理 | `map_item_global_citations()`, `map_item_local_references()`, `s2_request()`, `_s2_wait_and_claim()`, `_load_chunks_for_item()` |
-| `db_relations.py` | relations.sqlite3 の CRUD 操作 | `insert_citation()`, `insert_reference()`, `get_citations_for_chunk()`, `get_references_for_item()` |
+| `update_citations.py` | 引用ネットワーク更新 CLI（Citation-Update 用）。`--resume-skipped` / `--epub-budget` フラグ対応。OpenAlex による DOI 解決・Zotero Web API 書き戻し | `main()`, `process_item()`, `query_openalex()`, `_zotero_web_patch_doi()`, `get_all_items()` |
+| `citation_mapper.py` | S2 API 連携・引用チャンク照合・レート管理。EPUB 参照バジェット管理・スキップ済み再解決 | `find_s2_paper_id()`, `map_item_global_citations()`, `map_item_local_references()`, `resolve_skipped_epub_refs()`, `s2_request()`, `_s2_wait_and_claim()`, `_load_chunks_for_item()` |
+| `db_relations.py` | relations.sqlite3 の CRUD 操作。削除済みアイテムの purge・スキップ済み参照の再解決サポート | `insert_citation()`, `insert_reference()`, `get_citations_for_chunk()`, `get_references_for_item()`, `purge_removed_items()`, `get_skipped_epub_refs()`, `get_items_with_skipped_epub_refs()`, `update_reference_s2_data()` |
 | `embedder.py` | 埋め込みモデルのロード・ChromaDB コレクション初期化 | `get_collection()`, `_resolve_embedder_settings()` |
 | `zotero_source_localapi.py` | Zotero ローカル HTTP API (:23119) クライアント | `ZoteroLocalAPI`, `get_item()`, `get_attachments()` |
 | `pdf_extract.py` | PDF ページからの段落抽出（pdfminer ベース） | `extract_chunks_from_pdf()`, `extract_paragraphs_from_pdf_page()` |
 | `html_extract.py` | HTML/EPUB スナップショットからの段落抽出 | `extract_chunks_from_html_snapshot()`, `extract_chunks_from_epub_snapshot()` |
 | `note_extract.py` | Zotero ノート（HTML）のテキスト抽出 | `index_notes()` |
 | `docling_extract.py` | Docling ライブラリを使った PDF 抽出（fallback） | `extract_chunks_from_pdf_with_docling()` |
-| `epub_reference_extractor.py` | EPUB の脚注・章末注から参照文献テキスト抽出 | `extract_epub_references()` |
+| `epub_reference_extractor.py` | EPUB の脚注・章末注から参照文献テキスト抽出。リンク先の参照頻度（`cite_count`）を集計し重要度ソートに使用 | `extract_epub_references()` |
 | `text_utils.py` | テキスト分割・正規化・品質判定ユーティリティ | `split_long_paragraph()`, `merge_short_chunk_records()`, `looks_like_gibberish()`, `joiner_for_text()` |
 | `chapter_detect.py` | PDF 目次・EPUB 章タイトルの取得 | `get_pdf_toc()`, `get_epub_chapter_index_to_title()`, `build_pdf_page_chapter_lookup()` |
 | `manifest.py` | インデックス処理済み状態の読み書き | `load_manifest()`, `save_manifest()` |
@@ -249,7 +269,7 @@ flowchart TD
 
 | ファイル | 内容 |
 |---|---|
-| `.env` | 環境変数設定（`ZOTERO_LOCAL_API_BASE`, `S2_API_KEY`, `EMB_PROFILE` 等） |
+| `.env` | 環境変数設定（`ZOTERO_LOCAL_API_BASE`, `S2_API_KEY`, `EMB_PROFILE`, `ZOTERO_USER_ID`, `ZOTERO_API_KEY` 等） |
 | `pyproject.toml` | Python 依存パッケージ定義（uv 用） |
 | `env.sh` | シェル環境変数のサンプル（手動設定用） |
 | `.claude/settings.json` | Claude Code の権限設定（MCP サーバー停止コマンドの拒否ルール等） |

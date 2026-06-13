@@ -67,9 +67,11 @@ Zotero文献の被引用情報（どの論文に引用されているか）をSe
 - **Mac ユーザー**: `Citation-Update.command` をダブルクリック
 - **Windows ユーザー**: `Citation-Update.bat` をダブルクリック
 
-実行時は対象（特定アイテム指定 / 全アイテム一括）を選択するメニューが表示されます。Semantic Scholar APIのレート制限（1リクエスト/秒）により、大規模ライブラリの全件更新は時間がかかります。
+実行時は対象（特定アイテム指定 / 全アイテム一括 / スキップ済みEPUB参照の再解決）を選択するメニューが表示されます。Semantic Scholar APIのレート制限（APIキーあり: 2.5秒間隔、なし: 3.5秒間隔）により、大規模ライブラリの全件更新は時間がかかります。
 
-> **S2 APIキー**: `S2_API_KEY` を `.env` に設定すると、レート制限が緩和されます（詳細は下記の環境変数表を参照）。
+> **S2 APIキー**: `S2_API_KEY` を `.env` に設定するとレート制限が緩和されます。また `ZOTERO_USER_ID` + `ZOTERO_API_KEY` を設定すると、解決した DOI が Zotero ライブラリに自動書き戻しされます（詳細は下記の環境変数表を参照）。
+
+> **詳細ヘルプ**: メニューの選び方、ステータスの意味、429エラーやエラー回復の仕組みについては [`CITATION_UPDATE_GUIDE.md`](./CITATION_UPDATE_GUIDE.md) を参照してください。エラーが出た場合も Force rebuild は不要で、メニュー3の再実行だけで該当分が自動回収されます。
 
 ### 5. 環境変数（手動設定の場合）
 
@@ -84,8 +86,9 @@ Zotero文献の被引用情報（どの論文に引用されているか）をSe
 | `HF_HUB_OFFLINE` | `1` に設定するとHugging Faceへのアクセスを無効化 | — |
 | `ZOTERO_LOCAL_API_BASE` | Zotero Local HTTP APIのベースURL | `http://127.0.0.1:23119/api` |
 | `ZOTERO_LOCAL_API_PREFIX` | ZoteroローカルAPIのパスプレフィックス | `users/0` |
-| `ZOTERO_API_KEY` | ZoteroウェブAPIキー（ローカルAPI使用時は不要） | — |
-| `S2_API_KEY` | Semantic Scholar APIキー（引用ネットワーク構築時のレート制限緩和） | — |
+| `ZOTERO_API_KEY` | Zotero Web APIキー（`ZOTERO_USER_ID` と合わせて設定すると DOI 書き戻しが有効になる） | — |
+| `ZOTERO_USER_ID` | Zotero ユーザーID（数値。zotero.org/settings/keys で確認可能） | — |
+| `S2_API_KEY` | Semantic Scholar APIキー（設定すると間隔が 3.5s → 2.5s に短縮） | — |
 
 ---
 

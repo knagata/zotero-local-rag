@@ -87,10 +87,12 @@ ChromaDBのインデックスとメタデータを強制的にリロードしま
 ### 11. `build_citation_network` (引用・被引用ネットワークの一括構築)
 
 特定のZotero文献について、以下の両方を一括で実行し、引用ネットワークのデータベースを構築します。
-1. **引用先の抽出**: EPUBから注釈（脚注・章末注）を自動抽出して保存。
+1. **引用先の抽出**: EPUBから注釈（脚注・章末注）を自動抽出し、参照頻度（cite_count）の高い順に最大50件をSemantic Scholarで解決して保存。
 2. **被引用の抽出**: Semantic Scholar APIを利用して「外部のどの論文から引用されているか」を取得して保存。
 
 - **`item_key`**: 対象のZotero `itemKey`。
+
+> **EPUB参照バジェットについて**: 脚注が大量にある書籍（編著など）では、重要度の低い参照は `s2_status='skipped'` として保留されます。`Citation-Update` のメニュー項目5「Resume skipped EPUB refs」（`--resume-skipped`）でバジェットを増やして後から再解決できます。
 
 ### 12. `get_references_for_item` / `get_chunk_references` (参照文献の取得)
 

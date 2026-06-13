@@ -7,16 +7,18 @@ echo ========================================
 echo    Zotero Local RAG - Citation Update
 echo ========================================
 echo.
-echo Semantic Scholar API: 1 req/sec (rate-limited across all processes)
+echo Semantic Scholar API: rate-limited across all processes
+echo Help: CITATION_UPDATE_GUIDE.md (menu guide and error recovery)
 echo.
 
 echo How would you like to process citations?
 echo   1) Update a specific item by ID  (skips if already mapped)
 echo   2) Force re-update a specific item by ID  (always re-processes)
-echo   3) Update ALL items  (skips already-mapped items)
+echo   3) Update ALL items  (new and error items only / recommended)
 echo   4) Force re-update ALL items  (re-processes everything)
+echo   5) Resume skipped EPUB refs  (budget wo fuyashite skipped wo saikai)
 echo.
-set /p choice="Enter your choice (1-4): "
+set /p choice="Enter your choice (1-5): "
 
 echo.
 if "%choice%"=="1" (
@@ -47,6 +49,11 @@ if "%choice%"=="1" (
     ) else (
         echo Cancelled.
     )
+) else if "%choice%"=="5" (
+    set /p budget="S2 lookup budget per item (default 200): "
+    if "!budget!"=="" set budget=200
+    echo Resolving skipped EPUB refs with budget=!budget!...
+    uv run src\update_citations.py --resume-skipped --epub-budget "!budget!"
 ) else (
     echo Invalid choice. Exiting.
 )

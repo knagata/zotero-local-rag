@@ -25,6 +25,7 @@ from docling_extract import extract_chunks_from_pdf_with_docling
 from note_extract import index_notes
 
 from manifest import load_manifest, save_manifest
+from db_relations import purge_removed_items
 
 
 
@@ -377,6 +378,21 @@ async def main_async(args: argparse.Namespace) -> None:
             except Exception:
                 pass
             files_manifest.pop(stale_key, None)
+
+        # relations.db からも削除済みアイテムのレコードをパージ
+        current_item_keys = {
+            a.parentItemKey for a in attachments if a.parentItemKey
+        }
+        purge_counts = purge_removed_items(current_item_keys)
+        purged_total = sum(purge_counts.values())
+        if purged_total > 0 and show_progress:
+            print(
+                f"[PROGRESS] Purged removed items from relations.db: "
+                f"item_citation_status={purge_counts['item_citation_status']}, "
+                f"global_citations={purge_counts['global_citations']}, "
+                f"global_references={purge_counts['global_references']}",
+                file=sys.__stderr__,
+            )
 
     updated_pdf = updated_html = updated_epub = 0
     skipped_pdf = skipped_html = skipped_epub = 0

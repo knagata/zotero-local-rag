@@ -16,8 +16,54 @@ from typing import Dict, Any, Optional, List, Tuple
 from db_relations import insert_citation, update_item_citation_status
 from pathlib import Path
 
+
+class S2RetryExhaustedError(Exception):
+    """Raised by s2_request when all retries are exhausted (persistent rate-limiting).
+    Distinct from returning None, which means the paper was not found."""
+
+
 ROOT = Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 CHROMA_DIR = Path(os.environ.get("CHROMA_DIR", str(ROOT / "data" / "chroma")))
+
+def _load_dotenv() -> None:
+    env_file = ROOT / ".env"
+    if not env_file.exists():
+        return
+    try:
+        with open(env_file, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                k, v = k.strip(), v.strip()
+                if len(v) >= 2 and ((v.startswith('"') and v.endswith('"')) or
+                                    (v.startswith("'") and v.endswith("'"))):
+                    v = v[1:-1]
+                if k and k not in os.environ:
+                    os.environ[k] = v
+    except Exception:
+        pass
+
+_load_dotenv()
+_s2_key_at_import = os.environ.get("S2_API_KEY", "")
+print(
+    f"[citation_mapper] S2_API_KEY: "
+    + ("SET (length=%d)" % len(_s2_key_at_import) if _s2_key_at_import else "NOT SET — shared 1000 RPS pool"),
+    file=sys.stderr,
+)
+
+
+def _fmt_authors(authors_list: list, max_authors: int = 5) -> str:
+    """S2 authors リスト（[{name: ...}, ...]）を表示用文字列に整形する。"""
+    if not authors_list:
+        return ""
+    names = [a.get("name", "") for a in authors_list if a.get("name")]
+    if not names:
+        return ""
+    if len(names) > max_authors:
+        return ", ".join(names[:max_authors]) + " et al."
+    return ", ".join(names)
 
 
 def _pbar(current: int, total: int, label: str = "", width: int = 30, file=sys.stderr) -> None:
@@ -240,7 +286,7 @@ def _s2_wait_and_claim() -> None:
       6. Caller sends the actual HTTP request (outside the lock).
     """
     s2_api_key = os.environ.get("S2_API_KEY", "")
-    delay_required = 1.1 if s2_api_key else 3.1
+    delay_required = 2.5 if s2_api_key else 3.5
 
     os.makedirs(str(ROOT / "data"), exist_ok=True)
     with open(_S2_RATE_FILE, "a+") as fd:
@@ -263,16 +309,40 @@ def _s2_wait_and_claim() -> None:
             fcntl.flock(fd, fcntl.LOCK_UN)
 
 
-def s2_request(url: str, max_retries: int = 3) -> Optional[Dict[str, Any]]:
-    """Make a rate-limited S2 API request with exponential backoff on 429.
+# Circuit breaker: when S2 keeps returning 429 despite backoff, stop burning
+# time on in-place retries — fail fast, let callers record s2_status='error',
+# and rely on the end-of-run / next-run retry passes instead.
+_S2_FAILFAST_THRESHOLD = 3      # consecutive retry-exhaustions to trip the breaker
+_S2_FAILFAST_WINDOW = 300.0     # seconds to fail fast once tripped
+_s2_consec_exhausted = 0
+_s2_failfast_until = 0.0
 
-    Each attempt:
-      1. Waits for the cross-process rate-limit slot (_s2_wait_and_claim).
-      2. Sends the request.
-      3. On HTTP 429: waits an exponentially increasing delay (5s, 10s, 20s)
-         before the next attempt, giving the server time to recover.
+
+def s2_request(url: str, max_retries: int = 10) -> Optional[Dict[str, Any]]:
+    """Make a rate-limited S2 API request with adaptive retry on 429.
+
+    429 responses fall into two categories with different strategies:
+
+    1. AWS API Gateway throttle (x-amzn-ErrorType=TooManyRequestsException,
+       no Retry-After/X-RateLimit-* headers): The shared token bucket is
+       temporarily exhausted by global traffic. Backoff does not help since
+       other users consume refilled tokens. Strategy: short fixed wait (2s)
+       and retry up to max_retries times to catch a gap in traffic.
+       P(success in 10 tries) ≈ 99% at observed 35% per-attempt success rate.
+
+    2. Application-level rate limit (Retry-After header present): Respect
+       the server-specified wait time with exponential backoff.
+
+    After max_retries exhaustion, raises S2RetryExhaustedError. Failed
+    lookups are recorded as s2_status='error' and retried on the next run.
+    A circuit breaker skips S2 entirely for _S2_FAILFAST_WINDOW seconds
+    after _S2_FAILFAST_THRESHOLD consecutive exhaustions.
     """
     import urllib.error
+    global _s2_consec_exhausted, _s2_failfast_until
+
+    if time.time() < _s2_failfast_until:
+        raise S2RetryExhaustedError(f"circuit breaker open ({url})")
 
     s2_api_key = os.environ.get("S2_API_KEY", "")
     req_headers = {"User-Agent": "ZoteroLocalRAG/1.0"}
@@ -284,15 +354,58 @@ def s2_request(url: str, max_retries: int = 3) -> Optional[Dict[str, Any]]:
         req = urllib.request.Request(url, headers=req_headers)
         try:
             with urllib.request.urlopen(req, timeout=15) as response:
+                _s2_consec_exhausted = 0
                 return json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as e:
             if e.code == 429:
-                wait = 5 * (2 ** attempt)  # 5s → 10s → 20s
+                retry_after   = e.headers.get("Retry-After")           if e.headers else None
+                x_remaining   = e.headers.get("X-RateLimit-Remaining") if e.headers else None
+                x_limit       = e.headers.get("X-RateLimit-Limit")     if e.headers else None
+                x_reset       = e.headers.get("X-RateLimit-Reset")     if e.headers else None
+                amzn_type     = e.headers.get("x-amzn-ErrorType")      if e.headers else None
+
+                header_info = ", ".join(
+                    f"{k}={v}" for k, v in [
+                        ("Retry-After", retry_after),
+                        ("X-RateLimit-Remaining", x_remaining),
+                        ("X-RateLimit-Limit", x_limit),
+                        ("X-RateLimit-Reset", x_reset),
+                        ("x-amzn-ErrorType", amzn_type),
+                    ] if v is not None
+                )
+
+                import random
+                is_gateway_throttle = (
+                    amzn_type == "TooManyRequestsException"
+                    and not retry_after and not x_remaining
+                )
+                if is_gateway_throttle:
+                    # AWS Gateway shared bucket: short fixed wait, no backoff
+                    wait = 2.0 + random.uniform(0, 1.0)
+                    kind = "gateway"
+                elif retry_after:
+                    try:
+                        wait = max(int(retry_after), 1)
+                    except ValueError:
+                        wait = 10.0
+                    kind = "rate-limit"
+                else:
+                    s2_key = os.environ.get("S2_API_KEY", "")
+                    base = 10 if s2_key else 15
+                    wait = min(base * (2 ** attempt) + random.uniform(0, base * 0.5), 45)
+                    kind = "backoff"
+
                 print(
-                    f"[S2] 429 Too Many Requests (attempt {attempt + 1}/{max_retries}), "
-                    f"waiting {wait}s before retry...",
+                    f"[S2] 429 {kind} (attempt {attempt + 1}/{max_retries})"
+                    + (f" [{header_info}]" if header_info else " [no headers]")
+                    + f", waiting {wait:.1f}s...",
                     file=sys.stderr,
                 )
+                try:
+                    with open(_S2_RATE_FILE, "w") as _rf:
+                        _rf.write(str(time.time() + wait))
+                except OSError:
+                    pass
                 time.sleep(wait)
                 continue
             print(f"S2 API HTTP Error {e.code} on {url}: {e}", file=sys.stderr)
@@ -301,12 +414,30 @@ def s2_request(url: str, max_retries: int = 3) -> Optional[Dict[str, Any]]:
             print(f"S2 API Request Error on {url}: {e}", file=sys.stderr)
             return None
 
+    # Give the S2 token bucket time to recover before the next request,
+    # otherwise subsequent calls immediately re-trigger 429s.
+    try:
+        with open(_S2_RATE_FILE, "w") as _rf:
+            _rf.write(str(time.time() + 30))
+    except OSError:
+        pass
+    _s2_consec_exhausted += 1
+    if _s2_consec_exhausted >= _S2_FAILFAST_THRESHOLD:
+        _s2_failfast_until = time.time() + _S2_FAILFAST_WINDOW
+        _s2_consec_exhausted = 0
+        print(
+            f"[S2] {_S2_FAILFAST_THRESHOLD} consecutive retry-exhaustions — "
+            f"circuit breaker open: skipping S2 lookups for {int(_S2_FAILFAST_WINDOW)}s "
+            f"(failures recorded as 'error' and retried later).",
+            file=sys.stderr,
+        )
     print(f"[S2] Gave up after {max_retries} retries: {url}", file=sys.stderr)
-    return None
+    raise S2RetryExhaustedError(url)
 
 def find_s2_paper_id(title: str, year: Optional[int] = None, creators: str = "", doi: str = "", isbn: str = "") -> Optional[Dict[str, Any]]:
     # 1. Try DOI/ISBN exact lookup first
-    identifier = doi or isbn
+    # Zotero's ISBN field may contain multiple ISBNs separated by spaces; use only the first.
+    identifier = doi or (isbn.split()[0] if isbn else "")
     if identifier:
         prefix = "DOI:" if doi else "ISBN:"
         url = f"https://api.semanticscholar.org/graph/v1/paper/{prefix}{identifier}?fields=paperId,title,authors,year,citationCount"
@@ -318,16 +449,21 @@ def find_s2_paper_id(title: str, year: Optional[int] = None, creators: str = "",
 
     # 2. Fallback to Title + Author search
     import re
-    
+
+    # S2 indexes primarily English papers; skip search if title is mostly non-ASCII (e.g. Japanese)
+    non_ascii_ratio = sum(1 for c in title if ord(c) > 0x7F) / max(len(title), 1)
+    if non_ascii_ratio > 0.3:
+        return None
+
     # Use only the main title (before the colon) because S2 often omits subtitles.
     main_title = title.split(':')[0]
-    
+
     # Strip special characters
     clean_title = re.sub(r'[^\w\s]', ' ', main_title).strip()
-    
+
     author = creators.split(',')[0].strip() if creators else ""
     clean_author = re.sub(r'[^\w\s]', ' ', author).strip()
-    
+
     query_parts = [clean_title]
     if clean_author:
         query_parts.append(clean_author)
@@ -383,13 +519,42 @@ def map_item_global_citations(item_key: str, title: str = "", year: str = "", cr
 
     # 2. Find paper on S2
     print(f"[{time.time()}] Calling find_s2_paper_id...", file=sys.stderr)
-    s2_paper = find_s2_paper_id(title, year, creators, doi, isbn)
-    print(f"[{time.time()}] find_s2_paper_id returned.", file=sys.stderr)
+    try:
+        s2_paper = find_s2_paper_id(title, year, creators, doi, isbn)
+        print(f"[{time.time()}] find_s2_paper_id returned.", file=sys.stderr)
+    except S2RetryExhaustedError as exc:
+        print(f"[S2] Gave up after retries: {exc}", file=sys.stderr)
+        update_item_citation_status(item_key, "error")
+        return {"status": "error", "message": "S2 rate limit exhausted while finding paper ID.", "mapped_count": 0}
     if not s2_paper:
-        update_item_citation_status(item_key, "s2_done")
-        return {"status": "success", "message": "Item not found on Semantic Scholar.", "mapped_count": 0}
+        # S2 に見つからない（非英語資料・書籍・人文系などカバレッジ外で頻発）。
+        # DOI があれば Crossref で書誌情報（年・被引用数）をフォールバック補完する。
+        # 注: 引用関係そのものは S2 のみで取得し、ここでは書誌情報だけを補う。
+        cr_year = cr_cc = None
+        if doi:
+            try:
+                from crossref_client import fetch_crossref_by_doi
+                meta = fetch_crossref_by_doi(doi)
+            except Exception as exc:  # CrossrefError 含む。フォールバックは best-effort。
+                print(f"        -> Crossref fallback failed: {exc}", file=sys.stderr)
+                meta = None
+            if meta:
+                cr_year = meta.get("year")
+                cr_cc = meta.get("citation_count")
+                print(f"        -> Crossref fallback: year={cr_year}, citations={cr_cc}", file=sys.stderr)
+        update_item_citation_status(
+            item_key, "s2_done",
+            s2_year=cr_year,            # S2 列だが Crossref 由来の年を補完保存
+            s2_citation_count=cr_cc,    # 同上（is-referenced-by-count）
+        )
+        suffix = " (Crossref 書誌フォールバック適用)" if (cr_year or cr_cc) else ""
+        return {"status": "success",
+                "message": "Item not found on Semantic Scholar." + suffix,
+                "mapped_count": 0}
 
     # S2 メタ情報を DB に保存（以降の処理でも参照できるよう早めに記録）
+    # 注: アブストラクトは Citation-Update では取得しない（S2 依存・API 制限回避）。
+    #     概要は概要パネルの取得ボタンから Zotero local API 等でオンデマンド取得する。
     update_item_citation_status(
         item_key, "mapped",
         s2_paper_id=s2_paper.get("paperId"),
@@ -398,38 +563,42 @@ def map_item_global_citations(item_key: str, title: str = "", year: str = "", cr
     )
 
     paper_id = s2_paper["paperId"]
+    limit = 1000  # Max limit per request for S2 graph API
 
-    # 3. Fetch citations (with pagination)
+    # 3. Fetch citations
     data_items = []
     offset = 0
-    limit = 1000  # Max limit per request for S2 graph API
-    
     while True:
-        citations_url = f"https://api.semanticscholar.org/graph/v1/paper/{paper_id}/citations?fields=title,year,contexts,intents,citationCount,influentialCitationCount,externalIds&limit={limit}&offset={offset}"
-        citations_res = s2_request(citations_url)
-        
+        citations_url = (
+            f"https://api.semanticscholar.org/graph/v1/paper/{paper_id}/citations"
+            f"?fields=title,year,authors,contexts,intents,citationCount,influentialCitationCount,externalIds"
+            f"&limit={limit}&offset={offset}"
+        )
+        try:
+            citations_res = s2_request(citations_url)
+        except S2RetryExhaustedError:
+            citations_res = None
+
         if citations_res is None:
-            if not data_items: # If it fails on the first page
+            if not data_items:
                 update_item_citation_status(item_key, "error")
                 return {"status": "error", "message": "S2 API Error while fetching citations.", "mapped_count": 0, "s2_paper": s2_paper}
-            break # Otherwise just stop fetching more
-            
+            break
+
         page_data = citations_res.get("data", [])
         if not page_data:
             break
-            
+
         data_items.extend(page_data)
-        
+
         if len(data_items) >= max_citations:
             data_items = data_items[:max_citations]
             break
-            
+
         next_offset = citations_res.get("next")
         if not next_offset:
             break
-            
         offset = next_offset
-        time.sleep(1) # Be gentle to the API
 
     if not data_items:
         update_item_citation_status(item_key, "s2_done")
@@ -455,6 +624,7 @@ def map_item_global_citations(item_key: str, title: str = "", year: str = "", cr
         c_citation_count = citing_paper.get("citationCount", 0)
         c_influential_count = citing_paper.get("influentialCitationCount", 0)
         c_doi = (citing_paper.get("externalIds") or {}).get("DOI")
+        c_authors = _fmt_authors(citing_paper.get("authors") or [])
 
         for ctx in contexts:
             total_contexts += 1
@@ -498,36 +668,41 @@ def map_item_global_citations(item_key: str, title: str = "", year: str = "", cr
                 citing_influential_count=c_influential_count,
                 chunk_status=cit_status,
                 citing_doi=c_doi,
+                citing_authors=c_authors or None,
             )
 
-    # 4. Fetch References (Outgoing, with pagination)
+    # 4. Fetch References
     from db_relations import insert_reference
     r_data_items = []
     offset = 0
-    
     while True:
-        references_url = f"https://api.semanticscholar.org/graph/v1/paper/{paper_id}/references?fields=title,year,contexts,citationCount,influentialCitationCount,externalIds&limit={limit}&offset={offset}"
-        r_res = s2_request(references_url)
-        
+        references_url = (
+            f"https://api.semanticscholar.org/graph/v1/paper/{paper_id}/references"
+            f"?fields=title,year,authors,contexts,citationCount,influentialCitationCount,externalIds"
+            f"&limit={limit}&offset={offset}"
+        )
+        try:
+            r_res = s2_request(references_url)
+        except S2RetryExhaustedError:
+            r_res = None
+
         if r_res is None:
             break
-            
+
         page_data = r_res.get("data", [])
         if not page_data:
             break
-            
+
         r_data_items.extend(page_data)
-        
+
         if len(r_data_items) >= max_citations:
             r_data_items = r_data_items[:max_citations]
             break
-            
+
         next_offset = r_res.get("next")
         if not next_offset:
             break
-            
         offset = next_offset
-        time.sleep(1)
 
     ref_mapped_count = 0
     ref_total_contexts = 0
@@ -536,7 +711,7 @@ def map_item_global_citations(item_key: str, title: str = "", year: str = "", cr
         n_ref = len(r_data_items)
         print(f"        -> Found {n_ref} referenced papers on Semantic Scholar. Mapping to local chunks...", file=sys.stderr)
     else:
-        print("        -> No referenced papers found on Semantic Scholar (data was empty).", file=sys.stderr)
+        print("        -> No referenced papers found on Semantic Scholar.", file=sys.stderr)
 
     if r_data_items:
         for i, item in enumerate(r_data_items):
@@ -551,6 +726,7 @@ def map_item_global_citations(item_key: str, title: str = "", year: str = "", cr
             c_citation_count = cited_paper.get("citationCount", 0)
             c_influential_count = cited_paper.get("influentialCitationCount", 0)
             c_doi = (cited_paper.get("externalIds") or {}).get("DOI")
+            c_authors = _fmt_authors(cited_paper.get("authors") or [])
 
             if not contexts:
                 # S2にコンテキストなし → 論文情報だけ記録・AI解析候補としてマーク
@@ -568,6 +744,7 @@ def map_item_global_citations(item_key: str, title: str = "", year: str = "", cr
                     cited_citation_count=c_citation_count,
                     cited_influential_count=c_influential_count,
                     cited_doi=c_doi,
+                    cited_authors=c_authors or None,
                 )
                 continue
 
@@ -614,6 +791,7 @@ def map_item_global_citations(item_key: str, title: str = "", year: str = "", cr
                     cited_citation_count=c_citation_count,
                     cited_influential_count=c_influential_count,
                     cited_doi=c_doi,
+                    cited_authors=c_authors or None,
                 )
 
     update_item_citation_status(item_key, "s2_done")
@@ -632,7 +810,7 @@ def map_item_global_citations(item_key: str, title: str = "", year: str = "", cr
         "references_mapped_count": ref_mapped_count
     }
 
-def map_item_local_references(item_key: str, epub_path: str) -> Dict[str, Any]:
+def map_item_local_references(item_key: str, epub_path: str, epub_budget: int = 50) -> Dict[str, Any]:
     """
     Parses local EPUB to extract footnotes/endnotes, attempts to resolve them to Semantic Scholar,
     and saves to global_references.
@@ -646,9 +824,18 @@ def map_item_local_references(item_key: str, epub_path: str) -> Dict[str, Any]:
     if not local_refs:
         return {"status": "success", "message": "No EPUB references found.", "mapped_count": 0}
 
+    # S2 lookups per item are capped to avoid 429 storms on EPUBs with hundreds of references.
+    # Sort by cite_count desc (document-level citation frequency) then by chunk match distance.
+    local_refs.sort(key=lambda r: (-r.get("cite_count", 1), r.get("similarity_distance", 1.0)))
+
     mapped_count = 0
     total = len(local_refs)
-    print(f"        -> Found {total} references in EPUB. Resolving via Semantic Scholar...", file=sys.stderr)
+    s2_budget = min(total, epub_budget)
+    print(
+        f"        -> Found {total} references in EPUB."
+        f" Resolving top {s2_budget} via Semantic Scholar...",
+        file=sys.stderr,
+    )
 
     for i, ref in enumerate(local_refs):
         _pbar(i + 1, total, "  epub ref ", file=sys.stderr)
@@ -658,25 +845,33 @@ def map_item_local_references(item_key: str, epub_path: str) -> Dict[str, Any]:
         chunk_id = ref["citing_chunk_id"]
         dist = ref["similarity_distance"]
 
-        # Try to resolve via Semantic Scholar
-        query = raw_text[:100]
-        query = re.sub(r'[^\w\s]', ' ', query)
-
         s2_paper = None
         s2_status = 'not_found'
 
-        if len(query.strip()) > 10:
-            encoded_query = urllib.parse.quote(query.strip())
-            search_url = f"https://api.semanticscholar.org/graph/v1/paper/search?query={encoded_query}&limit=1&fields=title,year"
-            res = s2_request(search_url)
+        if i < s2_budget:
+            # Try to resolve via Semantic Scholar (60 chars keeps title, avoids journal/page noise)
+            query = re.sub(r'[^\w\s]', ' ', raw_text[:60])
+            query = re.sub(r'\s+', ' ', query).strip()
 
-            if res is None:
-                s2_status = 'error'
-            elif res.get("data"):
-                s2_paper = res["data"][0]
-                s2_status = 'mapped'
-            else:
-                s2_status = 'not_found'
+            _q = query.strip()
+            _non_ascii = sum(1 for c in _q if ord(c) > 0x7F) / max(len(_q), 1)
+            if len(_q) > 10 and _non_ascii <= 0.3:
+                encoded_query = urllib.parse.quote(_q)
+                search_url = f"https://api.semanticscholar.org/graph/v1/paper/search?query={encoded_query}&limit=1&fields=title,year"
+                try:
+                    res = s2_request(search_url)
+                except S2RetryExhaustedError:
+                    res = None
+
+                if res is None:
+                    s2_status = 'error'
+                elif res.get("data"):
+                    s2_paper = res["data"][0]
+                    s2_status = 'mapped'
+                else:
+                    s2_status = 'not_found'
+        else:
+            s2_status = 'skipped'
 
         c_paper_id = None
         c_title = None
@@ -708,3 +903,82 @@ def map_item_local_references(item_key: str, epub_path: str) -> Dict[str, Any]:
         "mapped_count": mapped_count,
         "message": f"Extracted {len(local_refs)} references, mapped {mapped_count}."
     }
+
+
+def resolve_skipped_epub_refs(item_key: str, budget: int = 200, statuses: tuple = ('skipped',)) -> Dict[str, Any]:
+    """DB に残っている指定 s2_status（既定 'skipped'）の EPUB 参照を S2 で解決する。
+    EPUB の再解析不要。DB 内の行を直接 UPDATE する。
+    statuses=('error',) を渡すと 429 リトライ枯渇などで失敗した行を再試行できる。
+    """
+    from db_relations import get_skipped_epub_refs, update_reference_s2_data
+
+    skipped = get_skipped_epub_refs(item_key, statuses=statuses)
+    if not skipped:
+        return {"status": "success", "message": "No skipped references.", "resolved": 0, "total": 0}
+
+    to_process = skipped[:budget]
+    total = len(skipped)
+    resolved = 0
+
+    print(
+        f"        -> Resolving {len(to_process)}/{total} skipped EPUB refs via S2...",
+        file=sys.stderr,
+    )
+
+    for i, ref in enumerate(to_process):
+        _pbar(i + 1, len(to_process), "  epub res ", file=sys.stderr)
+
+        raw_text = ref.get("raw_reference_text") or ""
+        query = re.sub(r'[^\w\s]', ' ', raw_text[:60])
+        query = re.sub(r'\s+', ' ', query).strip()
+
+        s2_paper = None
+        s2_status = 'not_found'
+
+        _q = query.strip()
+        _non_ascii = sum(1 for c in _q if ord(c) > 0x7F) / max(len(_q), 1)
+        if len(_q) > 10 and _non_ascii <= 0.3:
+            encoded_query = urllib.parse.quote(_q)
+            search_url = (
+                f"https://api.semanticscholar.org/graph/v1/paper/search"
+                f"?query={encoded_query}&limit=1"
+                f"&fields=paperId,title,year,citationCount,influentialCitationCount,externalIds,authors"
+            )
+            try:
+                res = s2_request(search_url)
+            except S2RetryExhaustedError:
+                res = None
+            if res is None:
+                s2_status = 'error'
+            elif res.get("data"):
+                s2_paper = res["data"][0]
+                s2_status = 'mapped'
+
+        c_paper_id = s2_paper.get("paperId") if s2_paper else None
+        c_title    = s2_paper.get("title")    if s2_paper else None
+        c_year     = s2_paper.get("year")     if s2_paper else None
+        c_cc       = s2_paper.get("citationCount", 0)            if s2_paper else 0
+        c_ic       = s2_paper.get("influentialCitationCount", 0) if s2_paper else 0
+        c_doi      = (s2_paper.get("externalIds") or {}).get("DOI") if s2_paper else None
+        c_authors  = _fmt_authors(s2_paper.get("authors") or []) if s2_paper else None
+
+        update_reference_s2_data(
+            ref_id=ref["id"],
+            cited_paper_id=c_paper_id,
+            cited_title=c_title,
+            cited_year=c_year,
+            cited_citation_count=c_cc,
+            cited_influential_count=c_ic,
+            cited_doi=c_doi,
+            cited_authors=c_authors,
+            s2_status=s2_status,
+        )
+        if s2_paper:
+            resolved += 1
+
+    remaining = total - len(to_process)
+    msg = f"Resolved {resolved}/{len(to_process)} skipped refs."
+    if remaining:
+        msg += f" {remaining} still skipped (increase --epub-budget to resolve more)."
+    return {"status": "success", "resolved": resolved, "processed": len(to_process),
+            "total_skipped": total, "message": msg}

@@ -10,16 +10,18 @@ echo "========================================"
 echo "   Zotero Local RAG - Citation Update"
 echo "========================================"
 echo ""
-echo "Semantic Scholar API: 1 req/sec (rate-limited across all processes)"
+echo "Semantic Scholar API: rate-limited across all processes"
+echo "Help: CITATION_UPDATE_GUIDE.md (メニューの選び方・エラー回復の詳細)"
 echo ""
 
 echo "How would you like to process citations?"
 echo "  1) Update a specific item by ID  (skips if already mapped)"
 echo "  2) Force re-update a specific item by ID  (always re-processes)"
-echo "  3) Update ALL items  (skips already-mapped items)"
+echo "  3) Update ALL items  (新規・エラー分のみ処理 / 通常はこれ)"
 echo "  4) Force re-update ALL items  (re-processes everything)"
+echo "  5) Resume skipped EPUB refs  (バジェットを増やして skipped を再解決)"
 echo ""
-read -p "Enter your choice (1-4): " choice
+read -p "Enter your choice (1-5): " choice
 
 echo ""
 case "$choice" in
@@ -54,6 +56,12 @@ case "$choice" in
         else
             echo "Cancelled."
         fi
+        ;;
+    5)
+        read -p "S2 lookup budget per item (default 200): " budget
+        budget="${budget:-200}"
+        echo "Resolving skipped EPUB refs with budget=${budget}..."
+        uv run src/update_citations.py --resume-skipped --epub-budget "$budget"
         ;;
     *)
         echo "Invalid choice. Exiting."
