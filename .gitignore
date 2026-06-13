@@ -30,5 +30,8 @@ data/mapping_debug.log
 data/mapping_debug_ref.log
 data/pdf_cache/
 
+# ── 設計メモ ─────────────────────────────────────────────
+LAYOUT_DESIGN_NOTES.md
+
 # ── ログ全般 ─────────────────────────────────────────────
 *.log
