@@ -63,6 +63,24 @@ AZURE_TRANSLATOR_KEY    = os.environ.get("AZURE_TRANSLATOR_KEY", "")
 AZURE_TRANSLATOR_REGION = os.environ.get("AZURE_TRANSLATOR_REGION", "japaneast")
 DEFAULT_PORT    = 7234
 
+# English stopwords for keyword extraction (lowercase)
+_STOPWORDS = frozenset({
+    "the", "and", "for", "are", "but", "not", "you", "all", "can", "had",
+    "her", "was", "one", "our", "out", "has", "have", "been", "were",
+    "its", "who", "whom", "which", "what", "when", "where", "why", "how",
+    "from", "with", "this", "that", "these", "those", "they", "them",
+    "their", "will", "would", "could", "should", "may", "might", "shall",
+    "also", "into", "than", "then", "just", "about", "over", "each",
+    "some", "any", "such", "only", "other", "more", "most", "very",
+    "much", "well", "new", "using", "based", "used", "use", "via",
+    "does", "did", "both", "after", "before", "between", "under",
+    "during", "within", "without", "through", "however", "therefore",
+    "here", "there", "still", "already", "often", "since", "while",
+    "case", "due", "make", "made", "doing", "done", "many", "two",
+    "three", "see", "yet", "own", "set", "part", "way", "get", "got",
+    "first", "like", "now", "say", "said",
+})
+
 
 # ── ChromaDB title / author lookup ───────────────────────────────────────────
 
@@ -105,25 +123,50 @@ def get_item_vectors(item_keys: list[str]) -> dict[str, list[float]]:
 
     ChromaDB からチャンクベクトルを読み出して平均する。結果は
     data/item_vectors_cache.json にキャッシュされ、未知のアイテムだけ追加計算する
-    （文献の本文は通常変わらないため）。再計算したい場合はキャッシュファイルを削除する。
+    （文献の本文は通常変わらないため）。
+    埋め込みモデルを変更した場合は次元数不一致によりキャッシュが自動無効化される。
     失敗時は空 dict を返し、レイアウトは引用エッジのみで計算される（表示は壊れない）。
     """
+    _META_KEY = "__meta__"
     cache_path = PROJECT_ROOT / "data" / "item_vectors_cache.json"
-    cache: dict[str, list[float]] = {}
+    vectors: dict[str, list[float]] = {}
+    saved_dim: int | None = None
+
     if cache_path.exists():
         try:
-            cache = json.loads(cache_path.read_text())
+            raw = json.loads(cache_path.read_text())
+            saved_dim = raw.get(_META_KEY, {}).get("embedding_dim") if isinstance(raw, dict) else None  # type: ignore[union-attr]
+            vectors = {k: v for k, v in raw.items() if k != _META_KEY}
         except Exception as e:
             print(f"  (item vector cache load failed: {e})", file=sys.stderr)
 
-    missing = [k for k in item_keys if k not in cache]
+    # Detect embedding model change — if saved dimension differs from current,
+    # invalidate the entire cache.
+    current_dim: int | None = None
+    try:
+        import chromadb
+        chroma_dir = os.environ.get("CHROMA_DIR", str(PROJECT_ROOT / "data" / "chroma"))
+        client = chromadb.PersistentClient(path=chroma_dir)
+        col = client.get_collection("zotero_paragraphs")
+        peek = col.peek(1)
+        embs = peek.get("embeddings") if peek is not None else None
+        if embs is not None and hasattr(embs, "shape") and len(embs.shape) > 1:
+            current_dim = embs.shape[1]
+        elif embs is not None and len(embs) > 0 and hasattr(embs[0], "__len__"):
+            current_dim = len(embs[0])
+    except Exception:
+        pass
+
+    if current_dim is not None and saved_dim is not None and saved_dim != current_dim:
+        print(f"  [vectors] embedding dimension changed ({saved_dim}→{current_dim}) — "
+              f"invalidating cache", file=sys.stderr)
+        vectors = {}
+        saved_dim = None
+
+    missing = [k for k in item_keys if k not in vectors]
     if missing:
         try:
             import numpy as np
-            import chromadb
-            chroma_dir = os.environ.get("CHROMA_DIR", str(PROJECT_ROOT / "data" / "chroma"))
-            client = chromadb.PersistentClient(path=chroma_dir)
-            col = client.get_collection("zotero_paragraphs")
             print(f"  [vectors] computing semantic vectors for {len(missing)} new items…",
                   file=sys.stderr)
             for key in missing:
@@ -140,19 +183,23 @@ def get_item_vectors(item_keys: list[str]) -> dict[str, list[float]]:
                     n = float(np.linalg.norm(v))
                     if n > 0:
                         v = v / n
-                    cache[key] = [round(float(x), 6) for x in v]
+                    vectors[key] = [round(float(x), 6) for x in v]
+                    if current_dim is None:
+                        current_dim = len(v)
                 except Exception:
                     continue
             try:
+                to_save = {_META_KEY: {"embedding_dim": current_dim}}
+                to_save.update(vectors)
                 tmp = cache_path.with_suffix(".tmp")
-                tmp.write_text(json.dumps(cache))
+                tmp.write_text(json.dumps(to_save))
                 tmp.replace(cache_path)
             except Exception as e:
                 print(f"  (item vector cache save failed: {e})", file=sys.stderr)
         except Exception as e:
             print(f"  (semantic vectors unavailable: {e})", file=sys.stderr)
 
-    return {k: cache[k] for k in item_keys if k in cache}
+    return {k: vectors[k] for k in item_keys if k in vectors}
 
 
 def get_item_ref_counts(conn: sqlite3.Connection, item_keys: list[str]) -> dict[str, int]:
@@ -463,21 +510,23 @@ def compute_clusters(
     vectors: dict[str, list[float]],
     positions: dict[str, tuple[float, float]],
     *,
-    distance_threshold: float = 0.5,
+    n_clusters: int = 8,
 ) -> list[dict]:
     """Zotero 資料の埋め込みベクトルをクラスタリングし、ConvexHull 領域を返す。
+
+    AgglomerativeClustering (cosine距離, average linkage) を使い、
+    指定された数のクラスタに分割する。
 
     Args:
         vectors: {item_key: embedding_vector}
         positions: {item_key: (x, y)}  — 2D 座標（次元削減後）
-        min_cluster_size: これ未満のクラスタは「その他」に統合
-        distance_threshold: AgglomerativeClustering の距離閾値（cosine 距離）
+        n_clusters: 目標クラスタ数。データ数を超える場合は自動調整。
 
     Returns:
         [{"id": 0, "label": "A", "item_keys": [...], "hull": [[x,y],...], "color": "#xxx"}, ...]
     """
     import numpy as np
-    from sklearn.cluster import AgglomerativeClustering
+    from sklearn.cluster import KMeans
     from scipy.spatial import ConvexHull
 
     if len(vectors) < 5:
@@ -486,22 +535,31 @@ def compute_clusters(
     keys = list(vectors.keys())
     X = np.array([vectors[k] for k in keys], dtype=np.float32)
 
-    # AgglomerativeClustering with cosine distance
-    clustering = AgglomerativeClustering(
-        n_clusters=None,
-        distance_threshold=distance_threshold,
-        metric="cosine",
-        linkage="average",
-    )
-    labels = clustering.fit_predict(X)
+    # Clamp n_clusters to valid range
+    n = min(n_clusters, len(X) - 1)
+    n = max(n, 2)
 
-    # クラスタごとにグループ化
+    # KMeans on L2-normalized vectors ≈ spherical k-means on unit hypersphere.
+    # Naturally produces balanced clusters (each centroid attracts items within
+    # its Voronoi region), unlike agglomerative methods which can create one
+    # giant cluster when most items are in a dense region.
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        clustering = KMeans(n_clusters=n, n_init="auto", random_state=42).fit(X)
+    labels_arr = clustering.labels_
+
+    # ── Build cluster groups (same format as before) ──
     groups: dict[int, list[str]] = {}
-    for key, label in zip(keys, labels):
+    for key, label in zip(keys, labels_arr):
         groups.setdefault(int(label), []).append(key)
 
-    # クラスタサイズ降順にソート
+    # Sort by size descending (largest = A)
     sorted_clusters = sorted(groups.items(), key=lambda x: -len(x[1]))
+    n = len(sorted_clusters)
+    print(f"  [clustering] k-means → {n} clusters "
+          f"(sizes: {', '.join(str(len(m)) for _, m in sorted_clusters[:10])}"
+          + ("…" if n > 10 else "") + ")", file=sys.stderr)
 
     # カラーパレット（視認性の高い色）
     palette = [
@@ -542,7 +600,113 @@ def compute_clusters(
             "item_keys": members,
             "hull": hull,
             "color": palette[idx],
+            "keywords": [],  # filled in second pass below
         })
+
+    # ── Second pass: keyword extraction using existing item vectors ──
+    # For each candidate term, compute its relevance to a cluster as the
+    # average cosine similarity of items (whose titles contain that term)
+    # to the cluster centroid.  No new embeddings needed.
+    if len(result) >= 2:
+        import re
+
+        # Get titles for all items
+        all_keys = [k for c in result for k in c["item_keys"]]
+        all_metas = get_item_meta(all_keys)
+
+        # Build per-cluster info: centroid + candidate terms from top items
+        cluster_info: list[dict] = []
+        all_terms: set[str] = set()
+
+        for c in result:
+            members_arr = np.array(c["item_keys"])
+            # Use all item vectors for the centroid (stable)
+            member_vecs = np.array([vectors[k] for k in c["item_keys"] if k in vectors], dtype=np.float32)
+            if len(member_vecs) >= 1:
+                centroid = member_vecs.mean(axis=0)
+                centroid = centroid / (np.linalg.norm(centroid) + 1e-10)
+                # top-5 items closest to centroid → candidate term source
+                sims = member_vecs @ centroid
+                top_k = min(5, len(c["item_keys"]))
+                top_idx = np.argsort(-sims)[:top_k]
+                top_keys = members_arr[top_idx].tolist()
+            else:
+                centroid = np.zeros(1, dtype=np.float32)
+                top_keys = c["item_keys"][:5]
+
+            c_terms: list[str] = []
+            for k in top_keys:
+                title = all_metas.get(k, {}).get("title", "")
+                tokens = re.split(r'[\s,.:;!?()\[\]「」『』【】《》""''/\\|　、。，．：；！？]+', title)
+                for tok in tokens:
+                    tok = tok.strip().lower()
+                    if not (3 <= len(tok) <= 20):
+                        continue
+                    if not re.search(r'[a-z぀-ゟ゠-ヿ一-鿿]', tok):
+                        continue
+                    if re.match(r'^[\d\W]+$', tok):
+                        continue
+                    if tok in _STOPWORDS:
+                        continue
+                    if tok not in all_terms:
+                        all_terms.add(tok)
+                    c_terms.append(tok)
+
+            cluster_info.append({
+                "centroid": centroid,
+                "terms": list(dict.fromkeys(c_terms)),
+            })
+
+        # For each candidate term, find which items contain it in their title.
+        # The term's similarity to a cluster centroid is the average cosine
+        # similarity of those items' vectors to the centroid.
+        # Pre-compute: term → list of item vectors (normalized)
+        term_item_vecs: dict[str, list[np.ndarray]] = {t: [] for t in all_terms}
+        for k in all_keys:
+            v = vectors.get(k)
+            if v is None:
+                continue
+            vn = np.asarray(v, dtype=np.float32)
+            vn = vn / (np.linalg.norm(vn) + 1e-10)
+            title = all_metas.get(k, {}).get("title", "")
+            tokens = set(re.split(r'[\s,.:;!?()\[\]「」『』【】《》""''/\\|　、。，．：；！？]+', title.lower()))
+            for tok in tokens:
+                if tok in term_item_vecs:
+                    term_item_vecs[tok].append(vn)
+
+        # Collect all (cluster_idx, term, score) globally, then assign each
+        # term to only the highest-scoring cluster — no duplicates across clusters.
+        global_scores: list[tuple[int, str, float]] = []
+        for i, c in enumerate(result):
+            info = cluster_info[i]
+            cent = info["centroid"]
+            if len(cent) < 2:
+                continue
+
+            for tok in info["terms"]:
+                tvecs = term_item_vecs.get(tok)
+                if not tvecs:
+                    continue
+                sims = [float(tv @ cent) for tv in tvecs]
+                score = np.mean(sims) * np.log(len(tvecs) + 1)
+                global_scores.append((i, tok, score))
+
+        global_scores.sort(key=lambda x: -x[2])
+
+        assigned: dict[str, str] = {}  # term → assigned to which cluster (label)
+        cluster_kw: dict[int, list[str]] = {i: [] for i in range(len(result))}
+        for ci, tok, score in global_scores:
+            if tok in assigned:
+                continue  # already claimed by a higher-scoring cluster
+            if len(cluster_kw[ci]) >= 3:
+                continue  # this cluster already has 3 keywords
+            assigned[tok] = result[ci]["label"]
+            cluster_kw[ci].append(tok)
+
+        for i, c in enumerate(result):
+            c["keywords"] = cluster_kw[i]
+
+    return result
 
     return result
 
@@ -1071,11 +1235,23 @@ def _build_sigma_html(
     outline: none;
   }
   #semantic-method-select:focus { border-color: var(--node-zotero); }
+  /* クラスタ数スライダー */
+  #semantic-clusters-wrap {
+    display: none; margin-top: 12px;
+  }
+  #semantic-clusters-wrap.show { display: block; }
+  #semantic-clusters-wrap label {
+    display: block; font-size: 10.5px; color: var(--text-dis); margin-bottom: 4px;
+  }
+  #nclusters-slider {
+    width: 100%; margin: 0; cursor: pointer;
+    accent-color: var(--node-zotero);
+  }
 
   /* ── Cluster overlay canvas ── */
   #cluster-overlay {
     position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-    pointer-events: none; z-index: 10;
+    pointer-events: none; /* behind sigma canvas */
   }
 
   /* ── Cluster legend (in legend card) ── */
@@ -1085,7 +1261,7 @@ def _build_sigma_html(
     font-size: 10.5px; color: var(--text-dis); margin-bottom: 6px;
   }
   #cluster-legend .cl-row {
-    display: flex; align-items: center; gap: 6px; margin-bottom: 3px;
+    display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-bottom: 3px;
     cursor: pointer; padding: 2px 4px; border-radius: 3px;
     font-size: 11px; color: var(--on-surface-variant);
   }
@@ -1094,8 +1270,26 @@ def _build_sigma_html(
   #cluster-legend .cl-dot {
     width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0;
   }
-  #cluster-legend .cl-label { flex: 1; }
+  #cluster-legend .cl-label { flex: 0 0 auto; }
   #cluster-legend .cl-count { font-size: 10.5px; color: var(--text-dis); }
+  #cluster-legend .cl-keywords {
+    flex-basis: 100%; margin-top: 1px;
+    font-size: 10px; color: var(--text-dis);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    padding-left: 16px;
+  }
+
+  /* ── Collapsible sections ── */
+  .sect-header {
+    display: flex; align-items: center; justify-content: space-between;
+    cursor: pointer; user-select: none;
+    font-size: 11px; color: var(--text-dis); margin: 8px 0 4px; padding: 2px 0;
+  }
+  .sect-header:hover { color: var(--on-surface); }
+  .sect-arrow { font-size: 8px; transition: transform 0.2s; }
+  .sect-header.open .sect-arrow { transform: rotate(90deg); }
+  .sect-body { overflow: hidden; }
+  .sect-body:not(.open) { display: none; }
 
   /* ── Sidebar ── */
   #sidebar {
@@ -1533,16 +1727,37 @@ def _build_sigma_html(
     border: 1px solid var(--outline-variant);
     border-radius: 4px; padding: 18px 20px 14px;
     color: var(--on-surface); font-size: 13px; min-width: 210px;
+    max-height: calc(100vh - 100px); overflow: hidden;
+    display: flex; flex-direction: column;
     box-shadow: 0 4px 8px rgba(0,0,0,0.5);
     transition: padding 0.38s ease, min-width 0.38s ease;
   }
   #legend-body {
-    overflow: hidden;
+    overflow-y: auto; overflow-x: hidden;
+    flex: 1; min-height: 0;
     transition: max-height 0.38s ease, opacity 0.38s ease;
-    max-height: 800px; opacity: 1;
+    max-height: 2000px; opacity: 1;
+    /* Thin scrollbar matching sidebar panels */
+    scrollbar-width: thin;
+    scrollbar-color: transparent transparent;
   }
   #rag-legend.minimized #legend-body { max-height: 0; opacity: 0; }
-  #rag-legend h3 { margin: 0 0 14px; font-size: 14px; font-weight: 500;
+  #legend-body:hover, #legend-body:focus-within {
+    scrollbar-color: var(--outline-variant) transparent;
+  }
+  #legend-body::-webkit-scrollbar { width: 4px; }
+  #legend-body::-webkit-scrollbar-track { background: transparent; }
+  #legend-body::-webkit-scrollbar-thumb {
+    background: transparent; border-radius: 9999px; transition: background 0.2s;
+  }
+  #legend-body:hover::-webkit-scrollbar-thumb,
+  #legend-body:focus-within::-webkit-scrollbar-thumb {
+    background: var(--outline-variant);
+  }
+  #legend-body::-webkit-scrollbar-thumb:hover {
+    background: var(--on-surface-variant);
+  }
+  #rag-legend h3 { margin: 0 0 14px; font-size: 14px; font-weight: 500; flex-shrink: 0;
                    color: var(--on-surface); letter-spacing: .01em; padding-right: 20px; }
   .rl-row  { display: flex; align-items: center; gap: 10px; margin-bottom: 7px; }
   .rl-dot  { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
@@ -1621,7 +1836,11 @@ def _build_sigma_html(
     <span style="font-size:10px;color:var(--text-dis)"> / </span>
     <span class="rl-count" id="stat-ref"><span id="stat-ref-vis">{n_ref}</span>({n_ref})</span>
   </div>
-  <div style="margin:8px 0 4px;font-size:11px;color:var(--text-dis)">ノード選択時の色分け</div>
+  <div class="sect-header open" data-section="legend">
+    凡例<span class="sect-arrow">▶</span>
+  </div>
+  <div class="sect-body open" data-section="legend">
+  <div style="margin:0 0 4px;font-size:11px;color:var(--text-dis)">ノード選択時の色分け</div>
   <div class="rl-row" style="margin-bottom:2px">
     <span class="rl-dot" style="background:{palette['nodeCiter']}"></span>
     <span class="rl-label" style="font-size:11px">被引用元（選択ノードを引用）</span>
@@ -1652,7 +1871,12 @@ def _build_sigma_html(
     <div class="dot" style="width:20px;height:20px"></div>
     <span class="sl">多</span>
   </div>
+  </div>
   <hr class="rl-divider">
+  <div class="sect-header open" data-section="filter">
+    フィルタ<span class="sect-arrow">▶</span>
+  </div>
+  <div class="sect-body open" data-section="filter">
   <div class="rl-filter">
     <label style="display:flex;align-items:center;justify-content:space-between">
       コレクションフィルタ
@@ -1685,6 +1909,7 @@ def _build_sigma_html(
     </div>
     <input type="range" class="rl-slider" id="filter-ref-cc" min="0" max="100" value="42">
   </div>
+  </div>
   <hr class="rl-divider">
   <div class="rl-stats">
     <span id="stat-nodes">{n_nodes}</span> nodes &nbsp;·&nbsp; <span>{n_edges}</span> edges
@@ -1702,6 +1927,11 @@ def _build_sigma_html(
       <option value="pca">PCA</option>
       <option value="mds">MDS (cosine)</option>
     </select>
+  </div>
+  <div id="semantic-clusters-wrap">
+    <hr class="rl-divider">
+    <label>クラスタ数: <strong id="nclusters-label">8</strong></label>
+    <input type="range" id="nclusters-slider" min="2" max="20" value="8" step="1">
   </div>
   <div id="cluster-legend">
     <hr class="rl-divider">
@@ -1771,6 +2001,7 @@ fetch('/api/graph')
     // ── Semantic map state ─────────────────────────────────────────────────
     var _viewMode = 'citation';                     // 'citation' | 'semantic'
     var _semanticMethod = 'umap';                   // 選択中の次元削減手法
+    var _nClusters = 8;                             // クラスタ数 (2-20)
     var _semanticPositions = {};                    // { node_id: [x, y] }
     var _citationNodePositions = {};                // 引用ネットワークのノード位置バックアップ
     var _semanticAbort = null;                      // 進行中の fetch をキャンセルするための AbortController
@@ -1812,8 +2043,8 @@ fetch('/api/graph')
         badge.setAttribute('data-label', '意味マップ計算中 (' + method.toUpperCase() + ')');
         if (badgePctEl) badgePctEl.textContent = badge.getAttribute('data-label');
       }
-      console.log('[RAG] loading semantic layout: method=' + method + ' reqId=' + reqId);
-      fetch('/api/semantic-layout?method=' + encodeURIComponent(method), { signal: signal })
+      console.log('[RAG] loading semantic layout: method=' + method + ' n=' + _nClusters + ' reqId=' + reqId);
+      fetch('/api/semantic-layout?method=' + encodeURIComponent(method) + '&n_clusters=' + _nClusters, { signal: signal })
         .then(function(r) { return r.json(); })
         .then(function(data) {
           // 古いリクエストの結果は無視
@@ -1832,7 +2063,6 @@ fetch('/api/graph')
             c.item_keys.forEach(function(ik) { _clusterItemMap[ik] = c.id; });
           });
           _buildClusterLegend();
-          _drawClusterHulls();
 
           console.log('[RAG] semantic layout loaded: method=' + method +
                       ' totalPositions=' + Object.keys(_semanticPositions).length +
@@ -1841,6 +2071,8 @@ fetch('/api/graph')
           if (_viewMode === 'semantic') {
             _applySemanticPositions();
           }
+          // Draw hulls AFTER positions are applied to graph nodes
+          _drawClusterHulls();
           var _b = document.getElementById('layout-badge');
           if (_b) _b.style.display = 'none';
         })
@@ -1857,6 +2089,16 @@ fetch('/api/graph')
       if (Object.keys(_citationNodePositions).length === 0) {
         _saveCitationPositionsNow();
       }
+
+      // 物理シミュレーションを停止（動いたままだと座標が上書きされる）
+      if (typeof simulation !== 'undefined' && simulation) {
+        simulation.stop();
+      }
+      if (!layoutDone) {
+        layoutDone = true;
+        badge.style.display = 'none';
+      }
+
       var pos = _semanticPositions;
       var count = 0;
       graph.forEachNode(function (id, attrs) {
@@ -1935,9 +2177,31 @@ fetch('/api/graph')
       });
 
       var methodWrap = document.getElementById('semantic-method-wrap');
+      var clustersWrap = document.getElementById('semantic-clusters-wrap');
       var clusterLegend = document.getElementById('cluster-legend');
       if (mode === 'semantic') {
+        // 物理シミュレーションを即座に停止（非同期ロード中も動き続けるのを防ぐ）
+        if (typeof simulation !== 'undefined' && simulation) {
+          simulation.stop();
+        }
+        if (!layoutDone) {
+          layoutDone = true;
+          badge.style.display = 'none';
+        }
+
+        // 意味マップでは外部論文が非表示のため、サイドバーもZoteroのみに強制
+        var _zoEl = document.getElementById('sb-zotero-only');
+        var _zlEl = document.getElementById('sb-zotero-only-label');
+        if (_zoEl) {
+          if (!('_savedZoteroOnly' in window)) window._savedZoteroOnly = _zoEl.checked;
+          _zoEl.checked = true;
+          _zoEl.disabled = true;
+          if (_zlEl) _zlEl.style.opacity = '0.45';
+        }
+        if (typeof window._renderList === 'function') window._renderList();
+
         if (methodWrap) methodWrap.classList.add('show');
+        if (clustersWrap) clustersWrap.classList.add('show');
         if (clusterLegend && _clusterData.length > 0) clusterLegend.classList.add('show');
         _drawClusterHulls();
         if (_semanticLayoutReady) {
@@ -1946,8 +2210,26 @@ fetch('/api/graph')
           _loadSemanticLayout(_semanticMethod);
         }
       } else {
+        // 引用ネットワークに戻すときはZotero-onlyフィルタを元に戻す
+        var _czEl = document.getElementById('sb-zotero-only');
+        var _czLbl = document.getElementById('sb-zotero-only-label');
+        if (_czEl) {
+          _czEl.disabled = false;
+          _czEl.checked = window._savedZoteroOnly || false;
+          if (_czLbl) _czLbl.style.opacity = '';
+        }
+        if (typeof window._renderList === 'function') window._renderList();
+
         if (methodWrap) methodWrap.classList.remove('show');
+        if (clustersWrap) clustersWrap.classList.remove('show');
         if (clusterLegend) clusterLegend.classList.remove('show');
+        // Clear overlay when switching to citation mode
+        var canvas = document.getElementById('cluster-overlay');
+        if (canvas) {
+          var ggl = canvas.__gl;
+          if (ggl) { ggl.clear(ggl.COLOR_BUFFER_BIT); }
+          else { var cc = canvas.getContext('2d'); if (cc) cc.clearRect(0, 0, canvas.width, canvas.height); }
+        }
         _selectedClusterId = -1;
         if (window._colItemKeys !== null) {
           // クラスタフィルタを解除（コレクションフィルタはそのまま）
@@ -1958,32 +2240,50 @@ fetch('/api/graph')
       }
     }
 
-    // ── Cluster hull drawing ───────────────────────────────────────────────
+    // ── Plain Voronoi overlay ──────────────────────────────────────────
+    // Each cell is flat-filled with its cluster colour (no stroke).
+
     function _drawClusterHulls() {
+      if (!_clusterData.length) return;
+
       var canvas = document.getElementById('cluster-overlay');
-      if (!canvas || !_clusterData.length) return;
+      if (!canvas) return;
       var dim = renderer.getDimensions();
+      if (dim.width <= 0 || dim.height <= 0) return;
       canvas.width = dim.width; canvas.height = dim.height;
       var ctx = canvas.getContext('2d');
       ctx.clearRect(0, 0, dim.width, dim.height);
 
+      // Collect screen-space points with cluster colour
+      var pts = [];
       _clusterData.forEach(function(c) {
-        if (!c.hull || c.hull.length < 3) return;
-        ctx.beginPath();
-        var first = true;
-        c.hull.forEach(function(pt) {
-          var sp = renderer.graphToViewport({ x: pt[0], y: pt[1] });
-          var sx = sp.x * dim.width, sy = sp.y * dim.height;
-          if (first) { ctx.moveTo(sx, sy); first = false; }
-          else { ctx.lineTo(sx, sy); }
+        if (!c.item_keys) return;
+        c.item_keys.forEach(function(ik) {
+          var pos = _semanticPositions['item:' + ik];
+          if (pos) {
+            var vp = renderer.graphToViewport({ x: pos[0], y: pos[1] });
+            pts.push({ x: vp.x, y: vp.y, color: c.color });
+          }
         });
-        ctx.closePath();
-        ctx.fillStyle = c.color + '18';  // 10% opacity
-        ctx.strokeStyle = c.color + '66'; // 40% opacity
-        ctx.lineWidth = 2;
-        ctx.fill();
-        ctx.stroke();
       });
+      if (pts.length < 3) return;
+
+      // Delaunay → Voronoi
+      var delaunay = d3.Delaunay.from(pts, function(d) { return d.x; }, function(d) { return d.y; });
+      var voronoi = delaunay.voronoi([0, 0, dim.width, dim.height]);
+
+      ctx.globalAlpha = 0.35;
+      for (var i = 0; i < pts.length; i++) {
+        var poly = voronoi.cellPolygon(i);
+        if (!poly || poly.length < 3) continue;
+        ctx.beginPath();
+        ctx.moveTo(poly[0][0], poly[0][1]);
+        for (var j = 1; j < poly.length; j++) ctx.lineTo(poly[j][0], poly[j][1]);
+        ctx.closePath();
+        ctx.fillStyle = pts[i].color;
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1.0;
     }
 
     // ── Cluster legend builder ─────────────────────────────────────────────
@@ -1999,11 +2299,14 @@ fetch('/api/graph')
       }
       list.innerHTML = '';
       _clusterData.forEach(function(c) {
+        var kw = c.keywords && c.keywords.length ? c.keywords.join(', ') : '';
+
         var row = document.createElement('div');
         row.className = 'cl-row' + (c.id === _selectedClusterId ? ' active' : '');
         row.innerHTML = '<span class="cl-dot" style="background:' + c.color + '"></span>' +
                         '<span class="cl-label">' + c.label + '</span>' +
-                        '<span class="cl-count">' + c.item_keys.length + '</span>';
+                        '<span class="cl-count">' + c.item_keys.length + '</span>' +
+                        (kw ? '<span class="cl-keywords">' + kw + '</span>' : '');
         row.addEventListener('click', function() {
           _selectCluster(c.id === _selectedClusterId ? -1 : c.id);
         });
@@ -2024,8 +2327,8 @@ fetch('/api/graph')
       } else {
         window._colItemKeys = null;
       }
-      if (typeof _applyColFilter === 'function') _applyColFilter();
       renderer.refresh();
+      if (typeof window._renderList === 'function') window._renderList();
     }
 
     // ── Cluster click detection (via sigma clickStage) ──────────────────────
@@ -2036,12 +2339,7 @@ fetch('/api/graph')
       _lastCanvasClick.y = ev.offsetY;
     });
 
-    // カメラ移動時に hull 再描画
-    if (typeof camera !== 'undefined' && camera) {
-      camera.on('updated', function() {
-        if (_viewMode === 'semantic' && _clusterData.length) _drawClusterHulls();
-      });
-    }
+    // Camera-follow handler registered below, after sigma initialization.
 
     function _pointInPolygon(x, y, polygon) {
       var inside = false;
@@ -2069,6 +2367,26 @@ fetch('/api/graph')
         _semanticMethod = this.value;
         _semanticLayoutReady = false;  // キャッシュがなければ再計算
         _loadSemanticLayout(_semanticMethod);
+      });
+    }
+
+    // ── Cluster count slider ──
+    var _nClustersSlider = document.getElementById('nclusters-slider');
+    var _nClustersLabel = document.getElementById('nclusters-label');
+    var _nClustersTimer = null;
+    if (_nClustersSlider && _nClustersLabel) {
+      _nClustersSlider.addEventListener('input', function() {
+        _nClusters = parseInt(this.value);
+        _nClustersLabel.textContent = _nClusters;
+        // Debounce: wait 400ms after last change before re-fetching
+        if (_nClustersTimer) clearTimeout(_nClustersTimer);
+        _nClustersTimer = setTimeout(function() {
+          if (_viewMode === 'semantic') {
+            // Re-fetch with new n_clusters — layout cache still applies,
+            // only clustering is recomputed server-side
+            _loadSemanticLayout(_semanticMethod);
+          }
+        }, 400);
       });
     }
 
@@ -2421,10 +2739,9 @@ function nodeReducer(node, data) {
       res.hidden = true;
       return res;
     }
-    // Zotero ノードをクラスタ色で着色
-    if (data.group === 'zotero' && data.itemKey && _clusterItemMap[data.itemKey] !== undefined) {
-      var cl = _clusterData.find(function(c) { return c.id === _clusterItemMap[data.itemKey]; });
-      if (cl) res.color = cl.color;
+    // In semantic mode, use same colors as citation mode
+    if (data.group === 'zotero') {
+      res.color = THEME.nodeZotero;
     }
   }
 
@@ -2600,6 +2917,14 @@ const renderer  = new SigmaClass(graph, container, {
   edgeReducer:           edgeReducer,
 });
 var camera = renderer.getCamera();
+
+// ── Camera-follow for Voronoi overlay ──
+var _hullRedrawTimer = null;
+camera.on('updated', function() {
+  if (_viewMode !== 'semantic' || !_clusterData.length) return;
+  if (_hullRedrawTimer) clearTimeout(_hullRedrawTimer);
+  _hullRedrawTimer = setTimeout(_drawClusterHulls, 50);
+});
 
 // Fix sigma's normalisation to the pre-computed bbox so D3 movements
 // produce stable framed-coordinate changes (visible animation).
@@ -2805,16 +3130,19 @@ renderer.on('clickStage', function () {
     var rx = _lastCanvasClick.x / dim.width;
     var ry = _lastCanvasClick.y / dim.height;
     var gpos = renderer.viewportToGraph({ x: rx, y: ry });
+    var hitCluster = false;
     for (var ci = 0; ci < _clusterData.length; ci++) {
       var hull = _clusterData[ci].hull;
       if (!hull || hull.length < 3) continue;
       if (_pointInPolygon(gpos.x, gpos.y, hull)) {
         _selectCluster(_selectedClusterId === _clusterData[ci].id ? -1 : _clusterData[ci].id);
-        return;
+        hitCluster = true;
+        break;
       }
     }
+    if (hitCluster) return;
     if (_selectedClusterId >= 0) _selectCluster(-1);
-    return;
+    // クラスタ外クリック時はノード選択解除にフォールスルー
   }
 
   if (selectedNode !== null) { clearSelection(); }
@@ -3162,6 +3490,16 @@ if (_hasPrecomputedLayout) {
     var minimized = legend.classList.toggle('minimized');
     btn.textContent = minimized ? '+' : '−';
     btn.title       = minimized ? '展開' : '最小化';
+  });
+
+  // Section collapse/expand
+  legend.querySelectorAll('.sect-header').forEach(function(hdr) {
+    hdr.addEventListener('click', function() {
+      var section = this.dataset.section;
+      var body = legend.querySelector('.sect-body[data-section="' + section + '"]');
+      var isOpen = this.classList.toggle('open');
+      body.classList.toggle('open', isOpen);
+    });
   });
 })();
 
@@ -4311,7 +4649,7 @@ function _renderSummarySection(itemKey, title, summaryData) {
     };
 
     var baseNodes = sbNodes.filter(function(n) {
-      if (filterZoteroOnly && n.group !== 'zotero') return false;
+      if (zoteroOnlyEl.checked && n.group !== 'zotero') return false;
       if (!filterQ) return true;
       return (n.fullTitle || n.label || '').toLowerCase().indexOf(filterQ) !== -1 ||
              (n.authors   || '').toLowerCase().indexOf(filterQ) !== -1;
@@ -4586,7 +4924,7 @@ console.log('[RAG] sigma ready – nodes:', graph.order, 'edges:', graph.size,
     <div id="sb-tab-list">
     <div style="padding:6px 10px 8px;flex-shrink:0;border-bottom:1px solid var(--outline-variant)">
       <input id="sb-search" type="text" placeholder="タイトル・著者で絞り込み…">
-      <label style="display:flex;align-items:center;gap:5px;margin-top:5px;font-size:11.5px;color:var(--on-surface-variant);cursor:pointer">
+      <label id="sb-zotero-only-label" style="display:flex;align-items:center;gap:5px;margin-top:5px;font-size:11.5px;color:var(--on-surface-variant);cursor:pointer">
         <input id="sb-zotero-only" type="checkbox"> Zotero所収のみ
       </label>
     </div>
@@ -5337,11 +5675,12 @@ def _route_collections() -> JSONResponse:
 
 
 @app.get("/api/semantic-layout")
-def _route_semantic_layout(method: str = "umap") -> JSONResponse:
+def _route_semantic_layout(method: str = "umap", n_clusters: int = 8) -> JSONResponse:
     """資料ベクトルを次元削減して2D意味空間マップ座標を返す。
 
     Query params:
         method: "umap" (default) | "tsne" | "pca" | "mds"
+        n_clusters: クラスタ数 (default: 8, range: 2-20)
 
     Returns:
         { positions: { item_key: [x, y], ... }, method, n_items, cached }
@@ -5382,7 +5721,7 @@ def _route_semantic_layout(method: str = "umap") -> JSONResponse:
             vectors_cached = get_item_vectors(item_keys_for_cluster)
             positions_cached = {k: v for k, v in cached.items() if k.startswith("item:")}
             _raw_positions = {k.split(":", 1)[1]: v for k, v in positions_cached.items()}
-            clusters_cached = compute_clusters(vectors_cached, _raw_positions) if len(vectors_cached) >= 5 else []
+            clusters_cached = compute_clusters(vectors_cached, _raw_positions, n_clusters=n_clusters) if len(vectors_cached) >= 5 else []
 
             return JSONResponse({
                 "positions": {k: list(v) for k, v in cached.items()},
@@ -5427,7 +5766,7 @@ def _route_semantic_layout(method: str = "umap") -> JSONResponse:
         _save_semantic_layout_cache(method, _item_pos)
 
     # クラスタリング
-    clusters = compute_clusters(vectors, positions)
+    clusters = compute_clusters(vectors, positions, n_clusters=n_clusters)
 
     return JSONResponse({
         "positions": {k: list(v) for k, v in _item_pos.items()},
