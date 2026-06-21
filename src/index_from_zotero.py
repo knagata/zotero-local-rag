@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import atexit
 import json
 import os
 import shutil
 import sys
 import time
 import gc
+from datetime import datetime, timezone
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Iterable, List, Optional
@@ -59,6 +61,7 @@ DATA_DIR = PROJECT_ROOT / "data"
 CHROMA_DIR = Path(os.environ.get("CHROMA_DIR", str(DATA_DIR / "chroma")))
 PDF_CACHE_DIR = Path(os.environ.get("PDF_CACHE_DIR", str(DATA_DIR / "pdf_cache")))
 MANIFEST_PATH = Path(os.environ.get("MANIFEST_PATH", str(DATA_DIR / "manifest.json")))
+INDEXING_LOCK_PATH = DATA_DIR / "indexing.lock"
 
 ZOTERO_DATA_DIR = os.environ.get("ZOTERO_DATA_DIR")  # required for local storage resolution in your pipeline
 CHROMA_COLLECTION_ENV = os.environ.get("CHROMA_COLLECTION")
@@ -76,6 +79,76 @@ UPSERT_BATCH_SIZE = int((os.environ.get("UPSERT_BATCH_SIZE") or "128").strip())
 if "BATCH_SIZE" in os.environ and "FLUSH_SIZE" not in os.environ:
     FLUSH_SIZE = int(os.environ["BATCH_SIZE"].strip())
     UPSERT_BATCH_SIZE = FLUSH_SIZE
+
+
+# ---------------------------------------------------------------------------
+# Indexing lock — prevents MCP server from serving stale/inconsistent results
+# while the indexer is writing to ChromaDB.
+# ---------------------------------------------------------------------------
+
+def _acquire_indexing_lock() -> dict:
+    """Create the indexing lock file.  Exits with an error if another indexer
+    is currently running (lock file exists and the owning process is alive).
+
+    Returns the lock metadata dict that should be passed to ``_release_indexing_lock``.
+    """
+    if INDEXING_LOCK_PATH.exists():
+        # A lock file already exists — check if it is stale
+        try:
+            existing = json.loads(INDEXING_LOCK_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            existing = {}
+        existing_pid = existing.get("pid")
+        if existing_pid is not None:
+            try:
+                os.kill(existing_pid, 0)  # signal 0 = existence check
+                # Process is still alive → genuine conflict
+                raise SystemExit(
+                    f"別のインデクサーが実行中です (PID={existing_pid})。\n"
+                    f"ロックファイル: {INDEXING_LOCK_PATH}\n"
+                    "インデクサーの完了を待ってから再実行してください。\n"
+                    "（プロセスが存在しないはずなのにロックが残っている場合は、"
+                    "手動で削除してください）"
+                )
+            except OSError:
+                # Process is dead — stale lock, remove below
+                print(
+                    f"[WARN] 古いロックファイルを削除します（PID={existing_pid} は存在しません）",
+                    file=sys.__stderr__,
+                )
+        else:
+            # No PID in lock file — treat as stale
+            print(
+                "[WARN] PID情報のない古いロックファイルを削除します",
+                file=sys.__stderr__,
+            )
+        # Remove stale lock
+        try:
+            INDEXING_LOCK_PATH.unlink()
+        except OSError:
+            pass
+
+    lock_data = {
+        "pid": os.getpid(),
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "operation": "indexing",
+    }
+    INDEXING_LOCK_PATH.write_text(json.dumps(lock_data, ensure_ascii=False), encoding="utf-8")
+
+    # Ensure the lock is released on normal exit, SystemExit, or KeyboardInterrupt.
+    atexit.register(_release_indexing_lock)
+
+    return lock_data
+
+
+def _release_indexing_lock() -> None:
+    """Remove the indexing lock file (best-effort, never raises)."""
+    try:
+        INDEXING_LOCK_PATH.unlink()
+    except FileNotFoundError:
+        pass  # already gone — nothing to do
+    except OSError as e:
+        print(f"[WARN] ロックファイルの削除に失敗しました: {e}", file=sys.__stderr__)
 
 
 def _dedupe_by_id(
@@ -243,6 +316,8 @@ def _validate_zotero_data_dir_or_exit():
 async def main_async(args: argparse.Namespace) -> None:
     PDF_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+    _acquire_indexing_lock()
 
     if args.rebuild:
         if CHROMA_DIR.exists():
@@ -919,6 +994,8 @@ async def main_async(args: argparse.Namespace) -> None:
 
     if show_progress:
         print(f"[PROGRESS] Total runtime: {time.perf_counter() - t0:.1f}s", file=sys.__stderr__)
+
+    _release_indexing_lock()
 
 
 if __name__ == "__main__":

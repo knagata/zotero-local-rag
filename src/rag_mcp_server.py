@@ -14,6 +14,7 @@ import sys
 import time
 import traceback
 import gc
+from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, Optional, List
 from typing_extensions import TypedDict
 
@@ -33,6 +34,8 @@ from chapter_detect import get_pdf_toc, get_epub_chapter_index_to_title
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CHROMA_DIR = os.environ.get("CHROMA_DIR", os.path.join(ROOT, "data", "chroma"))
 MANIFEST_PATH = os.environ.get("MANIFEST_PATH", os.path.join(ROOT, "data", "manifest.json"))
+INDEXING_LOCK_PATH = os.path.join(ROOT, "data", "indexing.lock")
+_LOCK_STALE_HOURS = 4
 _LOG_PATH = os.path.join(ROOT, "data", "zotero-rag.log")
 
 
@@ -53,6 +56,66 @@ def _setup_logger() -> logging.Logger:
 
 
 _log = _setup_logger()
+
+
+# ---------------------------------------------------------------------------
+# Indexing-lock guard — prevents queries during active ChromaDB writes.
+# ---------------------------------------------------------------------------
+
+def _check_indexing_lock() -> tuple:
+    """Check whether the indexer is currently writing to ChromaDB.
+
+    Returns ``(is_blocked: bool, message: str | None)``.
+    When *is_blocked* is ``True``, the caller should abort and return
+    *message* to the client.
+    """
+    if not os.path.exists(INDEXING_LOCK_PATH):
+        return False, None
+
+    # Read lock metadata
+    try:
+        lock_data = json.loads(Path(INDEXING_LOCK_PATH).read_text(encoding="utf-8"))
+    except Exception:
+        _log.warning("Corrupt indexing.lock — treating as stale")
+        return False, None
+
+    pid = lock_data.get("pid")
+
+    # --- PID-based staleness check ---
+    if pid is not None:
+        try:
+            os.kill(pid, 0)  # signal 0 = existence check only
+        except OSError:
+            _log.info("Indexer PID %s is dead — treating lock as stale", pid)
+            return False, None
+    else:
+        # No PID in lock file — treat as stale
+        _log.warning("indexing.lock has no PID — treating as stale")
+        return False, None
+
+    # --- Time-based staleness check (safety net) ---
+    started_at = lock_data.get("started_at")
+    if started_at:
+        try:
+            started = datetime.fromisoformat(started_at)
+            age = datetime.now(timezone.utc) - started
+            if age > timedelta(hours=_LOCK_STALE_HOURS):
+                _log.warning(
+                    "Indexing lock is %.1f h old — treating as stale",
+                    age.total_seconds() / 3600,
+                )
+                return False, None
+        except Exception:
+            pass
+
+    return True, (
+        "現在インデックス更新中です。"
+        "ChromaDB を使用する検索・参照機能は一時的に利用できません。\n"
+        "更新完了までしばらくお待ちください（通常数分〜数十分）。\n"
+        "Zotero 書誌検索（search_zotero_items）や get_item_details など "
+        "ChromaDB 非依存の機能は通常通りご利用いただけます。"
+    )
+
 
 # Collection name is intentionally configurable.
 # IMPORTANT: Chroma collections are dimension-fixed. If you switch embedding models
@@ -462,9 +525,13 @@ def _make_citation(md: dict) -> str:
 def force_reload_index() -> Dict[str, Any]:
     """
     Forcefully reload the ChromaDB index and metadata.
-    Use this if you have just run the indexer and are seeing 'Error finding id' 
+    Use this if you have just run the indexer and are seeing 'Error finding id'
     or missing results, and the automatic reload didn't seem to trigger.
     """
+    blocked, msg = _check_indexing_lock()
+    if blocked:
+        return {"status": "blocked", "message": msg}
+
     prev_mtime = _COL_INIT_MTIME
     _reset_col()
     try:
@@ -502,6 +569,12 @@ def server_status() -> Dict[str, Any]:
         "collections": [],
         "errors": [],
     }
+
+    # Surface indexing-lock state for observability
+    blocked, lock_msg = _check_indexing_lock()
+    report["indexing_lock"] = blocked
+    if blocked:
+        report["indexing_lock_message"] = lock_msg
 
     try:
         cfg = resolve_embedder_settings(Path(ROOT))
@@ -637,6 +710,10 @@ def rag_search(
     Returns:
         {"results": [ ... ]}
     """
+
+    blocked, msg = _check_indexing_lock()
+    if blocked:
+        return {"results": [], "warning": msg}
 
     where = _coerce_json(where)
     include_item_keys = _coerce_json(include_item_keys)
@@ -947,6 +1024,11 @@ def search_items(
         include_item_keys:
             Optional list of Zotero item keys to restrict the search to.
     """
+
+    blocked, msg = _check_indexing_lock()
+    if blocked:
+        return {"items": [], "warning": msg}
+
     where = _coerce_json(where)
     include_item_keys = _coerce_json(include_item_keys)
 
@@ -1044,6 +1126,11 @@ def get_chunk_context(chunk_id: str, window: int = 2) -> Dict[str, Any]:
     Returns:
         A dictionary containing the combined text and metadata of the context region.
     """
+
+    blocked, msg = _check_indexing_lock()
+    if blocked:
+        return {"error": msg}
+
     col = _col()
     nids = neighbor_ids(chunk_id, window)
     if not nids:
@@ -1204,13 +1291,18 @@ def get_chunk_citations(chunk_id: str) -> Dict[str, Any]:
 @mcp.tool()
 def get_cited_chunks_for_item(item_key: str, max_citations_per_chunk: int = 3) -> Dict[str, Any]:
     """
-    Given a Zotero item key, returns all paragraphs (chunks) from that item 
+    Given a Zotero item key, returns all paragraphs (chunks) from that item
     that have been cited by external papers, along with the citation context.
-    
+
     Args:
         item_key: The parent Zotero item key (e.g., 'BGZ9UFUJ')
         max_citations_per_chunk: Maximum number of representative citations to return per chunk.
     """
+
+    blocked, msg = _check_indexing_lock()
+    if blocked:
+        return {"status": "blocked", "message": msg}
+
     try:
         from db_relations import get_cited_chunks_for_item as get_chunks, get_citations_for_chunk
         chunks = get_chunks(item_key)
@@ -1306,6 +1398,11 @@ def get_references_for_item(item_key: str) -> Dict[str, Any]:
     Args:
         item_key: The parent Zotero item key (e.g., 'BGZ9UFUJ')
     """
+
+    blocked, msg = _check_indexing_lock()
+    if blocked:
+        return {"status": "blocked", "message": msg}
+
     try:
         from db_relations import get_references_for_item as get_ref_chunks, get_references_for_chunk
         chunks = get_ref_chunks(item_key)
@@ -1345,6 +1442,11 @@ async def build_citation_network(item_key: str) -> Dict[str, Any]:
     Args:
         item_key: The parent Zotero item key (e.g., 'BGZ9UFUJ')
     """
+
+    blocked, msg = _check_indexing_lock()
+    if blocked:
+        return {"status": "blocked", "message": msg}
+
     res: Dict[str, Any] = {}
 
     # Fetch Zotero item metadata so the mapper can look up the paper on S2.

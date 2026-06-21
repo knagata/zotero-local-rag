@@ -35,3 +35,14 @@ LAYOUT_DESIGN_NOTES.md
 
 # ── ログ全般 ─────────────────────────────────────────────
 *.log
+
+# ── Ralph Loop 作業ファイル ──────────────────────────────
+prd.json
+progress.txt
+
+# ── バックアップ ──────────────────────────────────────────
+data.backup.*/
+
+# ── キャッシュ・生成物（既存・新規とも追跡除外） ────────
+data/item_vectors_cache.json
+data/semantic_layout_*.json
