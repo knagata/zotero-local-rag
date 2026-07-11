@@ -300,6 +300,11 @@ def open_chroma_collection(
         metadata=metadata,
     )
     col._embedding_function = ef
+    # Keep the Client wrapper reachable from the collection so callers can
+    # close() it.  Without close(), chromadb keeps the System (and its
+    # in-memory HNSW segment) cached per-path in SharedSystemClient, and
+    # re-creating a PersistentClient silently reuses the stale one.
+    col._chroma_client = client
 
     # For existing collections, get_or_create_collection does NOT update metadata.
     # Explicitly apply sync_threshold=100 so the indexer flushes more frequently.

@@ -214,10 +214,49 @@ def _db_mtime_sum() -> float:
 
 
 def _reset_col() -> None:
-    """Invalidate the cached collection and client so they are re-initialized on the next call."""
-    # Explicitly break references to help GC unmap memory segments
+    """Invalidate the cached collection and fully tear down the ChromaDB System.
+
+    chromadb caches one System per persist path in
+    ``SharedSystemClient._identifier_to_system``.  Dropping the collection and
+    creating a "fresh" PersistentClient reuses that cached System — including
+    the stale in-memory HNSW segment written before the indexer ran — which is
+    why reloads used to require a full process restart.  Closing the client
+    (and force-evicting any leaked System) makes the next _col() call re-read
+    everything from disk.
+    """
     global _COL
+    client = getattr(_COL, "_chroma_client", None) if _COL is not None else None
     _COL = None
+    if client is not None:
+        try:
+            client.close()
+        except Exception as e:
+            _log.warning("ChromaDB client close() failed: %s", e)
+
+    # Belt and braces: if any client for this path was never closed (leaked
+    # refcount), the System survives close().  Stop and evict it explicitly.
+    try:
+        from chromadb.api.shared_system_client import SharedSystemClient
+
+        chroma_real = os.path.realpath(CHROMA_DIR)
+        for ident in list(SharedSystemClient._identifier_to_system.keys()):
+            try:
+                if os.path.realpath(ident) != chroma_real:
+                    continue
+            except OSError:
+                continue
+            system = SharedSystemClient._identifier_to_system.pop(ident, None)
+            with SharedSystemClient._refcount_lock:
+                SharedSystemClient._identifier_to_refcount.pop(ident, None)
+            if system is not None:
+                _log.info("Force-stopping leaked ChromaDB System for %s", ident)
+                try:
+                    system.stop()
+                except Exception as e:
+                    _log.warning("ChromaDB System stop() failed: %s", e)
+    except Exception as e:
+        _log.warning("ChromaDB system-cache eviction failed: %s", e)
+
     gc.collect()
 
 
@@ -339,8 +378,8 @@ def _col():
 
 _HNSW_ERROR_MSG = (
     "検索インデックスの状態が不整合です（HNSWラベルマップとバイナリの不一致）。"
-    "Claude Desktop を再起動すると解消されます。"
-    "再起動後、もう一度検索をお試しください。"
+    "force_reload_index ツールを実行してから再検索してください。"
+    "それでも解消しない場合は Claude Desktop を再起動してください。"
 )
 
 
@@ -595,13 +634,18 @@ def server_status() -> Dict[str, Any]:
 
     try:
         client = chromadb.PersistentClient(path=CHROMA_DIR)
-        cols = client.list_collections()
-        for c in cols:
-            try:
-                count = client.get_collection(c.name).count()
-            except Exception:
-                count = None
-            report["collections"].append({"name": c.name, "count": count})
+        try:
+            cols = client.list_collections()
+            for c in cols:
+                try:
+                    count = client.get_collection(c.name).count()
+                except Exception:
+                    count = None
+                report["collections"].append({"name": c.name, "count": count})
+        finally:
+            # Unclosed clients leak a refcount on the shared System, which
+            # would keep the stale System alive across _reset_col().
+            client.close()
     except Exception as e:
         report["status"] = "error"
         report["errors"].append(f"ChromaDB error: {e}")
