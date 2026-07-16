@@ -6,6 +6,7 @@ import argparse
 import sys
 from pathlib import Path
 from typing import Any
+from difflib import SequenceMatcher
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,8 +24,11 @@ def _resolve_in_connection(connection, cache: dict[tuple[Any, ...], int], **valu
     title = (values.get("title") or "").strip() or None
     title_norm = db_relations.normalize_work_title(title)
     year = values.get("year")
-    key = (s2, doi, isbn, zotero, title_norm, year)
-    if key in cache:
+    authors = (values.get("authors") or "").strip() or None
+    authors_norm = db_relations.normalize_work_title(authors)
+    key = (s2, doi, isbn, zotero, title_norm, authors_norm, year)
+    cacheable = bool(s2 or doi or isbn or zotero or (title_norm and (authors_norm or year is not None)))
+    if cacheable and key in cache:
         return cache[key]
 
     row = None
@@ -38,10 +42,24 @@ def _resolve_in_connection(connection, cache: dict[tuple[Any, ...], int], **valu
             if row:
                 break
     if row is None and title_norm:
-        row = connection.execute(
-            "SELECT work_id FROM works WHERE title_norm = ? AND (year IS NULL OR ? IS NULL OR ABS(year - ?) <= 1) LIMIT 1",
-            (title_norm, year, year),
-        ).fetchone()
+        candidates = connection.execute(
+            "SELECT work_id, authors, year FROM works WHERE title_norm = ?", (title_norm,)
+        ).fetchall()
+        for candidate in candidates:
+            years_comparable = year is not None and candidate["year"] is not None
+            year_match = years_comparable and abs(int(year) - int(candidate["year"])) <= 1
+            year_conflict = years_comparable and not year_match
+            authors_comparable = bool(authors_norm and candidate["authors"])
+            author_match = bool(
+                authors_comparable
+                and SequenceMatcher(
+                    None, authors_norm, db_relations.normalize_work_title(candidate["authors"])
+                ).ratio() >= 0.65
+            )
+            author_conflict = authors_comparable and not author_match
+            if (year_match or author_match) and not year_conflict and not author_conflict:
+                row = candidate
+                break
     if row is not None:
         work_id = int(row[0])
     else:
@@ -52,10 +70,11 @@ def _resolve_in_connection(connection, cache: dict[tuple[Any, ...], int], **valu
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
         ''', (
             s2, doi, isbn, zotero, title, title_norm,
-            values.get("authors"), year, values.get("citation_count"), values.get("abstract"),
+            authors, year, values.get("citation_count"), values.get("abstract"),
         ))
         work_id = int(cursor.lastrowid)
-    cache[key] = work_id
+    if cacheable:
+        cache[key] = work_id
     return work_id
 
 
@@ -93,12 +112,17 @@ def backfill(*, limit: int | None = None) -> dict[str, int]:
                     connection, cache, zotero_item_key=row["citing_item_key"]
                 )
                 owned[row["citing_item_key"]] = citing
-            cited = _resolve_in_connection(
+            raw = row["raw_reference_text"] or f"legacy-reference:{row['id']}"
+            source = row["source"] or "legacy-reference"
+            existing_edge = connection.execute('''
+                SELECT cited_work_id FROM work_edges
+                WHERE citing_work_id = ? AND source = ? AND raw_reference = ? LIMIT 1
+            ''', (citing, source, raw)).fetchone()
+            cited = int(existing_edge[0]) if existing_edge else _resolve_in_connection(
                 connection, cache, s2_paper_id=row["cited_paper_id"], doi=row["cited_doi"],
                 title=row["cited_title"], authors=row["cited_authors"], year=row["cited_year"],
                 citation_count=row["cited_citation_count"],
             )
-            raw = row["raw_reference_text"] or f"legacy-reference:{row['id']}"
             connection.execute('''
                 INSERT INTO work_edges
                     (citing_work_id, cited_work_id, source, confidence, raw_reference,
@@ -106,7 +130,7 @@ def backfill(*, limit: int | None = None) -> dict[str, int]:
                 VALUES (?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(citing_work_id, cited_work_id, source, raw_reference) DO NOTHING
             ''', (
-                citing, cited, row["source"] or "legacy-reference",
+                citing, cited, source,
                 max(0.0, 1.0 - float(row["similarity_distance"] or 0.0)), raw,
                 row["citing_chunk_id"], row["context_snippet"],
             ))
@@ -125,7 +149,12 @@ def backfill(*, limit: int | None = None) -> dict[str, int]:
                     connection, cache, zotero_item_key=row["cited_item_key"]
                 )
                 owned[row["cited_item_key"]] = cited
-            citing = _resolve_in_connection(
+            raw = f"legacy-citation:{row['id']}"
+            existing_edge = connection.execute('''
+                SELECT citing_work_id FROM work_edges
+                WHERE cited_work_id = ? AND source = 's2-citation' AND raw_reference = ? LIMIT 1
+            ''', (cited, raw)).fetchone()
+            citing = int(existing_edge[0]) if existing_edge else _resolve_in_connection(
                 connection, cache, s2_paper_id=row["citing_paper_id"], doi=row["citing_doi"],
                 title=row["citing_title"], authors=row["citing_authors"], year=row["citing_year"],
                 citation_count=row["citing_citation_count"],
@@ -138,7 +167,7 @@ def backfill(*, limit: int | None = None) -> dict[str, int]:
                 ON CONFLICT(citing_work_id, cited_work_id, source, raw_reference) DO NOTHING
             ''', (
                 citing, cited, max(0.0, 1.0 - float(row["similarity_distance"] or 0.0)),
-                f"legacy-citation:{row['id']}", row["cited_chunk_id"], row["context_snippet"],
+                raw, row["cited_chunk_id"], row["context_snippet"],
             ))
             counts["edges"] += 1
 

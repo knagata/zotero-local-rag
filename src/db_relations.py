@@ -309,13 +309,21 @@ def resolve_work(
             ).fetchall()
             for candidate in candidates:
                 similarity = SequenceMatcher(None, values["title_norm"], candidate["title_norm"] or "").ratio()
-                year_ok = year is None or candidate["year"] is None or abs(int(year) - int(candidate["year"])) <= 1
-                author_ok = True
+                years_comparable = year is not None and candidate["year"] is not None
+                year_match = years_comparable and abs(int(year) - int(candidate["year"])) <= 1
+                year_conflict = years_comparable and not year_match
+                author_match = False
+                authors_comparable = bool(authors and candidate["authors"])
                 if authors and candidate["authors"]:
-                    author_ok = SequenceMatcher(
+                    author_match = SequenceMatcher(
                         None, normalize_work_title(authors), normalize_work_title(candidate["authors"])
                     ).ratio() >= 0.65
-                if similarity >= 0.90 and year_ok and author_ok:
+                author_conflict = authors_comparable and not author_match
+                # A title alone is never sufficient evidence of identity.
+                if (
+                    similarity >= 0.90 and (year_match or author_match)
+                    and not year_conflict and not author_conflict
+                ):
                     row = candidate
                     break
 
@@ -887,7 +895,7 @@ def normalize_work_title(title: Optional[str]) -> str:
     return text
 
 
-def get_owned_work_identifiers() -> Dict[str, set[str]]:
+def get_owned_work_identifiers() -> Dict[str, Any]:
     """Return identifiers for owned works and every equivalent manifestation."""
     conn = get_db_connection()
     try:
@@ -899,18 +907,23 @@ def get_owned_work_identifiers() -> Dict[str, set[str]]:
                 FROM work_links wl JOIN owned
                   ON wl.work_id_a = owned.work_id OR wl.work_id_b = owned.work_id
             )
-            SELECT s2_paper_id, doi, isbn, title_norm FROM works
+            SELECT s2_paper_id, doi, isbn, title_norm, authors, year FROM works
             WHERE work_id IN (SELECT work_id FROM owned)
         ''').fetchall()
         if not rows:
             rows = conn.execute(
-                "SELECT s2_paper_id, doi, isbn, NULL AS title_norm FROM item_citation_status"
+                "SELECT s2_paper_id, doi, isbn, NULL AS title_norm, NULL AS authors, "
+                "s2_year AS year FROM item_citation_status"
             ).fetchall()
         return {
             "s2": {str(row[0]).strip().casefold() for row in rows if row[0]},
             "doi": {_normalize_identifier(row[1], "doi") for row in rows if row[1]},
             "isbn": {_normalize_identifier(row[2], "isbn") for row in rows if row[2]},
             "title": {str(row[3]) for row in rows if row[3]},
+            "records": [
+                {"title_norm": str(row[3]), "authors": row[4], "year": row[5]}
+                for row in rows if row[3]
+            ],
         }
     finally:
         conn.close()
@@ -922,10 +935,12 @@ def is_owned_work(
     doi: Optional[str] = None,
     isbn: Optional[str] = None,
     title: Optional[str] = None,
-    identifiers: Optional[Dict[str, set[str]]] = None,
+    authors: Optional[str] = None,
+    year: Optional[int] = None,
+    identifiers: Optional[Dict[str, Any]] = None,
     normalized_titles: Optional[set[str]] = None,
 ) -> bool:
-    """Check ownership using stable identifiers, then exact normalized title."""
+    """Check ownership using stable IDs or title plus corroborating metadata."""
     owned = identifiers if identifiers is not None else get_owned_work_identifiers()
     candidates = {
         "s2": (s2_paper_id or "").strip().casefold(),
@@ -935,8 +950,24 @@ def is_owned_work(
     if any(value and value in owned.get(kind, set()) for kind, value in candidates.items()):
         return True
     title_key = normalize_work_title(title)
-    owned_titles = set(normalized_titles or ()) | owned.get("title", set())
-    return bool(title_key and title_key in owned_titles)
+    if not title_key:
+        return False
+    for record in owned.get("records", []):
+        if title_key != record.get("title_norm"):
+            continue
+        years_comparable = year is not None and record.get("year") is not None
+        year_match = years_comparable and abs(int(year) - int(record["year"])) <= 1
+        year_conflict = years_comparable and not year_match
+        author_match = False
+        authors_comparable = bool(authors and record.get("authors"))
+        if authors and record.get("authors"):
+            author_match = SequenceMatcher(
+                None, normalize_work_title(authors), normalize_work_title(record["authors"])
+            ).ratio() >= 0.65
+        author_conflict = authors_comparable and not author_match
+        if (year_match or author_match) and not year_conflict and not author_conflict:
+            return True
+    return False
 
 
 def aggregate_unowned_works(
@@ -1009,10 +1040,17 @@ def aggregate_unowned_works(
             s2_paper_id=row.get("s2_paper_id"),
             doi=row.get("doi"),
             title=row.get("title"),
+            authors=row.get("authors"),
+            year=row.get("year"),
             identifiers=identifiers,
             normalized_titles=normalized_owned_titles,
         ):
             continue
+        if not row.get("s2_paper_id") and not row.get("doi"):
+            row["identity_status"] = (
+                "corroborated_metadata" if row.get("authors") or row.get("year")
+                else "title_only_unverified"
+            )
         keys = [key for key in (row.pop("adjacent_item_keys", "") or "").split(",") if key]
         row["adjacent_item_keys"] = keys[:5]
         results.append(row)

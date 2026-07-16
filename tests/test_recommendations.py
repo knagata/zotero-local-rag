@@ -66,12 +66,12 @@ class RecommendationAggregationTests(unittest.TestCase):
         )
         self.assertEqual({row["title"] for row in results}, {"Candidate", "Single Source"})
 
-    def test_normalized_title_can_exclude_owned_work(self):
+    def test_normalized_title_alone_cannot_exclude_unowned_work(self):
         results = db_relations.aggregate_unowned_works(
             min_citing_items=2,
             normalized_owned_titles={db_relations.normalize_work_title("Candidate!")},
         )
-        self.assertEqual(results, [])
+        self.assertEqual([row["title"] for row in results], ["Candidate"])
 
     def test_citations_direction_finds_shared_external_citer(self):
         results = db_relations.aggregate_unowned_works(

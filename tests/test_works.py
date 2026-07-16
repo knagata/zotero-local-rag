@@ -77,6 +77,26 @@ class CanonicalWorksTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertNotEqual(first, far_year)
 
+    def test_title_only_works_are_never_merged(self):
+        first = db_relations.resolve_work(title="贈与")
+        second = db_relations.resolve_work(title="贈与")
+        self.assertNotEqual(first, second)
+
+    def test_title_and_author_can_merge(self):
+        first = db_relations.resolve_work(title="贈与", authors="Marcel Mauss")
+        second = db_relations.resolve_work(title="贈与!", authors="Marcel Mauss")
+        self.assertEqual(first, second)
+
+    def test_title_only_does_not_imply_ownership(self):
+        db_relations.resolve_work(zotero_item_key="OWNED", title="家族")
+        self.assertFalse(db_relations.is_owned_work(title="家族"))
+
+    def test_title_plus_author_can_establish_ownership(self):
+        db_relations.resolve_work(
+            zotero_item_key="OWNED", title="家族", authors="Author A"
+        )
+        self.assertTrue(db_relations.is_owned_work(title="家族", authors="Author A"))
+
     def test_work_cluster_is_undirected_and_transitive(self):
         original = db_relations.resolve_work(title="Original")
         translation = db_relations.resolve_work(title="Translation")
@@ -143,6 +163,32 @@ class CanonicalWorksTests(unittest.TestCase):
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM work_edges").fetchone()[0], 1)
         finally:
             connection.close()
+
+    def test_title_only_legacy_reference_stays_separate_and_idempotent(self):
+        connection = db_relations.get_db_connection()
+        connection.execute(
+            "INSERT INTO item_citation_status (item_key, s2_status) VALUES ('OWN1', 'mapped')"
+        )
+        connection.executemany('''
+            INSERT INTO global_references
+                (cited_title, citing_item_key, context_snippet, raw_reference_text)
+            VALUES ('家族', 'OWN1', ?, ?)
+        ''', [("context-a", "ref-a"), ("context-b", "ref-b")])
+        connection.commit()
+        connection.close()
+        backfill_works.backfill()
+        backfill_works.backfill()
+        connection = db_relations.get_db_connection()
+        try:
+            title_works = connection.execute(
+                "SELECT COUNT(*) FROM works WHERE title_norm = ?",
+                (db_relations.normalize_work_title("家族"),),
+            ).fetchone()[0]
+            edges = connection.execute("SELECT COUNT(*) FROM work_edges").fetchone()[0]
+        finally:
+            connection.close()
+        self.assertEqual(title_works, 2)
+        self.assertEqual(edges, 2)
 
     def test_summary_and_case_crud(self):
         db_relations.save_item_summary(
