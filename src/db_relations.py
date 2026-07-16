@@ -2,6 +2,7 @@ import sqlite3
 import os
 import re
 import unicodedata
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
@@ -134,8 +135,230 @@ def _init_db(conn: sqlite3.Connection) -> None:
             created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS works (
+            work_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            s2_paper_id TEXT, doi TEXT, isbn TEXT,
+            openalex_id TEXT, cinii_crid TEXT, ndl_bibid TEXT,
+            zotero_item_key TEXT,
+            title TEXT, title_norm TEXT, authors TEXT, year INTEGER, lang TEXT,
+            container TEXT, work_type TEXT, citation_count INTEGER, abstract TEXT,
+            container_work_id INTEGER REFERENCES works(work_id),
+            section_id TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP
+        )
+    ''')
+    cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_works_s2 ON works(s2_paper_id) WHERE s2_paper_id IS NOT NULL")
+    cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_works_doi ON works(doi) WHERE doi IS NOT NULL")
+    cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_works_isbn ON works(isbn) WHERE isbn IS NOT NULL")
+    cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_works_openalex ON works(openalex_id) WHERE openalex_id IS NOT NULL")
+    cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_works_cinii ON works(cinii_crid) WHERE cinii_crid IS NOT NULL")
+    cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_works_ndl ON works(ndl_bibid) WHERE ndl_bibid IS NOT NULL")
+    cursor.execute('''CREATE UNIQUE INDEX IF NOT EXISTS idx_works_zot ON works(zotero_item_key)
+                      WHERE zotero_item_key IS NOT NULL AND container_work_id IS NULL''')
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_works_title_norm ON works(title_norm)")
+
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS work_edges (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            citing_work_id INTEGER NOT NULL REFERENCES works(work_id),
+            cited_work_id INTEGER NOT NULL REFERENCES works(work_id),
+            source TEXT NOT NULL,
+            confidence REAL DEFAULT 1.0,
+            raw_reference TEXT,
+            citing_chunk_id TEXT,
+            context_snippet TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(citing_work_id, cited_work_id, source, raw_reference)
+        )
+    ''')
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_work_edges_citing ON work_edges(citing_work_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_work_edges_cited ON work_edges(cited_work_id)")
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS work_links (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            work_id_a INTEGER NOT NULL REFERENCES works(work_id),
+            work_id_b INTEGER NOT NULL REFERENCES works(work_id),
+            relation TEXT NOT NULL CHECK(relation IN ('translation_of', 'reprint_of', 'edition_of')),
+            confidence REAL DEFAULT 1.0,
+            source TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(work_id_a, work_id_b, relation)
+        )
+    ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS resolver_cache (
+            query_hash TEXT NOT NULL,
+            source TEXT NOT NULL,
+            response_json TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY(query_hash, source)
+        )
+    ''')
     
     conn.commit()
+
+
+def _normalize_identifier(value: Optional[str], kind: str) -> Optional[str]:
+    normalized = unicodedata.normalize("NFKC", value or "").strip().casefold()
+    if not normalized:
+        return None
+    if kind == "doi":
+        normalized = re.sub(r"^(?:https?://(?:dx\.)?doi\.org/|doi:\s*)", "", normalized)
+    elif kind == "isbn":
+        normalized = re.sub(r"[^0-9x]", "", normalized)
+    return normalized or None
+
+
+def resolve_work(
+    *,
+    s2_paper_id: Optional[str] = None,
+    doi: Optional[str] = None,
+    isbn: Optional[str] = None,
+    openalex_id: Optional[str] = None,
+    cinii_crid: Optional[str] = None,
+    ndl_bibid: Optional[str] = None,
+    zotero_item_key: Optional[str] = None,
+    title: Optional[str] = None,
+    authors: Optional[str] = None,
+    year: Optional[int] = None,
+    lang: Optional[str] = None,
+    container: Optional[str] = None,
+    work_type: Optional[str] = None,
+    citation_count: Optional[int] = None,
+    abstract: Optional[str] = None,
+    container_work_id: Optional[int] = None,
+    section_id: Optional[str] = None,
+) -> int:
+    """Resolve a canonical work by stable ID or conservative fuzzy matching."""
+    values: Dict[str, Any] = {
+        "s2_paper_id": _normalize_identifier(s2_paper_id, "s2"),
+        "doi": _normalize_identifier(doi, "doi"),
+        "isbn": _normalize_identifier(isbn, "isbn"),
+        "openalex_id": _normalize_identifier(openalex_id, "openalex"),
+        "cinii_crid": _normalize_identifier(cinii_crid, "cinii"),
+        "ndl_bibid": _normalize_identifier(ndl_bibid, "ndl"),
+        "zotero_item_key": (zotero_item_key or "").strip() or None,
+        "title": (title or "").strip() or None,
+        "title_norm": normalize_work_title(title),
+        "authors": (authors or "").strip() or None,
+        "year": year, "lang": lang, "container": container,
+        "work_type": work_type, "citation_count": citation_count,
+        "abstract": abstract, "container_work_id": container_work_id,
+        "section_id": section_id,
+    }
+    conn = get_db_connection()
+    try:
+        row = None
+        for column in ("s2_paper_id", "doi", "isbn", "openalex_id", "cinii_crid", "ndl_bibid", "zotero_item_key"):
+            value = values[column]
+            if value is None or (column == "zotero_item_key" and container_work_id is not None):
+                continue
+            row = conn.execute(f"SELECT * FROM works WHERE {column} = ? LIMIT 1", (value,)).fetchone()
+            if row:
+                break
+
+        if row is None and values["title_norm"]:
+            candidates = conn.execute(
+                "SELECT * FROM works WHERE title_norm = ? OR title_norm LIKE ? LIMIT 100",
+                (values["title_norm"], f"{values['title_norm'][:80]}%"),
+            ).fetchall()
+            for candidate in candidates:
+                similarity = SequenceMatcher(None, values["title_norm"], candidate["title_norm"] or "").ratio()
+                year_ok = year is None or candidate["year"] is None or abs(int(year) - int(candidate["year"])) <= 1
+                author_ok = True
+                if authors and candidate["authors"]:
+                    author_ok = SequenceMatcher(
+                        None, normalize_work_title(authors), normalize_work_title(candidate["authors"])
+                    ).ratio() >= 0.65
+                if similarity >= 0.90 and year_ok and author_ok:
+                    row = candidate
+                    break
+
+        columns = list(values)
+        if row is not None:
+            assignments = ", ".join(f"{column} = COALESCE({column}, ?)" for column in columns)
+            conn.execute(
+                f"UPDATE works SET {assignments}, updated_at = CURRENT_TIMESTAMP WHERE work_id = ?",
+                [values[column] for column in columns] + [row["work_id"]],
+            )
+            conn.commit()
+            return int(row["work_id"])
+
+        placeholders = ",".join("?" for _ in columns)
+        cursor = conn.execute(
+            f"INSERT INTO works ({','.join(columns)}, updated_at) VALUES ({placeholders}, CURRENT_TIMESTAMP)",
+            [values[column] for column in columns],
+        )
+        conn.commit()
+        return int(cursor.lastrowid)
+    finally:
+        conn.close()
+
+
+def save_work_edge(
+    citing_work_id: int, cited_work_id: int, *, source: str,
+    confidence: float = 1.0, raw_reference: Optional[str] = None,
+    citing_chunk_id: Optional[str] = None, context_snippet: Optional[str] = None,
+) -> int:
+    conn = get_db_connection()
+    try:
+        cursor = conn.execute('''
+            INSERT INTO work_edges
+                (citing_work_id, cited_work_id, source, confidence, raw_reference,
+                 citing_chunk_id, context_snippet)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(citing_work_id, cited_work_id, source, raw_reference) DO UPDATE SET
+                confidence = MAX(confidence, excluded.confidence),
+                citing_chunk_id = COALESCE(excluded.citing_chunk_id, citing_chunk_id),
+                context_snippet = COALESCE(excluded.context_snippet, context_snippet)
+        ''', (citing_work_id, cited_work_id, source, confidence, raw_reference or "", citing_chunk_id, context_snippet))
+        conn.commit()
+        return int(cursor.lastrowid or 0)
+    finally:
+        conn.close()
+
+
+def save_work_link(
+    work_id_a: int, work_id_b: int, relation: str, *, confidence: float = 1.0,
+    source: Optional[str] = None,
+) -> int:
+    if relation not in {"translation_of", "reprint_of", "edition_of"}:
+        raise ValueError("Unsupported work relation.")
+    if work_id_a == work_id_b:
+        raise ValueError("A work cannot link to itself.")
+    conn = get_db_connection()
+    try:
+        cursor = conn.execute('''
+            INSERT INTO work_links (work_id_a, work_id_b, relation, confidence, source)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(work_id_a, work_id_b, relation) DO UPDATE SET
+                confidence = excluded.confidence, source = COALESCE(excluded.source, source)
+        ''', (work_id_a, work_id_b, relation, confidence, source))
+        conn.commit()
+        return int(cursor.lastrowid or 0)
+    finally:
+        conn.close()
+
+
+def get_work_cluster(work_id: int) -> List[int]:
+    """Return the connected component of translation/reprint/edition links."""
+    conn = get_db_connection()
+    try:
+        rows = conn.execute('''
+            WITH RECURSIVE cluster(work_id) AS (
+                SELECT ?
+                UNION
+                SELECT CASE WHEN wl.work_id_a = cluster.work_id THEN wl.work_id_b ELSE wl.work_id_a END
+                FROM work_links wl JOIN cluster
+                  ON wl.work_id_a = cluster.work_id OR wl.work_id_b = cluster.work_id
+            ) SELECT work_id FROM cluster ORDER BY work_id
+        ''', (work_id,)).fetchall()
+        return [int(row[0]) for row in rows]
+    finally:
+        conn.close()
 
 
 def get_query_expansion(query_hash: str) -> Optional[str]:
@@ -413,16 +636,29 @@ def normalize_work_title(title: Optional[str]) -> str:
 
 
 def get_owned_work_identifiers() -> Dict[str, set[str]]:
-    """Return normalized S2/DOI/ISBN identifiers already represented in Zotero."""
+    """Return identifiers for owned works and every equivalent manifestation."""
     conn = get_db_connection()
     try:
-        rows = conn.execute(
-            "SELECT s2_paper_id, doi, isbn FROM item_citation_status"
-        ).fetchall()
+        rows = conn.execute('''
+            WITH RECURSIVE owned(work_id) AS (
+                SELECT work_id FROM works WHERE zotero_item_key IS NOT NULL
+                UNION
+                SELECT CASE WHEN wl.work_id_a = owned.work_id THEN wl.work_id_b ELSE wl.work_id_a END
+                FROM work_links wl JOIN owned
+                  ON wl.work_id_a = owned.work_id OR wl.work_id_b = owned.work_id
+            )
+            SELECT s2_paper_id, doi, isbn, title_norm FROM works
+            WHERE work_id IN (SELECT work_id FROM owned)
+        ''').fetchall()
+        if not rows:
+            rows = conn.execute(
+                "SELECT s2_paper_id, doi, isbn, NULL AS title_norm FROM item_citation_status"
+            ).fetchall()
         return {
             "s2": {str(row[0]).strip().casefold() for row in rows if row[0]},
-            "doi": {str(row[1]).strip().casefold() for row in rows if row[1]},
-            "isbn": {str(row[2]).strip().casefold() for row in rows if row[2]},
+            "doi": {_normalize_identifier(row[1], "doi") for row in rows if row[1]},
+            "isbn": {_normalize_identifier(row[2], "isbn") for row in rows if row[2]},
+            "title": {str(row[3]) for row in rows if row[3]},
         }
     finally:
         conn.close()
@@ -441,13 +677,14 @@ def is_owned_work(
     owned = identifiers if identifiers is not None else get_owned_work_identifiers()
     candidates = {
         "s2": (s2_paper_id or "").strip().casefold(),
-        "doi": (doi or "").strip().casefold(),
-        "isbn": (isbn or "").strip().casefold(),
+        "doi": _normalize_identifier(doi, "doi") or "",
+        "isbn": _normalize_identifier(isbn, "isbn") or "",
     }
     if any(value and value in owned.get(kind, set()) for kind, value in candidates.items()):
         return True
     title_key = normalize_work_title(title)
-    return bool(title_key and normalized_titles and title_key in normalized_titles)
+    owned_titles = set(normalized_titles or ()) | owned.get("title", set())
+    return bool(title_key and title_key in owned_titles)
 
 
 def aggregate_unowned_works(
@@ -458,11 +695,7 @@ def aggregate_unowned_works(
     limit: int = 100,
     normalized_owned_titles: Optional[set[str]] = None,
 ) -> List[Dict[str, Any]]:
-    """Aggregate external works adjacent to the library and remove owned works.
-
-    TODO: replace the provisional S2/DOI/title identity key with ``works.work_id``
-    after the canonical works layer is introduced.
-    """
+    """Aggregate external works and exclude owned equivalent manifestations."""
     if direction not in {"references", "citations"}:
         raise ValueError("direction must be 'references' or 'citations'.")
     if min_citing_items < 1:

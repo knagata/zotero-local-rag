@@ -1,0 +1,109 @@
+from __future__ import annotations
+
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+from src import db_relations
+from scripts import backfill_works
+
+
+class CanonicalWorksTests(unittest.TestCase):
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.db_patch = patch.object(
+            db_relations, "DB_PATH", str(Path(self.tempdir.name) / "relations.db")
+        )
+        self.db_patch.start()
+        db_relations._db_initialized = False
+
+    def tearDown(self):
+        self.db_patch.stop()
+        db_relations._db_initialized = False
+        self.tempdir.cleanup()
+
+    def test_stable_identifier_resolves_existing_work(self):
+        first = db_relations.resolve_work(
+            doi="https://doi.org/10.1234/ABC", title="The Gift", year=1925
+        )
+        second = db_relations.resolve_work(
+            doi="doi:10.1234/abc", authors="Marcel Mauss"
+        )
+        self.assertEqual(first, second)
+
+    def test_conservative_title_match_and_year(self):
+        first = db_relations.resolve_work(title="Essai sur le don", authors="Mauss", year=1925)
+        second = db_relations.resolve_work(title="Essai sur le don!", authors="Mauss", year=1926)
+        far_year = db_relations.resolve_work(title="Essai sur le don", authors="Mauss", year=2000)
+        self.assertEqual(first, second)
+        self.assertNotEqual(first, far_year)
+
+    def test_work_cluster_is_undirected_and_transitive(self):
+        original = db_relations.resolve_work(title="Original")
+        translation = db_relations.resolve_work(title="Translation")
+        edition = db_relations.resolve_work(title="New Edition")
+        db_relations.save_work_link(translation, original, "translation_of", source="manual")
+        db_relations.save_work_link(edition, translation, "edition_of", source="manual")
+        self.assertEqual(db_relations.get_work_cluster(original), sorted([original, translation, edition]))
+
+    def test_translation_cluster_counts_as_owned(self):
+        owned_translation = db_relations.resolve_work(
+            zotero_item_key="OWNED", title="贈与論"
+        )
+        original = db_relations.resolve_work(
+            title="Essai sur le don", doi="10.1234/original"
+        )
+        db_relations.save_work_link(
+            owned_translation, original, "translation_of", source="manual"
+        )
+        self.assertTrue(db_relations.is_owned_work(doi="https://doi.org/10.1234/original"))
+
+    def test_child_works_can_share_zotero_item_key(self):
+        parent = db_relations.resolve_work(zotero_item_key="ITEM1", title="Collected Volume")
+        chapter1 = db_relations.resolve_work(
+            zotero_item_key="ITEM1", title="Chapter One", container_work_id=parent, section_id="c1"
+        )
+        chapter2 = db_relations.resolve_work(
+            zotero_item_key="ITEM1", title="Chapter Two", container_work_id=parent, section_id="c2"
+        )
+        self.assertEqual(len({parent, chapter1, chapter2}), 3)
+
+    def test_edge_upsert_is_idempotent(self):
+        citing = db_relations.resolve_work(title="Citing")
+        cited = db_relations.resolve_work(title="Cited")
+        db_relations.save_work_edge(citing, cited, source="test", raw_reference="ref")
+        db_relations.save_work_edge(citing, cited, source="test", raw_reference="ref")
+        connection = db_relations.get_db_connection()
+        try:
+            count = connection.execute("SELECT COUNT(*) FROM work_edges").fetchone()[0]
+        finally:
+            connection.close()
+        self.assertEqual(count, 1)
+
+    def test_legacy_backfill_is_idempotent(self):
+        connection = db_relations.get_db_connection()
+        connection.execute(
+            "INSERT INTO item_citation_status (item_key, s2_status) VALUES ('OWN1', 'mapped')"
+        )
+        connection.execute('''
+            INSERT INTO global_references
+                (cited_paper_id, cited_title, citing_item_key, context_snippet)
+            VALUES ('S2-1', 'External', 'OWN1', 'context')
+        ''')
+        connection.commit()
+        connection.close()
+        first = backfill_works.backfill()
+        second = backfill_works.backfill()
+        self.assertEqual(first["edges"], 1)
+        self.assertEqual(second["edges"], 1)
+        connection = db_relations.get_db_connection()
+        try:
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM works").fetchone()[0], 2)
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM work_edges").fetchone()[0], 1)
+        finally:
+            connection.close()
+
+
+if __name__ == "__main__":
+    unittest.main()
