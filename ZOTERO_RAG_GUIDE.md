@@ -41,6 +41,20 @@
 - **`language_balance`**: 候補に日英両方がある場合、最終結果に各言語を最大2件ずつ確保するか (デフォルト `false`)。利用には `lang` メタデータを含む再インデックスが必要です。
 - **`search_mode`**: 通常は `"default"`、民族誌的・経験的事例を探す場合は `"case"`。事例モードでは仮想事例文（HyDE）と抽象度展開を併用し、前後1段落を既定で返します。
 
+### 4. `hierarchical_search` (資料・章→段落の階層検索)
+
+俯瞰的な質問、関連文献の発見、複数資料の比較では最初に使います。資料要約と章要約から候補を選び、その候補内の段落検索と全体への直接検索をRRFで統合します。
+
+- **`k`**: 最終的に返す根拠段落数 (デフォルト `8`)。
+- **`k_items`**: 要約層で残す候補資料数 (デフォルト `12`)。
+- **`include_direct`**: 要約で取りこぼした資料を拾う全体段落検索を併用するか (デフォルト `true`)。
+- **`return_summaries`**: 候補資料と段落に要約スニペットを付けるか (デフォルト `true`)。
+
+### 5. `get_item_summary` / `search_cases`
+
+- `get_item_summary(item_key=...)`: 保存済みの資料要約全文をローカルDBから取得します。
+- `search_cases(query=..., region=...)`: 構造化された事例注釈と `rag_search(search_mode="case")` を統合します。事例注釈が未生成でも、直接段落検索へ自動フォールバックします。
+
 ### 4. `get_chunk_context` (文脈拡張・低コスト)
 
 `rag_search` で取得した特定のチャンクについて、その周辺の段落を再検索（ベクトル計算）なしで取得します。
@@ -164,6 +178,7 @@ ChromaDBのインデックスとメタデータを強制的にリロードしま
 | `itemKey` | str | ZoteroのアイテムID |
 | `attachmentKey` | str | 添付ファイルID |
 | `source_type` | str | `"pdf"` / `"html"` / `"epub"` / `"note"` |
+| `lang` | str | `"ja"` / `"zh"` / `"en"` / `"other"` |
 | `page` | int | PDFのページ番号（1始まり） |
 | `page_label` | str | PDFのページラベル（例: `"xii"`, `"15"`） |
 | `chapter` | str | 章タイトル |

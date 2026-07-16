@@ -104,6 +104,25 @@ class CanonicalWorksTests(unittest.TestCase):
         finally:
             connection.close()
 
+    def test_summary_and_case_crud(self):
+        db_relations.save_item_summary(
+            "ITEM1", "日本語要約", "extractive", summary_en="English summary",
+            keywords="gift; 贈与", chunk_count=12, source_mtime=1.5,
+        )
+        db_relations.save_section_summary(
+            "ITEM1", "c1", "章要約", chapter="第一章", model="extractive",
+            chunk_count=4, chapter_authors="A. Author",
+        )
+        db_relations.replace_case_annotations(
+            "ITEM1", "c1", [{
+                "description": "交換の事例", "region": "Melanesia",
+                "practices": ["kula"], "phenomena": ["reciprocity"],
+            }], model="test",
+        )
+        self.assertEqual(db_relations.get_item_summary("ITEM1")["summary_en"], "English summary")
+        self.assertEqual(db_relations.get_section_summaries("ITEM1")[0]["chapter"], "第一章")
+        self.assertEqual(db_relations.get_case_annotations("ITEM1")[0]["practices"], "kula")
+
 
 if __name__ == "__main__":
     unittest.main()

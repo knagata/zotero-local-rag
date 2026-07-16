@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import time
 from dataclasses import dataclass
@@ -246,6 +247,7 @@ def resolve_collection_name(
     *,
     env_value: str | None = None,
     default: str = "zotero_paragraphs",
+    suffix: str | None = None,
 ) -> str:
     """Resolve a ChromaDB collection name.
 
@@ -264,11 +266,16 @@ def resolve_collection_name(
     """
     explicit = (env_value or "").strip()
     if explicit:
-        return explicit
-    dim = probe_embedding_dim(ef)
-    if isinstance(dim, int) and dim > 0:
-        return f"{default}_{dim}"
-    return default
+        base = explicit
+    else:
+        dim = probe_embedding_dim(ef)
+        base = f"{default}_{dim}" if isinstance(dim, int) and dim > 0 else default
+    if suffix:
+        clean_suffix = re.sub(r"[^a-zA-Z0-9_-]+", "_", suffix).strip("_")
+        if not clean_suffix:
+            raise ValueError("Collection suffix must contain letters or digits.")
+        return f"{base}__{clean_suffix}"
+    return base
 
 
 # ---------------------------------------------------------------------------
@@ -353,6 +360,7 @@ def get_collection(
     project_root: Path,
     chroma_collection_env: Optional[str],
     chroma_collection_default: str,
+    suffix: str | None = None,
 ):
     """
     Create / open Chroma collection with an embedding function.
@@ -369,6 +377,7 @@ def get_collection(
         ef,
         env_value=chroma_collection_env,
         default=chroma_collection_default,
+        suffix=suffix,
     )
 
     save_embedder_config(chroma_dir, cfg, dim, collection_name)

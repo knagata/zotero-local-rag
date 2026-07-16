@@ -51,6 +51,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from src.item_vectors import get_item_vectors as _shared_get_item_vectors
+from src.chunk_store import get_item_chunks
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
 PROJECT_ROOT    = Path(__file__).resolve().parents[1]
@@ -5928,30 +5929,8 @@ def _route_generate_summary(body: _SummaryRequest) -> JSONResponse:
 
     model = body.model if body.model in GEMINI_MODELS else GEMINI_DEFAULT_MODEL
 
-    # ChromaDB SQLite から直接チャンク本文を取得する。
-    # get_item_meta と同じく chroma.sqlite3 を read-only（mode=ro）で開くため、
-    # chromadb パッケージに依存せず、Claude の zotero-rag MCP サーバーが同じ DB を
-    # 読んでいても衝突しない（SQLite WAL は複数リーダーを許可。書き込みはインデックス
-    # 更新時のみ）。チャンクは embedding_id（= attachmentKey:…:paraN:partM）の
-    # 自然順に並べて文書順を保つ。
     try:
-        conn = sqlite3.connect(f"file:{CHROMA_DB}?mode=ro", uri=True, timeout=5)
-        rows = conn.execute(
-            """
-            SELECT e.embedding_id AS cid, doc.string_value AS body
-            FROM embedding_metadata ik
-            JOIN embeddings e ON e.id = ik.id
-            JOIN embedding_metadata doc ON doc.id = ik.id AND doc.key = 'chroma:document'
-            WHERE ik.key = 'itemKey' AND ik.string_value = ?
-            """,
-            (body.item_key,),
-        ).fetchall()
-        conn.close()
-        pairs = sorted(
-            [(cid, txt) for cid, txt in rows if txt],
-            key=lambda p: _natural_key(p[0]),
-        )
-        chunks_text = [t for _, t in pairs]
+        chunks_text = [chunk["text"] for chunk in get_item_chunks(body.item_key) if chunk["text"]]
     except Exception as e:
         return JSONResponse({"error": f"ChromaDB 読み取りエラー: {e}"}, status_code=500)
 

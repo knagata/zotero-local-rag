@@ -31,6 +31,7 @@ from manifest import load_manifest
 from chapter_detect import get_pdf_toc, get_epub_chapter_index_to_title
 from query_expansion import expand_queries
 from search_fusion import language_balanced_order
+from db_relations import get_case_annotations, get_item_summary as load_item_summary
 
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -1028,6 +1029,175 @@ def rag_search(
             break
 
     return {"results": out}
+
+
+@mcp.tool()
+def get_item_summary(item_key: str) -> Dict[str, Any]:
+    """Return a stored full-document summary without sending text to an external service."""
+    summary = load_item_summary((item_key or "").strip())
+    return {"item_key": item_key, "summary": summary}
+
+
+@mcp.tool()
+def hierarchical_search(
+    query: str | List[str],
+    k: int = 8,
+    k_items: int = 12,
+    where: Any = None,
+    include_direct: bool = True,
+    return_summaries: bool = True,
+    auto_expand: bool = True,
+) -> Dict[str, Any]:
+    """Search item/section summaries, then retrieve evidence paragraphs.
+
+    Use this for overview questions, literature discovery, or comparisons across
+    documents. For an exact quotation or an out-of-theme ethnographic case, use
+    ``rag_search`` directly. Global paragraph retrieval remains enabled by default
+    as a recall safeguard when a summary misses the relevant detail.
+    """
+    if k <= 0 or k_items <= 0:
+        return {"results": [], "candidate_items": []}
+    queries = [query] if isinstance(query, str) else list(query)
+    queries = [value.strip() for value in queries if isinstance(value, str) and value.strip()]
+    if not queries:
+        return {"results": [], "candidate_items": [], "warning": "query is empty"}
+    if auto_expand:
+        queries = expand_queries(queries, mode="default", timeout=5.0, logger=_log)
+
+    paragraph_collection = _col()
+    embeddings = paragraph_collection._embedding_function(queries)
+    candidate_scores: dict[str, float] = {}
+    candidate_meta: dict[str, dict[str, Any]] = {}
+    warnings: list[str] = []
+    client = getattr(paragraph_collection, "_chroma_client", None)
+    base_name = _EMB_COLLECTION_NAME or COLLECTION_NAME_DEFAULT
+    for suffix, result_count in (("sum_item", k_items), ("sum_section", max(k_items * 2, 20))):
+        try:
+            summary_collection = client.get_collection(f"{base_name}__{suffix}")
+            response = summary_collection.query(
+                query_embeddings=embeddings, n_results=result_count,
+                include=["metadatas", "documents", "distances"],
+            )
+        except Exception as exc:
+            warnings.append(f"{suffix} collection unavailable: {exc}")
+            continue
+        for ranking in response.get("metadatas") or []:
+            for rank, metadata in enumerate(ranking, start=1):
+                if not isinstance(metadata, dict) or not metadata.get("itemKey"):
+                    continue
+                item_key = str(metadata["itemKey"])
+                candidate_scores[item_key] = candidate_scores.get(item_key, 0.0) + 1.0 / (RRF_K + rank)
+                candidate_meta[item_key] = metadata
+
+    candidate_keys = sorted(candidate_scores, key=lambda key: (-candidate_scores[key], key))[:k_items]
+    candidate_response = rag_search(
+        queries, k=max(k * 3, k), where=where, include_item_keys=candidate_keys or None,
+        auto_expand=False, hybrid=True,
+    ) if candidate_keys else {"results": []}
+    direct_response = rag_search(
+        queries, k=max(k * 3, k), where=where, auto_expand=False, hybrid=True,
+    ) if include_direct else {"results": []}
+
+    fused: dict[str, dict[str, Any]] = {}
+    scores: dict[str, float] = {}
+    for weight, response in ((1.5, candidate_response), (1.0, direct_response)):
+        for rank, hit in enumerate(response.get("results") or [], start=1):
+            chunk_id = hit.get("id")
+            if not chunk_id:
+                continue
+            fused[chunk_id] = hit
+            scores[chunk_id] = scores.get(chunk_id, 0.0) + weight / (RRF_K + rank)
+    ordered_ids = sorted(scores, key=lambda chunk_id: (-scores[chunk_id], chunk_id))[:k]
+    results = []
+    for chunk_id in ordered_ids:
+        hit = dict(fused[chunk_id])
+        hit["hierarchical_rrf_score"] = scores[chunk_id]
+        if return_summaries:
+            item_key = (hit.get("meta") or {}).get("itemKey")
+            summary = load_item_summary(item_key) if item_key else None
+            hit["item_summary_snippet"] = (summary.get("summary") or "")[:120] if summary else ""
+        results.append(hit)
+
+    candidate_items = []
+    for item_key in candidate_keys:
+        metadata = candidate_meta.get(item_key, {})
+        summary = load_item_summary(item_key) if return_summaries else None
+        candidate_items.append({
+            "item_key": item_key, "title": metadata.get("title"), "year": metadata.get("year"),
+            "score": candidate_scores[item_key],
+            "summary_snippet": (summary.get("summary") or "")[:120] if summary else "",
+        })
+    response: Dict[str, Any] = {"results": results, "candidate_items": candidate_items}
+    if warnings:
+        response["warnings"] = warnings
+    return response
+
+
+@mcp.tool()
+def search_cases(
+    query: str | List[str], region: Optional[str] = None, k: int = 10,
+    auto_expand: bool = True,
+) -> Dict[str, Any]:
+    """Find empirical/ethnographic cases using annotations plus direct paragraphs.
+
+    The case annotation index may cover only summarized items, so results are always
+    fused with global ``rag_search(search_mode='case')`` as a coverage safeguard.
+    ``region`` is a case-insensitive partial-match filter on structured annotations.
+    """
+    if k <= 0:
+        return {"results": []}
+    queries = [query] if isinstance(query, str) else list(query)
+    queries = [value.strip() for value in queries if isinstance(value, str) and value.strip()]
+    if not queries:
+        return {"results": [], "warning": "query is empty"}
+    if auto_expand:
+        queries = expand_queries(queries, mode="case", timeout=5.0, logger=_log)
+
+    paragraph_collection = _col()
+    case_rows = {int(row["case_id"]): row for row in get_case_annotations()}
+    structured: list[dict[str, Any]] = []
+    warning = None
+    try:
+        client = getattr(paragraph_collection, "_chroma_client", None)
+        case_collection = client.get_collection(f"{_EMB_COLLECTION_NAME or COLLECTION_NAME_DEFAULT}__cases")
+        embeddings = paragraph_collection._embedding_function(queries)
+        response = case_collection.query(
+            query_embeddings=embeddings, n_results=max(k * 5, k),
+            include=["metadatas", "documents", "distances"],
+        )
+        seen: set[int] = set()
+        for ranking in response.get("metadatas") or []:
+            for rank, metadata in enumerate(ranking, start=1):
+                case_id = int((metadata or {}).get("case_id") or 0)
+                row = case_rows.get(case_id)
+                if not row or case_id in seen:
+                    continue
+                if region and region.casefold() not in str(row.get("region") or "").casefold():
+                    continue
+                seen.add(case_id)
+                structured.append({
+                    "kind": "case", **row, "rrf_score": 1.0 / (RRF_K + rank),
+                })
+    except Exception as exc:
+        warning = f"case annotation index unavailable: {exc}"
+
+    direct = rag_search(
+        queries, k=max(k * 3, k), search_mode="case", auto_expand=False, hybrid=True,
+    ).get("results") or []
+    combined: list[dict[str, Any]] = structured + [
+        {
+            "kind": "chunk", "chunk_id": hit.get("id"),
+            "item_key": (hit.get("meta") or {}).get("itemKey"),
+            "description": hit.get("text"), "citation": hit.get("citation"),
+            "region": None, "rrf_score": 1.0 / (RRF_K + rank), "meta": hit.get("meta"),
+        }
+        for rank, hit in enumerate(direct, start=1)
+    ]
+    combined.sort(key=lambda row: (-float(row.get("rrf_score") or 0), str(row.get("chunk_id") or row.get("case_id"))))
+    result: Dict[str, Any] = {"results": combined[:k]}
+    if warning:
+        result["warning"] = warning
+    return result
 
 
 @mcp.tool()

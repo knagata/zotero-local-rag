@@ -11,7 +11,10 @@
   1. `search_zotero_items`: ベクトルインデックスを介さず、Zotero Local APIからタイトル・著者名・出版年などを超高速で直接検索（部分一致など）できる書誌検索。
   2. `search_items`: ベクトル検索を利用しつつ本文テキストを返さず、メタデータとRRF（密度ベース）スコアのみで関連資料をスクリーニング。
   3. `rag_search`: 意味検索（セマンティック検索）による、ピンポイントな段落レベルのテキスト抽出。
-  4. `get_chunk_context`: 指定した段落前後の文脈をデータベースから直接取得。
+  4. `hierarchical_search`: 資料要約・章要約で候補を絞り、直接段落検索も融合する俯瞰検索。
+  5. `get_chunk_context`: 指定した段落前後の文脈をデータベースから直接取得。
+- **多言語ハイブリッド検索**: 日英クエリ拡張、FTS5 trigram語彙検索、任意の日英結果クオータを利用できます。
+- **要約・事例レイヤー**: ローカル抽出型要約を無償で構築でき、明示的に選んだ場合のみ共通LLMクライアントで高品質要約と事例抽出を行います。
 - **引用・被引用ネットワーク分析 (Semantic Scholar連携)**:
   - `build_citation_network`: 指定した資料について、EPUBからの引用先抽出（References）とSemantic Scholarからの被引用取得（Citations）を両方とも一括で実行してデータベースを構築。
   - `get_references_for_item` / `get_chunk_references`: 特定の段落チャンクが「どの文献を引用しているか」の参照先ネットワークを取得・分析。
@@ -75,6 +78,22 @@ Geminiには `GEMINI_API_KEY`、Anthropicには `ANTHROPIC_API_KEY` が必要で
 `LLM_OPENAI_BASE_URL`（例: `http://localhost:11434/v1`）を設定して `openai_compat` を使います。
 CLIプロバイダは各CLIで事前にサインインされている必要があります。
 永続化する場合は [`.env.example`](.env.example) から必要な項目だけを `.env` にコピーしてください。
+
+要約索引は次のコマンドで差分構築できます。既定の `extractive` は本文を外部へ送信しません。
+
+```bash
+# ローカル抽出型要約 + 要約コレクション
+uv run python -m src.build_summaries
+
+# LLM要約（本文を設定済みプロバイダへ送信するため、除外タグを設定して明示実行）
+SUMMARY_EXCLUDE_TAGS=private,confidential uv run python -m src.build_summaries --mode llm
+
+# 既存ChromaからFTS5を初回構築
+uv run python -m src.lexical_index --rebuild
+
+# 既存チャンクにlangを後付け（埋め込み再計算なし、FTSも同期再構築）
+uv run python -m src.backfill_languages --batch-size 5000
+```
 
 ### 3. アプリケーションの更新（新バージョンへの移行）
 

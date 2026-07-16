@@ -113,6 +113,48 @@ def _init_db(conn: sqlite3.Connection) -> None:
             updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+    for sql in (
+        "ALTER TABLE item_summaries ADD COLUMN summary_en TEXT",
+        "ALTER TABLE item_summaries ADD COLUMN keywords TEXT",
+        "ALTER TABLE item_summaries ADD COLUMN chunk_count INTEGER",
+        "ALTER TABLE item_summaries ADD COLUMN source_mtime REAL",
+    ):
+        try:
+            cursor.execute(sql)
+        except sqlite3.OperationalError:
+            pass
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS section_summaries (
+            item_key TEXT NOT NULL,
+            section_id TEXT NOT NULL,
+            chapter TEXT,
+            summary TEXT NOT NULL,
+            model TEXT,
+            chunk_count INTEGER,
+            chapter_authors TEXT,
+            first_publication_note TEXT,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY(item_key, section_id)
+        )
+    ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS case_annotations (
+            case_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            item_key TEXT NOT NULL,
+            section_id TEXT,
+            description TEXT NOT NULL,
+            region TEXT,
+            grp TEXT,
+            practices TEXT,
+            phenomena TEXT,
+            period TEXT,
+            chunk_id TEXT,
+            source_kind TEXT,
+            model TEXT,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_case_item ON case_annotations(item_key)")
 
     # 外部論文（S2 paperId）の概要キャッシュ。
     # status='found' は abstract か tldr のいずれかが取得できた状態、
@@ -437,26 +479,116 @@ def get_item_summary(item_key: str) -> Optional[dict]:
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
-        cursor.execute('SELECT summary, model, updated_at FROM item_summaries WHERE item_key = ?', (item_key,))
+        cursor.execute('''
+            SELECT summary, summary_en, keywords, model, chunk_count, source_mtime, updated_at
+            FROM item_summaries WHERE item_key = ?
+        ''', (item_key,))
         row = cursor.fetchone()
-        return {"summary": row[0], "model": row[1], "updated_at": row[2]} if row else None
+        return dict(row) if row else None
     finally:
         conn.close()
 
 
-def save_item_summary(item_key: str, summary: str, model: str = "") -> None:
+def save_item_summary(
+    item_key: str, summary: str, model: str = "", *, summary_en: Optional[str] = None,
+    keywords: Optional[str] = None, chunk_count: Optional[int] = None,
+    source_mtime: Optional[float] = None,
+) -> None:
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
         cursor.execute('''
-            INSERT INTO item_summaries (item_key, summary, model, updated_at)
-            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            INSERT INTO item_summaries
+                (item_key, summary, summary_en, keywords, model, chunk_count, source_mtime, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             ON CONFLICT(item_key) DO UPDATE SET
                 summary    = excluded.summary,
+                summary_en = excluded.summary_en,
+                keywords   = excluded.keywords,
                 model      = excluded.model,
+                chunk_count = excluded.chunk_count,
+                source_mtime = excluded.source_mtime,
                 updated_at = CURRENT_TIMESTAMP
-        ''', (item_key, summary, model))
+        ''', (item_key, summary, summary_en, keywords, model, chunk_count, source_mtime))
         conn.commit()
+    finally:
+        conn.close()
+
+
+def get_section_summaries(item_key: str) -> List[Dict[str, Any]]:
+    conn = get_db_connection()
+    try:
+        rows = conn.execute('''
+            SELECT * FROM section_summaries WHERE item_key = ? ORDER BY section_id
+        ''', (item_key,)).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def save_section_summary(
+    item_key: str, section_id: str, summary: str, *, chapter: Optional[str] = None,
+    model: str = "", chunk_count: Optional[int] = None,
+    chapter_authors: Optional[str] = None, first_publication_note: Optional[str] = None,
+) -> None:
+    conn = get_db_connection()
+    try:
+        conn.execute('''
+            INSERT INTO section_summaries
+                (item_key, section_id, chapter, summary, model, chunk_count,
+                 chapter_authors, first_publication_note, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(item_key, section_id) DO UPDATE SET
+                chapter = excluded.chapter, summary = excluded.summary,
+                model = excluded.model, chunk_count = excluded.chunk_count,
+                chapter_authors = excluded.chapter_authors,
+                first_publication_note = excluded.first_publication_note,
+                updated_at = CURRENT_TIMESTAMP
+        ''', (
+            item_key, section_id, chapter, summary, model, chunk_count,
+            chapter_authors, first_publication_note,
+        ))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def replace_case_annotations(
+    item_key: str, section_id: str, cases: List[Dict[str, Any]], *, model: str = "",
+) -> None:
+    conn = get_db_connection()
+    try:
+        conn.execute(
+            "DELETE FROM case_annotations WHERE item_key = ? AND section_id = ?",
+            (item_key, section_id),
+        )
+        conn.executemany('''
+            INSERT INTO case_annotations
+                (item_key, section_id, description, region, grp, practices, phenomena,
+                 period, chunk_id, source_kind, model, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ''', [(
+            item_key, section_id, case.get("description") or "", case.get("region"),
+            case.get("group") or case.get("grp"),
+            "; ".join(case.get("practices") or []) if isinstance(case.get("practices"), list) else case.get("practices"),
+            "; ".join(case.get("phenomena") or []) if isinstance(case.get("phenomena"), list) else case.get("phenomena"),
+            case.get("period"), case.get("chunk_id"), case.get("source_kind"), model,
+        ) for case in cases if case.get("description")])
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_case_annotations(item_key: Optional[str] = None) -> List[Dict[str, Any]]:
+    conn = get_db_connection()
+    try:
+        if item_key:
+            rows = conn.execute(
+                "SELECT * FROM case_annotations WHERE item_key = ? ORDER BY case_id", (item_key,)
+            ).fetchall()
+        else:
+            rows = conn.execute("SELECT * FROM case_annotations ORDER BY case_id").fetchall()
+        return [dict(row) for row in rows]
     finally:
         conn.close()
 
@@ -870,7 +1002,10 @@ def purge_removed_items(current_item_keys: set[str]) -> dict[str, int]:
         db_keys = {row[0] for row in cursor.fetchall()}
         removed_keys = db_keys - current_item_keys
 
-        counts: dict[str, int] = {"item_citation_status": 0, "global_citations": 0, "global_references": 0}
+        counts: dict[str, int] = {
+            "item_citation_status": 0, "global_citations": 0, "global_references": 0,
+            "item_summaries": 0, "section_summaries": 0, "case_annotations": 0,
+        }
         if not removed_keys:
             return counts
 
@@ -891,6 +1026,12 @@ def purge_removed_items(current_item_keys: set[str]) -> dict[str, int]:
             f"DELETE FROM global_references WHERE citing_item_key IN ({placeholders})", params
         )
         counts["global_references"] = cursor.rowcount
+
+        for table in ("item_summaries", "section_summaries", "case_annotations"):
+            cursor.execute(
+                f"DELETE FROM {table} WHERE item_key IN ({placeholders})", params
+            )
+            counts[table] = cursor.rowcount
 
         conn.commit()
         return counts

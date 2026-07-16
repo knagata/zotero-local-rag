@@ -41,7 +41,7 @@ def _connect(path: Path | None = None) -> sqlite3.Connection:
 
 def upsert_chunks(
     ids: list[str], documents: list[str], metadatas: list[dict[str, Any]],
-    *, path: Path | None = None,
+    *, path: Path | None = None, replace: bool = True,
 ) -> None:
     """Replace FTS rows for the supplied Chroma chunk IDs."""
     rows = []
@@ -62,7 +62,8 @@ def upsert_chunks(
         return
     connection = _connect(path)
     try:
-        connection.executemany("DELETE FROM chunks_fts WHERE chunk_id = ?", [(row[0],) for row in rows])
+        if replace:
+            connection.executemany("DELETE FROM chunks_fts WHERE chunk_id = ?", [(row[0],) for row in rows])
         connection.executemany(
             """INSERT INTO chunks_fts
                (chunk_id, item_key, lang, source_type, attachment_key, note_key,
@@ -142,7 +143,7 @@ def search_chunks(
         connection.close()
 
 
-def rebuild_from_chroma(*, path: Path | None = None, batch_size: int = 1000) -> int:
+def rebuild_from_chroma(*, path: Path | None = None, batch_size: int = 5000) -> int:
     """Rebuild the lexical DB from the active Chroma collection."""
     try:
         from .item_vectors import _open_collection
@@ -165,7 +166,7 @@ def rebuild_from_chroma(*, path: Path | None = None, batch_size: int = 1000) -> 
             ids = result.get("ids") or []
             documents = result.get("documents") or []
             metadatas = result.get("metadatas") or []
-            upsert_chunks(ids, documents, metadatas, path=db_path)
+            upsert_chunks(ids, documents, metadatas, path=db_path, replace=False)
             total += len(ids)
     finally:
         client.close()
