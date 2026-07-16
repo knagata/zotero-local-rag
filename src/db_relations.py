@@ -1,5 +1,7 @@
 import sqlite3
 import os
+import re
+import unicodedata
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
@@ -64,6 +66,15 @@ def _init_db(conn: sqlite3.Connection) -> None:
             UNIQUE(cited_paper_id, citing_item_key, context_snippet, raw_reference_text)
         )
     ''')
+
+    # Must exist before its backward-compatible ALTER migrations on a fresh DB.
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS item_citation_status (
+            item_key TEXT PRIMARY KEY,
+            s2_status TEXT,
+            last_checked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
     
     # Migrations（既存DBへの後方互換カラム追加）
     _migrations = [
@@ -115,16 +126,45 @@ def _init_db(conn: sqlite3.Connection) -> None:
             updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
-    
+
     cursor.execute('''
-        CREATE TABLE IF NOT EXISTS item_citation_status (
-            item_key TEXT PRIMARY KEY,
-            s2_status TEXT,
-            last_checked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        CREATE TABLE IF NOT EXISTS query_expansion_cache (
+            query_hash  TEXT PRIMARY KEY,
+            expansions  TEXT NOT NULL,
+            created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
     
     conn.commit()
+
+
+def get_query_expansion(query_hash: str) -> Optional[str]:
+    """Return cached query-expansion JSON, or ``None`` on a cache miss."""
+    conn = get_db_connection()
+    try:
+        row = conn.execute(
+            "SELECT expansions FROM query_expansion_cache WHERE query_hash = ?",
+            (query_hash,),
+        ).fetchone()
+        return row[0] if row else None
+    finally:
+        conn.close()
+
+
+def save_query_expansion(query_hash: str, expansions: str) -> None:
+    """Persist a successful query expansion for reuse across MCP sessions."""
+    conn = get_db_connection()
+    try:
+        conn.execute('''
+            INSERT INTO query_expansion_cache (query_hash, expansions, created_at)
+            VALUES (?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(query_hash) DO UPDATE SET
+                expansions = excluded.expansions,
+                created_at = CURRENT_TIMESTAMP
+        ''', (query_hash, expansions))
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def update_item_citation_status(
@@ -364,6 +404,137 @@ def get_references_for_item(item_key: str) -> List[Dict[str, Any]]:
     conn.close()
     return [dict(row) for row in rows]
 
+
+def normalize_work_title(title: Optional[str]) -> str:
+    """Normalize a title for conservative owned/unowned comparison."""
+    text = unicodedata.normalize("NFKC", title or "").casefold()
+    text = re.sub(r"[^\w]+", "", text, flags=re.UNICODE)
+    return text
+
+
+def get_owned_work_identifiers() -> Dict[str, set[str]]:
+    """Return normalized S2/DOI/ISBN identifiers already represented in Zotero."""
+    conn = get_db_connection()
+    try:
+        rows = conn.execute(
+            "SELECT s2_paper_id, doi, isbn FROM item_citation_status"
+        ).fetchall()
+        return {
+            "s2": {str(row[0]).strip().casefold() for row in rows if row[0]},
+            "doi": {str(row[1]).strip().casefold() for row in rows if row[1]},
+            "isbn": {str(row[2]).strip().casefold() for row in rows if row[2]},
+        }
+    finally:
+        conn.close()
+
+
+def is_owned_work(
+    *,
+    s2_paper_id: Optional[str] = None,
+    doi: Optional[str] = None,
+    isbn: Optional[str] = None,
+    title: Optional[str] = None,
+    identifiers: Optional[Dict[str, set[str]]] = None,
+    normalized_titles: Optional[set[str]] = None,
+) -> bool:
+    """Check ownership using stable identifiers, then exact normalized title."""
+    owned = identifiers if identifiers is not None else get_owned_work_identifiers()
+    candidates = {
+        "s2": (s2_paper_id or "").strip().casefold(),
+        "doi": (doi or "").strip().casefold(),
+        "isbn": (isbn or "").strip().casefold(),
+    }
+    if any(value and value in owned.get(kind, set()) for kind, value in candidates.items()):
+        return True
+    title_key = normalize_work_title(title)
+    return bool(title_key and normalized_titles and title_key in normalized_titles)
+
+
+def aggregate_unowned_works(
+    scope_item_keys: Optional[List[str]] = None,
+    *,
+    direction: str = "references",
+    min_citing_items: int = 2,
+    limit: int = 100,
+    normalized_owned_titles: Optional[set[str]] = None,
+) -> List[Dict[str, Any]]:
+    """Aggregate external works adjacent to the library and remove owned works.
+
+    TODO: replace the provisional S2/DOI/title identity key with ``works.work_id``
+    after the canonical works layer is introduced.
+    """
+    if direction not in {"references", "citations"}:
+        raise ValueError("direction must be 'references' or 'citations'.")
+    if min_citing_items < 1:
+        raise ValueError("min_citing_items must be at least 1.")
+    if limit < 1:
+        return []
+
+    if direction == "references":
+        table = "global_references"
+        s2_col, doi_col = "cited_paper_id", "cited_doi"
+        title_col, year_col, authors_col = "cited_title", "cited_year", "cited_authors"
+        item_col, citation_count_col = "citing_item_key", "cited_citation_count"
+    else:
+        table = "global_citations"
+        s2_col, doi_col = "citing_paper_id", "citing_doi"
+        title_col, year_col, authors_col = "citing_title", "citing_year", "citing_authors"
+        item_col, citation_count_col = "cited_item_key", "citing_citation_count"
+
+    identity_sql = f'''CASE
+        WHEN NULLIF(TRIM({s2_col}), '') IS NOT NULL THEN 's2:' || LOWER(TRIM({s2_col}))
+        WHEN NULLIF(TRIM({doi_col}), '') IS NOT NULL THEN 'doi:' || LOWER(TRIM({doi_col}))
+        ELSE 'title:' || LOWER(TRIM({title_col})) END'''
+    where = [f"NULLIF(TRIM({title_col}), '') IS NOT NULL"]
+    params: list[Any] = []
+    if scope_item_keys:
+        placeholders = ",".join("?" for _ in scope_item_keys)
+        where.append(f"{item_col} IN ({placeholders})")
+        params.extend(scope_item_keys)
+
+    sql = f'''
+        SELECT {identity_sql} AS identity_key,
+               MAX({title_col}) AS title,
+               MAX({authors_col}) AS authors,
+               MAX({year_col}) AS year,
+               MAX({doi_col}) AS doi,
+               MAX({s2_col}) AS s2_paper_id,
+               COUNT(DISTINCT {item_col}) AS adjacent_item_count,
+               GROUP_CONCAT(DISTINCT {item_col}) AS adjacent_item_keys,
+               MAX(COALESCE({citation_count_col}, 0)) AS total_citation_count,
+               COUNT(*) AS mention_count
+        FROM {table}
+        WHERE {' AND '.join(where)}
+        GROUP BY identity_key
+        HAVING COUNT(DISTINCT {item_col}) >= ?
+        ORDER BY adjacent_item_count DESC, mention_count DESC,
+                 total_citation_count DESC, title COLLATE NOCASE ASC
+    '''
+    params.append(min_citing_items)
+    conn = get_db_connection()
+    try:
+        rows = [dict(row) for row in conn.execute(sql, params).fetchall()]
+    finally:
+        conn.close()
+
+    identifiers = get_owned_work_identifiers()
+    results: List[Dict[str, Any]] = []
+    for row in rows:
+        if is_owned_work(
+            s2_paper_id=row.get("s2_paper_id"),
+            doi=row.get("doi"),
+            title=row.get("title"),
+            identifiers=identifiers,
+            normalized_titles=normalized_owned_titles,
+        ):
+            continue
+        keys = [key for key in (row.pop("adjacent_item_keys", "") or "").split(",") if key]
+        row["adjacent_item_keys"] = keys[:5]
+        results.append(row)
+        if len(results) >= limit:
+            break
+    return results
+
 def purge_removed_items(current_item_keys: set[str]) -> dict[str, int]:
     """Zoteroから削除されたアイテムキーに関連するDBレコードを削除する。
 
@@ -466,5 +637,3 @@ def update_reference_s2_data(
         conn.commit()
     finally:
         conn.close()
-
-

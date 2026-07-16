@@ -29,6 +29,7 @@ from fastmcp import FastMCP
 from zotero_source_localapi import ZoteroLocalAPI
 from manifest import load_manifest
 from chapter_detect import get_pdf_toc, get_epub_chapter_index_to_title
+from query_expansion import expand_queries
 
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -699,15 +700,20 @@ def rag_search(
     include_notes: bool = False,
     include_item_keys: Any = None,
     exclude_chunk_ids: Any = None,
+    auto_expand: bool = True,
+    search_mode: str = "default",
 ) -> RagSearchResponse:
     """
     Paragraph-level semantic search over local Zotero PDFs/HTML snapshots (+ optionally Notes).
     Args:
         query:
             Natural-language query string OR a list of strings.
-            Providing a list (e.g. synonyms, different languages) allows for broader semantic
-            matching in a single call. Results are deduplicated by chunk ID (keeping the
-            best distance hit), saving tokens by avoiding redundant context.
+            Prefer a list containing Japanese and English queries plus useful synonyms so
+            material in either language can be retrieved. For proper names, include both
+            the original spelling and its Japanese transliteration where applicable, for
+            example ["贈与論 互酬性", "gift exchange reciprocity Mauss", "モース 贈与"].
+            Multi-query results are fused with Reciprocal Rank Fusion and deduplicated by
+            chunk ID, saving tokens by avoiding redundant context.
         k:
             Number of results to return (after filtering short fragments and deduplication). Default: 5.
         where:
@@ -751,6 +757,13 @@ def rag_search(
         exclude_chunk_ids:
             Optional list of chunk IDs to exclude from the results. Use this to avoid
             seeing the same paragraphs across multiple turns.
+        auto_expand:
+            If True (default), add cached Japanese/English query variants. Expansion
+            failures fall back to the original query without failing the search.
+        search_mode:
+            "default" for ordinary semantic search or "case" for cross-topic case
+            retrieval. Case mode adds hypothetical ethnographic passages and broader/
+            narrower concepts, and uses one neighboring paragraph of context by default.
     Returns:
         {"results": [ ... ]}
     """
@@ -762,6 +775,17 @@ def rag_search(
     where = _coerce_json(where)
     include_item_keys = _coerce_json(include_item_keys)
     exclude_chunk_ids = _coerce_json(exclude_chunk_ids)
+
+    if search_mode not in {"default", "case"}:
+        return {"results": [], "warning": "search_mode must be 'default' or 'case'."}
+    queries = [query] if isinstance(query, str) else list(query)
+    queries = [item for item in queries if isinstance(item, str) and item.strip()]
+    if not queries:
+        return {"results": [], "warning": "query must contain at least one non-empty string."}
+    if auto_expand:
+        queries = expand_queries(queries, mode=search_mode, timeout=5.0, logger=_log)
+    if search_mode == "case" and context_window == 0:
+        context_window = 1
 
     col = _col()
     if k <= 0:
@@ -782,9 +806,6 @@ def rag_search(
             if not col:
                 raise ValueError("Chroma collection is empty or not initialized. Run the indexer first.")
 
-            # Ensure query is a list
-            queries = [query] if isinstance(query, str) else query
-            
             # Manually compute embeddings to avoid Chroma FFI deadlock
             query_embeddings = col._embedding_function(queries)
 
@@ -1471,6 +1492,62 @@ def get_references_for_item(item_key: str) -> Dict[str, Any]:
         }
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
+
+@mcp.tool()
+def suggest_unowned_works(
+    scope_item_keys: Any = None,
+    direction: str = "references",
+    k: int = 20,
+    min_citing_items: int = 2,
+) -> Dict[str, Any]:
+    """Rank external works adjacent to the library but not already owned.
+
+    Args:
+        scope_item_keys: Optional Zotero item-key list. If omitted, aggregate the whole library.
+        direction: "references" finds works cited by owned items; "citations" finds external
+            papers that cite owned items.
+        k: Maximum number of suggestions (default 20, maximum 100).
+        min_citing_items: Require adjacency to at least this many distinct owned items.
+    """
+    scope = _coerce_json(scope_item_keys)
+    if scope is not None and not isinstance(scope, list):
+        return {"status": "error", "message": "scope_item_keys must be a list or null."}
+    if direction not in {"references", "citations"}:
+        return {"status": "error", "message": "direction must be 'references' or 'citations'."}
+    if k <= 0 or min_citing_items <= 0:
+        return {"status": "error", "message": "k and min_citing_items must be positive."}
+
+    try:
+        from db_relations import aggregate_unowned_works, normalize_work_title
+
+        manifest = load_manifest(Path(MANIFEST_PATH))
+        owned_titles = {
+            normalize_work_title(info.get("title"))
+            for info in manifest.get("files", {}).values()
+            if isinstance(info, dict) and info.get("title")
+        }
+        suggestions = aggregate_unowned_works(
+            scope,
+            direction=direction,
+            min_citing_items=min_citing_items,
+            limit=min(k, 100),
+            normalized_owned_titles=owned_titles,
+        )
+        count_key = "cited_by_n_items" if direction == "references" else "cites_n_items"
+        item_keys_key = "citing_item_keys" if direction == "references" else "cited_item_keys"
+        for suggestion in suggestions:
+            suggestion[count_key] = suggestion.pop("adjacent_item_count")
+            suggestion[item_keys_key] = suggestion.pop("adjacent_item_keys")
+        return {
+            "direction": direction,
+            "scope_item_keys": scope,
+            "suggestion_count": len(suggestions),
+            "suggestions": suggestions,
+            "identity_note": "Provisional S2/DOI/title grouping; canonical works IDs are planned.",
+        }
+    except Exception as exc:
+        return {"status": "error", "message": str(exc)}
 
 @mcp.tool()
 async def build_citation_network(item_key: str) -> Dict[str, Any]:

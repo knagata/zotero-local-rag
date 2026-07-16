@@ -51,6 +51,31 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 
 > **埋め込みの更新**: Zoteroに新しい文献を追加した後は、ウィザードを再起動してEnterを連打するだけで差分インデックスが更新されます。
 
+### LLMプロバイダ設定（拡張機能用）
+
+クエリ拡張・要約・参考文献抽出などの段階的に追加される機能は、共通のLLM設定を使います。
+指定形式は `provider:model` で、カンマ区切りにすると左から順にフォールバックします。
+
+```bash
+# 全タスクの既定（未指定時もこの値）
+export LLM_DEFAULT="gemini:gemini-3.1-flash-lite"
+
+# タスク別の上書き例
+export LLM_EXPAND="gemini:gemini-3.1-flash-lite"
+export LLM_SUMMARY="codex_cli:gpt-5"
+export LLM_EXTRACT="gemini:gemini-3.1-flash-lite"
+
+# Codexの制限到達後だけClaude CLIへ切り替える例
+export LLM_SUMMARY="codex_cli:gpt-5,claude_cli:sonnet"
+```
+
+対応プロバイダは `gemini`、`anthropic`、`openai_compat`、`codex_cli`、`claude_cli` です。
+Geminiには `GEMINI_API_KEY`、Anthropicには `ANTHROPIC_API_KEY` が必要です。Anthropic SDKは
+`uv sync --extra llm-anthropic` で追加できます。Ollama・LM Studio・vLLMなどは
+`LLM_OPENAI_BASE_URL`（例: `http://localhost:11434/v1`）を設定して `openai_compat` を使います。
+CLIプロバイダは各CLIで事前にサインインされている必要があります。
+永続化する場合は [`.env.example`](.env.example) から必要な項目だけを `.env` にコピーしてください。
+
 ### 3. アプリケーションの更新（新バージョンへの移行）
 
 GitHubから最新バージョンを自動でダウンロードして上書きする更新スクリプトを用意しています。`.env` とインデックスデータ（`data/`）は保持されます。

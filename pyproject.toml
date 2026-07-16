@@ -27,6 +27,8 @@ dependencies = [
     "scipy>=1.10.0",
 ]
 
+[project.optional-dependencies]
+llm-anthropic = ["anthropic>=0.75.0"]
+
 [project.scripts]
 zotero-local-rag = "src.rag_mcp_server:main"
-
