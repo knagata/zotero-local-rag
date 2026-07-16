@@ -7,7 +7,7 @@ dependencies = [
     "sentence-transformers",
     "huggingface-hub>=0.34.0,<1.0",
     "pymupdf",
-    "fastmcp",
+    "fastmcp>=3,<4",
     "httpx",
     "typing_extensions",
     "trafilatura",

@@ -322,10 +322,27 @@ def resolve_work(
         columns = list(values)
         if row is not None:
             assignments = ", ".join(f"{column} = COALESCE({column}, ?)" for column in columns)
-            conn.execute(
-                f"UPDATE works SET {assignments}, updated_at = CURRENT_TIMESTAMP WHERE work_id = ?",
-                [values[column] for column in columns] + [row["work_id"]],
-            )
+            try:
+                conn.execute(
+                    f"UPDATE works SET {assignments}, updated_at = CURRENT_TIMESTAMP WHERE work_id = ?",
+                    [values[column] for column in columns] + [row["work_id"]],
+                )
+            except sqlite3.IntegrityError:
+                # A second stable identifier may already belong to another work.
+                # Preserve both identities and update only non-unique metadata.
+                conn.rollback()
+                unique_columns = {
+                    "s2_paper_id", "doi", "isbn", "openalex_id", "cinii_crid",
+                    "ndl_bibid", "zotero_item_key",
+                }
+                safe_columns = [column for column in columns if column not in unique_columns]
+                safe_assignments = ", ".join(
+                    f"{column} = COALESCE({column}, ?)" for column in safe_columns
+                )
+                conn.execute(
+                    f"UPDATE works SET {safe_assignments}, updated_at = CURRENT_TIMESTAMP WHERE work_id = ?",
+                    [values[column] for column in safe_columns] + [row["work_id"]],
+                )
             conn.commit()
             return int(row["work_id"])
 
@@ -347,7 +364,7 @@ def save_work_edge(
 ) -> int:
     conn = get_db_connection()
     try:
-        cursor = conn.execute('''
+        conn.execute('''
             INSERT INTO work_edges
                 (citing_work_id, cited_work_id, source, confidence, raw_reference,
                  citing_chunk_id, context_snippet)
@@ -357,8 +374,12 @@ def save_work_edge(
                 citing_chunk_id = COALESCE(excluded.citing_chunk_id, citing_chunk_id),
                 context_snippet = COALESCE(excluded.context_snippet, context_snippet)
         ''', (citing_work_id, cited_work_id, source, confidence, raw_reference or "", citing_chunk_id, context_snippet))
+        row = conn.execute('''
+            SELECT id FROM work_edges
+            WHERE citing_work_id = ? AND cited_work_id = ? AND source = ? AND raw_reference = ?
+        ''', (citing_work_id, cited_work_id, source, raw_reference or "")).fetchone()
         conn.commit()
-        return int(cursor.lastrowid or 0)
+        return int(row[0])
     finally:
         conn.close()
 
@@ -1141,6 +1162,7 @@ def purge_removed_items(current_item_keys: set[str]) -> dict[str, int]:
         counts: dict[str, int] = {
             "item_citation_status": 0, "global_citations": 0, "global_references": 0,
             "item_summaries": 0, "section_summaries": 0, "case_annotations": 0,
+            "works": 0, "work_edges": 0, "work_links": 0,
         }
         if not removed_keys:
             return counts
@@ -1168,6 +1190,27 @@ def purge_removed_items(current_item_keys: set[str]) -> dict[str, int]:
                 f"DELETE FROM {table} WHERE item_key IN ({placeholders})", params
             )
             counts[table] = cursor.rowcount
+
+        work_rows = cursor.execute(
+            f"SELECT work_id FROM works WHERE zotero_item_key IN ({placeholders})", params
+        ).fetchall()
+        work_ids = [int(row[0]) for row in work_rows]
+        if work_ids:
+            work_placeholders = ",".join("?" * len(work_ids))
+            cursor.execute(
+                f"DELETE FROM work_edges WHERE citing_work_id IN ({work_placeholders}) "
+                f"OR cited_work_id IN ({work_placeholders})",
+                [*work_ids, *work_ids],
+            )
+            counts["work_edges"] = cursor.rowcount
+            cursor.execute(
+                f"DELETE FROM work_links WHERE work_id_a IN ({work_placeholders}) "
+                f"OR work_id_b IN ({work_placeholders})",
+                [*work_ids, *work_ids],
+            )
+            counts["work_links"] = cursor.rowcount
+            cursor.execute(f"DELETE FROM works WHERE work_id IN ({work_placeholders})", work_ids)
+            counts["works"] = cursor.rowcount
 
         conn.commit()
         return counts

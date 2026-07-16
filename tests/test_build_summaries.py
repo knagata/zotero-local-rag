@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import unittest
+import os
+from unittest.mock import patch
 
+from src import build_summaries
 from src.build_summaries import SECTION_WINDOW, split_sections
 from src.embedder import resolve_collection_name
 
@@ -25,6 +28,25 @@ class SummaryPipelineTests(unittest.TestCase):
             resolve_collection_name(lambda _: [], env_value="paragraphs", suffix="sum_item"),
             "paragraphs__sum_item",
         )
+
+    def test_llm_mode_does_not_treat_extractively_summarized_item_as_unchanged(self):
+        chunks = [{"id": "a", "text": "body", "metadata": {}}]
+        existing = {"chunk_count": 1, "source_mtime": 0.0, "model": "extractive"}
+        with patch.object(build_summaries, "get_item_chunks", return_value=chunks), patch.object(
+            build_summaries, "load_manifest", return_value={}
+        ), patch.object(build_summaries, "get_item_summary", return_value=existing), patch.object(
+            build_summaries, "_source_mtime", return_value=0.0
+        ), patch.object(build_summaries, "_excluded_from_llm", return_value=(True, "policy")):
+            result = build_summaries.build_item("ITEM", mode="llm")
+        self.assertEqual(result["status"], "excluded")
+
+    def test_summary_exclusion_fails_closed_when_tags_cannot_be_checked(self):
+        with patch.dict(os.environ, {"SUMMARY_EXCLUDE_TAGS": "private"}, clear=False), patch.object(
+            build_summaries.httpx, "get", side_effect=RuntimeError("offline")
+        ):
+            excluded, reason = build_summaries._excluded_from_llm("ITEM")
+        self.assertTrue(excluded)
+        self.assertIn("could not verify", reason)
 
 
 if __name__ == "__main__":

@@ -34,6 +34,10 @@ class LexicalIndexTests(unittest.TestCase):
         rows = search_chunks("贈与", path=self.path)
         self.assertEqual([row["chunk_id"] for row in rows], ["a"])
 
+    def test_multiword_query_matches_non_adjacent_terms(self):
+        rows = search_chunks("gift reciprocity", path=self.path)
+        self.assertEqual([row["chunk_id"] for row in rows], ["b"])
+
     def test_notes_and_item_filters(self):
         self.assertEqual(search_chunks("メモ", path=self.path), [])
         rows = search_chunks("メモ", include_notes=True, item_keys=["I1"], path=self.path)

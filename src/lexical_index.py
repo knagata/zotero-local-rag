@@ -117,7 +117,11 @@ def search_chunks(
         where = ["(body LIKE ? ESCAPE '\\' OR title LIKE ? ESCAPE '\\' OR creators LIKE ? ESCAPE '\\')"]
         params: list[Any] = [pattern, pattern, pattern]
     else:
-        phrase = '"' + query.replace('"', '""') + '"'
+        # Treat whitespace-separated terms as independent FTS operands. Quoting the
+        # entire expanded query would require adjacency/order and collapse recall.
+        phrase = " AND ".join(
+            '"' + token.replace('"', '""') + '"' for token in query.split()
+        )
         where = ["chunks_fts MATCH ?"]
         params = [phrase]
     if not include_notes:

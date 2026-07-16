@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 import re
+import time
 from typing import Any, Iterable
 
 try:
@@ -19,6 +20,8 @@ _PROMPT_VERSION = "query-expansion-v1"
 _MAX_EXPANDED_QUERIES = 12
 _CASE_KEYS = ("queries", "hyde", "broader", "narrower")
 _DEFAULT_KEYS = ("queries",)
+_NEGATIVE_CACHE_SECONDS = 60.0
+_negative_until: dict[tuple[str, str], float] = {}
 _SCHEMA = {
     "type": "object",
     "properties": {
@@ -122,12 +125,18 @@ def expand_queries(
         if cached:
             payload = json.loads(cached)
         else:
+            provider_key = (client.provider, client.model)
+            if _negative_until.get(provider_key, 0.0) > time.monotonic():
+                return original
             payload = client.generate_json(_prompt(original, mode), schema=_SCHEMA, timeout=timeout)
             save_query_expansion(key, json.dumps(payload, ensure_ascii=False))
+            _negative_until.pop(provider_key, None)
         keys = _CASE_KEYS if mode == "case" else _DEFAULT_KEYS
         additions = [item for name in keys for item in payload.get(name, [])]
         return _dedupe([*original, *additions])[:_MAX_EXPANDED_QUERIES]
     except Exception as exc:
+        if "client" in locals():
+            _negative_until[(client.provider, client.model)] = time.monotonic() + _NEGATIVE_CACHE_SECONDS
         if logger:
             logger.warning("Query expansion unavailable; using original queries: %s", exc)
         return original

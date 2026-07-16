@@ -32,6 +32,44 @@ class CanonicalWorksTests(unittest.TestCase):
         )
         self.assertEqual(first, second)
 
+    def test_conflicting_secondary_identifier_does_not_abort_resolution(self):
+        first = db_relations.resolve_work(doi="10.1234/one", s2_paper_id="S2-ONE", title="One")
+        second = db_relations.resolve_work(doi="10.1234/two", s2_paper_id="S2-TWO", title="Two")
+        resolved = db_relations.resolve_work(
+            doi="10.1234/one", s2_paper_id="S2-TWO", container="Journal"
+        )
+        self.assertEqual(resolved, second)
+        self.assertNotEqual(first, second)
+        connection = db_relations.get_db_connection()
+        try:
+            row = connection.execute("SELECT * FROM works WHERE work_id = ?", (second,)).fetchone()
+        finally:
+            connection.close()
+        self.assertEqual(row["doi"], "10.1234/two")
+        self.assertEqual(row["s2_paper_id"], "s2-two")
+        self.assertEqual(row["container"], "Journal")
+
+    def test_purge_removed_item_cleans_owned_work_and_edges(self):
+        connection = db_relations.get_db_connection()
+        connection.execute(
+            "INSERT INTO item_citation_status (item_key, s2_status) VALUES ('REMOVED', 'mapped')"
+        )
+        connection.commit()
+        connection.close()
+        owned = db_relations.resolve_work(zotero_item_key="REMOVED", title="Removed")
+        external = db_relations.resolve_work(title="External")
+        db_relations.save_work_edge(owned, external, source="test", raw_reference="ref")
+        counts = db_relations.purge_removed_items(set())
+        self.assertEqual(counts["works"], 1)
+        self.assertEqual(counts["work_edges"], 1)
+        connection = db_relations.get_db_connection()
+        try:
+            self.assertIsNone(
+                connection.execute("SELECT 1 FROM works WHERE work_id = ?", (owned,)).fetchone()
+            )
+        finally:
+            connection.close()
+
     def test_conservative_title_match_and_year(self):
         first = db_relations.resolve_work(title="Essai sur le don", authors="Mauss", year=1925)
         second = db_relations.resolve_work(title="Essai sur le don!", authors="Mauss", year=1926)
@@ -72,14 +110,16 @@ class CanonicalWorksTests(unittest.TestCase):
     def test_edge_upsert_is_idempotent(self):
         citing = db_relations.resolve_work(title="Citing")
         cited = db_relations.resolve_work(title="Cited")
-        db_relations.save_work_edge(citing, cited, source="test", raw_reference="ref")
-        db_relations.save_work_edge(citing, cited, source="test", raw_reference="ref")
+        first_id = db_relations.save_work_edge(citing, cited, source="test", raw_reference="ref")
+        second_id = db_relations.save_work_edge(citing, cited, source="test", raw_reference="ref")
         connection = db_relations.get_db_connection()
         try:
             count = connection.execute("SELECT COUNT(*) FROM work_edges").fetchone()[0]
         finally:
             connection.close()
         self.assertEqual(count, 1)
+        self.assertGreater(first_id, 0)
+        self.assertEqual(first_id, second_id)
 
     def test_legacy_backfill_is_idempotent(self):
         connection = db_relations.get_db_connection()

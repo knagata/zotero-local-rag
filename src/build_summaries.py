@@ -172,7 +172,13 @@ def build_item(item_key: str, *, mode: str = "extractive", force: bool = False) 
     manifest = load_manifest(MANIFEST_PATH)
     source_mtime = _source_mtime(chunks, manifest)
     existing = get_item_summary(item_key)
-    if not force and existing and existing.get("chunk_count") == len(chunks) and float(existing.get("source_mtime") or 0) == source_mtime:
+    same_source = (
+        existing
+        and existing.get("chunk_count") == len(chunks)
+        and float(existing.get("source_mtime") or 0) == source_mtime
+    )
+    upgrading_extract = mode == "llm" and existing and existing.get("model") == "extractive"
+    if not force and same_source and not upgrading_extract:
         return {"item_key": item_key, "status": "unchanged"}
     if mode == "llm":
         excluded, reason = _excluded_from_llm(item_key)
@@ -289,6 +295,12 @@ def embed_summaries(
     for collection, rows in (
         (item_collection, item_rows), (section_collection, section_rows), (case_collection, case_rows)
     ):
+        if item_keys is None and not only_missing:
+            existing_ids = set(collection.get(include=[]).get("ids") or [])
+            current_ids = {row[0] for row in rows}
+            stale_ids = sorted(existing_ids - current_ids)
+            for start in range(0, len(stale_ids), 1000):
+                collection.delete(ids=stale_ids[start : start + 1000])
         if item_keys is not None and not only_missing:
             for item_key in item_keys:
                 try:

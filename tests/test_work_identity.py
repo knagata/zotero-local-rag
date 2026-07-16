@@ -57,6 +57,37 @@ class WorkIdentityTests(unittest.TestCase):
         candidates = db_relations.get_s2_lookup_candidates("ITEM")
         self.assertIn("Essai sur le don", {row["title"] for row in candidates})
 
+    def test_ndl_translation_requires_matching_author(self):
+        item = {
+            "title": "贈与論", "extra": "", "language": "ja", "date": "2014",
+            "creators": [{"firstName": "Marcel", "lastName": "Mauss"}],
+        }
+        record = {
+            "title": "贈与論", "alternative_titles": ["Essai sur le don"],
+            "authors": "Lewis Hyde", "ndl_bibid": "R1", "year": 1925,
+        }
+        with patch.object(work_identity, "_zotero_item", return_value=item), patch.object(
+            work_identity, "search_ndl", return_value=[record]
+        ), patch.object(work_identity, "save_work_link") as save:
+            result = work_identity.detect_translation("ITEM", dry_run=False)
+        self.assertEqual(result["status"], "needs_review")
+        save.assert_not_called()
+
+    def test_ndl_translation_accepts_matching_author(self):
+        item = {
+            "title": "贈与論", "extra": "", "language": "ja", "date": "2014",
+            "creators": [{"firstName": "Marcel", "lastName": "Mauss"}],
+        }
+        record = {
+            "title": "贈与論", "alternative_titles": ["Essai sur le don"],
+            "authors": "Mauss, Marcel", "ndl_bibid": "R1", "year": 1925,
+        }
+        with patch.object(work_identity, "_zotero_item", return_value=item), patch.object(
+            work_identity, "search_ndl", return_value=[record]
+        ):
+            result = work_identity.detect_translation("ITEM", dry_run=False)
+        self.assertEqual(result["status"], "linked")
+
 
 if __name__ == "__main__":
     unittest.main()

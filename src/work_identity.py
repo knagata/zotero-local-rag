@@ -20,6 +20,24 @@ ORIGINAL_TITLE_RE = re.compile(
 )
 
 
+def _authors_match(left: str, right: str) -> bool:
+    """Conservatively confirm that two bibliographic author strings overlap."""
+    if not left.strip() or not right.strip():
+        return False
+    tokenize = lambda value: {
+        token for token in re.findall(r"[\w\u3040-\u30ff\u3400-\u9fff]+", value.casefold())
+        if len(token) >= 2
+    }
+    left_tokens, right_tokens = tokenize(left), tokenize(right)
+    if left_tokens & right_tokens:
+        return True
+    left_compact = re.sub(r"\W+", "", left.casefold())
+    right_compact = re.sub(r"\W+", "", right.casefold())
+    return min(len(left_compact), len(right_compact)) >= 3 and (
+        left_compact in right_compact or right_compact in left_compact
+    )
+
+
 def plan_chapter_promotion(item_key: str) -> dict[str, Any]:
     """Promote only volumes with at least two distinct explicit chapter authors."""
     sections = get_section_summaries(item_key)
@@ -99,11 +117,18 @@ def detect_translation(item_key: str, *, dry_run: bool = True) -> dict[str, Any]
         " ".join(filter(None, [creator.get("firstName"), creator.get("lastName")])) or creator.get("name", "")
         for creator in creators if isinstance(creator, dict)
     )
+    ndl_verified = source != "ndl" or _authors_match(authors, str((ndl_record or {}).get("authors") or ""))
     result = {
         "item_key": item_key, "title": title, "original_title": original_title or None,
-        "source": source, "status": "candidate" if original_title else "not_found",
+        "source": source,
+        "status": "candidate" if original_title and ndl_verified else (
+            "needs_review" if original_title else "not_found"
+        ),
+        "verification": "author_match" if source == "ndl" and ndl_verified else (
+            "author_mismatch_or_missing" if source == "ndl" else "explicit_metadata"
+        ),
     }
-    if dry_run or not original_title:
+    if dry_run or not original_title or not ndl_verified:
         return {**result, "dry_run": dry_run}
     derived_id = resolve_work(
         zotero_item_key=item_key, title=title, authors=authors,

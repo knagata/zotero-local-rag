@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import os
 from pathlib import Path
 from unittest.mock import patch
 
@@ -60,6 +61,33 @@ class ReferenceAgentTests(unittest.TestCase):
         second = reference_agent.resolve_reference(reference)
         self.assertEqual(first, second)
         self.assertEqual(first["confidence"], 1.0)
+
+    def test_external_outage_does_not_cache_unresolved_result(self):
+        reference = {"raw": "Example", "authors": ["Author"], "title": "Work", "year": 2020}
+        failure = RuntimeError("offline")
+        with patch.object(reference_agent, "search_cinii", side_effect=failure), patch.object(
+            reference_agent, "search_ndl", side_effect=failure
+        ), patch.object(reference_agent, "save_resolver_cache") as save:
+            result = reference_agent.resolve_reference(reference)
+        self.assertEqual(result["source"], "unresolved")
+        save.assert_not_called()
+
+    def test_candidate_score_penalizes_conflicting_authors(self):
+        reference = {"title": "The Gift", "authors": ["Marcel Mauss"], "year": 1925}
+        matching = {"title": "The Gift", "authors": "Marcel Mauss", "year": 1925}
+        conflicting = {"title": "The Gift", "authors": "Lewis Hyde", "year": 1925}
+        self.assertGreater(
+            reference_agent._candidate_score(reference, matching),
+            reference_agent._candidate_score(reference, conflicting),
+        )
+
+    def test_reference_exclusion_fails_closed_when_tags_cannot_be_checked(self):
+        with patch.dict(os.environ, {"EXTRACT_EXCLUDE_TAGS": "private"}, clear=False), patch.object(
+            reference_agent.httpx, "get", side_effect=RuntimeError("offline")
+        ):
+            excluded, reason = reference_agent._item_excluded("ITEM")
+        self.assertTrue(excluded)
+        self.assertIn("could not verify", reason)
 
 
 if __name__ == "__main__":

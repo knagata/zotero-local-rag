@@ -150,7 +150,20 @@ def _candidate_score(reference: dict[str, Any], candidate: dict[str, Any]) -> fl
     ).ratio()
     ref_year, candidate_year = reference.get("year"), candidate.get("year")
     if ref_year and candidate_year and abs(int(ref_year) - int(candidate_year)) > 1:
-        return title_score * 0.7
+        title_score *= 0.7
+    ref_authors = reference.get("authors") or []
+    if isinstance(ref_authors, list):
+        ref_authors = "; ".join(str(value) for value in ref_authors)
+    candidate_authors = str(candidate.get("authors") or "")
+    if ref_authors and candidate_authors:
+        ref_tokens = set(re.findall(r"[\w\u3040-\u30ff\u3400-\u9fff]+", str(ref_authors).casefold()))
+        candidate_tokens = set(re.findall(r"[\w\u3040-\u30ff\u3400-\u9fff]+", candidate_authors.casefold()))
+        token_score = len(ref_tokens & candidate_tokens) / max(len(ref_tokens), 1)
+        sequence_score = SequenceMatcher(
+            None, normalize_work_title(str(ref_authors)), normalize_work_title(candidate_authors)
+        ).ratio()
+        if max(token_score, sequence_score) < 0.45:
+            title_score *= 0.7
     return title_score
 
 
@@ -173,6 +186,7 @@ def resolve_reference(reference: dict[str, Any]) -> dict[str, Any]:
         "isbn": reference.get("isbn"), "lang": reference.get("lang"),
         "container": reference.get("container"), "work_type": reference.get("type"),
     }
+    external_error = False
     if reference.get("doi") or reference.get("isbn"):
         result = {"work_id": resolve_work(**base), "confidence": 1.0, "source": "identifier"}
     else:
@@ -184,6 +198,7 @@ def resolve_reference(reference: dict[str, Any]) -> dict[str, Any]:
                     year=reference.get("year"),
                 ))
             except Exception:
+                external_error = True
                 continue
         scored = sorted(
             ((_candidate_score(reference, candidate), candidate) for candidate in candidates),
@@ -203,7 +218,11 @@ def resolve_reference(reference: dict[str, Any]) -> dict[str, Any]:
     result["work_id"] = get_canonical_work_id(manifestation_id)
     if result["work_id"] != manifestation_id:
         result["manifestation_work_id"] = manifestation_id
-    save_resolver_cache(cache_key, "cascade", json.dumps(result, ensure_ascii=False))
+    # Do not turn an outage/rate-limit result into a permanent unresolved cache hit.
+    # A successful identifier or external match remains safe to cache even if another
+    # provider in the cascade was unavailable.
+    if result.get("source") != "unresolved" or not external_error:
+        save_resolver_cache(cache_key, "cascade", json.dumps(result, ensure_ascii=False))
     return result
 
 

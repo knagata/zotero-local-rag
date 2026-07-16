@@ -1155,7 +1155,8 @@ def search_cases(
 
     paragraph_collection = _col()
     case_rows = {int(row["case_id"]): row for row in get_case_annotations()}
-    structured: list[dict[str, Any]] = []
+    structured_by_id: dict[int, dict[str, Any]] = {}
+    structured_scores: dict[int, float] = {}
     warning = None
     try:
         client = getattr(paragraph_collection, "_chroma_client", None)
@@ -1165,22 +1166,25 @@ def search_cases(
             query_embeddings=embeddings, n_results=max(k * 5, k),
             include=["metadatas", "documents", "distances"],
         )
-        seen: set[int] = set()
         for ranking in response.get("metadatas") or []:
             for rank, metadata in enumerate(ranking, start=1):
                 case_id = int((metadata or {}).get("case_id") or 0)
                 row = case_rows.get(case_id)
-                if not row or case_id in seen:
+                if not row:
                     continue
                 if region and region.casefold() not in str(row.get("region") or "").casefold():
                     continue
-                seen.add(case_id)
-                structured.append({
-                    "kind": "case", **row, "rrf_score": 1.0 / (RRF_K + rank),
-                })
+                structured_by_id[case_id] = row
+                structured_scores[case_id] = (
+                    structured_scores.get(case_id, 0.0) + 1.0 / (RRF_K + rank)
+                )
     except Exception as exc:
         warning = f"case annotation index unavailable: {exc}"
 
+    structured = [
+        {"kind": "case", **structured_by_id[case_id], "rrf_score": score}
+        for case_id, score in structured_scores.items()
+    ]
     direct = rag_search(
         queries, k=max(k * 3, k), search_mode="case", auto_expand=False, hybrid=True,
     ).get("results") or []

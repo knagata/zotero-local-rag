@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from src.llm_client import ProviderUnavailable
 from src.db_relations import _init_db
+from src import query_expansion
 from src.query_expansion import expand_queries
 
 
@@ -27,6 +28,9 @@ class FakeLLM:
 
 
 class QueryExpansionTests(unittest.TestCase):
+    def setUp(self):
+        query_expansion._negative_until.clear()
+
     def test_database_migration_creates_cache_table(self):
         connection = sqlite3.connect(":memory:")
         _init_db(connection)
@@ -77,6 +81,15 @@ class QueryExpansionTests(unittest.TestCase):
             "src.query_expansion.get_query_expansion", return_value=None
         ):
             self.assertEqual(expand_queries(["贈与"]), ["贈与"])
+
+    def test_provider_failure_is_temporarily_suppressed(self):
+        fake = FakeLLM(error=ProviderUnavailable("missing key"))
+        with patch("src.query_expansion.get_llm", return_value=fake), patch(
+            "src.query_expansion.get_query_expansion", return_value=None
+        ), patch("src.query_expansion.time.monotonic", return_value=100.0):
+            self.assertEqual(expand_queries(["贈与"]), ["贈与"])
+            self.assertEqual(expand_queries(["交換"]), ["交換"])
+        self.assertEqual(fake.calls, 1)
 
     def test_cache_failure_returns_original(self):
         fake = FakeLLM()
