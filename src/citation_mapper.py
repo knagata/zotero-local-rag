@@ -13,7 +13,7 @@ import difflib
 import numpy as np
 from typing import Dict, Any, Optional, List, Tuple
 
-from db_relations import insert_citation, update_item_citation_status
+from db_relations import get_s2_lookup_candidates, insert_citation, update_item_citation_status
 from pathlib import Path
 
 
@@ -502,6 +502,21 @@ def map_item_global_citations(item_key: str, title: str = "", year: str = "", cr
     print(f"[{time.time()}] Calling find_s2_paper_id...", file=sys.stderr)
     try:
         s2_paper = find_s2_paper_id(title, year, creators, doi, isbn)
+        if not s2_paper:
+            for candidate in get_s2_lookup_candidates(item_key):
+                candidate_title = candidate.get("title") or ""
+                if not candidate_title or candidate_title == title:
+                    continue
+                print(
+                    f"        -> Retrying S2 through equivalent/chapter work: {candidate_title}",
+                    file=sys.stderr,
+                )
+                s2_paper = find_s2_paper_id(
+                    candidate_title, candidate.get("year"), candidate.get("authors") or "",
+                    candidate.get("doi") or "", candidate.get("isbn") or "",
+                )
+                if s2_paper:
+                    break
         print(f"[{time.time()}] find_s2_paper_id returned.", file=sys.stderr)
     except S2RetryExhaustedError as exc:
         print(f"[S2] Gave up after retries: {exc}", file=sys.stderr)

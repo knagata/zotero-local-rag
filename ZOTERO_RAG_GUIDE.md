@@ -140,7 +140,8 @@ ChromaDBのインデックスとメタデータを強制的にリロードしま
 
 - **`item_key`**: 起点となるZoteroアイテム。
 - **`method`**: `"coupling"`（共有参考文献）、`"cocitation"`（同じ外部論文からの共引用）、
-  `"semantic"`（本文チャンク平均ベクトル）、`"hybrid"`（3方式の等重みRRF、デフォルト）。
+  `"semantic"`（本文チャンク平均ベクトル）、`"case_overlap"`（地域・実践・現象の共有）、
+  `"hybrid"`（引用2方式+意味類似の等重みRRF、デフォルト）。
 - **`k`**: 最大取得件数（デフォルト `10`）。
 
 結果の `evidence` には共有参照数、共引用元数、内容類似度が含まれます。
@@ -153,6 +154,11 @@ PDF・HTML・EPUBの参考文献候補を構造化し、正準worksグラフへ�
 - `use_llm=true` では候補テキストを `LLM_EXTRACT` へ送信します。`EXTRACT_EXCLUDE_TAGS` に該当するアイテム、またはタグ確認不能時はfail-closedで停止します。
 - 保存時は DOI/ISBN、CiNii Research (`CINII_APP_ID` 設定時)、NDL Searchの順に候補を照合し、低信頼結果も根拠とともに保持します。
 - `confirm_reference_match(edge_id, work_id)` で低信頼エッジを正しいworkへ付け替え、`work_id` を省略すると棄却します。
+
+### 17. `promote_chapters` / `detect_translation`
+
+- `promote_chapters` は章著者が複数章で明確に異なる場合だけ章を子workへ昇格します。既定はdry-runです。
+- `detect_translation` はZotero Extraの明示原題、次にNDLの原タイトル候補を使います。未検証のLLM推測だけではリンクを作りません。既定はdry-runです。
 
 ---
 

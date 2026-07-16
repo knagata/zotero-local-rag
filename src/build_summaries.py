@@ -16,7 +16,7 @@ try:
     from .chunk_store import active_collection_name, get_item_chunks, list_item_keys
     from .db_relations import (
         get_case_annotations, get_item_summary, get_section_summaries, replace_case_annotations,
-        save_item_summary, save_section_summary,
+        save_item_summary, save_section_summary, update_case_chunk,
     )
     from .embedder import create_embedding_function, open_chroma_collection, resolve_embedder_settings
     from .llm_client import LLMError, get_llm
@@ -26,7 +26,7 @@ except ImportError:  # pragma: no cover
     from chunk_store import active_collection_name, get_item_chunks, list_item_keys
     from db_relations import (
         get_case_annotations, get_item_summary, get_section_summaries, replace_case_annotations,
-        save_item_summary, save_section_summary,
+        save_item_summary, save_section_summary, update_case_chunk,
     )
     from embedder import create_embedding_function, open_chroma_collection, resolve_embedder_settings
     from llm_client import LLMError, get_llm
@@ -232,6 +232,7 @@ def embed_summaries(
     item_collection = open_chroma_collection(CHROMA_DIR, f"{base}__sum_item", ef)
     section_collection = open_chroma_collection(CHROMA_DIR, f"{base}__sum_section", ef)
     case_collection = open_chroma_collection(CHROMA_DIR, f"{base}__cases", ef)
+    paragraph_collection = getattr(item_collection, "_chroma_client").get_collection(base)
     item_rows: list[tuple[str, str, dict[str, Any]]] = []
     section_rows: list[tuple[str, str, dict[str, Any]]] = []
     case_rows: list[tuple[str, str, dict[str, Any]]] = []
@@ -267,6 +268,17 @@ def embed_summaries(
             case.get("description"), case.get("region"), case.get("grp"),
             case.get("practices"), case.get("phenomena"),
         ]))
+        if not case.get("chunk_id") and document:
+            try:
+                nearest = paragraph_collection.query(
+                    query_embeddings=ef([document]), n_results=1,
+                    where={"itemKey": case["item_key"]}, include=["distances"],
+                )
+                ids = nearest.get("ids") or []
+                case["chunk_id"] = ids[0][0] if ids and ids[0] else None
+                update_case_chunk(int(case["case_id"]), case.get("chunk_id"))
+            except Exception:
+                pass
         case_rows.append((f"case:{case['case_id']}", document, {
             "case_id": int(case["case_id"]), "itemKey": str(case["item_key"]),
             "section_id": str(case.get("section_id") or ""),

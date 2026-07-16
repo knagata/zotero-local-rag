@@ -14,7 +14,7 @@ try:
     from .cinii_client import search_cinii
     from .chunk_store import get_item_chunks
     from .db_relations import (
-        get_resolver_cache, normalize_work_title, resolve_work, save_resolver_cache,
+        get_canonical_work_id, get_resolver_cache, normalize_work_title, resolve_work, save_resolver_cache,
         save_work_edge,
     )
     from .llm_client import LLMError, get_llm
@@ -22,7 +22,7 @@ try:
 except ImportError:  # pragma: no cover
     from cinii_client import search_cinii
     from chunk_store import get_item_chunks
-    from db_relations import get_resolver_cache, normalize_work_title, resolve_work, save_resolver_cache, save_work_edge
+    from db_relations import get_canonical_work_id, get_resolver_cache, normalize_work_title, resolve_work, save_resolver_cache, save_work_edge
     from llm_client import LLMError, get_llm
     from ndl_client import search_ndl
 
@@ -159,7 +159,12 @@ def resolve_reference(reference: dict[str, Any]) -> dict[str, Any]:
     cache_key = hashlib.sha256(json.dumps(reference, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
     cached = get_resolver_cache(cache_key, "cascade")
     if cached:
-        return json.loads(cached)
+        result = json.loads(cached)
+        manifestation_id = int(result.get("manifestation_work_id") or result["work_id"])
+        result["work_id"] = get_canonical_work_id(manifestation_id)
+        if result["work_id"] != manifestation_id:
+            result["manifestation_work_id"] = manifestation_id
+        return result
     authors = reference.get("authors") or []
     authors_text = "; ".join(authors) if isinstance(authors, list) else str(authors)
     base = {
@@ -194,6 +199,10 @@ def resolve_reference(reference: dict[str, Any]) -> dict[str, Any]:
             }
         else:
             result = {"work_id": resolve_work(**base), "confidence": 0.5, "source": "unresolved"}
+    manifestation_id = int(result["work_id"])
+    result["work_id"] = get_canonical_work_id(manifestation_id)
+    if result["work_id"] != manifestation_id:
+        result["manifestation_work_id"] = manifestation_id
     save_resolver_cache(cache_key, "cascade", json.dumps(result, ensure_ascii=False))
     return result
 

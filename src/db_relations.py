@@ -420,6 +420,50 @@ def get_work_cluster(work_id: int) -> List[int]:
         conn.close()
 
 
+def get_canonical_work_id(work_id: int) -> int:
+    """Follow directed manifestation links toward the original/earlier work."""
+    conn = get_db_connection()
+    try:
+        row = conn.execute('''
+            WITH RECURSIVE origins(work_id, depth) AS (
+                SELECT ?, 0
+                UNION ALL
+                SELECT wl.work_id_b, origins.depth + 1
+                FROM work_links wl JOIN origins ON wl.work_id_a = origins.work_id
+                WHERE origins.depth < 50
+            )
+            SELECT work_id FROM origins ORDER BY depth DESC, work_id ASC LIMIT 1
+        ''', (work_id,)).fetchone()
+        return int(row[0]) if row else work_id
+    finally:
+        conn.close()
+
+
+def get_s2_lookup_candidates(item_key: str) -> List[Dict[str, Any]]:
+    """Return equivalent manifestations and promoted chapters for S2 lookup fallback."""
+    conn = get_db_connection()
+    try:
+        rows = conn.execute('''
+            WITH RECURSIVE equivalent(work_id) AS (
+                SELECT work_id FROM works
+                WHERE zotero_item_key = ? AND container_work_id IS NULL
+                UNION
+                SELECT CASE WHEN wl.work_id_a = equivalent.work_id THEN wl.work_id_b ELSE wl.work_id_a END
+                FROM work_links wl JOIN equivalent
+                  ON wl.work_id_a = equivalent.work_id OR wl.work_id_b = equivalent.work_id
+            )
+            SELECT work_id, title, authors, year, doi, isbn, work_type, section_id
+            FROM works
+            WHERE work_id IN (SELECT work_id FROM equivalent)
+               OR container_work_id IN (SELECT work_id FROM equivalent)
+            ORDER BY CASE WHEN doi IS NOT NULL THEN 0 WHEN isbn IS NOT NULL THEN 1 ELSE 2 END,
+                     container_work_id IS NOT NULL, work_id
+        ''', (item_key,)).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
 def get_query_expansion(query_hash: str) -> Optional[str]:
     """Return cached query-expansion JSON, or ``None`` on a cache miss."""
     conn = get_db_connection()
@@ -632,6 +676,18 @@ def get_case_annotations(item_key: Optional[str] = None) -> List[Dict[str, Any]]
         else:
             rows = conn.execute("SELECT * FROM case_annotations ORDER BY case_id").fetchall()
         return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def update_case_chunk(case_id: int, chunk_id: Optional[str]) -> None:
+    conn = get_db_connection()
+    try:
+        conn.execute(
+            "UPDATE case_annotations SET chunk_id = ?, updated_at = CURRENT_TIMESTAMP WHERE case_id = ?",
+            (chunk_id, case_id),
+        )
+        conn.commit()
     finally:
         conn.close()
 
@@ -1030,6 +1086,43 @@ def get_network_item_keys() -> List[str]:
         return sorted(row[0] for row in rows if row[0])
     finally:
         conn.close()
+
+
+def get_case_overlap_pairs(item_key: str, limit: int = 100) -> List[Dict[str, Any]]:
+    """Rank items by overlap of structured case region/practice/phenomenon terms."""
+    conn = get_db_connection()
+    try:
+        rows = conn.execute('''
+            SELECT item_key, region, practices, phenomena FROM case_annotations
+            WHERE item_key = ? OR item_key IN (
+                SELECT DISTINCT item_key FROM case_annotations WHERE item_key <> ?
+            )
+        ''', (item_key, item_key)).fetchall()
+    finally:
+        conn.close()
+    terms: Dict[str, set[str]] = {}
+    for row in rows:
+        bucket = terms.setdefault(row["item_key"], set())
+        for value in (row["region"], row["practices"], row["phenomena"]):
+            bucket.update(
+                token.strip().casefold() for token in re.split(r"[;,、/|]", value or "") if token.strip()
+            )
+    target = terms.get(item_key, set())
+    if not target:
+        return []
+    output = []
+    for candidate, candidate_terms in terms.items():
+        if candidate == item_key:
+            continue
+        shared = sorted(target & candidate_terms)
+        if shared:
+            output.append({
+                "item_key": candidate, "shared_case_terms": shared,
+                "case_overlap_score": len(shared) / max(len(target | candidate_terms), 1),
+            })
+    return sorted(
+        output, key=lambda row: (-row["case_overlap_score"], -len(row["shared_case_terms"]), row["item_key"])
+    )[: max(limit, 0)]
 
 def purge_removed_items(current_item_keys: set[str]) -> dict[str, int]:
     """Zoteroから削除されたアイテムキーに関連するDBレコードを削除する。

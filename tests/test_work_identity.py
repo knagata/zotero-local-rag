@@ -1,0 +1,62 @@
+from __future__ import annotations
+
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+from src import db_relations, work_identity
+
+
+class WorkIdentityTests(unittest.TestCase):
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.db_patch = patch.object(
+            db_relations, "DB_PATH", str(Path(self.tempdir.name) / "relations.db")
+        )
+        self.db_patch.start()
+        db_relations._db_initialized = False
+
+    def tearDown(self):
+        self.db_patch.stop()
+        db_relations._db_initialized = False
+        self.tempdir.cleanup()
+
+    def test_promotes_only_distinct_authored_chapters(self):
+        db_relations.resolve_work(zotero_item_key="ITEM", title="Volume")
+        db_relations.save_section_summary(
+            "ITEM", "c1", "a", chapter="Chapter A", chapter_authors="Author A"
+        )
+        db_relations.save_section_summary(
+            "ITEM", "c2", "b", chapter="Chapter B", chapter_authors="Author B"
+        )
+        preview = work_identity.promote_chapters("ITEM")
+        self.assertTrue(preview["eligible"])
+        result = work_identity.promote_chapters("ITEM", dry_run=False)
+        self.assertEqual(result["status"], "promoted")
+        self.assertEqual(len(result["chapter_work_ids"]), 2)
+
+    def test_explicit_original_title_creates_translation_link(self):
+        item = {
+            "title": "贈与論", "extra": "Original title: Essai sur le don",
+            "language": "ja", "date": "2014", "creators": [{"lastName": "Mauss"}],
+        }
+        with patch.object(work_identity, "_zotero_item", return_value=item):
+            preview = work_identity.detect_translation("ITEM")
+            self.assertEqual(preview["original_title"], "Essai sur le don")
+            result = work_identity.detect_translation("ITEM", dry_run=False)
+        self.assertEqual(result["status"], "linked")
+        self.assertEqual(
+            set(db_relations.get_work_cluster(result["derived_work_id"])),
+            {result["derived_work_id"], result["original_work_id"]},
+        )
+        self.assertEqual(
+            db_relations.get_canonical_work_id(result["derived_work_id"]),
+            result["original_work_id"],
+        )
+        candidates = db_relations.get_s2_lookup_candidates("ITEM")
+        self.assertIn("Essai sur le don", {row["title"] for row in candidates})
+
+
+if __name__ == "__main__":
+    unittest.main()

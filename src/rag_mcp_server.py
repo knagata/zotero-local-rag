@@ -1231,6 +1231,26 @@ def confirm_reference_match(edge_id: int, work_id: Optional[int] = None) -> Dict
 
 
 @mcp.tool()
+def promote_chapters(item_key: str, dry_run: bool = True) -> Dict[str, Any]:
+    """Promote clearly multi-author sections to child works; preview by default."""
+    from work_identity import promote_chapters as run_promotion
+    return run_promotion(item_key, dry_run=dry_run)
+
+
+@mcp.tool()
+def detect_translation(item_key: str, dry_run: bool = True) -> Dict[str, Any]:
+    """Detect an original work from explicit Zotero metadata or an NDL record.
+
+    This intentionally does not create links from an unverified LLM-only guess.
+    """
+    from work_identity import detect_translation as run_detection
+    try:
+        return run_detection(item_key, dry_run=dry_run)
+    except Exception as exc:
+        return {"item_key": item_key, "status": "error", "error": str(exc)}
+
+
+@mcp.tool()
 async def get_item_details(item_key: str) -> Dict[str, Any]:
     """
     Fetch full bibliographic metadata for a specific Zotero item.
