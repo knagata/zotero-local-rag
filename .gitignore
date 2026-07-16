@@ -29,6 +29,7 @@ data/layout_cache.json
 data/mapping_debug.log
 data/mapping_debug_ref.log
 data/pdf_cache/
+data/backups/
 
 # ── 設計メモ ─────────────────────────────────────────────
 LAYOUT_DESIGN_NOTES.md
