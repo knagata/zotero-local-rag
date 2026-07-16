@@ -363,6 +363,23 @@ def save_work_edge(
         conn.close()
 
 
+def confirm_work_edge(edge_id: int, work_id: Optional[int]) -> bool:
+    """Reassign a low-confidence edge to a reviewed work, or reject it with None."""
+    conn = get_db_connection()
+    try:
+        if work_id is None:
+            cursor = conn.execute("DELETE FROM work_edges WHERE id = ?", (edge_id,))
+        else:
+            cursor = conn.execute('''
+                UPDATE work_edges SET cited_work_id = ?, confidence = 1.0, source = 'manual'
+                WHERE id = ?
+            ''', (work_id, edge_id))
+        conn.commit()
+        return cursor.rowcount > 0
+    finally:
+        conn.close()
+
+
 def save_work_link(
     work_id_a: int, work_id_b: int, relation: str, *, confidence: float = 1.0,
     source: Optional[str] = None,
@@ -427,6 +444,32 @@ def save_query_expansion(query_hash: str, expansions: str) -> None:
                 expansions = excluded.expansions,
                 created_at = CURRENT_TIMESTAMP
         ''', (query_hash, expansions))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_resolver_cache(query_hash: str, source: str) -> Optional[str]:
+    conn = get_db_connection()
+    try:
+        row = conn.execute(
+            "SELECT response_json FROM resolver_cache WHERE query_hash = ? AND source = ?",
+            (query_hash, source),
+        ).fetchone()
+        return row[0] if row else None
+    finally:
+        conn.close()
+
+
+def save_resolver_cache(query_hash: str, source: str, response_json: str) -> None:
+    conn = get_db_connection()
+    try:
+        conn.execute('''
+            INSERT INTO resolver_cache (query_hash, source, response_json, created_at)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(query_hash, source) DO UPDATE SET
+                response_json = excluded.response_json, created_at = CURRENT_TIMESTAMP
+        ''', (query_hash, source, response_json))
         conn.commit()
     finally:
         conn.close()

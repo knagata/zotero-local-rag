@@ -1201,6 +1201,36 @@ def search_cases(
 
 
 @mcp.tool()
+def extract_references_for_item(
+    item_key: str, dry_run: bool = True, use_llm: bool = True,
+) -> Dict[str, Any]:
+    """Extract and resolve one item's bibliography; preview by default.
+
+    When ``use_llm`` is true, candidate bibliography text is sent to the configured
+    ``LLM_EXTRACT`` provider. ``EXTRACT_EXCLUDE_TAGS`` is enforced fail-closed.
+    Set ``dry_run=False`` only after reviewing the preview.
+    """
+    from reference_agent import extract_references_for_item as run_extraction
+    try:
+        return run_extraction(item_key, dry_run=dry_run, use_llm=use_llm)
+    except Exception as exc:
+        _log.exception("Reference extraction failed for %s", item_key)
+        return {"item_key": item_key, "status": "error", "error": str(exc), "references": []}
+
+
+@mcp.tool()
+def confirm_reference_match(edge_id: int, work_id: Optional[int] = None) -> Dict[str, Any]:
+    """Accept a replacement canonical work, or reject an edge by omitting work_id."""
+    from db_relations import confirm_work_edge
+    changed = confirm_work_edge(edge_id, work_id)
+    return {
+        "status": "updated" if changed else "not_found",
+        "edge_id": edge_id, "work_id": work_id,
+        "action": "reassigned" if work_id is not None else "rejected",
+    }
+
+
+@mcp.tool()
 async def get_item_details(item_key: str) -> Dict[str, Any]:
     """
     Fetch full bibliographic metadata for a specific Zotero item.

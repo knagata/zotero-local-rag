@@ -17,8 +17,10 @@ echo   2) Force re-update a specific item by ID  (always re-processes)
 echo   3) Update ALL items  (new and error items only / recommended)
 echo   4) Force re-update ALL items  (re-processes everything)
 echo   5) Resume skipped EPUB refs  (budget wo fuyashite skipped wo saikai)
+echo   6) Preview PDF/HTML reference extraction for one item (no DB writes)
+echo   7) Extract and save PDF/HTML references for one item
 echo.
-set /p choice="Enter your choice (1-5): "
+set /p choice="Enter your choice (1-7): "
 
 echo.
 if "%choice%"=="1" (
@@ -54,6 +56,18 @@ if "%choice%"=="1" (
     if "!budget!"=="" set budget=200
     echo Resolving skipped EPUB refs with budget=!budget!...
     uv run src\update_citations.py --resume-skipped --epub-budget "!budget!"
+) else if "%choice%"=="6" (
+    set /p item_id="Enter the Item ID: "
+    uv run python -m src.extract_references --item "!item_id!"
+) else if "%choice%"=="7" (
+    set /p item_id="Enter the Item ID: "
+    echo Reference text may be sent to the configured LLM_EXTRACT provider.
+    set /p confirm="Continue and save resolved edges? (y/N): "
+    if /i "!confirm!"=="y" (
+        uv run python -m src.extract_references --item "!item_id!" --commit
+    ) else (
+        echo Cancelled.
+    )
 ) else (
     echo Invalid choice. Exiting.
 )

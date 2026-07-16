@@ -20,8 +20,10 @@ echo "  2) Force re-update a specific item by ID  (always re-processes)"
 echo "  3) Update ALL items  (新規・エラー分のみ処理 / 通常はこれ)"
 echo "  4) Force re-update ALL items  (re-processes everything)"
 echo "  5) Resume skipped EPUB refs  (バジェットを増やして skipped を再解決)"
+echo "  6) Preview PDF/HTML reference extraction for one item (no DB writes)"
+echo "  7) Extract and save PDF/HTML references for one item"
 echo ""
-read -p "Enter your choice (1-5): " choice
+read -p "Enter your choice (1-7): " choice
 
 echo ""
 case "$choice" in
@@ -62,6 +64,20 @@ case "$choice" in
         budget="${budget:-200}"
         echo "Resolving skipped EPUB refs with budget=${budget}..."
         uv run src/update_citations.py --resume-skipped --epub-budget "$budget"
+        ;;
+    6)
+        read -p "Enter the Item ID: " item_id
+        uv run python -m src.extract_references --item "$item_id"
+        ;;
+    7)
+        read -p "Enter the Item ID: " item_id
+        echo "Reference text may be sent to the configured LLM_EXTRACT provider."
+        read -p "Continue and save resolved edges? (y/N): " confirm
+        if [ "$confirm" == "y" ] || [ "$confirm" == "Y" ]; then
+            uv run python -m src.extract_references --item "$item_id" --commit
+        else
+            echo "Cancelled."
+        fi
         ;;
     *)
         echo "Invalid choice. Exiting."

@@ -79,6 +79,10 @@ Geminiには `GEMINI_API_KEY`、Anthropicには `ANTHROPIC_API_KEY` が必要で
 CLIプロバイダは各CLIで事前にサインインされている必要があります。
 永続化する場合は [`.env.example`](.env.example) から必要な項目だけを `.env` にコピーしてください。
 
+参考文献抽出は `Citation-Update` のメニュー6で書き込みなしのプレビュー、メニュー7で保存できます。
+CiNii Research v2を解決先に使う場合は、公式登録で得た `CINII_APP_ID` を設定してください。
+NDL Search SRUはアプリケーションIDなしで利用します。
+
 要約索引は次のコマンドで差分構築できます。既定の `extractive` は本文を外部へ送信しません。
 
 ```bash
