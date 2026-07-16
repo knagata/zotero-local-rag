@@ -1549,6 +1549,33 @@ def suggest_unowned_works(
     except Exception as exc:
         return {"status": "error", "message": str(exc)}
 
+
+@mcp.tool()
+def related_items(item_key: str, method: str = "hybrid", k: int = 10) -> Dict[str, Any]:
+    """Find owned Zotero items related by citations or semantic content.
+
+    Args:
+        item_key: Source Zotero item key.
+        method: "coupling", "cocitation", "semantic", or equal-weight "hybrid".
+        k: Maximum number of related items (default 10, maximum 100).
+    """
+    if not item_key.strip():
+        return {"status": "error", "message": "item_key is required."}
+    if k <= 0:
+        return {"status": "error", "message": "k must be positive."}
+    try:
+        from recommendations import related_items as find_related_items
+
+        results = find_related_items(item_key, method=method, k=min(k, 100))
+        return {
+            "item_key": item_key,
+            "method": method,
+            "related_count": len(results),
+            "related_items": results,
+        }
+    except Exception as exc:
+        return {"status": "error", "message": str(exc)}
+
 @mcp.tool()
 async def build_citation_network(item_key: str) -> Dict[str, Any]:
     """

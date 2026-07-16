@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from src import db_relations
+from src import recommendations
 
 
 class RecommendationAggregationTests(unittest.TestCase):
@@ -78,6 +79,48 @@ class RecommendationAggregationTests(unittest.TestCase):
         )
         self.assertEqual([row["title"] for row in results], ["Neighbor Study"])
         self.assertEqual(results[0]["adjacent_item_count"], 2)
+
+    def test_coupling_and_cocitation_pairs(self):
+        coupling = db_relations.get_coupling_pairs("OWN1")
+        cocitation = db_relations.get_cocitation_pairs("OWN1")
+        self.assertEqual(coupling[0]["item_key"], "OWN2")
+        self.assertGreaterEqual(coupling[0]["shared_reference_count"], 2)
+        self.assertEqual(cocitation, [{"item_key": "OWN2", "shared_citer_count": 1}])
+
+
+class RelatedItemsTests(unittest.TestCase):
+    def test_hybrid_rrf_combines_three_methods_and_evidence(self):
+        with patch.object(
+            recommendations, "get_network_item_keys", return_value=["A", "B", "C"]
+        ), patch.object(
+            recommendations,
+            "get_coupling_pairs",
+            return_value=[{"item_key": "B", "shared_reference_count": 3}],
+        ), patch.object(
+            recommendations,
+            "get_cocitation_pairs",
+            return_value=[{"item_key": "C", "shared_citer_count": 2}],
+        ), patch.object(
+            recommendations,
+            "get_item_vectors",
+            return_value={"A": [1.0, 0.0], "B": [0.8, 0.6], "C": [0.0, 1.0]},
+        ), patch.object(
+            recommendations,
+            "get_item_meta",
+            return_value={"B": {"title": "Book B"}, "C": {"title": "Book C"}},
+        ):
+            rows = recommendations.related_items("A", method="hybrid", k=2)
+
+        self.assertEqual(rows[0]["item_key"], "B")
+        self.assertEqual(rows[0]["title"], "Book B")
+        self.assertEqual(
+            {entry["method"] for entry in rows[0]["evidence"]},
+            {"coupling", "semantic"},
+        )
+
+    def test_invalid_method_is_rejected(self):
+        with self.assertRaises(ValueError):
+            recommendations.related_items("A", method="unknown")
 
 
 if __name__ == "__main__":

@@ -118,6 +118,17 @@ ChromaDBのインデックスとメタデータを強制的にリロードしま
 - **`k`**: 最大取得件数（デフォルト `20`）。
 - **`min_citing_items`**: 何件以上の異なる所蔵文献に隣接することを求めるか（デフォルト `2`）。
 
+### 15. `related_items` (所蔵文献間の関連発見)
+
+指定した所蔵文献に近い別の所蔵文献を、根拠つきで返します。
+
+- **`item_key`**: 起点となるZoteroアイテム。
+- **`method`**: `"coupling"`（共有参考文献）、`"cocitation"`（同じ外部論文からの共引用）、
+  `"semantic"`（本文チャンク平均ベクトル）、`"hybrid"`（3方式の等重みRRF、デフォルト）。
+- **`k`**: 最大取得件数（デフォルト `10`）。
+
+結果の `evidence` には共有参照数、共引用元数、内容類似度が含まれます。
+
 ---
 
 ## ⚙️ 最適化仕様と返り値の解釈
@@ -225,10 +236,13 @@ ChromaDBのインデックスとメタデータを強制的にリロードしま
 
 **ケースE：引用関係をたどって新しい文献を探したい場合**
 ```
-1. suggest_unowned_works(direction="references", min_citing_items=2, k=20)
+1. related_items(item_key="KEY1", method="hybrid", k=10)
+   → 所蔵文献の中から、引用構造または本文内容が近い資料を根拠つきで発見
+
+2. suggest_unowned_works(direction="references", min_citing_items=2, k=20)
    → ライブラリ内の複数文献が参照する未所蔵の基礎文献・重要文献を発見
 
-2. suggest_unowned_works(
+3. suggest_unowned_works(
        scope_item_keys=["KEY1", "KEY2"],
        direction="citations",
        min_citing_items=2,
@@ -236,7 +250,7 @@ ChromaDBのインデックスとメタデータを強制的にリロードしま
    )
    → 関心のある所蔵文献群をまとめて引用している隣接研究を発見
 
-3. DOI・タイトルを確認してZoteroへ追加し、Library-Update後にrag_searchで本文を探索
+4. DOI・タイトルを確認してZoteroへ追加し、Library-Update後にrag_searchで本文を探索
 ```
 
 結果にはランキング根拠となる所蔵 `itemKey` が含まれます。現段階の同一文献判定は

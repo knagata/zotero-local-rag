@@ -535,6 +535,94 @@ def aggregate_unowned_works(
             break
     return results
 
+
+def _reference_identity_sql(alias: str) -> str:
+    return f'''CASE
+        WHEN NULLIF(TRIM({alias}.cited_paper_id), '') IS NOT NULL
+            THEN 's2:' || LOWER(TRIM({alias}.cited_paper_id))
+        WHEN NULLIF(TRIM({alias}.cited_doi), '') IS NOT NULL
+            THEN 'doi:' || LOWER(TRIM({alias}.cited_doi))
+        ELSE 'title:' || LOWER(TRIM({alias}.cited_title)) END'''
+
+
+def get_coupling_pairs(item_key: str, limit: int = 100) -> List[Dict[str, Any]]:
+    """Rank owned items sharing outgoing references with ``item_key``."""
+    identity = _reference_identity_sql("r")
+    candidate_identity = _reference_identity_sql("c")
+    conn = get_db_connection()
+    try:
+        rows = conn.execute(
+            f'''
+            WITH target_refs AS (
+                SELECT DISTINCT {identity} AS work_key
+                FROM global_references r
+                WHERE r.citing_item_key = ?
+                  AND NULLIF(TRIM(r.cited_title), '') IS NOT NULL
+            ), candidate_refs AS (
+                SELECT DISTINCT c.citing_item_key AS item_key,
+                       {candidate_identity} AS work_key
+                FROM global_references c
+                WHERE c.citing_item_key <> ?
+                  AND NULLIF(TRIM(c.cited_title), '') IS NOT NULL
+            )
+            SELECT candidate_refs.item_key,
+                   COUNT(*) AS shared_reference_count
+            FROM candidate_refs
+            JOIN target_refs USING (work_key)
+            GROUP BY candidate_refs.item_key
+            ORDER BY shared_reference_count DESC, candidate_refs.item_key ASC
+            LIMIT ?
+            ''',
+            (item_key, item_key, max(limit, 0)),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def get_cocitation_pairs(item_key: str, limit: int = 100) -> List[Dict[str, Any]]:
+    """Rank owned items cited alongside ``item_key`` by the same external works."""
+    conn = get_db_connection()
+    try:
+        rows = conn.execute(
+            '''
+            WITH target_citers AS (
+                SELECT DISTINCT citing_paper_id
+                FROM global_citations
+                WHERE cited_item_key = ?
+                  AND NULLIF(TRIM(citing_paper_id), '') IS NOT NULL
+            ), candidate_pairs AS (
+                SELECT DISTINCT c.cited_item_key AS item_key, c.citing_paper_id
+                FROM global_citations c
+                JOIN target_citers t ON t.citing_paper_id = c.citing_paper_id
+                WHERE c.cited_item_key <> ?
+            )
+            SELECT item_key, COUNT(*) AS shared_citer_count
+            FROM candidate_pairs
+            GROUP BY item_key
+            ORDER BY shared_citer_count DESC, item_key ASC
+            LIMIT ?
+            ''',
+            (item_key, item_key, max(limit, 0)),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def get_network_item_keys() -> List[str]:
+    """Return all owned item keys represented in citation or status tables."""
+    conn = get_db_connection()
+    try:
+        rows = conn.execute('''
+            SELECT item_key FROM item_citation_status
+            UNION SELECT citing_item_key FROM global_references
+            UNION SELECT cited_item_key FROM global_citations
+        ''').fetchall()
+        return sorted(row[0] for row in rows if row[0])
+    finally:
+        conn.close()
+
 def purge_removed_items(current_item_keys: set[str]) -> dict[str, int]:
     """Zoteroから削除されたアイテムキーに関連するDBレコードを削除する。
 

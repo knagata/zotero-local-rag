@@ -50,6 +50,7 @@ import webbrowser
 from pathlib import Path
 
 from dotenv import load_dotenv
+from src.item_vectors import get_item_vectors as _shared_get_item_vectors
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
 PROJECT_ROOT    = Path(__file__).resolve().parents[1]
@@ -127,79 +128,7 @@ def get_item_vectors(item_keys: list[str]) -> dict[str, list[float]]:
     埋め込みモデルを変更した場合は次元数不一致によりキャッシュが自動無効化される。
     失敗時は空 dict を返し、レイアウトは引用エッジのみで計算される（表示は壊れない）。
     """
-    _META_KEY = "__meta__"
-    cache_path = PROJECT_ROOT / "data" / "item_vectors_cache.json"
-    vectors: dict[str, list[float]] = {}
-    saved_dim: int | None = None
-
-    if cache_path.exists():
-        try:
-            raw = json.loads(cache_path.read_text())
-            saved_dim = raw.get(_META_KEY, {}).get("embedding_dim") if isinstance(raw, dict) else None  # type: ignore[union-attr]
-            vectors = {k: v for k, v in raw.items() if k != _META_KEY}
-        except Exception as e:
-            print(f"  (item vector cache load failed: {e})", file=sys.stderr)
-
-    # Detect embedding model change — if saved dimension differs from current,
-    # invalidate the entire cache.
-    current_dim: int | None = None
-    try:
-        import chromadb
-        chroma_dir = os.environ.get("CHROMA_DIR", str(PROJECT_ROOT / "data" / "chroma"))
-        client = chromadb.PersistentClient(path=chroma_dir)
-        col = client.get_collection("zotero_paragraphs")
-        peek = col.peek(1)
-        embs = peek.get("embeddings") if peek is not None else None
-        if embs is not None and hasattr(embs, "shape") and len(embs.shape) > 1:
-            current_dim = embs.shape[1]
-        elif embs is not None and len(embs) > 0 and hasattr(embs[0], "__len__"):
-            current_dim = len(embs[0])
-    except Exception:
-        pass
-
-    if current_dim is not None and saved_dim is not None and saved_dim != current_dim:
-        print(f"  [vectors] embedding dimension changed ({saved_dim}→{current_dim}) — "
-              f"invalidating cache", file=sys.stderr)
-        vectors = {}
-        saved_dim = None
-
-    missing = [k for k in item_keys if k not in vectors]
-    if missing:
-        try:
-            import numpy as np
-            print(f"  [vectors] computing semantic vectors for {len(missing)} new items…",
-                  file=sys.stderr)
-            for key in missing:
-                try:
-                    r = col.get(where={"itemKey": key}, include=["embeddings"])
-                    embs = r.get("embeddings")
-                    if embs is None or len(embs) == 0:
-                        continue
-                    arr = np.asarray(embs, dtype=np.float32)
-                    arr = arr[np.isfinite(arr).all(axis=1)]  # NaN/Infを含むチャンクは除外
-                    if len(arr) == 0:
-                        continue
-                    v = arr.mean(axis=0)
-                    n = float(np.linalg.norm(v))
-                    if n > 0:
-                        v = v / n
-                    vectors[key] = [round(float(x), 6) for x in v]
-                    if current_dim is None:
-                        current_dim = len(v)
-                except Exception:
-                    continue
-            try:
-                to_save = {_META_KEY: {"embedding_dim": current_dim}}
-                to_save.update(vectors)
-                tmp = cache_path.with_suffix(".tmp")
-                tmp.write_text(json.dumps(to_save))
-                tmp.replace(cache_path)
-            except Exception as e:
-                print(f"  (item vector cache save failed: {e})", file=sys.stderr)
-        except Exception as e:
-            print(f"  (semantic vectors unavailable: {e})", file=sys.stderr)
-
-    return {k: vectors[k] for k in item_keys if k in vectors}
+    return _shared_get_item_vectors(item_keys)
 
 
 def get_item_ref_counts(conn: sqlite3.Connection, item_keys: list[str]) -> dict[str, int]:
