@@ -10,6 +10,7 @@ uv.lock
 
 # ── 環境設定 ─────────────────────────────────────────────
 .env
+.env.policy
 
 # ── macOS ────────────────────────────────────────────────
 .DS_Store
@@ -30,6 +31,8 @@ data/mapping_debug.log
 data/mapping_debug_ref.log
 data/pdf_cache/
 data/backups/
+data/quality/
+data/nightly_report.json
 
 # ── 設計メモ ─────────────────────────────────────────────
 LAYOUT_DESIGN_NOTES.md

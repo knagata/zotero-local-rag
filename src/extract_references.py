@@ -3,16 +3,23 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 
 try:
     from .chunk_store import list_item_keys
     from .reference_agent import extract_references_for_item
     from .db_relations import stage_reference_candidates
+    from .env_utils import load_dotenv_native
 except ImportError:  # pragma: no cover
     from chunk_store import list_item_keys
     from reference_agent import extract_references_for_item
     from db_relations import stage_reference_candidates
+    from env_utils import load_dotenv_native
+
+
+ROOT = Path(__file__).resolve().parents[1]
+load_dotenv_native(ROOT)
 
 
 def main() -> None:
@@ -28,8 +35,15 @@ def main() -> None:
         help="Store dry-run candidates in the review queue without changing the works graph.",
     )
     parser.add_argument("--heuristic", action="store_true", help="Do not send reference text to an LLM.")
+    parser.add_argument("--llm", help="Override LLM_EXTRACT, e.g. codex_cli:auto.")
+    parser.add_argument(
+        "--strict-llm", action="store_true",
+        help="Fail instead of silently falling back to heuristic extraction.",
+    )
     parser.add_argument("--output", type=Path, help="Write one complete result JSON object per line.")
     args = parser.parse_args()
+    if args.llm:
+        os.environ["LLM_EXTRACT"] = args.llm
     keys = list(args.item) if args.item else list_item_keys()
     if args.limit is not None:
         keys = keys[: max(args.limit, 0)]
@@ -39,6 +53,7 @@ def main() -> None:
         for index, item_key in enumerate(keys, start=1):
             result = extract_references_for_item(
                 item_key, dry_run=not args.commit, use_llm=not args.heuristic,
+                strict_llm=args.strict_llm,
             )
             if args.stage and result.get("status") == "dry_run":
                 staged = stage_reference_candidates(

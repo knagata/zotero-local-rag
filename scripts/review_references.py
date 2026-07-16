@@ -13,6 +13,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.db_relations import get_reference_review_candidates, set_reference_review_status
+from src.reference_agent import commit_approved_reference_candidates
 
 
 def main() -> None:
@@ -25,11 +26,16 @@ def main() -> None:
     set_parser.add_argument("review_id", type=int)
     set_parser.add_argument("status", choices=["pending", "approved", "rejected"])
     set_parser.add_argument("--note")
+    commit_parser = subparsers.add_parser("commit-approved")
+    commit_parser.add_argument("--limit", type=int, default=100)
     args = parser.parse_args()
 
     if args.command == "list":
         rows = get_reference_review_candidates(args.status)[: max(args.limit, 0)]
         print(json.dumps(rows, ensure_ascii=False, indent=2))
+        return
+    if args.command == "commit-approved":
+        print(json.dumps(commit_approved_reference_candidates(limit=args.limit), ensure_ascii=False, indent=2))
         return
     changed = set_reference_review_status(args.review_id, args.status, args.note)
     print(json.dumps({

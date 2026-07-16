@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from scripts.audit_ambiguous_works import audit
 from src import db_relations
+from src.reference_agent import commit_approved_reference_candidates
 from src.reference_quality_report import build_report
 
 
@@ -57,6 +58,28 @@ class ReferenceReviewTests(unittest.TestCase):
         report = audit(self.db_path)
         self.assertEqual(report["candidate_count"], 1)
         self.assertEqual(report["ambiguous_title_only"][0]["work_id"], ambiguous)
+
+    def test_only_approved_literal_identifier_is_committed(self):
+        raw = "Author. Title. https://doi.org/10.1234/example"
+        db_relations.stage_reference_candidates(
+            "ITEM", "test", [{"raw": raw, "title": "Title", "doi": "10.1234/example"}],
+        )
+        row = db_relations.get_reference_review_candidates()[0]
+        db_relations.set_reference_review_status(row["review_id"], "approved")
+        result = commit_approved_reference_candidates()
+        self.assertEqual(result["committed"], 1)
+        committed = db_relations.get_reference_review_candidates("approved")[0]
+        self.assertGreater(committed["committed_edge_id"], 0)
+
+    def test_approved_hallucinated_identifier_is_not_committed(self):
+        db_relations.stage_reference_candidates(
+            "ITEM", "test", [{"raw": "Author. Title.", "title": "Title", "doi": "10.1234/missing"}],
+        )
+        row = db_relations.get_reference_review_candidates()[0]
+        db_relations.set_reference_review_status(row["review_id"], "approved")
+        result = commit_approved_reference_candidates()
+        self.assertEqual(result["insufficient_evidence"], 1)
+        self.assertEqual(result["committed"], 0)
 
 
 if __name__ == "__main__":

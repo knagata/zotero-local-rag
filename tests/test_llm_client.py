@@ -8,7 +8,7 @@ from unittest.mock import patch
 from src.llm_client import (
     CLIAgentClient, FallbackLLMClient, InvalidLLMResponse, LLMError,
     OpenAICompatibleClient, ProviderUnavailable, RateLimitReached,
-    _extract_json, _retry, get_llm,
+    _extract_json, _is_rate_limit, _retry, get_llm,
 )
 
 
@@ -54,6 +54,18 @@ class LLMClientTests(unittest.TestCase):
     def test_retry_converts_rate_limit_without_sleeping(self):
         with self.assertRaises(RateLimitReached):
             _retry(lambda: (_ for _ in ()).throw(RuntimeError("HTTP 429")))
+
+    def test_session_identifier_containing_429_is_not_a_rate_limit(self):
+        self.assertFalse(_is_rate_limit("session id: d350e4297eea; model unsupported"))
+
+    def test_codex_auto_omits_explicit_model_flag(self):
+        completed = SimpleNamespace(returncode=0, stdout='{"ok": true}', stderr="")
+        with patch("src.llm_client.subprocess.run", return_value=completed) as run:
+            result = CLIAgentClient("auto", "codex_cli").generate_json(
+                "prompt", schema={"type": "object"}
+            )
+        self.assertEqual(result, {"ok": True})
+        self.assertNotIn("--model", run.call_args.args[0])
 
     def test_retry_transient_error_then_success(self):
         calls = []

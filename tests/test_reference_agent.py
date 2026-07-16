@@ -21,6 +21,13 @@ class _FakeLLM:
 
 
 class ReferenceAgentTests(unittest.TestCase):
+    def test_reference_schema_is_strict_for_codex(self):
+        schema = reference_agent.REFERENCE_SCHEMA
+        self.assertFalse(schema["additionalProperties"])
+        item = schema["properties"]["references"]["items"]
+        self.assertFalse(item["additionalProperties"])
+        self.assertEqual(set(item["required"]), set(item["properties"]))
+
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
         self.db_patch = patch.object(
@@ -51,6 +58,17 @@ class ReferenceAgentTests(unittest.TestCase):
             rows, model = reference_agent.extract_references(text)
         self.assertEqual(model, "fake:test")
         self.assertEqual([row["title"] for row in rows], ["Essai sur le don"])
+
+    def test_strict_llm_does_not_hide_provider_failure(self):
+        failing = _FakeLLM()
+        failing.generate_json = lambda *args, **kwargs: (_ for _ in ()).throw(
+            reference_agent.LLMError("failed")
+        )
+        with patch.object(reference_agent, "get_llm", return_value=failing):
+            with self.assertRaises(reference_agent.LLMError):
+                reference_agent.extract_references(
+                    "References\nAuthor (2020). Title.", fallback_heuristic=False,
+                )
 
     def test_identifier_resolution_is_cached(self):
         reference = {

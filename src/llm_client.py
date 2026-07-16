@@ -1,13 +1,14 @@
 """Provider-neutral text and structured-output clients for LLM tasks.
 
 Providers use ``<provider>:<model>`` specifications. A comma-separated value
-creates a fallback chain, for example ``codex_cli:gpt-5,claude_cli:sonnet``.
+creates a fallback chain, for example ``codex_cli:auto,claude_cli:sonnet``.
 Optional SDKs are imported lazily so local workflows stay lightweight.
 """
 from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import tempfile
 import time
@@ -28,12 +29,12 @@ DEFAULT_MODELS = {
     "gemini": "gemini-3.1-flash-lite",
     "anthropic": "claude-haiku-4-5",
     "openai_compat": "gpt-4.1-mini",
-    "codex_cli": "gpt-5",
+    "codex_cli": "auto",
     "claude_cli": "sonnet",
 }
 RATE_LIMIT_MARKERS = (
     "rate limit", "rate_limit", "too many requests", "quota exceeded",
-    "usage limit", "limit reached", "429",
+    "usage limit", "limit reached",
 )
 
 
@@ -71,8 +72,10 @@ T = TypeVar("T")
 
 def _is_rate_limit(error: BaseException | str) -> bool:
     message = str(error).lower()
-    return getattr(error, "status_code", None) == 429 or any(
-        marker in message for marker in RATE_LIMIT_MARKERS
+    return (
+        getattr(error, "status_code", None) == 429
+        or any(marker in message for marker in RATE_LIMIT_MARKERS)
+        or bool(re.search(r'(?:"status"\s*:\s*|http(?:/\S+)?\s+)429\b', message))
     )
 
 
@@ -315,10 +318,12 @@ class CLIAgentClient:
                 with tempfile.TemporaryDirectory(prefix="zotero-rag-codex-") as tmp:
                     output_path = Path(tmp) / "response.txt"
                     command = [
-                        "codex", "exec", "-", "--model", self.model,
+                        "codex", "exec", "-",
                         "--sandbox", "read-only", "--ephemeral",
                         "--skip-git-repo-check", "--output-last-message", str(output_path),
                     ]
+                    if self.model not in {"auto", "default"}:
+                        command.extend(["--model", self.model])
                     if schema is not None:
                         schema_path = Path(tmp) / "schema.json"
                         schema_path.write_text(json.dumps(schema), encoding="utf-8")

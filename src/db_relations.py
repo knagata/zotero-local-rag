@@ -260,11 +260,21 @@ def _init_db(conn: sqlite3.Connection) -> None:
             status TEXT NOT NULL DEFAULT 'pending'
                 CHECK(status IN ('pending', 'approved', 'rejected')),
             reviewer_note TEXT,
+            committed_edge_id INTEGER,
+            committed_at TIMESTAMP,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(item_key, raw_hash)
         )
     ''')
+    for sql in (
+        "ALTER TABLE reference_review_queue ADD COLUMN committed_edge_id INTEGER",
+        "ALTER TABLE reference_review_queue ADD COLUMN committed_at TIMESTAMP",
+    ):
+        try:
+            cursor.execute(sql)
+        except sqlite3.OperationalError:
+            pass
     cursor.execute(
         "CREATE INDEX IF NOT EXISTS idx_reference_review_status "
         "ON reference_review_queue(status, item_key)"
@@ -660,6 +670,21 @@ def set_reference_review_status(review_id: int, status: str, note: str | None = 
             SET status = ?, reviewer_note = ?, updated_at = CURRENT_TIMESTAMP
             WHERE review_id = ?
         ''', (status, note, review_id))
+        conn.commit()
+        return cursor.rowcount > 0
+    finally:
+        conn.close()
+
+
+def mark_reference_review_committed(review_id: int, edge_id: int) -> bool:
+    conn = get_db_connection()
+    try:
+        cursor = conn.execute('''
+            UPDATE reference_review_queue
+            SET committed_edge_id = ?, committed_at = CURRENT_TIMESTAMP,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE review_id = ? AND status = 'approved' AND committed_edge_id IS NULL
+        ''', (edge_id, review_id))
         conn.commit()
         return cursor.rowcount > 0
     finally:

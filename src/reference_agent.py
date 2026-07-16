@@ -14,7 +14,8 @@ try:
     from .cinii_client import search_cinii
     from .chunk_store import get_item_chunks
     from .db_relations import (
-        get_canonical_work_id, get_resolver_cache, normalize_work_title, resolve_work, save_resolver_cache,
+        get_canonical_work_id, get_reference_review_candidates, get_resolver_cache,
+        mark_reference_review_committed, normalize_work_title, resolve_work, save_resolver_cache,
         save_work_edge,
     )
     from .llm_client import LLMError, get_llm
@@ -22,7 +23,7 @@ try:
 except ImportError:  # pragma: no cover
     from cinii_client import search_cinii
     from chunk_store import get_item_chunks
-    from db_relations import get_canonical_work_id, get_resolver_cache, normalize_work_title, resolve_work, save_resolver_cache, save_work_edge
+    from db_relations import get_canonical_work_id, get_reference_review_candidates, get_resolver_cache, mark_reference_review_committed, normalize_work_title, resolve_work, save_resolver_cache, save_work_edge
     from llm_client import LLMError, get_llm
     from ndl_client import search_ndl
 
@@ -46,9 +47,14 @@ REFERENCE_SCHEMA: dict[str, Any] = {
             "lang": {"type": ["string", "null"]}, "type": {"type": ["string", "null"]},
             "translation_note": {"type": ["string", "null"]},
         },
-        "required": ["raw", "authors", "title"],
+        "required": [
+            "raw", "authors", "title", "container", "year", "volume", "pages",
+            "publisher", "doi", "isbn", "lang", "type", "translation_note",
+        ],
+        "additionalProperties": False,
     }}},
     "required": ["references"],
+    "additionalProperties": False,
 }
 
 
@@ -107,7 +113,9 @@ def _validate_references(rows: list[Any], source_text: str) -> list[dict[str, An
     return valid
 
 
-def extract_references(text: str, *, use_llm: bool = True) -> tuple[list[dict[str, Any]], str]:
+def extract_references(
+    text: str, *, use_llm: bool = True, fallback_heuristic: bool = True,
+) -> tuple[list[dict[str, Any]], str]:
     if use_llm:
         prompt = (
             "以下の参考文献・注記候補から各文献をJSONで構造化してください。rawは入力に存在する"
@@ -119,7 +127,8 @@ def extract_references(text: str, *, use_llm: bool = True) -> tuple[list[dict[st
             result = client.generate_json(prompt, schema=REFERENCE_SCHEMA, timeout=300)
             return _validate_references(result.get("references") or [], text), f"{client.provider}:{client.model}"
         except LLMError:
-            pass
+            if not fallback_heuristic:
+                raise
     return parse_reference_lines(text), "heuristic"
 
 
@@ -232,6 +241,7 @@ def resolve_reference(reference: dict[str, Any]) -> dict[str, Any]:
 
 def extract_references_for_item(
     item_key: str, *, dry_run: bool = True, use_llm: bool = True,
+    strict_llm: bool = False,
 ) -> dict[str, Any]:
     chunks = get_item_chunks(item_key)
     if not chunks:
@@ -242,7 +252,9 @@ def extract_references_for_item(
             return {"item_key": item_key, "status": "excluded", "reason": reason, "references": []}
     candidates = detect_reference_sections(chunks)
     source_text = "\n".join(chunk["text"] for chunk in candidates if chunk.get("text"))[:30000]
-    references, model = extract_references(source_text, use_llm=use_llm)
+    references, model = extract_references(
+        source_text, use_llm=use_llm, fallback_heuristic=not strict_llm,
+    )
     metadata = chunks[0].get("metadata", {})
     citing_work = None
     if not dry_run:
@@ -269,7 +281,46 @@ def extract_references_for_item(
     }
 
 
+def commit_approved_reference_candidates(*, limit: int = 100) -> dict[str, Any]:
+    """Commit only approved candidates whose DOI/ISBN is literally present in raw text."""
+    totals = {"examined": 0, "committed": 0, "already_committed": 0, "insufficient_evidence": 0}
+    for row in get_reference_review_candidates("approved"):
+        if totals["examined"] >= max(limit, 0):
+            break
+        totals["examined"] += 1
+        if row.get("committed_edge_id"):
+            totals["already_committed"] += 1
+            continue
+        raw = str(row.get("raw_reference") or "")
+        raw_folded = raw.casefold()
+        doi = str(row.get("doi") or "").strip()
+        isbn = str(row.get("isbn") or "").strip()
+        doi_norm = re.sub(r"^(?:https?://(?:dx\.)?doi\.org/|doi:\s*)", "", doi.casefold())
+        isbn_norm = re.sub(r"[^0-9x]", "", isbn.casefold())
+        raw_isbn = re.sub(r"[^0-9x]", "", raw_folded)
+        doi_verified = bool(doi_norm and doi_norm in raw_folded)
+        isbn_verified = bool(isbn_norm and len(isbn_norm) in {10, 13} and isbn_norm in raw_isbn)
+        if not (doi_verified or isbn_verified):
+            totals["insufficient_evidence"] += 1
+            continue
+        reference = {
+            "raw": raw, "title": row.get("title"), "authors": row.get("authors") or [],
+            "year": row.get("year"), "doi": doi if doi_verified else None,
+            "isbn": isbn if isbn_verified else None, "container": row.get("container"),
+            "lang": row.get("lang"), "type": row.get("work_type"),
+        }
+        resolved = resolve_reference(reference)
+        citing_work = resolve_work(zotero_item_key=row["item_key"])
+        edge_id = save_work_edge(
+            citing_work, resolved["work_id"], source="review-approved",
+            confidence=1.0, raw_reference=raw,
+        )
+        if mark_reference_review_committed(int(row["review_id"]), edge_id):
+            totals["committed"] += 1
+    return totals
+
+
 __all__ = [
     "detect_reference_sections", "extract_references", "extract_references_for_item",
-    "parse_reference_lines", "resolve_reference",
+    "commit_approved_reference_candidates", "parse_reference_lines", "resolve_reference",
 ]

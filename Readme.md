@@ -65,11 +65,11 @@ export LLM_DEFAULT="gemini:gemini-3.1-flash-lite"
 
 # タスク別の上書き例
 export LLM_EXPAND="gemini:gemini-3.1-flash-lite"
-export LLM_SUMMARY="codex_cli:gpt-5"
+export LLM_SUMMARY="codex_cli:auto"
 export LLM_EXTRACT="gemini:gemini-3.1-flash-lite"
 
 # Codexの制限到達後だけClaude CLIへ切り替える例
-export LLM_SUMMARY="codex_cli:gpt-5,claude_cli:sonnet"
+export LLM_SUMMARY="codex_cli:auto,claude_cli:sonnet"
 ```
 
 対応プロバイダは `gemini`、`anthropic`、`openai_compat`、`codex_cli`、`claude_cli` です。
@@ -92,6 +92,9 @@ uv run python -m src.extract_references --item ITEMKEY --stage --heuristic
 # pending候補の確認・判定
 uv run python scripts/review_references.py list --status pending --limit 20
 uv run python scripts/review_references.py set 123 rejected --note "本文の誤検出"
+
+# approved候補のうち、原文中にDOI/ISBNが実在するものだけcommit
+uv run python scripts/review_references.py commit-approved --limit 20
 
 # completenessの自動レポート（precision/recallは目視評価が必要）
 uv run python -m src.reference_quality_report --status pending
@@ -116,6 +119,27 @@ uv run python -m src.backfill_languages --batch-size 5000
 `SUMMARY_EXCLUDE_TAGS` / `EXTRACT_EXCLUDE_TAGS` が未設定の場合、本文を外部LLMへ送る処理は
 fail-closedで停止します。全資料の送信を許可する場合だけ、対応する
 `SUMMARY_ALLOW_CLOUD_ALL=1` / `EXTRACT_ALLOW_CLOUD_ALL=1` を明示設定してください。
+秘密値と分けたい場合は、Git除外される `.env.policy` に除外タグだけを記録できます。
+
+### 夜間Codex要約（品質ゲート後に有効化）
+
+まずDBを書き換えない比較を行います。
+
+```bash
+uv run python scripts/compare_summary_models.py \
+  --item ITEMKEY --llm codex_cli:auto --max-sections 3
+```
+
+夜間ランナーは既定で最大5時間・20資料、Codex単独で実行し、レート制限時は正常停止します。
+
+```bash
+scripts/nightly_summaries.sh --check
+NIGHTLY_ENABLE=1 NIGHTLY_MAX_HOURS=5 NIGHTLY_MAX_ITEMS=20 scripts/nightly_summaries.sh
+```
+
+launchd雛形は `scripts/com.zotero-local-rag.nightly.plist.example` です。
+`__PROJECT_ROOT__` を絶対パスへ置換してから `~/Library/LaunchAgents/` に配置してください。
+品質比較が完了するまではlaunchdへ登録しないでください。
 
 ### 3. アプリケーションの更新（新バージョンへの移行）
 

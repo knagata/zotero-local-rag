@@ -5,7 +5,7 @@ from pathlib import Path
 
 
 def load_dotenv_native(project_root: Path | None = None) -> None:
-    """Load .env file into os.environ (does not override existing vars).
+    """Load .env and optional .env.policy without overriding existing vars.
 
     Detects project root automatically via the caller's file location when
     project_root is not provided.
@@ -23,25 +23,24 @@ def load_dotenv_native(project_root: Path | None = None) -> None:
         else:
             return
 
-    env_file = project_root / ".env"
-    if not env_file.exists():
-        return
-
-    try:
-        with open(env_file, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                k, v = line.split("=", 1)
-                k = k.strip()
-                v = v.strip()
-                if len(v) >= 2 and (
-                    (v.startswith('"') and v.endswith('"'))
-                    or (v.startswith("'") and v.endswith("'"))
-                ):
-                    v = v[1:-1]
-                if k and k not in os.environ:
-                    os.environ[k] = v
-    except Exception:
-        pass
+    for env_file in (project_root / ".env", project_root / ".env.policy"):
+        if not env_file.exists():
+            continue
+        try:
+            with open(env_file, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    k, v = line.split("=", 1)
+                    k = k.strip()
+                    v = v.strip()
+                    if len(v) >= 2 and (
+                        (v.startswith('"') and v.endswith('"'))
+                        or (v.startswith("'") and v.endswith("'"))
+                    ):
+                        v = v[1:-1]
+                    if k and k not in os.environ:
+                        os.environ[k] = v
+        except Exception:
+            pass

@@ -6,6 +6,7 @@ import gc
 import json
 import os
 import re
+import time
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
@@ -19,7 +20,7 @@ try:
         save_item_summary, save_section_summary, update_case_chunk,
     )
     from .embedder import create_embedding_function, open_chroma_collection, resolve_embedder_settings
-    from .llm_client import LLMError, get_llm
+    from .llm_client import LLMError, RateLimitReached, get_llm
     from .manifest import load_manifest
     from .env_utils import load_dotenv_native
 except ImportError:  # pragma: no cover
@@ -29,7 +30,7 @@ except ImportError:  # pragma: no cover
         save_item_summary, save_section_summary, update_case_chunk,
     )
     from embedder import create_embedding_function, open_chroma_collection, resolve_embedder_settings
-    from llm_client import LLMError, get_llm
+    from llm_client import LLMError, RateLimitReached, get_llm
     from manifest import load_manifest
     from env_utils import load_dotenv_native
 
@@ -56,12 +57,17 @@ SECTION_SCHEMA: dict[str, Any] = {
                 "locator_hint": {"type": ["string", "null"]},
                 "source_kind": {"type": ["string", "null"]},
             },
-            "required": ["description", "practices", "phenomena"],
+            "required": [
+                "description", "region", "group", "practices", "phenomena", "period",
+                "locator_hint", "source_kind",
+            ],
+            "additionalProperties": False,
         }},
         "chapter_authors": {"type": "array", "items": {"type": "string"}},
         "first_publication_note": {"type": ["string", "null"]},
     },
-    "required": ["summary", "cases", "chapter_authors"],
+    "required": ["summary", "cases", "chapter_authors", "first_publication_note"],
+    "additionalProperties": False,
 }
 
 ITEM_SCHEMA: dict[str, Any] = {
@@ -71,6 +77,7 @@ ITEM_SCHEMA: dict[str, Any] = {
         "keywords": {"type": "array", "items": {"type": "string"}},
     },
     "required": ["summary", "summary_en", "keywords"],
+    "additionalProperties": False,
 }
 
 
@@ -195,6 +202,8 @@ def build_item(item_key: str, *, mode: str = "extractive", force: bool = False) 
         if use_llm:
             try:
                 result, model = _llm_section(section)
+            except RateLimitReached:
+                raise
             except LLMError:
                 result, model = _extractive_section(section), "extractive"
                 use_llm = False
@@ -217,6 +226,8 @@ def build_item(item_key: str, *, mode: str = "extractive", force: bool = False) 
     if use_llm and model != "extractive":
         try:
             item_result, model = _llm_item(title, section_rows)
+        except RateLimitReached:
+            raise
         except LLMError:
             item_result = {}
     else:
@@ -343,13 +354,43 @@ def main() -> None:
     parser.add_argument("--no-embed", action="store_true")
     parser.add_argument("--embed-only", action="store_true")
     parser.add_argument("--resume-embed", action="store_true", help="Embed only IDs not already present.")
+    parser.add_argument("--llm", help="Override LLM_SUMMARY, e.g. codex_cli:auto.")
+    parser.add_argument("--max-items", type=int, help="Maximum items to process in this run.")
+    parser.add_argument("--max-hours", type=float, help="Stop before starting another item after this many hours.")
+    parser.add_argument(
+        "--stop-on-rate-limit", action="store_true",
+        help="Treat provider quota exhaustion as a resumable normal stop.",
+    )
     args = parser.parse_args()
+    if args.max_items is not None and args.max_items < 0:
+        parser.error("--max-items must be non-negative")
+    if args.max_hours is not None and args.max_hours <= 0:
+        parser.error("--max-hours must be positive")
+    if args.llm:
+        os.environ["LLM_SUMMARY"] = args.llm
     counts = Counter()
     updated_keys: set[str] = set()
+    started = time.monotonic()
+    processed = 0
+    stop_reason = "completed"
     if not args.embed_only:
         keys = [args.item] if args.item else list_item_keys()
+        if args.max_items is not None:
+            keys = keys[:args.max_items]
         for index, key in enumerate(keys, start=1):
-            result = build_item(key, mode=args.mode, force=args.force)
+            if args.max_hours is not None and time.monotonic() - started >= args.max_hours * 3600:
+                stop_reason = "max_hours"
+                break
+            try:
+                result = build_item(key, mode=args.mode, force=args.force)
+            except RateLimitReached as exc:
+                counts["rate_limited"] += 1
+                stop_reason = "rate_limit"
+                print(f"[{index}/{len(keys)}] {key}: rate_limit ({exc})", flush=True)
+                if args.stop_on_rate_limit:
+                    break
+                raise
+            processed += 1
             counts[result["status"]] += 1
             if result["status"] == "updated":
                 updated_keys.add(key)
@@ -366,7 +407,10 @@ def main() -> None:
         )
     elif not args.no_embed:
         print("No changed summaries to embed.")
-    print(json.dumps(counts, ensure_ascii=False))
+    print(json.dumps({
+        "counts": dict(counts), "processed": processed, "stop_reason": stop_reason,
+        "elapsed_seconds": round(time.monotonic() - started, 3),
+    }, ensure_ascii=False))
 
 
 if __name__ == "__main__":

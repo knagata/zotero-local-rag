@@ -7,9 +7,23 @@ from unittest.mock import patch
 from src import build_summaries
 from src.build_summaries import SECTION_WINDOW, split_sections
 from src.embedder import resolve_collection_name
+from src.llm_client import RateLimitReached
 
 
 class SummaryPipelineTests(unittest.TestCase):
+    def test_codex_schemas_are_strict_objects(self):
+        def assert_strict(schema):
+            if schema.get("type") == "object":
+                self.assertFalse(schema.get("additionalProperties", True))
+                self.assertEqual(set(schema.get("required", [])), set(schema.get("properties", {})))
+                for child in schema.get("properties", {}).values():
+                    assert_strict(child)
+            if schema.get("type") == "array":
+                assert_strict(schema["items"])
+
+        assert_strict(build_summaries.SECTION_SCHEMA)
+        assert_strict(build_summaries.ITEM_SCHEMA)
+
     def test_chapter_groups_and_fallback_windows(self):
         chunks = [
             {"id": "a", "text": "a", "metadata": {"chapter": "One"}},
@@ -53,6 +67,18 @@ class SummaryPipelineTests(unittest.TestCase):
             excluded, reason = build_summaries._excluded_from_llm("ITEM")
         self.assertTrue(excluded)
         self.assertIn("not configured", reason)
+
+    def test_rate_limit_propagates_for_resumable_nightly_stop(self):
+        chunks = [{"id": "a", "text": "body", "metadata": {}}]
+        with patch.object(build_summaries, "get_item_chunks", return_value=chunks), patch.object(
+            build_summaries, "load_manifest", return_value={}
+        ), patch.object(build_summaries, "get_item_summary", return_value=None), patch.object(
+            build_summaries, "_source_mtime", return_value=0.0
+        ), patch.object(build_summaries, "_excluded_from_llm", return_value=(False, None)), patch.object(
+            build_summaries, "_llm_section", side_effect=RateLimitReached("quota")
+        ):
+            with self.assertRaises(RateLimitReached):
+                build_summaries.build_item("ITEM", mode="llm")
 
 
 if __name__ == "__main__":
