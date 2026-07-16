@@ -25,6 +25,7 @@ class ZoteroAttachment:
     source_type: str  # "pdf" | "html" | "epub"
     contentType: Optional[str] = None
     filename: Optional[str] = None
+    language: Optional[str] = None
 
 
 class ZoteroLocalAPI:
@@ -263,10 +264,13 @@ class ZoteroLocalAPI:
             parent_title = None
             parent_year = None
             parent_creators = None
+            parent_language = None
 
             if isinstance(parent_key, str) and parent_key:
                 parent_obj = await self.get_item(parent_key)
                 parent_title, parent_year, parent_creators = self._extract_parent_meta(parent_obj)
+                _, parent_data = self._unwrap_item(parent_obj)
+                parent_language = parent_data.get("language")
 
                 if collection_key:
                     _, pd = self._unwrap_item(parent_obj)
@@ -304,6 +308,7 @@ class ZoteroLocalAPI:
                 source_type=source_type or "pdf",
                 contentType=ct if isinstance(ct, str) else None,
                 filename=fn if isinstance(fn, str) else None,
+                language=parent_language if isinstance(parent_language, str) else None,
             )
 
     async def list_normalized_attachments(
@@ -377,10 +382,13 @@ class ZoteroLocalAPI:
             parent_title = None
             parent_year = None
             parent_creators = None
+            parent_language = None
 
             if isinstance(parent_key, str) and parent_key:
                 parent_obj = await self.get_item(parent_key)
                 parent_title, parent_year, parent_creators = self._extract_parent_meta(parent_obj)
+                _, parent_data = self._unwrap_item(parent_obj)
+                parent_language = parent_data.get("language")
 
                 if collection_key:
                     _, pd = self._unwrap_item(parent_obj)
@@ -401,6 +409,7 @@ class ZoteroLocalAPI:
                     "title": parent_title,
                     "year": parent_year,
                     "creators": parent_creators,
+                    "language": parent_language if isinstance(parent_language, str) else None,
                     "version": ver,
                 }
             )

@@ -12,6 +12,7 @@ from text_utils import (
     MIN_CHUNK_CHARS,
     MIN_CHUNK_CHARS_NO_SPACE,
     clean_extracted_text,
+    detect_lang,
     is_no_space_language_document,
     joiner_for_text,
     looks_like_gibberish,
@@ -37,6 +38,7 @@ def index_notes(
     show_progress: bool,
     dedupe_fn: DedupeFn,
     upsert_fn: UpsertFn,
+    lexical_delete_fn: Callable[[str], None] | None = None,
 ) -> tuple[dict[str, dict[str, Any]], dict[str, int]]:
     """
     Index Zotero notes into Chroma.
@@ -58,6 +60,11 @@ def index_notes(
             deleted_stale_notes += 1
         except Exception:
             pass
+        if lexical_delete_fn:
+            try:
+                lexical_delete_fn(nk)
+            except Exception:
+                pass
         notes_manifest.pop(nk, None)
 
     updated_notes = 0
@@ -105,6 +112,11 @@ def index_notes(
             col.delete(where={"noteKey": note_key})
         except Exception:
             pass
+        if lexical_delete_fn:
+            try:
+                lexical_delete_fn(note_key)
+            except Exception:
+                pass
 
         creators_str: Optional[str] = None
         creators = n.get("creators")
@@ -122,6 +134,7 @@ def index_notes(
             "path": None,
             "pdf_path": None,
             "locator": None,
+            "lang": detect_lang("", n.get("language")),
         }
 
         note_html = n.get("note_html") or ""
@@ -168,6 +181,7 @@ def index_notes(
                         "locator": f"note:para{para_index}",
                         "para_index": int(para_index),
                         "part_index": int(part_index),
+                        "lang": detect_lang(part, n.get("language")),
                     }
                 )
                 note_chunks.append((cid, part, md))

@@ -185,6 +185,47 @@ def _latin_ratio(text: str) -> float:
     return latin / max(total, 1)
 
 
+def detect_lang(text: str, hint: Optional[str] = None) -> str:
+    """Return ``ja``, ``zh``, ``en``, or ``other`` using metadata then script ratios."""
+    if hint:
+        normalized = unicodedata.normalize("NFKC", hint).strip().casefold()
+        primary = re.split(r"[-_\s]", normalized, maxsplit=1)[0]
+        aliases = {
+            "ja": "ja", "jpn": "ja", "japanese": "ja", "日本語": "ja",
+            "zh": "zh", "zho": "zh", "chi": "zh", "chinese": "zh", "中国語": "zh",
+            "en": "en", "eng": "en", "english": "en", "英語": "en",
+        }
+        if primary in aliases:
+            return aliases[primary]
+        for alias, code in aliases.items():
+            if alias in normalized:
+                return code
+
+    sample = (text or "")[:20000]
+    if not sample.strip():
+        return "other"
+    kana = sum(
+        1
+        for char in sample
+        if 0x3040 <= ord(char) <= 0x30FF or 0xFF66 <= ord(char) <= 0xFF9D
+    )
+    han = sum(
+        1
+        for char in sample
+        if 0x3400 <= ord(char) <= 0x4DBF
+        or 0x4E00 <= ord(char) <= 0x9FFF
+        or 0xF900 <= ord(char) <= 0xFAFF
+    )
+    significant = max(sum(not char.isspace() for char in sample), 1)
+    if kana / significant >= 0.01:
+        return "ja"
+    if han / significant >= 0.15:
+        return "zh"
+    if _latin_ratio(sample) >= 0.40:
+        return "en"
+    return "other"
+
+
 def is_no_space_language_document(sample: str) -> bool:
     """Heuristic: treat as a no-whitespace language doc (e.g., Japanese/Chinese).
 

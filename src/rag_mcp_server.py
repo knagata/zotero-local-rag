@@ -30,6 +30,7 @@ from zotero_source_localapi import ZoteroLocalAPI
 from manifest import load_manifest
 from chapter_detect import get_pdf_toc, get_epub_chapter_index_to_title
 from query_expansion import expand_queries
+from search_fusion import language_balanced_order
 
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -158,6 +159,7 @@ class RagMeta(TypedDict, total=False):
     filename: Optional[str]
     chapter: Optional[str]  # NEW: Level-1 chapter title
     section: Optional[str]  # NEW: Level-2 section title (PDF only)
+    lang: Optional[str]  # "ja" | "zh" | "en" | "other"
 
 
 class RagContextChunk(TypedDict, total=False):
@@ -702,6 +704,8 @@ def rag_search(
     exclude_chunk_ids: Any = None,
     auto_expand: bool = True,
     search_mode: str = "default",
+    hybrid: bool = True,
+    language_balance: bool = False,
 ) -> RagSearchResponse:
     """
     Paragraph-level semantic search over local Zotero PDFs/HTML snapshots (+ optionally Notes).
@@ -731,6 +735,7 @@ def rag_search(
                 - attachmentKey: str (attachments)
                 - noteKey: str (notes)
                 - source_type: "pdf" | "html" | "epub" | "note"
+                - lang: "ja" | "zh" | "en" | "other"
                 - locator: str (e.g., "p12:para3" / "html:para10" / "note:para2")
                 - chapter: str (Chapter title, e.g., "Chapter 1", "第一章")
                 - section: str (Section title, e.g., "1.1 Introduction")
@@ -764,6 +769,14 @@ def rag_search(
             "default" for ordinary semantic search or "case" for cross-topic case
             retrieval. Case mode adds hypothetical ethnographic passages and broader/
             narrower concepts, and uses one neighboring paragraph of context by default.
+        hybrid:
+            If True (default), fuse semantic results with the local FTS5 trigram index.
+            Arbitrary `where` filters temporarily disable lexical fusion because they cannot
+            be translated safely to SQL; semantic search still runs normally.
+        language_balance:
+            If True, reserve up to two final-result slots each for Japanese and English
+            chunks when both are present in the candidate pool. Requires a reindex that
+            includes the `lang` metadata. Default: False.
     Returns:
         {"results": [ ... ]}
     """
@@ -866,13 +879,68 @@ def rag_search(
                 # Accumulate RRF score
                 hits_combined[hid]["rrf_score"] += rrf_val
 
-    # Sort all consolidated hits by RRF score descending (highest first)
+    # Lexical BM25 results are fused by rank, never by incomparable raw scores.
+    # Restrictive arbitrary Chroma filters remain semantic-only; item-key and note
+    # restrictions are supported directly by the lexical index.
+    if hybrid and where is None:
+        try:
+            from lexical_index import search_chunks as lexical_search
+
+            lexical_rankings = [
+                lexical_search(
+                    q,
+                    k=internal_k,
+                    include_notes=include_notes,
+                    item_keys=include_item_keys,
+                )
+                for q in queries
+            ]
+            lexical_ids = list(dict.fromkeys(
+                row["chunk_id"] for ranking in lexical_rankings for row in ranking
+            ))
+            lexical_docs: dict[str, str] = {}
+            lexical_metas: dict[str, dict[str, Any]] = {}
+            if lexical_ids:
+                hydrated = col.get(ids=lexical_ids, include=["documents", "metadatas"])
+                for idx, chunk_id in enumerate(hydrated.get("ids") or []):
+                    documents = hydrated.get("documents") or []
+                    metadatas = hydrated.get("metadatas") or []
+                    lexical_docs[chunk_id] = documents[idx] if idx < len(documents) else ""
+                    metadata = metadatas[idx] if idx < len(metadatas) else {}
+                    lexical_metas[chunk_id] = metadata if isinstance(metadata, dict) else {}
+            for ranking in lexical_rankings:
+                for rank, row in enumerate(ranking, start=1):
+                    chunk_id = row["chunk_id"]
+                    if chunk_id not in lexical_docs:
+                        continue
+                    contribution = 1.0 / (RRF_K + rank)
+                    if chunk_id in hits_combined:
+                        hits_combined[chunk_id]["rrf_score"] += contribution
+                    else:
+                        hits_combined[chunk_id] = {
+                            "distance": None,
+                            "rrf_score": contribution,
+                            "document": lexical_docs[chunk_id],
+                            "metadata": lexical_metas[chunk_id],
+                        }
+        except Exception as exc:
+            _log.warning("Lexical search unavailable; using semantic results: %s", exc)
+
+    # Sort all consolidated hits by RRF score descending (highest first).
     sorted_hits = sorted(hits_combined.items(), key=lambda x: x[1]["rrf_score"], reverse=True)
 
     # Filtering out excluded IDs
     if exclude_chunk_ids:
         exclude_set = set(exclude_chunk_ids)
         sorted_hits = [h for h in sorted_hits if h[0] not in exclude_set]
+
+    min_return_chars = int(os.environ.get("MIN_RETURN_CHARS", "200"))
+    sorted_hits = [
+        hit for hit in sorted_hits
+        if len(str(hit[1].get("document") or "").strip()) >= min_return_chars
+    ]
+    if language_balance:
+        sorted_hits = language_balanced_order(sorted_hits, k)
 
     ids0 = [x[0] for x in sorted_hits]
     docs0 = [x[1]["document"] for x in sorted_hits]
@@ -882,16 +950,11 @@ def rag_search(
 
 
 
-    MIN_RETURN_CHARS = int(os.environ.get("MIN_RETURN_CHARS", "200"))
-
     out: List[RagHit] = []
     for i in range(len(ids0)):
         md = metas0[i] if i < len(metas0) and isinstance(metas0[i], dict) else {}
         dist = dists0[i] if i < len(dists0) else None
         text = docs0[i] if i < len(docs0) else ""
-
-        if len(text.strip()) < MIN_RETURN_CHARS:
-            continue
 
         citation = _make_citation(md)
 
@@ -956,6 +1019,7 @@ def rag_search(
                     "filename": md.get("filename"),
                     "chapter": md.get("chapter"),
                     "section": md.get("section"),
+                    "lang": md.get("lang"),
                 },
             }
         )

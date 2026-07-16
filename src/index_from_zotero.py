@@ -25,6 +25,10 @@ from html_extract import (
 from pdf_extract import extract_chunks_from_pdf
 from docling_extract import extract_chunks_from_pdf_with_docling
 from note_extract import index_notes
+from text_utils import detect_lang
+from lexical_index import delete_by_attachment_keys as delete_lexical_attachments
+from lexical_index import delete_by_note_key as delete_lexical_note
+from lexical_index import upsert_chunks as upsert_lexical_chunks
 
 from manifest import load_manifest, save_manifest
 from db_relations import purge_removed_items
@@ -168,11 +172,16 @@ def _dedupe_by_id(
 
 def _delete_by_attachment_keys(col: Any, attachment_keys: Iterable[str]) -> None:
     """Best-effort delete all chunks for each attachmentKey."""
-    for dk in attachment_keys:
+    keys = [key for key in attachment_keys if key]
+    for dk in keys:
         try:
             col.delete(where={"attachmentKey": dk})
         except Exception:
             pass
+    try:
+        delete_lexical_attachments(keys)
+    except Exception as exc:
+        print(f"[WARN] Lexical index delete failed: {exc}", file=sys.__stderr__)
 
 
 def relieve_memory_pressure() -> None:
@@ -247,6 +256,12 @@ def _upsert_in_subbatches(
             documents=docs[start:end],
             metadatas=metas[start:end],
         )
+        try:
+            upsert_lexical_chunks(
+                ids[start:end], docs[start:end], metas[start:end]
+            )
+        except Exception as exc:
+            print(f"[WARN] Lexical index update failed: {exc}", file=sys.__stderr__)
         relieve_memory_pressure()
 
 
@@ -593,6 +608,7 @@ async def main_async(args: argparse.Namespace) -> None:
             "filename": getattr(a, "filename", None),
             "path": str(file_path),
             "locator": None,
+            "lang": detect_lang("", getattr(a, "language", None)),
         }
 
         if show_progress:
@@ -651,6 +667,9 @@ async def main_async(args: argparse.Namespace) -> None:
                 file=sys.__stderr__,
             )
             continue
+
+        for _cid, text, md in chunks:
+            md["lang"] = detect_lang(text, getattr(a, "language", None))
 
         if quality_check_only:
             # Only update manifest quality, do not write to ChromaDB
@@ -902,6 +921,7 @@ async def main_async(args: argparse.Namespace) -> None:
         show_progress=show_progress,
         dedupe_fn=_dedupe_by_id,
         upsert_fn=_upsert_in_subbatches,
+        lexical_delete_fn=delete_lexical_note,
     )
 
     updated_notes = int(note_stats.get("updated_notes", 0))
