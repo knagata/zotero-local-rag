@@ -48,6 +48,12 @@ class SummaryPipelineTests(unittest.TestCase):
         self.assertTrue(excluded)
         self.assertIn("could not verify", reason)
 
+    def test_summary_exclusion_requires_an_explicit_cloud_policy(self):
+        with patch.dict(os.environ, {}, clear=True):
+            excluded, reason = build_summaries._excluded_from_llm("ITEM")
+        self.assertTrue(excluded)
+        self.assertIn("not configured", reason)
+
 
 if __name__ == "__main__":
     unittest.main()

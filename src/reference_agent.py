@@ -124,9 +124,13 @@ def extract_references(text: str, *, use_llm: bool = True) -> tuple[list[dict[st
 
 
 def _item_excluded(item_key: str) -> tuple[bool, str | None]:
-    tags = {tag.strip().casefold() for tag in os.environ.get("EXTRACT_EXCLUDE_TAGS", "").split(",") if tag.strip()}
+    configured = os.environ.get("EXTRACT_EXCLUDE_TAGS", "")
+    tags = {tag.strip().casefold() for tag in configured.split(",") if tag.strip()}
     if not tags:
-        return False, None
+        allow_all = os.environ.get("EXTRACT_ALLOW_CLOUD_ALL", "").strip().casefold() in {"1", "true", "yes"}
+        if allow_all:
+            return False, None
+        return True, "EXTRACT_EXCLUDE_TAGS is not configured; cloud extraction is disabled"
     base = (os.environ.get("ZOTERO_LOCAL_API_BASE") or "http://127.0.0.1:23119/api").rstrip("/")
     prefix = (os.environ.get("ZOTERO_LOCAL_API_PREFIX") or "users/0").strip("/")
     headers = {"Zotero-API-Version": os.environ.get("ZOTERO_API_VERSION", "3")}

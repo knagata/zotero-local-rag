@@ -83,6 +83,20 @@ CLIプロバイダは各CLIで事前にサインインされている必要が�
 CiNii Research v2を解決先に使う場合は、公式登録で得た `CINII_APP_ID` を設定してください。
 NDL Search SRUはアプリケーションIDなしで利用します。
 
+全量保存前のレビューには、引用グラフを変更しないステージングキューを使用できます。
+
+```bash
+# ローカルヒューリスティックで候補をレビューキューへ保存
+uv run python -m src.extract_references --item ITEMKEY --stage --heuristic
+
+# pending候補の確認・判定
+uv run python scripts/review_references.py list --status pending --limit 20
+uv run python scripts/review_references.py set 123 rejected --note "本文の誤検出"
+
+# completenessの自動レポート（precision/recallは目視評価が必要）
+uv run python -m src.reference_quality_report --status pending
+```
+
 要約索引は次のコマンドで差分構築できます。既定の `extractive` は本文を外部へ送信しません。
 
 ```bash
@@ -98,6 +112,10 @@ uv run python -m src.lexical_index --rebuild
 # 既存チャンクにlangを後付け（埋め込み再計算なし、FTSも同期再構築）
 uv run python -m src.backfill_languages --batch-size 5000
 ```
+
+`SUMMARY_EXCLUDE_TAGS` / `EXTRACT_EXCLUDE_TAGS` が未設定の場合、本文を外部LLMへ送る処理は
+fail-closedで停止します。全資料の送信を許可する場合だけ、対応する
+`SUMMARY_ALLOW_CLOUD_ALL=1` / `EXTRACT_ALLOW_CLOUD_ALL=1` を明示設定してください。
 
 ### 3. アプリケーションの更新（新バージョンへの移行）
 

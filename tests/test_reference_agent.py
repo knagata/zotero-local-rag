@@ -89,6 +89,16 @@ class ReferenceAgentTests(unittest.TestCase):
         self.assertTrue(excluded)
         self.assertIn("could not verify", reason)
 
+    def test_reference_exclusion_requires_an_explicit_cloud_policy(self):
+        with patch.dict(os.environ, {}, clear=True):
+            excluded, reason = reference_agent._item_excluded("ITEM")
+        self.assertTrue(excluded)
+        self.assertIn("not configured", reason)
+
+    def test_reference_exclusion_allows_explicit_cloud_opt_in(self):
+        with patch.dict(os.environ, {"EXTRACT_ALLOW_CLOUD_ALL": "1"}, clear=True):
+            self.assertEqual(reference_agent._item_excluded("ITEM"), (False, None))
+
 
 if __name__ == "__main__":
     unittest.main()

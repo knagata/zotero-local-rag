@@ -2,6 +2,8 @@ import sqlite3
 import os
 import re
 import unicodedata
+import hashlib
+import json
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import List, Dict, Any, Optional
@@ -239,6 +241,34 @@ def _init_db(conn: sqlite3.Connection) -> None:
             PRIMARY KEY(query_hash, source)
         )
     ''')
+
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS reference_review_queue (
+            review_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            item_key TEXT NOT NULL,
+            raw_hash TEXT NOT NULL,
+            raw_reference TEXT NOT NULL,
+            title TEXT,
+            authors_json TEXT,
+            year INTEGER,
+            doi TEXT,
+            isbn TEXT,
+            container TEXT,
+            lang TEXT,
+            work_type TEXT,
+            extraction_model TEXT,
+            status TEXT NOT NULL DEFAULT 'pending'
+                CHECK(status IN ('pending', 'approved', 'rejected')),
+            reviewer_note TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(item_key, raw_hash)
+        )
+    ''')
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_reference_review_status "
+        "ON reference_review_queue(status, item_key)"
+    )
     
     conn.commit()
 
@@ -544,6 +574,94 @@ def save_resolver_cache(query_hash: str, source: str, response_json: str) -> Non
                 response_json = excluded.response_json, created_at = CURRENT_TIMESTAMP
         ''', (query_hash, source, response_json))
         conn.commit()
+    finally:
+        conn.close()
+
+
+def stage_reference_candidates(
+    item_key: str, model: str, references: List[Dict[str, Any]],
+) -> Dict[str, int]:
+    """Upsert extracted references into a review-only queue, never the works graph."""
+    conn = get_db_connection()
+    counts = {"staged": 0, "updated": 0}
+    try:
+        for reference in references:
+            raw = str(reference.get("raw") or "").strip()
+            if not raw:
+                continue
+            raw_hash = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+            existed = conn.execute(
+                "SELECT 1 FROM reference_review_queue WHERE item_key = ? AND raw_hash = ?",
+                (item_key, raw_hash),
+            ).fetchone()
+            authors = reference.get("authors") or []
+            conn.execute('''
+                INSERT INTO reference_review_queue
+                    (item_key, raw_hash, raw_reference, title, authors_json, year,
+                     doi, isbn, container, lang, work_type, extraction_model, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(item_key, raw_hash) DO UPDATE SET
+                    raw_reference = excluded.raw_reference,
+                    title = excluded.title,
+                    authors_json = excluded.authors_json,
+                    year = excluded.year,
+                    doi = excluded.doi,
+                    isbn = excluded.isbn,
+                    container = excluded.container,
+                    lang = excluded.lang,
+                    work_type = excluded.work_type,
+                    extraction_model = excluded.extraction_model,
+                    updated_at = CURRENT_TIMESTAMP
+            ''', (
+                item_key, raw_hash, raw, reference.get("title"),
+                json.dumps(authors, ensure_ascii=False), reference.get("year"),
+                reference.get("doi"), reference.get("isbn"), reference.get("container"),
+                reference.get("lang"), reference.get("type"), model,
+            ))
+            counts["updated" if existed else "staged"] += 1
+        conn.commit()
+        return counts
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def get_reference_review_candidates(status: Optional[str] = None) -> List[Dict[str, Any]]:
+    conn = get_db_connection()
+    try:
+        if status is not None and status not in {"pending", "approved", "rejected"}:
+            raise ValueError("invalid review status")
+        sql = "SELECT * FROM reference_review_queue"
+        params: tuple[Any, ...] = ()
+        if status is not None:
+            sql += " WHERE status = ?"
+            params = (status,)
+        sql += " ORDER BY item_key, review_id"
+        rows = [dict(row) for row in conn.execute(sql, params).fetchall()]
+        for row in rows:
+            try:
+                row["authors"] = json.loads(row.pop("authors_json") or "[]")
+            except (json.JSONDecodeError, TypeError):
+                row["authors"] = []
+        return rows
+    finally:
+        conn.close()
+
+
+def set_reference_review_status(review_id: int, status: str, note: str | None = None) -> bool:
+    if status not in {"approved", "rejected", "pending"}:
+        raise ValueError("invalid review status")
+    conn = get_db_connection()
+    try:
+        cursor = conn.execute('''
+            UPDATE reference_review_queue
+            SET status = ?, reviewer_note = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE review_id = ?
+        ''', (status, note, review_id))
+        conn.commit()
+        return cursor.rowcount > 0
     finally:
         conn.close()
 

@@ -126,7 +126,10 @@ def _excluded_from_llm(item_key: str) -> tuple[bool, str | None]:
         tag.strip().casefold() for tag in os.environ.get("SUMMARY_EXCLUDE_TAGS", "").split(",") if tag.strip()
     }
     if not configured:
-        return False, None
+        allow_all = os.environ.get("SUMMARY_ALLOW_CLOUD_ALL", "").strip().casefold() in {"1", "true", "yes"}
+        if allow_all:
+            return False, None
+        return True, "SUMMARY_EXCLUDE_TAGS is not configured; cloud summarization is disabled"
     base = (os.environ.get("ZOTERO_LOCAL_API_BASE") or "http://127.0.0.1:23119/api").rstrip("/")
     prefix = (os.environ.get("ZOTERO_LOCAL_API_PREFIX") or "users/0").strip("/")
     headers = {"Zotero-API-Version": os.environ.get("ZOTERO_API_VERSION", "3")}
