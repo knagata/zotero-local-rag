@@ -16,6 +16,11 @@ from typing import Dict, Any, Optional, List, Tuple
 from db_relations import get_s2_lookup_candidates, insert_citation, update_item_citation_status
 from pathlib import Path
 
+try:
+    from .reference_text import is_short_form_reference
+except ImportError:  # pragma: no cover - direct script imports
+    from reference_text import is_short_form_reference
+
 
 class S2RetryExhaustedError(Exception):
     """Raised by s2_request when all retries are exhausted (persistent rate-limiting).
@@ -833,6 +838,7 @@ def map_item_local_references(item_key: str, epub_path: str, epub_budget: int = 
         file=sys.stderr,
     )
 
+    lookups_used = 0
     for i, ref in enumerate(local_refs):
         _pbar(i + 1, total, "  epub ref ", file=sys.stderr)
 
@@ -844,7 +850,10 @@ def map_item_local_references(item_key: str, epub_path: str, epub_budget: int = 
         s2_paper = None
         s2_status = 'not_found'
 
-        if i < s2_budget:
+        if is_short_form_reference(raw_text):
+            s2_status = 'short_form'
+        elif lookups_used < s2_budget:
+            lookups_used += 1
             # Try to resolve via Semantic Scholar (60 chars keeps title, avoids journal/page noise)
             query = re.sub(r'[^\w\s]', ' ', raw_text[:60])
             query = re.sub(r'\s+', ' ', query).strip()
@@ -925,6 +934,13 @@ def resolve_skipped_epub_refs(item_key: str, budget: int = 200, statuses: tuple 
         _pbar(i + 1, len(to_process), "  epub res ", file=sys.stderr)
 
         raw_text = ref.get("raw_reference_text") or ""
+        if is_short_form_reference(raw_text):
+            update_reference_s2_data(
+                ref_id=ref["id"], cited_paper_id=None, cited_title=None, cited_year=None,
+                cited_citation_count=0, cited_influential_count=0, cited_doi=None,
+                cited_authors=None, s2_status='short_form',
+            )
+            continue
         query = re.sub(r'[^\w\s]', ' ', raw_text[:60])
         query = re.sub(r'\s+', ' ', query).strip()
 

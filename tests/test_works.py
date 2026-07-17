@@ -206,6 +206,27 @@ class CanonicalWorksTests(unittest.TestCase):
         self.assertEqual(title_works, 2)
         self.assertEqual(edges, 2)
 
+    def test_legacy_backfill_skips_short_form_reference_even_if_previously_mapped(self):
+        connection = db_relations.get_db_connection()
+        connection.execute(
+            "INSERT INTO item_citation_status (item_key, s2_status) VALUES ('OWN1', 'mapped')"
+        )
+        connection.execute('''
+            INSERT INTO global_references
+                (cited_paper_id, cited_title, citing_item_key, raw_reference_text, s2_status)
+            VALUES ('FALSE', 'Unrelated result', 'OWN1', '21 Ibid., p. 46.', 'mapped')
+        ''')
+        connection.commit()
+        connection.close()
+        counts = backfill_works.backfill()
+        connection = db_relations.get_db_connection()
+        try:
+            edges = connection.execute("SELECT COUNT(*) FROM work_edges").fetchone()[0]
+        finally:
+            connection.close()
+        self.assertEqual(counts["edges"], 0)
+        self.assertEqual(edges, 0)
+
     def test_summary_and_case_crud(self):
         db_relations.save_item_summary(
             "ITEM1", "日本語要約", "extractive", summary_en="English summary",

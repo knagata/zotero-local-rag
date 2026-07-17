@@ -14,6 +14,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src import db_relations
+from src.reference_text import is_short_form_reference
 
 
 def _resolve_in_connection(connection, cache: dict[tuple[Any, ...], int], **values: Any) -> int:
@@ -102,10 +103,14 @@ def backfill(*, limit: int | None = None) -> dict[str, int]:
         references = connection.execute('''
             SELECT id, cited_paper_id, cited_doi, cited_title, cited_authors, cited_year,
                    cited_citation_count, citing_item_key, raw_reference_text,
-                   context_snippet, citing_chunk_id, similarity_distance, source
+                   context_snippet, citing_chunk_id, similarity_distance, source, s2_status
             FROM global_references ORDER BY id
         ''' + suffix, params).fetchall()
         for row in references:
+            if is_short_form_reference(row["raw_reference_text"]):
+                continue
+            if not (row["cited_paper_id"] or row["cited_doi"] or row["cited_title"]):
+                continue
             citing = owned.get(row["citing_item_key"])
             if citing is None:
                 citing = _resolve_in_connection(
