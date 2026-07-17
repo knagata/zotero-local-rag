@@ -64,12 +64,24 @@ class SummaryPipelineTests(unittest.TestCase):
             "入力には要約対象となる本文が含まれていません。本文をご提示ください。",
             "この内容を要約することはできません。対象テキストをご提示ください。",
             "I cannot provide a summary because the input does not contain the passage.",
+            (
+                "入力原文は索引の断片であり、経験的事例の叙述を含んでいません。"
+                "具体的な事例を単一の引用によって裏付けることはできません。"
+                "根拠のある抽出結果は空としました。"
+            ),
         ]
         for value in fixtures:
             self.assertTrue(build_summaries.is_meta_summary(value))
         self.assertFalse(build_summaries.is_meta_summary(
             "本章は、入力資料に含まれる複数の民族誌事例を比較して論じる。"
         ))
+
+    def test_contributors_heading_is_non_content(self):
+        section = {
+            "section_id": "c1", "chapter": "Contributors",
+            "chunks": [{"id": "x", "text": "Biographical information. " * 30, "metadata": {}}],
+        }
+        self.assertEqual(build_summaries.classify_section_content(section), "non_content")
 
     def test_structured_fields_require_exact_evidence_and_direct_chunk(self):
         source = "Alice Smith conducted fieldwork in Fiji in 2020. Published in 2021."
