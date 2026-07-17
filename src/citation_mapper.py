@@ -17,9 +17,9 @@ from db_relations import get_s2_lookup_candidates, insert_citation, update_item_
 from pathlib import Path
 
 try:
-    from .reference_text import is_short_form_reference
+    from .reference_text import is_short_form_reference, s2_candidate_is_supported
 except ImportError:  # pragma: no cover - direct script imports
-    from reference_text import is_short_form_reference
+    from reference_text import is_short_form_reference, s2_candidate_is_supported
 
 
 class S2RetryExhaustedError(Exception):
@@ -51,6 +51,16 @@ def _fmt_authors(authors_list: list, max_authors: int = 5) -> str:
     if len(names) > max_authors:
         return ", ".join(names[:max_authors]) + " et al."
     return ", ".join(names)
+
+
+def _select_supported_s2_candidate(raw_text: str, result: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Return the only defensible S2 search hit; never trust result ordering."""
+    supported = [
+        paper for paper in (result or {}).get("data", [])
+        if s2_candidate_is_supported(raw_text, paper)
+    ]
+    unique = {paper.get("paperId"): paper for paper in supported if paper.get("paperId")}
+    return next(iter(unique.values())) if len(unique) == 1 else None
 
 
 def _pbar(current: int, total: int, label: str = "", width: int = 30, file=sys.stderr) -> None:
@@ -862,7 +872,11 @@ def map_item_local_references(item_key: str, epub_path: str, epub_budget: int = 
             _non_ascii = sum(1 for c in _q if ord(c) > 0x7F) / max(len(_q), 1)
             if len(_q) > 10 and _non_ascii <= 0.3:
                 encoded_query = urllib.parse.quote(_q)
-                search_url = f"https://api.semanticscholar.org/graph/v1/paper/search?query={encoded_query}&limit=1&fields=title,year"
+                search_url = (
+                    "https://api.semanticscholar.org/graph/v1/paper/search"
+                    f"?query={encoded_query}&limit=5"
+                    "&fields=paperId,title,year,citationCount,influentialCitationCount,authors,externalIds"
+                )
                 try:
                     res = s2_request(search_url)
                 except S2RetryExhaustedError:
@@ -871,8 +885,8 @@ def map_item_local_references(item_key: str, epub_path: str, epub_budget: int = 
                 if res is None:
                     s2_status = 'error'
                 elif res.get("data"):
-                    s2_paper = res["data"][0]
-                    s2_status = 'mapped'
+                    s2_paper = _select_supported_s2_candidate(raw_text, res)
+                    s2_status = 'mapped' if s2_paper else 'unverified'
                 else:
                     s2_status = 'not_found'
         else:
@@ -881,11 +895,19 @@ def map_item_local_references(item_key: str, epub_path: str, epub_budget: int = 
         c_paper_id = None
         c_title = None
         c_year = None
+        c_cc = 0
+        c_ic = 0
+        c_doi = None
+        c_authors = None
 
         if s2_paper:
             c_paper_id = s2_paper.get("paperId")
             c_title = s2_paper.get("title")
             c_year = s2_paper.get("year")
+            c_cc = s2_paper.get("citationCount", 0)
+            c_ic = s2_paper.get("influentialCitationCount", 0)
+            c_doi = (s2_paper.get("externalIds") or {}).get("DOI")
+            c_authors = _fmt_authors(s2_paper.get("authors") or [])
 
         insert_reference(
             cited_paper_id=c_paper_id,
@@ -897,10 +919,12 @@ def map_item_local_references(item_key: str, epub_path: str, epub_budget: int = 
             similarity_distance=dist,
             page_hint=None,
             source='epub',
-            raw_reference_text=raw_text,
-            s2_status=s2_status
+            raw_reference_text=raw_text, s2_status=s2_status,
+            cited_citation_count=c_cc, cited_influential_count=c_ic,
+            cited_doi=c_doi, cited_authors=c_authors,
         )
-        mapped_count += 1
+        if s2_paper:
+            mapped_count += 1
 
     return {
         "status": "success",
@@ -953,7 +977,7 @@ def resolve_skipped_epub_refs(item_key: str, budget: int = 200, statuses: tuple 
             encoded_query = urllib.parse.quote(_q)
             search_url = (
                 f"https://api.semanticscholar.org/graph/v1/paper/search"
-                f"?query={encoded_query}&limit=1"
+                f"?query={encoded_query}&limit=5"
                 f"&fields=paperId,title,year,citationCount,influentialCitationCount,externalIds,authors"
             )
             try:
@@ -963,7 +987,10 @@ def resolve_skipped_epub_refs(item_key: str, budget: int = 200, statuses: tuple 
             if res is None:
                 s2_status = 'error'
             elif res.get("data"):
-                s2_paper = res["data"][0]
+                s2_paper = _select_supported_s2_candidate(raw_text, res)
+                if not s2_paper:
+                    s2_status = 'unverified'
+            if s2_paper:
                 s2_status = 'mapped'
 
         c_paper_id = s2_paper.get("paperId") if s2_paper else None

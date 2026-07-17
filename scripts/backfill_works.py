@@ -109,6 +109,8 @@ def backfill(*, limit: int | None = None) -> dict[str, int]:
         for row in references:
             if is_short_form_reference(row["raw_reference_text"]):
                 continue
+            if row["source"] == "epub" and row["s2_status"] != "mapped":
+                continue
             if not (row["cited_paper_id"] or row["cited_doi"] or row["cited_title"]):
                 continue
             citing = owned.get(row["citing_item_key"])
