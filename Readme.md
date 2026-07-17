@@ -182,6 +182,8 @@ NIGHTLY_ENABLE=1 NIGHTLY_REOCR_ENABLE=1 \
 macOSのシステムタイムゾーンが使われるため、JST設定のMacではJST 03:30です。設定後に
 `scripts/install_nightly_launchd.sh` を実行すると、launchd設定を生成・登録します。時刻を変更した場合も
 同じコマンドを再実行してください。`scripts/install_nightly_launchd.sh --check` は設定を変更せず状態を表示します。
+リポジトリがmacOSで保護されるDocuments配下にある場合は、`.env` に
+`NIGHTLY_LAUNCH_MODE=terminal` を設定してください。03:30にTerminalが開き、その権限で処理を実行します。
 
 ### 3. アプリケーションの更新（新バージョンへの移行）
 
