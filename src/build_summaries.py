@@ -94,7 +94,9 @@ NON_CONTENT_HEADING_RE = re.compile(
     r"目次|contents?|table\s+of\s+contents|図版一覧|表一覧|口絵|凡例|奥付|索引|index|"
     r"copyright|著作権(?:について|表示|注意)?|colophon|標題紙|title\s+page|half\s+title|"
     r"cover|本著作物について|list\s+of\s+(?:illustrations|figures|tables)|"
-    r"series(?:\s+page|\s+list)?|シリーズ一覧|叢書一覧"
+    r"series(?:\s+page|\s+list)?|シリーズ一覧|叢書一覧|acknowledg(?:e)?ments?|謝辞|"
+    r"about\s+(?:the\s+)?author|about\s+[\w .'-]+|著者紹介|"
+    r"references?|bibliography|参考文献|引用文献"
     r")\s*$",
     re.I,
 )
@@ -157,6 +159,11 @@ def classify_section_content(section: dict[str, Any]) -> str:
         if heading and NON_CONTENT_HEADING_RE.fullmatch(heading):
             return "non_content"
     lines = [line.strip() for line in text.splitlines() if line.strip()]
+    early_lines = lines[:8]
+    if any(re.match(r"^index\s+(?:a\s+note\s+about|[a-z].*\b\d+)", line, re.I) for line in early_lines):
+        return "non_content"
+    if any(line.casefold().startswith("contents ") for line in early_lines):
+        return "non_content"
     page_entries = sum(bool(TOC_ENTRY_RE.search(line)) for line in lines)
     if len(lines) >= 5 and page_entries >= 3 and page_entries / len(lines) >= 0.3:
         return "non_content"
@@ -213,12 +220,25 @@ def _case_specific_values_supported(case: dict[str, Any], evidence_quote: str) -
 
 
 def _evidence_chunk_id(evidence_quote: str, chunks: list[dict[str, Any]]) -> str | None:
+    """Locate evidence in one chunk or a pair of adjacent chunks.
+
+    When a quote crosses one boundary, the first chunk ID is retained as the
+    navigation anchor. Quotes spanning three or more chunks remain unsupported.
+    """
     needle = _normalize_evidence(evidence_quote)
     if not needle:
         return None
     for chunk in chunks:
         if needle in _normalize_evidence(chunk.get("text")):
             value = chunk.get("id")
+            return str(value) if value is not None else None
+    for first, second in zip(chunks, chunks[1:]):
+        joined = " ".join(filter(None, [
+            _normalize_evidence(first.get("text")),
+            _normalize_evidence(second.get("text")),
+        ]))
+        if needle in joined:
+            value = first.get("id")
             return str(value) if value is not None else None
     return None
 
@@ -377,7 +397,10 @@ def _llm_item(title: str, section_rows: list[dict[str, Any]]) -> tuple[dict[str,
     return client.generate_json(prompt, schema=ITEM_SCHEMA, timeout=300), f"{client.provider}:{client.model}"
 
 
-def build_item(item_key: str, *, mode: str = "extractive", force: bool = False) -> dict[str, Any]:
+def build_item(
+    item_key: str, *, mode: str = "extractive", force: bool = False,
+    audit_sections: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     chunks = get_item_chunks(item_key)
     if not chunks:
         return {"item_key": item_key, "status": "empty"}
@@ -406,6 +429,13 @@ def build_item(item_key: str, *, mode: str = "extractive", force: bool = False) 
         if mode == "llm" and classify_section_content(section) == "non_content":
             delete_section_summary(item_key, section["section_id"])
             skipped_non_content += 1
+            if audit_sections is not None:
+                audit_sections.append({
+                    "section_id": section["section_id"], "chapter": section["chapter"],
+                    "status": "skipped_non_content", "llm_summary": None, "cases": [],
+                    "chapter_authors": [], "first_publication_note": None,
+                    "verification": None,
+                })
             continue
         if use_llm:
             try:
@@ -423,6 +453,16 @@ def build_item(item_key: str, *, mode: str = "extractive", force: bool = False) 
         if result.get("_verification"):
             verification_by_section.append({
                 "section_id": section["section_id"], **result["_verification"],
+            })
+        if audit_sections is not None:
+            audit_sections.append({
+                "section_id": section["section_id"], "chapter": section["chapter"],
+                "status": "generated" if model != "extractive" else "extractive_fallback",
+                "model": model, "llm_summary": summary,
+                "cases": result.get("cases") or [],
+                "chapter_authors": result.get("chapter_authors") or [],
+                "first_publication_note": result.get("first_publication_note"),
+                "verification": result.get("_verification"),
             })
         authors = result.get("chapter_authors") or []
         author_names = [

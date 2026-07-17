@@ -123,9 +123,8 @@ fail-closedで停止します。全資料の送信を許可する場合だけ、
 
 ### 夜間Codex要約（品質ゲート後に有効化）
 
-> **現在は有効化しないでください。** 前付け除外と構造化フィールドの根拠検証は実装済み
-> ですが、20資料の再テスト結果は人間による最終監査待ちです。監査と5資料の全節試行が
-> 完了するまで、夜間ランナーは無効のままです。
+> **現在は有効化しないでください。** 20資料のゲート1は合格しましたが、5資料全節の
+> ゲート2は未完了です。ゲート2の独立監査が完了するまで、夜間ランナーは無効のままです。
 
 まずDBを書き換えない比較を行います。
 
@@ -133,6 +132,18 @@ fail-closedで停止します。全資料の送信を許可する場合だけ、
 uv run python scripts/compare_summary_models.py \
   --item ITEMKEY --llm codex_cli:auto --max-sections 3
 ```
+
+再OCR候補は、DBを変更せずJSONとMarkdownへ出力できます。
+
+```bash
+uv run python scripts/list_reocr_candidates.py \
+  --comparison data/quality/summary-comparison.json \
+  --json-output data/quality/reocr-candidates.json \
+  --markdown-output data/quality/reocr-candidates.md
+```
+
+`scripts/run_grounding_gate.py` は指定資料の要約DBを置換する手動品質ゲート専用です。
+`--write-database` の明示指定が必要で、通常運用や夜間runnerからは呼び出しません。
 
 夜間ランナーは既定で最大5時間・20資料、Codex単独で実行し、レート制限時は正常停止します。
 

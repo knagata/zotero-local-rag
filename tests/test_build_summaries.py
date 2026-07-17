@@ -30,7 +30,15 @@ class SummaryPipelineTests(unittest.TestCase):
         fixtures = [
             {"chapter": "目次", "text": "章題 " * 100},
             {"chapter": "Title Page", "text": "publication data " * 50},
+            {"chapter": "Acknowledgments", "text": "Many people helped with this book. " * 30},
+            {"chapter": "About Virginia Heffernan", "text": "Biographical information. " * 30},
             {"chapter": "", "text": "序章 概要 5\n第一章 調査 20\n第二章 分析 40\n第三章 結論 70\n" * 10},
+            {"chapter": "", "text": (
+                "Thank you for downloading this ebook.\n"
+                "CONTENTS PREFACE 1. DESIGN 2. TEXT 3. IMAGES 4. VIDEO\n"
+                "INDEX A note about the index and print page numbers.\n"
+                + "Knausgaard, 79 Kindle, 241 Korea, 196 " * 30
+            )},
             {"chapter": "", "text": "short copyright notice"},
         ]
         for index, fixture in enumerate(fixtures):
@@ -112,7 +120,7 @@ class SummaryPipelineTests(unittest.TestCase):
         self.assertEqual(verified["cases"], [])
         self.assertEqual(stats["cases"]["reasons"]["value_not_in_evidence"], 1)
 
-    def test_case_evidence_must_resolve_to_one_chunk(self):
+    def test_case_evidence_may_span_two_adjacent_chunks(self):
         result = {
             "summary": "要約", "chapter_authors": [], "first_publication_note": None,
             "cases": [{
@@ -126,6 +134,29 @@ class SummaryPipelineTests(unittest.TestCase):
             result,
             "村で\n\n交換が行われた。",
             [{"id": "chunk-1", "text": "村で"}, {"id": "chunk-2", "text": "交換が行われた。"}],
+        )
+        self.assertEqual(len(verified["cases"]), 1)
+        self.assertEqual(verified["cases"][0]["chunk_id"], "chunk-1")
+        self.assertEqual(stats["total_discarded"], 0)
+
+    def test_case_evidence_spanning_three_chunks_is_discarded(self):
+        result = {
+            "summary": "要約", "chapter_authors": [], "first_publication_note": None,
+            "cases": [{
+                "description": "村で交換が行われた。", "region": None, "group": None,
+                "practices": ["交換"], "phenomena": [], "period": None,
+                "locator_hint": None, "source_kind": "primary",
+                "evidence_quote": "村で 盛んに 交換が行われた。",
+            }],
+        }
+        verified, stats = build_summaries._verify_section_result(
+            result,
+            "村で\n\n盛んに\n\n交換が行われた。",
+            [
+                {"id": "chunk-1", "text": "村で"},
+                {"id": "chunk-2", "text": "盛んに"},
+                {"id": "chunk-3", "text": "交換が行われた。"},
+            ],
         )
         self.assertEqual(verified["cases"], [])
         self.assertEqual(stats["cases"]["reasons"]["evidence_not_in_chunk"], 1)
@@ -200,11 +231,15 @@ class SummaryPipelineTests(unittest.TestCase):
         ) as delete, patch.object(build_summaries, "save_item_summary"), patch.object(
             build_summaries, "_llm_section"
         ) as llm:
-            result = build_summaries.build_item("ITEM", mode="llm")
+            audit_sections = []
+            result = build_summaries.build_item(
+                "ITEM", mode="llm", audit_sections=audit_sections,
+            )
         delete.assert_called_once_with("ITEM", "c0")
         llm.assert_not_called()
         self.assertEqual(result["skipped_non_content"], 1)
         self.assertEqual(result["sections"], 0)
+        self.assertEqual(audit_sections[0]["status"], "skipped_non_content")
 
 
 if __name__ == "__main__":
