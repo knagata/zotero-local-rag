@@ -32,7 +32,7 @@ if [[ "${NIGHTLY_ENABLE:-0}" != "1" ]]; then
 fi
 
 mkdir -p "$ROOT/data"
-exec >>"$LOG" 2>&1
+exec > >(tee -a "$LOG") 2>&1
 echo "[$(date -Iseconds)] nightly summaries start"
 cd "$ROOT"
 if ! "$PYTHON" -m src.codex_quota --min-remaining-percent "$MIN_WEEKLY_REMAINING"; then

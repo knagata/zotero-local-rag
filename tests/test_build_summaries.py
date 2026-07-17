@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import io
 import unittest
 import os
+import sys
+from contextlib import redirect_stdout
 from unittest.mock import Mock, patch
 
 from src import build_summaries
@@ -243,6 +246,23 @@ class SummaryPipelineTests(unittest.TestCase):
         ):
             with self.assertRaises(RateLimitReached):
                 build_summaries.build_item("ITEM", mode="llm")
+
+    def test_max_items_counts_updates_not_unchanged_scans(self):
+        results = [
+            {"item_key": "A", "status": "unchanged"},
+            {"item_key": "B", "status": "updated"},
+            {"item_key": "C", "status": "unchanged"},
+            {"item_key": "D", "status": "updated"},
+        ]
+        output = io.StringIO()
+        with patch.object(build_summaries, "list_item_keys", return_value=list("ABCDE")), patch.object(
+            build_summaries, "build_item", side_effect=results
+        ) as build, patch.object(
+            sys, "argv", ["build_summaries", "--max-items", "2", "--no-embed"]
+        ), redirect_stdout(output):
+            build_summaries.main()
+        self.assertEqual([call.args[0] for call in build.call_args_list], list("ABCD"))
+        self.assertIn('"stop_reason": "max_items"', output.getvalue())
 
     def test_quota_guard_runs_before_each_llm_request(self):
         chunks = [{"id": "a", "text": "substantive body " * 40, "metadata": {}}]

@@ -668,7 +668,7 @@ def main() -> None:
         "--audit-output", type=Path,
         help="Write per-item grounding verification statistics as JSON.",
     )
-    parser.add_argument("--max-items", type=int, help="Maximum items to process in this run.")
+    parser.add_argument("--max-items", type=int, help="Maximum items to update in this run.")
     parser.add_argument("--max-hours", type=float, help="Stop before starting another item after this many hours.")
     parser.add_argument(
         "--stop-on-rate-limit", action="store_true",
@@ -698,23 +698,13 @@ def main() -> None:
     audit_items: list[dict[str, Any]] = []
     if not args.embed_only:
         keys = [args.item] if args.item else list_item_keys()
-        if args.max_items is not None:
-            keys = keys[:args.max_items]
         for index, key in enumerate(keys, start=1):
+            if args.max_items is not None and counts["updated"] >= args.max_items:
+                stop_reason = "max_items"
+                break
             if args.max_hours is not None and time.monotonic() - started >= args.max_hours * 3600:
                 stop_reason = "max_hours"
                 break
-            if args.min_weekly_remaining_percent is not None:
-                try:
-                    require_weekly_quota(args.min_weekly_remaining_percent)
-                except CodexQuotaFloorReached as exc:
-                    stop_reason = "weekly_quota_floor"
-                    print(f"[{index}/{len(keys)}] {exc}; stopping safely", flush=True)
-                    break
-                except CodexQuotaError as exc:
-                    stop_reason = "quota_unknown"
-                    print(f"[{index}/{len(keys)}] quota_unknown ({exc}); stopping safely", flush=True)
-                    break
             try:
                 quota_guard = None
                 if args.min_weekly_remaining_percent is not None:
