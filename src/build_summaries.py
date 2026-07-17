@@ -9,7 +9,7 @@ import re
 import time
 from collections import Counter, defaultdict
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import httpx
 
@@ -23,6 +23,7 @@ try:
     from .llm_client import LLMError, RateLimitReached, get_llm
     from .manifest import load_manifest
     from .env_utils import load_dotenv_native
+    from .codex_quota import CodexQuotaError, CodexQuotaFloorReached, require_weekly_quota
 except ImportError:  # pragma: no cover
     from chunk_store import active_collection_name, get_item_chunks, list_item_keys
     from db_relations import (
@@ -33,6 +34,7 @@ except ImportError:  # pragma: no cover
     from llm_client import LLMError, RateLimitReached, get_llm
     from manifest import load_manifest
     from env_utils import load_dotenv_native
+    from codex_quota import CodexQuotaError, CodexQuotaFloorReached, require_weekly_quota
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -420,6 +422,7 @@ def _llm_item(title: str, section_rows: list[dict[str, Any]]) -> tuple[dict[str,
 def build_item(
     item_key: str, *, mode: str = "extractive", force: bool = False,
     audit_sections: list[dict[str, Any]] | None = None,
+    quota_guard: Callable[[], Any] | None = None,
 ) -> dict[str, Any]:
     chunks = get_item_chunks(item_key)
     if not chunks:
@@ -459,6 +462,8 @@ def build_item(
             continue
         if use_llm:
             try:
+                if quota_guard is not None:
+                    quota_guard()
                 result, model = _llm_section(section)
             except RateLimitReached:
                 raise
@@ -513,6 +518,8 @@ def build_item(
     title = str(metadata.get("title") or "")
     if section_rows and use_llm and model != "extractive":
         try:
+            if quota_guard is not None:
+                quota_guard()
             item_result, model = _llm_item(title, section_rows)
         except RateLimitReached:
             raise
@@ -667,11 +674,20 @@ def main() -> None:
         "--stop-on-rate-limit", action="store_true",
         help="Treat provider quota exhaustion as a resumable normal stop.",
     )
+    parser.add_argument(
+        "--min-weekly-remaining-percent", type=int,
+        help="Stop safely before each Codex LLM request when weekly quota is at or below this percentage.",
+    )
     args = parser.parse_args()
     if args.max_items is not None and args.max_items < 0:
         parser.error("--max-items must be non-negative")
     if args.max_hours is not None and args.max_hours <= 0:
         parser.error("--max-hours must be positive")
+    if (
+        args.min_weekly_remaining_percent is not None
+        and not 0 <= args.min_weekly_remaining_percent <= 100
+    ):
+        parser.error("--min-weekly-remaining-percent must be between 0 and 100")
     if args.llm:
         os.environ["LLM_SUMMARY"] = args.llm
     counts = Counter()
@@ -688,8 +704,34 @@ def main() -> None:
             if args.max_hours is not None and time.monotonic() - started >= args.max_hours * 3600:
                 stop_reason = "max_hours"
                 break
+            if args.min_weekly_remaining_percent is not None:
+                try:
+                    require_weekly_quota(args.min_weekly_remaining_percent)
+                except CodexQuotaFloorReached as exc:
+                    stop_reason = "weekly_quota_floor"
+                    print(f"[{index}/{len(keys)}] {exc}; stopping safely", flush=True)
+                    break
+                except CodexQuotaError as exc:
+                    stop_reason = "quota_unknown"
+                    print(f"[{index}/{len(keys)}] quota_unknown ({exc}); stopping safely", flush=True)
+                    break
             try:
-                result = build_item(key, mode=args.mode, force=args.force)
+                quota_guard = None
+                if args.min_weekly_remaining_percent is not None:
+                    quota_guard = lambda: require_weekly_quota(
+                        args.min_weekly_remaining_percent,
+                    )
+                result = build_item(
+                    key, mode=args.mode, force=args.force, quota_guard=quota_guard,
+                )
+            except CodexQuotaFloorReached as exc:
+                stop_reason = "weekly_quota_floor"
+                print(f"[{index}/{len(keys)}] {exc}; stopping safely", flush=True)
+                break
+            except CodexQuotaError as exc:
+                stop_reason = "quota_unknown"
+                print(f"[{index}/{len(keys)}] quota_unknown ({exc}); stopping safely", flush=True)
+                break
             except RateLimitReached as exc:
                 counts["rate_limited"] += 1
                 stop_reason = "rate_limit"

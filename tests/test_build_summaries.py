@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 import os
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from src import build_summaries
 from src.build_summaries import SECTION_WINDOW, split_sections
@@ -243,6 +243,30 @@ class SummaryPipelineTests(unittest.TestCase):
         ):
             with self.assertRaises(RateLimitReached):
                 build_summaries.build_item("ITEM", mode="llm")
+
+    def test_quota_guard_runs_before_each_llm_request(self):
+        chunks = [{"id": "a", "text": "substantive body " * 40, "metadata": {}}]
+        generated = {
+            "summary": "本文の要約", "cases": [], "chapter_authors": [],
+            "first_publication_note": None,
+            "_verification": {"total_generated": 0, "total_discarded": 0,
+                              "suspicious_section": False},
+        }
+        item_result = {"summary": "全体要約", "summary_en": "Summary", "keywords": ["test"]}
+        guard = Mock()
+        with patch.object(build_summaries, "get_item_chunks", return_value=chunks), patch.object(
+            build_summaries, "load_manifest", return_value={}
+        ), patch.object(build_summaries, "get_item_summary", return_value=None), patch.object(
+            build_summaries, "_source_mtime", return_value=0.0
+        ), patch.object(build_summaries, "_excluded_from_llm", return_value=(False, None)), patch.object(
+            build_summaries, "_llm_section", return_value=(generated, "codex_cli:test")
+        ), patch.object(
+            build_summaries, "_llm_item", return_value=(item_result, "codex_cli:test")
+        ), patch.object(build_summaries, "save_section_summary"), patch.object(
+            build_summaries, "replace_case_annotations"
+        ), patch.object(build_summaries, "save_item_summary"):
+            build_summaries.build_item("ITEM", mode="llm", quota_guard=guard)
+        self.assertEqual(guard.call_count, 2)
 
     def test_llm_build_skips_non_content_and_removes_old_section(self):
         chunks = [{

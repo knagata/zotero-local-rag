@@ -161,6 +161,9 @@ uv run python -m src.build_summaries --mode llm --force --item ITEMKEY \
 `--write-database` の明示指定が必要で、通常運用や夜間runnerからは呼び出しません。
 
 夜間ランナーは既定で最大5時間・20資料、Codex単独で実行し、レート制限時は正常停止します。
+Codexの週次利用枠も実行前、各資料の開始前、各LLMリクエストの直前に確認し、既定では残量が20%以下になると処理を見送ります。
+残量を取得できない場合も安全のため見送ります。週次枠のリセット後は、次回の夜間実行から
+自動的に再開します。閾値は `NIGHTLY_MIN_WEEKLY_REMAINING_PERCENT` で変更できます。
 再OCR工程は別ガード `NIGHTLY_REOCR_ENABLE=1` がない限り実行されません。有効時も候補上位2件が既定上限で、
 索引・要約のバックアップ、文字数・異常反復・grounding破棄率の前後レポートを
 `data/nightly_reocr_report.json` に保存します。品質ゲート失敗時は、その夜の後続処理を停止します。

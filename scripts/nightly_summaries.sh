@@ -10,6 +10,7 @@ LLM="${NIGHTLY_LLM:-codex_cli:gpt-5.6-luna}"
 LOG="$ROOT/data/nightly_summaries.log"
 REOCR_CANDIDATES="${NIGHTLY_REOCR_CANDIDATES:-$ROOT/data/quality/reocr-candidates.json}"
 REOCR_MAX_ITEMS="${NIGHTLY_REOCR_MAX_ITEMS:-2}"
+MIN_WEEKLY_REMAINING="${NIGHTLY_MIN_WEEKLY_REMAINING_PERCENT:-20}"
 
 if [[ "${1:-}" == "--check" ]]; then
   [[ -x "$PYTHON" ]] || { echo "Python not executable: $PYTHON"; exit 1; }
@@ -31,6 +32,10 @@ mkdir -p "$ROOT/data"
 exec >>"$LOG" 2>&1
 echo "[$(date -Iseconds)] nightly summaries start"
 cd "$ROOT"
+if ! "$PYTHON" -m src.codex_quota --min-remaining-percent "$MIN_WEEKLY_REMAINING"; then
+  echo "[$(date -Iseconds)] nightly summaries skipped: weekly quota floor or quota unavailable"
+  exit 0
+fi
 if [[ "${NIGHTLY_REOCR_ENABLE:-0}" == "1" ]]; then
   "$PYTHON" scripts/run_reocr_queue.py \
     --candidates "$REOCR_CANDIDATES" --limit "$REOCR_MAX_ITEMS" --llm "$LLM" \
@@ -38,7 +43,8 @@ if [[ "${NIGHTLY_REOCR_ENABLE:-0}" == "1" ]]; then
 fi
 caffeinate -i "$PYTHON" -m src.build_summaries \
   --mode llm --llm "$LLM" --stop-on-rate-limit \
-  --max-hours "$MAX_HOURS" --max-items "$MAX_ITEMS"
+  --max-hours "$MAX_HOURS" --max-items "$MAX_ITEMS" \
+  --min-weekly-remaining-percent "$MIN_WEEKLY_REMAINING"
 "$PYTHON" scripts/nightly_report.py \
   --since-hours "$MAX_HOURS" --output data/nightly_report.json
 echo "[$(date -Iseconds)] nightly summaries end"
