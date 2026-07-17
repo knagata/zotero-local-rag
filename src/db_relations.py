@@ -843,6 +843,24 @@ def delete_section_summary(item_key: str, section_id: str) -> None:
         conn.close()
 
 
+def invalidate_item_summaries(item_key: str) -> Dict[str, int]:
+    """Delete all summaries/cases derived from chunks that are about to change."""
+    conn = get_db_connection()
+    try:
+        counts: Dict[str, int] = {}
+        conn.execute("BEGIN IMMEDIATE")
+        for table in ("case_annotations", "section_summaries", "item_summaries"):
+            cursor = conn.execute(f"DELETE FROM {table} WHERE item_key = ?", (item_key,))
+            counts[table] = max(0, int(cursor.rowcount))
+        conn.commit()
+        return counts
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def replace_case_annotations(
     item_key: str, section_id: str, cases: List[Dict[str, Any]], *, model: str = "",
 ) -> None:

@@ -70,6 +70,22 @@ class CanonicalWorksTests(unittest.TestCase):
         finally:
             connection.close()
 
+    def test_invalidate_item_summaries_removes_all_chunk_derived_rows(self):
+        db_relations.save_item_summary("ITEM", "summary", "test")
+        db_relations.save_section_summary("ITEM", "c0", "section", model="test")
+        db_relations.replace_case_annotations("ITEM", "c0", [{
+            "description": "case", "region": None, "group": None,
+            "practices": [], "phenomena": [], "period": None,
+            "chunk_id": "old", "source_kind": "primary", "evidence_quote": "case",
+        }], model="test")
+        counts = db_relations.invalidate_item_summaries("ITEM")
+        self.assertEqual(counts, {
+            "case_annotations": 1, "section_summaries": 1, "item_summaries": 1,
+        })
+        self.assertIsNone(db_relations.get_item_summary("ITEM"))
+        self.assertEqual(db_relations.get_section_summaries("ITEM"), [])
+        self.assertEqual(db_relations.get_case_annotations("ITEM"), [])
+
     def test_conservative_title_match_and_year(self):
         first = db_relations.resolve_work(title="Essai sur le don", authors="Mauss", year=1925)
         second = db_relations.resolve_work(title="Essai sur le don!", authors="Mauss", year=1926)

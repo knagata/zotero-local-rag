@@ -24,6 +24,7 @@ from html_extract import (
 )
 from pdf_extract import extract_chunks_from_pdf
 from docling_extract import extract_chunks_from_pdf_with_docling
+from ndlocr_extract import extract_chunks_from_pdf_with_ndlocr
 from note_extract import index_notes
 from text_utils import detect_lang
 from lexical_index import delete_by_attachment_keys as delete_lexical_attachments
@@ -31,7 +32,7 @@ from lexical_index import delete_by_note_key as delete_lexical_note
 from lexical_index import upsert_chunks as upsert_lexical_chunks
 
 from manifest import load_manifest, save_manifest
-from db_relations import purge_removed_items
+from db_relations import invalidate_item_summaries, purge_removed_items
 
 # Gemini batch embedding pipeline (used when EMB_PROFILE=gemini)
 try:
@@ -304,7 +305,34 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Automatically use IBM Docling to re-parse and re-index scanned or corrupted PDFs tracked in the manifest.",
     )
-    return p.parse_args()
+    p.add_argument(
+        "--reocr-candidates", type=Path,
+        help="Reparse only attachments listed in list_reocr_candidates.py JSON; ja uses NDLOCR-Lite.",
+    )
+    p.add_argument(
+        "--reocr-limit", type=int,
+        help="Maximum ranked candidates to process with --reocr-candidates.",
+    )
+    args = p.parse_args()
+    if args.reocr_limit is not None and args.reocr_limit < 1:
+        p.error("--reocr-limit must be positive")
+    if args.reocr_limit is not None and not args.reocr_candidates:
+        p.error("--reocr-limit requires --reocr-candidates")
+    return args
+
+
+def _load_reocr_routes(path: Path | None, limit: int | None) -> dict[str, dict[str, Any]]:
+    if path is None:
+        return {}
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    rows = payload.get("candidates", [])
+    if not isinstance(rows, list):
+        raise ValueError("re-OCR candidate JSON must contain a candidates array")
+    selected = rows[:limit] if limit is not None else rows
+    return {
+        str(row.get("attachment_key")): row
+        for row in selected if isinstance(row, dict) and row.get("attachment_key")
+    }
 
 
 def _zotero_data_dir_is_valid(zotero_data_dir: Optional[str]) -> bool:
@@ -349,6 +377,7 @@ async def main_async(args: argparse.Namespace) -> None:
 
     manifest["files"] = files_manifest
     manifest["notes"] = notes_manifest
+    reocr_routes = _load_reocr_routes(args.reocr_candidates, args.reocr_limit)
 
     api = ZoteroLocalAPI()
     show_progress = bool(args.progress) or (os.environ.get("PROGRESS") == "1")
@@ -405,6 +434,9 @@ async def main_async(args: argparse.Namespace) -> None:
     )
     attachments = [a for a in attachments if getattr(a, "pdf_path", None)]
 
+    if reocr_routes:
+        attachments = [a for a in attachments if a.attachmentKey in reocr_routes]
+
     # If --reparse-corrupted is set, filter attachments upfront to show correct progress
     if args.reparse_corrupted:
         corrupted_attachments = []
@@ -420,7 +452,12 @@ async def main_async(args: argparse.Namespace) -> None:
 
     total_attachments = len(attachments)
     if show_progress:
-        if args.reparse_corrupted:
+        if reocr_routes:
+            print(
+                f"[PROGRESS] Found {total_attachments} explicitly queued re-OCR attachment(s).",
+                file=sys.__stderr__,
+            )
+        elif args.reparse_corrupted:
             print(
                 f"[PROGRESS] Found {total_attachments} scanned/corrupted PDF(s) requiring high-fidelity Docling parsing.",
                 file=sys.__stderr__,
@@ -475,7 +512,7 @@ async def main_async(args: argparse.Namespace) -> None:
 
     # Delete stale attachment items (skipped during selective re-parsing)
     deleted_stale = 0
-    if not args.reparse_corrupted:
+    if not args.reparse_corrupted and not reocr_routes:
         current_keys = {a.attachmentKey for a in attachments}
         stale_keys = set(files_manifest.keys()) - current_keys
 
@@ -555,10 +592,15 @@ async def main_async(args: argparse.Namespace) -> None:
         has_quality = prev and "quality" in prev
         quality_check_only = False
 
-        # Decide if we need to force Docling for this file
+        # Decide if we need to force a re-parser for this file.
         force_docling = False
+        force_ndlocr = False
+        reocr_route = reocr_routes.get(a.attachmentKey)
         if stype == "pdf":
-            if args.use_docling:
+            if reocr_route:
+                force_ndlocr = str(reocr_route.get("lang") or "") == "ja"
+                force_docling = not force_ndlocr
+            elif args.use_docling:
                 already_docling = has_quality and prev["quality"].get("parser") == "docling"
                 if not already_docling:
                     force_docling = True
@@ -569,7 +611,9 @@ async def main_async(args: argparse.Namespace) -> None:
                 if is_problematic and not already_docling:
                     force_docling = True
 
-        if prev and float(prev.get("mtime", -1)) == mtime and int(prev.get("size", -1)) == size and not force_docling:
+        if (prev and float(prev.get("mtime", -1)) == mtime
+                and int(prev.get("size", -1)) == size
+                and not force_docling and not force_ndlocr):
             if args.check_quality or not has_quality:
                 quality_check_only = True
                 if show_progress:
@@ -639,7 +683,16 @@ async def main_async(args: argparse.Namespace) -> None:
             chunks, quality_info = extract_chunks_from_epub_snapshot(file_path, a.attachmentKey, meta_base)
         else:
             use_docling_for_this_file = force_docling or args.use_docling
-            if use_docling_for_this_file:
+            if force_ndlocr:
+                if show_progress:
+                    print(
+                        f"[PROGRESS]   ↳ parsing Japanese re-OCR candidate with NDLOCR-Lite...",
+                        file=sys.__stderr__,
+                    )
+                chunks, quality_info = extract_chunks_from_pdf_with_ndlocr(
+                    file_path, a.attachmentKey, meta_base,
+                )
+            elif use_docling_for_this_file:
                 if show_progress:
                     print(
                         f"[PROGRESS]   ↳ parsing with high-fidelity IBM Docling...",
@@ -667,6 +720,15 @@ async def main_async(args: argparse.Namespace) -> None:
                 file=sys.__stderr__,
             )
             continue
+
+        if reocr_route and a.parentItemKey:
+            counts = invalidate_item_summaries(a.parentItemKey)
+            if show_progress:
+                print(
+                    f"[PROGRESS]   ↳ invalidated derived summaries for item={a.parentItemKey}: "
+                    f"sections={counts['section_summaries']} cases={counts['case_annotations']}",
+                    file=sys.__stderr__,
+                )
 
         for _cid, text, md in chunks:
             md["lang"] = detect_lang(text, getattr(a, "language", None))

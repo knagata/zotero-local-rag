@@ -145,6 +145,18 @@ uv run python scripts/list_reocr_candidates.py \
   --markdown-output data/quality/reocr-candidates.md
 ```
 
+候補JSONを明示して再OCRする場合だけ、言語ルーティングが有効になります。`ja` は
+NDLOCR-Lite、`en` / `other` はDoclingへ送られます。元のZotero PDFは変更しません。
+再抽出に成功すると古い要約・事例は無効化されるため、続けてLuna要約を再生成してください。
+
+```bash
+uv run src/index_from_zotero.py --progress \
+  --reocr-candidates data/quality/reocr-candidates.json --reocr-limit 2
+
+uv run python -m src.build_summaries --mode llm --force --item ITEMKEY \
+  --llm codex_cli:gpt-5.6-luna
+```
+
 `scripts/run_grounding_gate.py` は指定資料の要約DBを置換する手動品質ゲート専用です。
 `--write-database` の明示指定が必要で、通常運用や夜間runnerからは呼び出しません。
 
