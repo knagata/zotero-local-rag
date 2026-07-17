@@ -178,9 +178,10 @@ NIGHTLY_ENABLE=1 NIGHTLY_REOCR_ENABLE=1 \
   scripts/nightly_summaries.sh
 ```
 
-launchd雛形は `scripts/com.zotero-local-rag.nightly.plist.example` です。
-`__PROJECT_ROOT__` を絶対パスへ置換してから `~/Library/LaunchAgents/` に配置してください。
-品質比較が完了するまではlaunchdへ登録しないでください。
+夜間実行時刻は `.env` の `NIGHTLY_START_TIME=03:30` のように24時間表記で指定します。
+macOSのシステムタイムゾーンが使われるため、JST設定のMacではJST 03:30です。設定後に
+`scripts/install_nightly_launchd.sh` を実行すると、launchd設定を生成・登録します。時刻を変更した場合も
+同じコマンドを再実行してください。`scripts/install_nightly_launchd.sh --check` は設定を変更せず状態を表示します。
 
 ### 3. アプリケーションの更新（新バージョンへの移行）
 

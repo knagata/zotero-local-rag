@@ -2,6 +2,9 @@
 set -euo pipefail
 
 ROOT="${0:A:h:h}"
+source "$ROOT/scripts/lib/load_dotenv.zsh"
+load_dotenv_file "$ROOT/.env"
+load_dotenv_file "$ROOT/.env.policy"
 export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$PATH"
 PYTHON="${PYTHON:-$ROOT/.venv/bin/python}"
 MAX_HOURS="${NIGHTLY_MAX_HOURS:-5}"
@@ -19,7 +22,7 @@ if [[ "${1:-}" == "--check" ]]; then
     command -v ndlocr-lite >/dev/null || { echo "ndlocr-lite not found"; exit 1; }
     [[ -f "$REOCR_CANDIDATES" ]] || { echo "re-OCR candidates not found: $REOCR_CANDIDATES"; exit 1; }
   fi
-  echo "nightly prerequisites: ok (execution not started)"
+  echo "nightly prerequisites: ok (execution not started; NIGHTLY_ENABLE=${NIGHTLY_ENABLE:-0})"
   exit 0
 fi
 
