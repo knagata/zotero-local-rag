@@ -28,6 +28,7 @@ DEFAULT_LLM = "gemini:gemini-3.1-flash-lite"
 DEFAULT_MODELS = {
     "gemini": "gemini-3.1-flash-lite",
     "anthropic": "claude-haiku-4-5",
+    "deepseek": "deepseek-v4-pro",
     "openai_compat": "gpt-4.1-mini",
     "codex_cli": "auto",
     "claude_cli": "sonnet",
@@ -136,6 +137,53 @@ def _extract_json(value: Any) -> dict[str, Any]:
     if not isinstance(parsed, dict):
         raise InvalidLLMResponse("The model response was valid JSON but not an object.")
     return parsed
+
+
+def _validate_schema_subset(value: Any, schema: dict[str, Any], path: str = "$") -> None:
+    """Validate the JSON-Schema subset used by this project's LLM contracts."""
+    if "anyOf" in schema:
+        for option in schema["anyOf"]:
+            try:
+                _validate_schema_subset(value, option, path)
+                return
+            except InvalidLLMResponse:
+                continue
+        raise InvalidLLMResponse(f"LLM output does not match any schema at {path}.")
+
+    expected = schema.get("type")
+    expected_types = expected if isinstance(expected, list) else [expected]
+    type_checks = {
+        "object": lambda item: isinstance(item, dict),
+        "array": lambda item: isinstance(item, list),
+        "string": lambda item: isinstance(item, str),
+        "null": lambda item: item is None,
+        "number": lambda item: isinstance(item, (int, float)) and not isinstance(item, bool),
+        "integer": lambda item: isinstance(item, int) and not isinstance(item, bool),
+        "boolean": lambda item: isinstance(item, bool),
+    }
+    if expected and not any(type_checks[item](value) for item in expected_types):
+        raise InvalidLLMResponse(
+            f"LLM output has the wrong type at {path}; expected {expected}."
+        )
+    if isinstance(value, dict) and "object" in expected_types:
+        properties = schema.get("properties", {})
+        missing = [key for key in schema.get("required", []) if key not in value]
+        if missing:
+            raise InvalidLLMResponse(
+                f"LLM output is missing required fields at {path}: {', '.join(missing)}."
+            )
+        if schema.get("additionalProperties") is False:
+            extras = sorted(set(value) - set(properties))
+            if extras:
+                raise InvalidLLMResponse(
+                    f"LLM output has additional fields at {path}: {', '.join(extras)}."
+                )
+        for key, child in value.items():
+            if key in properties:
+                _validate_schema_subset(child, properties[key], f"{path}.{key}")
+    if isinstance(value, list) and "array" in expected_types and "items" in schema:
+        for index, child in enumerate(value):
+            _validate_schema_subset(child, schema["items"], f"{path}[{index}]")
 
 
 @dataclass
@@ -299,9 +347,85 @@ class OpenAICompatibleClient:
     def generate_json(
         self, prompt: str, *, schema: dict[str, Any], timeout: float = 30.0
     ) -> dict[str, Any]:
-        return _extract_json(self._request(
+        result = _extract_json(self._request(
             prompt, max_tokens=4096, timeout=timeout, schema=schema
         ))
+        _validate_schema_subset(result, schema)
+        return result
+
+
+@dataclass
+class DeepSeekClient:
+    """DeepSeek Chat Completions client using its supported JSON mode."""
+
+    model: str
+    provider: str = "deepseek"
+
+    def _request(
+        self, prompt: str, *, max_tokens: int, timeout: float,
+        schema: dict[str, Any] | None = None,
+    ) -> str:
+        api_key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
+        if not api_key:
+            raise ProviderUnavailable("DEEPSEEK_API_KEY is not set.")
+        thinking = os.environ.get("DEEPSEEK_THINKING", "disabled").strip().casefold()
+        thinking = thinking if thinking in {"enabled", "disabled"} else "disabled"
+        payload: dict[str, Any] = {
+            "model": self.model,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": max_tokens,
+            "thinking": {"type": thinking},
+        }
+        if thinking == "enabled":
+            payload["reasoning_effort"] = os.environ.get(
+                "DEEPSEEK_REASONING_EFFORT", "high"
+            ).strip() or "high"
+        if schema is not None:
+            # DeepSeek supports JSON object mode, not OpenAI's json_schema mode.
+            # Include the contract in the prompt, then parse and verify downstream.
+            payload["messages"][0]["content"] = (
+                prompt + "\n\nReturn JSON matching this schema exactly:\n"
+                + json.dumps(schema, ensure_ascii=False)
+            )
+            payload["response_format"] = {"type": "json_object"}
+
+        def call() -> str:
+            response = httpx.post(
+                "https://api.deepseek.com/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=payload, timeout=timeout,
+            )
+            if response.status_code == 429:
+                raise RateLimitReached(response.text)
+            response.raise_for_status()
+            try:
+                content = response.json()["choices"][0]["message"]["content"]
+            except (KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
+                raise InvalidLLMResponse("Invalid DeepSeek response envelope.") from exc
+            if not isinstance(content, str) or not content.strip():
+                # DeepSeek documents occasional empty JSON-mode responses.
+                # Treat only this provider-specific condition as transient.
+                raise LLMError("DeepSeek returned empty content.")
+            return content
+
+        return _retry(call)
+
+    def generate_text(
+        self, prompt: str, *, max_tokens: int = 2048, timeout: float = 30.0
+    ) -> str:
+        return self._request(prompt, max_tokens=max_tokens, timeout=timeout)
+
+    def generate_json(
+        self, prompt: str, *, schema: dict[str, Any], timeout: float = 30.0
+    ) -> dict[str, Any]:
+        result = _extract_json(self._request(
+            prompt, max_tokens=4096, timeout=timeout, schema=schema
+        ))
+        _validate_schema_subset(result, schema)
+        return result
 
 
 @dataclass
@@ -424,6 +548,8 @@ def _create_client(provider: str, model: str) -> LLMClient:
         return GeminiClient(model)
     if provider == "anthropic":
         return AnthropicClient(model)
+    if provider == "deepseek":
+        return DeepSeekClient(model)
     if provider == "openai_compat":
         return OpenAICompatibleClient(model)
     return CLIAgentClient(model=model, provider=provider)
@@ -448,5 +574,5 @@ def get_llm(task: str) -> LLMClient:
 
 __all__ = [
     "LLMClient", "LLMError", "ProviderUnavailable", "RateLimitReached",
-    "InvalidLLMResponse", "FallbackLLMClient", "get_llm",
+    "InvalidLLMResponse", "DeepSeekClient", "FallbackLLMClient", "get_llm",
 ]

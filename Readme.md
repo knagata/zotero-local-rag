@@ -70,10 +70,15 @@ export LLM_EXTRACT="gemini:gemini-3.1-flash-lite"
 
 # Codexの制限到達後だけClaude CLIへ切り替える例
 export LLM_SUMMARY="codex_cli:auto,claude_cli:sonnet"
+
+# DeepSeek V4 Pro（構造化出力はローカルSchema検証付き）
+export DEEPSEEK_API_KEY="..."
+export LLM_SUMMARY="deepseek:deepseek-v4-pro,codex_cli:gpt-5.6-sol"
 ```
 
-対応プロバイダは `gemini`、`anthropic`、`openai_compat`、`codex_cli`、`claude_cli` です。
-Geminiには `GEMINI_API_KEY`、Anthropicには `ANTHROPIC_API_KEY` が必要です。Anthropic SDKは
+対応プロバイダは `gemini`、`anthropic`、`deepseek`、`openai_compat`、`codex_cli`、
+`claude_cli` です。Geminiには `GEMINI_API_KEY`、Anthropicには `ANTHROPIC_API_KEY`、
+DeepSeekには `DEEPSEEK_API_KEY` が必要です。Anthropic SDKは
 `uv sync --extra llm-anthropic` で追加できます。Ollama・LM Studio・vLLMなどは
 `LLM_OPENAI_BASE_URL`（例: `http://localhost:11434/v1`）を設定して `openai_compat` を使います。
 CLIプロバイダは各CLIで事前にサインインされている必要があります。
@@ -124,13 +129,18 @@ fail-closedで停止します。全資料の送信を許可する場合だけ、
 ### 夜間Codex要約（品質ゲート後に有効化）
 
 > **現在は有効化しないでください。** 20資料のゲート1は合格しましたが、5資料全節の
-> ゲート2は未完了です。ゲート2の独立監査が完了するまで、夜間ランナーは無効のままです。
+> ゲート2の生成は完了しましたが、独立監査待ちです。監査が完了するまで、夜間ランナーは
+> 無効のままです。
 
 まずDBを書き換えない比較を行います。
 
 ```bash
 uv run python scripts/compare_summary_models.py \
   --item ITEMKEY --llm codex_cli:auto --max-sections 3
+
+# APIプロバイダのDB非書込み並列比較（小さい並列数から開始）
+uv run python scripts/compare_summary_models.py \
+  --item ITEMKEY --llm deepseek:deepseek-v4-pro --max-sections 4 --workers 4
 ```
 
 再OCR候補は、DBを変更せずJSONとMarkdownへ出力できます。

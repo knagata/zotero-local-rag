@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from src.llm_client import (
-    CLIAgentClient, FallbackLLMClient, InvalidLLMResponse, LLMError,
+    CLIAgentClient, DeepSeekClient, FallbackLLMClient, InvalidLLMResponse, LLMError,
     OpenAICompatibleClient, ProviderUnavailable, RateLimitReached,
     _extract_json, _is_rate_limit, _retry, get_llm,
 )
@@ -107,6 +107,48 @@ class LLMClientTests(unittest.TestCase):
         self.assertEqual(result, {"ok": True})
         self.assertEqual(post.call_args.kwargs["json"]["model"], "qwen3:14b")
         self.assertIn("response_format", post.call_args.kwargs["json"])
+
+    def test_deepseek_json_request_uses_native_key_and_json_object_mode(self):
+        response = SimpleNamespace(
+            status_code=200,
+            raise_for_status=lambda: None,
+            json=lambda: {"choices": [{"message": {"content": '{"ok": true}'}}]},
+        )
+        with patch.dict(os.environ, {"DEEPSEEK_API_KEY": "test-key"}, clear=True), patch(
+            "src.llm_client.httpx.post", return_value=response
+        ) as post:
+            result = DeepSeekClient("deepseek-v4-pro").generate_json(
+                "Return JSON", schema={"type": "object"}
+            )
+        self.assertEqual(result, {"ok": True})
+        request = post.call_args.kwargs
+        self.assertEqual(request["json"]["model"], "deepseek-v4-pro")
+        self.assertEqual(request["json"]["thinking"], {"type": "disabled"})
+        self.assertNotIn("reasoning_effort", request["json"])
+        self.assertEqual(request["json"]["response_format"], {"type": "json_object"})
+        self.assertEqual(request["headers"]["Authorization"], "Bearer test-key")
+
+    def test_deepseek_is_available_as_provider_spec(self):
+        with patch.dict(os.environ, {"LLM_SUMMARY": "deepseek:deepseek-v4-pro"}, clear=True):
+            client = get_llm("summary")
+        self.assertIsInstance(client, DeepSeekClient)
+        self.assertEqual(client.model, "deepseek-v4-pro")
+
+    def test_deepseek_rejects_json_that_does_not_match_schema(self):
+        response = SimpleNamespace(
+            status_code=200,
+            raise_for_status=lambda: None,
+            json=lambda: {"choices": [{"message": {"content": '{"wrong": true}'}}]},
+        )
+        schema = {
+            "type": "object", "properties": {"ok": {"type": "boolean"}},
+            "required": ["ok"], "additionalProperties": False,
+        }
+        with patch.dict(os.environ, {"DEEPSEEK_API_KEY": "test-key"}, clear=True), patch(
+            "src.llm_client.httpx.post", return_value=response
+        ):
+            with self.assertRaises(InvalidLLMResponse):
+                DeepSeekClient("deepseek-v4-pro").generate_json("Return JSON", schema=schema)
 
     def test_claude_cli_disables_tools(self):
         completed = SimpleNamespace(

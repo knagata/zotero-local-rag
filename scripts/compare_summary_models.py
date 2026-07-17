@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 import sys
@@ -20,32 +21,37 @@ from src.env_utils import load_dotenv_native
 from src.llm_client import LLMError, RateLimitReached
 
 
-def compare_item(item_key: str, *, max_sections: int) -> dict:
+def _compare_section(section: dict) -> dict:
+    extractive = build_summaries._extractive_section(section)
+    if build_summaries.classify_section_content(section) == "non_content":
+        return {
+            "section_id": section["section_id"], "chapter": section["chapter"],
+            "status": "skipped_non_content", "extractive_summary": extractive["summary"],
+            "llm_summary": None, "cases": [], "chapter_authors": [],
+            "first_publication_note": None, "verification": None,
+        }
+    generated, model = build_summaries._llm_section(section)
+    return {
+        "section_id": section["section_id"], "chapter": section["chapter"],
+        "status": "generated", "model": model, "extractive_summary": extractive["summary"],
+        "llm_summary": generated.get("summary"), "cases": generated.get("cases") or [],
+        "chapter_authors": generated.get("chapter_authors") or [],
+        "first_publication_note": generated.get("first_publication_note"),
+        "verification": generated.get("_verification"),
+    }
+
+
+def compare_item(item_key: str, *, max_sections: int, workers: int = 1) -> dict:
     excluded, reason = build_summaries._excluded_from_llm(item_key)
     if excluded:
         return {"item_key": item_key, "status": "excluded", "reason": reason, "sections": []}
     chunks = get_item_chunks(item_key)
     sections = build_summaries.split_sections(chunks)[:max(max_sections, 0)]
-    output = []
-    for section in sections:
-        extractive = build_summaries._extractive_section(section)
-        if build_summaries.classify_section_content(section) == "non_content":
-            output.append({
-                "section_id": section["section_id"], "chapter": section["chapter"],
-                "status": "skipped_non_content", "extractive_summary": extractive["summary"],
-                "llm_summary": None, "cases": [], "chapter_authors": [],
-                "first_publication_note": None, "verification": None,
-            })
-            continue
-        generated, model = build_summaries._llm_section(section)
-        output.append({
-            "section_id": section["section_id"], "chapter": section["chapter"],
-            "status": "generated", "model": model, "extractive_summary": extractive["summary"],
-            "llm_summary": generated.get("summary"), "cases": generated.get("cases") or [],
-            "chapter_authors": generated.get("chapter_authors") or [],
-            "first_publication_note": generated.get("first_publication_note"),
-            "verification": generated.get("_verification"),
-        })
+    if workers == 1:
+        output = [_compare_section(section) for section in sections]
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            output = list(pool.map(_compare_section, sections))
     statuses = {section["status"] for section in output}
     status = "skipped_non_content" if statuses == {"skipped_non_content"} else "compared"
     return {"item_key": item_key, "status": status, "sections": output}
@@ -56,9 +62,12 @@ def main() -> None:
     parser.add_argument("--item", action="append")
     parser.add_argument("--max-items", type=int, default=20)
     parser.add_argument("--max-sections", type=int, default=3)
+    parser.add_argument("--workers", type=int, default=1)
     parser.add_argument("--llm", default="codex_cli:auto")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
+    if args.workers < 1:
+        parser.error("--workers must be positive")
     load_dotenv_native(ROOT)
     os.environ["LLM_SUMMARY"] = args.llm
     keys = (args.item or list_item_keys())[:max(args.max_items, 0)]
@@ -68,7 +77,9 @@ def main() -> None:
     }
     for key in keys:
         try:
-            report["items"].append(compare_item(key, max_sections=args.max_sections))
+            report["items"].append(compare_item(
+                key, max_sections=args.max_sections, workers=args.workers,
+            ))
         except RateLimitReached as exc:
             report["stop_reason"] = "rate_limit"
             report["error"] = str(exc)
