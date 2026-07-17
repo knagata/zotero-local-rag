@@ -268,6 +268,9 @@ def _init_db(conn: sqlite3.Connection) -> None:
             reviewer_note TEXT,
             committed_edge_id INTEGER,
             committed_at TIMESTAMP,
+            source_reference_id INTEGER,
+            source_context TEXT,
+            source_kind TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(item_key, raw_hash)
@@ -277,6 +280,9 @@ def _init_db(conn: sqlite3.Connection) -> None:
         "ALTER TABLE reference_review_queue ADD COLUMN contributors_json TEXT",
         "ALTER TABLE reference_review_queue ADD COLUMN committed_edge_id INTEGER",
         "ALTER TABLE reference_review_queue ADD COLUMN committed_at TIMESTAMP",
+        "ALTER TABLE reference_review_queue ADD COLUMN source_reference_id INTEGER",
+        "ALTER TABLE reference_review_queue ADD COLUMN source_context TEXT",
+        "ALTER TABLE reference_review_queue ADD COLUMN source_kind TEXT",
     ):
         try:
             cursor.execute(sql)
@@ -615,8 +621,9 @@ def stage_reference_candidates(
             conn.execute('''
                 INSERT INTO reference_review_queue
                     (item_key, raw_hash, raw_reference, title, authors_json, contributors_json, year,
-                     doi, isbn, container, lang, work_type, extraction_model, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                     doi, isbn, container, lang, work_type, extraction_model,
+                     source_reference_id, source_context, source_kind, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 ON CONFLICT(item_key, raw_hash) DO UPDATE SET
                     raw_reference = excluded.raw_reference,
                     title = excluded.title,
@@ -629,6 +636,13 @@ def stage_reference_candidates(
                     lang = excluded.lang,
                     work_type = excluded.work_type,
                     extraction_model = excluded.extraction_model,
+                    source_reference_id = COALESCE(
+                        excluded.source_reference_id, reference_review_queue.source_reference_id
+                    ),
+                    source_context = COALESCE(
+                        excluded.source_context, reference_review_queue.source_context
+                    ),
+                    source_kind = COALESCE(excluded.source_kind, reference_review_queue.source_kind),
                     updated_at = CURRENT_TIMESTAMP
             ''', (
                 item_key, raw_hash, raw, reference.get("title"),
@@ -637,6 +651,8 @@ def stage_reference_candidates(
                 reference.get("year"),
                 reference.get("doi"), reference.get("isbn"), reference.get("container"),
                 reference.get("lang"), reference.get("type"), model,
+                reference.get("source_reference_id"), reference.get("source_context"),
+                reference.get("source_kind"),
             ))
             counts["updated" if existed else "staged"] += 1
         conn.commit()
@@ -648,18 +664,26 @@ def stage_reference_candidates(
         conn.close()
 
 
-def get_reference_review_candidates(status: Optional[str] = None) -> List[Dict[str, Any]]:
+def get_reference_review_candidates(
+    status: Optional[str] = None, *, source_kind: Optional[str] = None,
+) -> List[Dict[str, Any]]:
     conn = get_db_connection()
     try:
         if status is not None and status not in {"pending", "approved", "rejected"}:
             raise ValueError("invalid review status")
         sql = "SELECT * FROM reference_review_queue"
-        params: tuple[Any, ...] = ()
+        clauses: list[str] = []
+        params_list: list[Any] = []
         if status is not None:
-            sql += " WHERE status = ?"
-            params = (status,)
+            clauses.append("status = ?")
+            params_list.append(status)
+        if source_kind is not None:
+            clauses.append("source_kind = ?")
+            params_list.append(source_kind)
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
         sql += " ORDER BY item_key, review_id"
-        rows = [dict(row) for row in conn.execute(sql, params).fetchall()]
+        rows = [dict(row) for row in conn.execute(sql, tuple(params_list)).fetchall()]
         for row in rows:
             try:
                 row["authors"] = json.loads(row.pop("authors_json") or "[]")
@@ -686,6 +710,74 @@ def set_reference_review_status(review_id: int, status: str, note: str | None = 
         ''', (status, note, review_id))
         conn.commit()
         return cursor.rowcount > 0
+    finally:
+        conn.close()
+
+
+def apply_reference_review_decision(decision: Dict[str, Any]) -> bool:
+    """Apply a reviewer decision, but allow approval only with a literal stable ID."""
+    review_id = int(decision["review_id"])
+    status = str(decision.get("status") or "pending")
+    if status not in {"approved", "rejected", "pending"}:
+        raise ValueError("invalid review status")
+    conn = get_db_connection()
+    try:
+        row = conn.execute(
+            "SELECT raw_reference FROM reference_review_queue WHERE review_id = ?", (review_id,)
+        ).fetchone()
+        if row is None:
+            return False
+        raw = unicodedata.normalize("NFKC", str(row["raw_reference"] or ""))
+        raw_folded = raw.casefold()
+        raw_compact = re.sub(r"[^0-9x]", "", raw_folded)
+
+        title = str(decision.get("title") or "").strip() or None
+        if title:
+            normalized_title = normalize_work_title(title)
+            if len(normalized_title) < 8 or normalized_title not in normalize_work_title(raw):
+                raise ValueError(f"review {review_id}: title is not supported by raw reference")
+        year = decision.get("year")
+        if year is not None:
+            year = int(year)
+            if str(year) not in raw:
+                raise ValueError(f"review {review_id}: year is not present in raw reference")
+        doi = str(decision.get("doi") or "").strip() or None
+        doi_norm = _normalize_identifier(doi, "doi") if doi else None
+        doi_verified = bool(doi_norm and doi_norm in raw_folded)
+        if doi and not doi_verified:
+            raise ValueError(f"review {review_id}: DOI is not present in raw reference")
+        isbn = str(decision.get("isbn") or "").strip() or None
+        isbn_norm = _normalize_identifier(isbn, "isbn") if isbn else None
+        isbn_verified = bool(
+            isbn_norm and len(isbn_norm) in {10, 13} and isbn_norm in raw_compact
+        )
+        if isbn and not isbn_verified:
+            raise ValueError(f"review {review_id}: ISBN is not present in raw reference")
+        if status == "approved" and not (doi_verified or isbn_verified):
+            raise ValueError(f"review {review_id}: approval requires a literal DOI or ISBN")
+
+        authors = decision.get("authors")
+        authors_json = None
+        if authors is not None:
+            if not isinstance(authors, list) or not all(isinstance(value, str) for value in authors):
+                raise ValueError(f"review {review_id}: authors must be a string array")
+            authors_json = json.dumps(authors, ensure_ascii=False)
+        cursor = conn.execute('''
+            UPDATE reference_review_queue
+            SET status=?, reviewer_note=?,
+                title=COALESCE(?, title), authors_json=COALESCE(?, authors_json),
+                year=COALESCE(?, year), doi=COALESCE(?, doi), isbn=COALESCE(?, isbn),
+                updated_at=CURRENT_TIMESTAMP
+            WHERE review_id=?
+        ''', (
+            status, decision.get("note"), title, authors_json, year,
+            doi_norm, isbn_norm, review_id,
+        ))
+        conn.commit()
+        return cursor.rowcount > 0
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 

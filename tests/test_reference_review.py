@@ -9,6 +9,7 @@ from scripts.audit_ambiguous_works import audit
 from src import db_relations
 from src.reference_agent import commit_approved_reference_candidates
 from src.reference_quality_report import build_report
+from scripts.stage_unverified_epub_refs import stage
 
 
 class ReferenceReviewTests(unittest.TestCase):
@@ -43,6 +44,29 @@ class ReferenceReviewTests(unittest.TestCase):
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM work_edges").fetchone()[0], 0)
         finally:
             connection.close()
+
+    def test_unverified_epub_refs_stage_with_provenance_and_no_graph_write(self):
+        connection = db_relations.get_db_connection()
+        connection.execute('''
+            INSERT INTO global_references
+                (id, citing_item_key, source, raw_reference_text, context_snippet, s2_status)
+            VALUES (42, 'ITEM', 'epub', 'Author (2020). A title.', 'citation context', 'unverified')
+        ''')
+        connection.commit()
+        connection.close()
+        dry_run = stage(self.db_path)
+        self.assertEqual(dry_run["to_stage"], 1)
+        committed = stage(self.db_path, commit=True)
+        self.assertEqual(committed["staged"], 1)
+        row = db_relations.get_reference_review_candidates("pending")[0]
+        self.assertEqual(row["source_reference_id"], 42)
+        self.assertEqual(row["source_context"], "citation context")
+        self.assertEqual(row["source_kind"], "epub-unverified")
+        self.assertEqual(row["year"], 2020)
+        connection = db_relations.get_db_connection()
+        self.assertEqual(connection.execute("SELECT COUNT(*) FROM work_edges").fetchone()[0], 0)
+        connection.close()
+        self.assertEqual(stage(self.db_path, commit=True)["to_stage"], 0)
 
     def test_quality_report_marks_title_only_candidates(self):
         db_relations.stage_reference_candidates(
@@ -84,6 +108,35 @@ class ReferenceReviewTests(unittest.TestCase):
         result = commit_approved_reference_candidates()
         self.assertEqual(result["insufficient_evidence"], 1)
         self.assertEqual(result["committed"], 0)
+
+    def test_claude_decision_requires_literal_identifier_for_approval(self):
+        raw = "Author (2020). A sufficiently distinctive title. doi:10.1234/example"
+        db_relations.stage_reference_candidates(
+            "ITEM", "epub-unverified", [{"raw": raw, "title": None}],
+        )
+        review_id = db_relations.get_reference_review_candidates()[0]["review_id"]
+        changed = db_relations.apply_reference_review_decision({
+            "review_id": review_id, "status": "approved",
+            "title": "A sufficiently distinctive title", "authors": ["Author"],
+            "year": 2020, "doi": "10.1234/example", "note": "Claude: exact DOI",
+        })
+        self.assertTrue(changed)
+        row = db_relations.get_reference_review_candidates("approved")[0]
+        self.assertEqual(row["doi"], "10.1234/example")
+        self.assertEqual(row["authors"], ["Author"])
+
+    def test_claude_decision_rejects_unsupported_approval(self):
+        db_relations.stage_reference_candidates(
+            "ITEM", "epub-unverified", [{"raw": "Author (2020). A title.", "title": None}],
+        )
+        review_id = db_relations.get_reference_review_candidates()[0]["review_id"]
+        with self.assertRaisesRegex(ValueError, "literal DOI or ISBN"):
+            db_relations.apply_reference_review_decision({
+                "review_id": review_id, "status": "approved", "year": 2020,
+            })
+        self.assertEqual(
+            db_relations.get_reference_review_candidates("pending")[0]["status"], "pending"
+        )
 
 
 if __name__ == "__main__":

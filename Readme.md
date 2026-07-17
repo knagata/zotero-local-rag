@@ -92,12 +92,23 @@ uv run python -m src.extract_references --item ITEMKEY --stage --heuristic
 uv run python scripts/review_references.py list --status pending --limit 20
 uv run python scripts/review_references.py set 123 rejected --note "本文の誤検出"
 
+# EPUB照合で確定できなかった候補を、グラフ無変更でレビューキューへstage
+uv run python scripts/stage_unverified_epub_refs.py --commit
+uv run python scripts/review_references.py list --status pending \
+  --source-kind epub-unverified --limit 20
+
+# Claude等のレビュー判定JSONを決定的検証後に一括適用
+uv run python scripts/review_references.py apply-decisions decisions.json
+
 # approved候補のうち、原文中にDOI/ISBNが実在するものだけcommit
 uv run python scripts/review_references.py commit-approved --limit 20
 
 # completenessの自動レポート（precision/recallは目視評価が必要）
 uv run python -m src.reference_quality_report --status pending
 ```
+
+`apply-decisions` でも `approved` にできるのは、原文中に同じDOIまたはISBNが文字どおり
+存在する候補だけです。タイトル・年・識別子の捏造は一括適用時に拒否されます。
 
 要約索引は次のコマンドで差分構築できます。既定の `extractive` は本文を外部へ送信しません。
 
