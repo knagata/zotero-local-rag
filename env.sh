@@ -71,10 +71,10 @@ export EMB_PROFILE="${EMB_PROFILE:-fast}"
 
 # LLM providers used by query expansion, summaries, and reference extraction.
 # Format: provider:model. Comma-separated providers form a fallback chain.
-# Supported: gemini, anthropic, openai_compat, codex_cli, claude_cli.
+# Supported: gemini, anthropic, deepseek, openai_compat, codex_cli, claude_cli.
 export LLM_DEFAULT="${LLM_DEFAULT:-gemini:gemini-3.1-flash-lite}"
 # export LLM_EXPAND="${LLM_EXPAND:-gemini:gemini-3.1-flash-lite}"
-# export LLM_SUMMARY="${LLM_SUMMARY:-codex_cli:gpt-5}"
+export LLM_SUMMARY="${LLM_SUMMARY:-codex_cli:gpt-5.6-luna}"
 # export LLM_EXTRACT="${LLM_EXTRACT:-gemini:gemini-3.1-flash-lite}"
 # export LLM_OPENAI_BASE_URL="${LLM_OPENAI_BASE_URL:-http://localhost:11434/v1}"
 # export LLM_OPENAI_API_KEY="${LLM_OPENAI_API_KEY:-}"

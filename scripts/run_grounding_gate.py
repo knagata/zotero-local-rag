@@ -41,7 +41,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--item", action="append", required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--llm", default="codex_cli:auto")
+    parser.add_argument("--llm", default="codex_cli:gpt-5.6-luna")
     parser.add_argument(
         "--write-database", action="store_true",
         help="Required acknowledgment: section/item summaries and cases will be replaced.",

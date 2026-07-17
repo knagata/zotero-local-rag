@@ -32,6 +32,9 @@ class SummaryPipelineTests(unittest.TestCase):
             {"chapter": "Title Page", "text": "publication data " * 50},
             {"chapter": "Acknowledgments", "text": "Many people helped with this book. " * 30},
             {"chapter": "About Virginia Heffernan", "text": "Biographical information. " * 30},
+            {"chapter": "事項一覧", "text": "用語と参照ページ " * 50},
+            {"chapter": "Glossary", "text": "Term definitions and page references. " * 30},
+            {"chapter": "List of Abbreviations", "text": "Abbreviation entries. " * 40},
             {"chapter": "", "text": "序章 概要 5\n第一章 調査 20\n第二章 分析 40\n第三章 結論 70\n" * 10},
             {"chapter": "", "text": (
                 "Thank you for downloading this ebook.\n"
@@ -55,6 +58,18 @@ class SummaryPipelineTests(unittest.TestCase):
             "chunks": [{"id": "chunk-1", "text": text, "metadata": {}}],
         }
         self.assertEqual(build_summaries.classify_section_content(section), "content")
+
+    def test_detects_model_meta_responses(self):
+        fixtures = [
+            "入力には要約対象となる本文が含まれていません。本文をご提示ください。",
+            "この内容を要約することはできません。対象テキストをご提示ください。",
+            "I cannot provide a summary because the input does not contain the passage.",
+        ]
+        for value in fixtures:
+            self.assertTrue(build_summaries.is_meta_summary(value))
+        self.assertFalse(build_summaries.is_meta_summary(
+            "本章は、入力資料に含まれる複数の民族誌事例を比較して論じる。"
+        ))
 
     def test_structured_fields_require_exact_evidence_and_direct_chunk(self):
         source = "Alice Smith conducted fieldwork in Fiji in 2020. Published in 2021."
@@ -240,6 +255,36 @@ class SummaryPipelineTests(unittest.TestCase):
         self.assertEqual(result["skipped_non_content"], 1)
         self.assertEqual(result["sections"], 0)
         self.assertEqual(audit_sections[0]["status"], "skipped_non_content")
+
+    def test_llm_build_discards_meta_response_and_removes_old_section(self):
+        chunks = [{
+            "id": "a", "text": "substantive source text " * 50,
+            "metadata": {"chapter": "Terms"},
+        }]
+        generated = {
+            "summary": "入力には要約対象の本文が含まれていません。ご提示ください。",
+            "cases": [], "chapter_authors": [], "first_publication_note": None,
+            "_verification": {"total_generated": 0, "total_discarded": 0,
+                              "suspicious_section": False},
+        }
+        with patch.object(build_summaries, "get_item_chunks", return_value=chunks), patch.object(
+            build_summaries, "load_manifest", return_value={}
+        ), patch.object(build_summaries, "get_item_summary", return_value=None), patch.object(
+            build_summaries, "_source_mtime", return_value=0.0
+        ), patch.object(build_summaries, "_excluded_from_llm", return_value=(False, None)), patch.object(
+            build_summaries, "_llm_section", return_value=(generated, "codex_cli:gpt-5.6-luna")
+        ), patch.object(build_summaries, "delete_section_summary") as delete, patch.object(
+            build_summaries, "save_section_summary"
+        ) as save_section, patch.object(build_summaries, "save_item_summary"):
+            audit_sections = []
+            result = build_summaries.build_item(
+                "ITEM", mode="llm", audit_sections=audit_sections,
+            )
+        delete.assert_called_once_with("ITEM", "c0")
+        save_section.assert_not_called()
+        self.assertEqual(result["sections"], 0)
+        self.assertEqual(result["skipped_non_content"], 1)
+        self.assertEqual(audit_sections[0]["skip_reason"], "meta_response")
 
 
 if __name__ == "__main__":

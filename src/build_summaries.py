@@ -96,8 +96,21 @@ NON_CONTENT_HEADING_RE = re.compile(
     r"cover|本著作物について|list\s+of\s+(?:illustrations|figures|tables)|"
     r"series(?:\s+page|\s+list)?|シリーズ一覧|叢書一覧|acknowledg(?:e)?ments?|謝辞|"
     r"about\s+(?:the\s+)?author|about\s+[\w .'-]+|著者紹介|"
+    r"事項一覧|人名一覧|用語一覧|略語一覧|年表|glossary|chronology|timeline|"
+    r"list\s+of\s+(?:terms|names|abbreviations)|"
     r"references?|bibliography|参考文献|引用文献"
     r")\s*$",
+    re.I,
+)
+META_SUMMARY_RE = re.compile(
+    r"(?:"
+    r"要約(?:すること)?(?:が|は)?できません|要約できません|ご提示ください|"
+    r"(?:入力|本文|テキスト|内容)[^。\n]{0,50}(?:含まれてい(?:ません|ない)|"
+    r"提示されていません|見当たりません|ありません)|"
+    r"cannot\s+(?:provide|produce|generate|write)\s+(?:a\s+)?summary|"
+    r"please\s+(?:provide|share)\s+(?:the\s+)?(?:text|content|passage)|"
+    r"(?:input|provided\s+(?:text|content))[^.\n]{0,50}(?:does\s+not|doesn't)\s+contain"
+    r")",
     re.I,
 )
 TOC_ENTRY_RE = re.compile(r"(?:\.{3,}|…{2,}|・{3,})\s*\d+\s*$")
@@ -172,6 +185,11 @@ def classify_section_content(section: dict[str, Any]) -> str:
     if len(text) < 5000 and len(CHAPTER_MARKER_RE.findall(text)) >= 3:
         return "non_content"
     return "content"
+
+
+def is_meta_summary(summary: str) -> bool:
+    """Detect model refusals/meta commentary that must never become an index entry."""
+    return bool(META_SUMMARY_RE.search(str(summary or "")[:500]))
 
 
 def _normalize_evidence(value: Any) -> str:
@@ -448,6 +466,17 @@ def build_item(
         else:
             result = _extractive_section(section)
         summary = str(result.get("summary") or "").strip()
+        if model != "extractive" and is_meta_summary(summary):
+            delete_section_summary(item_key, section["section_id"])
+            skipped_non_content += 1
+            if audit_sections is not None:
+                audit_sections.append({
+                    "section_id": section["section_id"], "chapter": section["chapter"],
+                    "status": "skipped_non_content", "skip_reason": "meta_response",
+                    "llm_summary": None, "cases": [], "chapter_authors": [],
+                    "first_publication_note": None, "verification": None,
+                })
+            continue
         row = {"section_id": section["section_id"], "chapter": section["chapter"], "summary": summary}
         section_rows.append(row)
         if result.get("_verification"):

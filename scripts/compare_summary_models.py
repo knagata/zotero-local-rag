@@ -63,7 +63,7 @@ def main() -> None:
     parser.add_argument("--max-items", type=int, default=20)
     parser.add_argument("--max-sections", type=int, default=3)
     parser.add_argument("--workers", type=int, default=1)
-    parser.add_argument("--llm", default="codex_cli:auto")
+    parser.add_argument("--llm", default="codex_cli:gpt-5.6-luna")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     if args.workers < 1:

@@ -6,7 +6,7 @@ export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$PATH"
 PYTHON="${PYTHON:-$ROOT/.venv/bin/python}"
 MAX_HOURS="${NIGHTLY_MAX_HOURS:-5}"
 MAX_ITEMS="${NIGHTLY_MAX_ITEMS:-20}"
-LLM="${NIGHTLY_LLM:-codex_cli:auto}"
+LLM="${NIGHTLY_LLM:-codex_cli:gpt-5.6-luna}"
 LOG="$ROOT/data/nightly_summaries.log"
 
 if [[ "${1:-}" == "--check" ]]; then
