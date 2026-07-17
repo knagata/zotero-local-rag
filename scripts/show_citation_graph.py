@@ -50,11 +50,15 @@ import webbrowser
 from pathlib import Path
 
 from dotenv import load_dotenv
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 from src.item_vectors import get_item_vectors as _shared_get_item_vectors
 from src.chunk_store import get_item_chunks
-load_dotenv(Path(__file__).resolve().parents[1] / ".env")
+load_dotenv(PROJECT_ROOT / ".env")
 
-PROJECT_ROOT    = Path(__file__).resolve().parents[1]
 DB_PATH         = os.environ.get("RELATIONS_DB_PATH", str(PROJECT_ROOT / "data" / "relations.db"))
 CHROMA_DB       = os.environ.get("CHROMA_DIR", str(PROJECT_ROOT / "data" / "chroma")) + "/chroma.sqlite3"
 ZOTERO_SQLITE   = os.environ.get(
