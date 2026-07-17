@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -41,11 +42,33 @@ def _box_size(box: Any) -> tuple[float, float]:
         return 0.0, 0.0
 
 
+_PATHOLOGICAL_REPEAT_RE = re.compile(r"(.)\1{19,}")
+
+
+def _usable_ocr_text(value: Any) -> str:
+    """Discard layout artifacts while preserving ordinary textual repetition."""
+    text = str(value or "").strip()
+    if not text or _PATHOLOGICAL_REPEAT_RE.search(text):
+        return ""
+    return text
+
+
+def _trim_adjacent_overlap(previous: str, current: str, *, minimum: int = 12) -> str:
+    """Remove OCR region overlap without touching short, possibly intentional repeats."""
+    if len(current) >= minimum and current in previous:
+        return ""
+    limit = min(len(previous), len(current))
+    for size in range(limit, minimum - 1, -1):
+        if previous.endswith(current[:size]):
+            return current[size:].lstrip()
+    return current
+
+
 def lines_from_ndlocr_payload(payload: dict[str, Any]) -> tuple[list[str], list[float]]:
     """Return NDL's evaluated reading order and per-line confidences."""
     rows = [
         row for group in payload.get("contents", []) if isinstance(group, list)
-        for row in group if isinstance(row, dict) and str(row.get("text") or "").strip()
+        for row in group if isinstance(row, dict) and _usable_ocr_text(row.get("text"))
     ]
     # IDs are assigned after NDL's PAGE XML reading-order evaluation. Use them
     # instead of naïve y/x sorting, which interleaves Japanese multi-column text.
@@ -53,7 +76,20 @@ def lines_from_ndlocr_payload(payload: dict[str, Any]) -> tuple[list[str], list[
     vertical = sum(_box_size(row.get("boundingBox"))[1] > _box_size(row.get("boundingBox"))[0]
                    for row in rows) > len(rows) / 2
     separator = "" if vertical else "\n"
-    texts = [str(row.get("text") or "").strip() for row in rows]
+    texts: list[str] = []
+    seen: set[str] = set()
+    previous = ""
+    for row in rows:
+        text = _usable_ocr_text(row.get("text"))
+        normalized = " ".join(text.split())
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        text = _trim_adjacent_overlap(previous, text)
+        if not text:
+            continue
+        texts.append(text)
+        previous = text
     confidences = []
     for row in rows:
         try:

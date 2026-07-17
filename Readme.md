@@ -161,10 +161,18 @@ uv run python -m src.build_summaries --mode llm --force --item ITEMKEY \
 `--write-database` の明示指定が必要で、通常運用や夜間runnerからは呼び出しません。
 
 夜間ランナーは既定で最大5時間・20資料、Codex単独で実行し、レート制限時は正常停止します。
+再OCR工程は別ガード `NIGHTLY_REOCR_ENABLE=1` がない限り実行されません。有効時も候補上位2件が既定上限で、
+索引・要約のバックアップ、文字数・異常反復・grounding破棄率の前後レポートを
+`data/nightly_reocr_report.json` に保存します。品質ゲート失敗時は、その夜の後続処理を停止します。
 
 ```bash
 scripts/nightly_summaries.sh --check
 NIGHTLY_ENABLE=1 NIGHTLY_MAX_HOURS=5 NIGHTLY_MAX_ITEMS=20 scripts/nightly_summaries.sh
+
+# ゲート3完了後、再OCR候補も明示的に処理する場合のみ
+NIGHTLY_ENABLE=1 NIGHTLY_REOCR_ENABLE=1 \
+  NIGHTLY_REOCR_CANDIDATES=data/quality/reocr-candidates.json \
+  scripts/nightly_summaries.sh
 ```
 
 launchd雛形は `scripts/com.zotero-local-rag.nightly.plist.example` です。

@@ -655,6 +655,10 @@ def main() -> None:
     parser.add_argument("--embed-only", action="store_true")
     parser.add_argument("--resume-embed", action="store_true", help="Embed only IDs not already present.")
     parser.add_argument("--llm", help="Override LLM_SUMMARY, e.g. codex_cli:auto.")
+    parser.add_argument(
+        "--audit-output", type=Path,
+        help="Write per-item grounding verification statistics as JSON.",
+    )
     parser.add_argument("--max-items", type=int, help="Maximum items to process in this run.")
     parser.add_argument("--max-hours", type=float, help="Stop before starting another item after this many hours.")
     parser.add_argument(
@@ -673,6 +677,7 @@ def main() -> None:
     started = time.monotonic()
     processed = 0
     stop_reason = "completed"
+    audit_items: list[dict[str, Any]] = []
     if not args.embed_only:
         keys = [args.item] if args.item else list_item_keys()
         if args.max_items is not None:
@@ -691,6 +696,7 @@ def main() -> None:
                     break
                 raise
             processed += 1
+            audit_items.append(result)
             counts[result["status"]] += 1
             if result["status"] == "updated":
                 updated_keys.add(key)
@@ -707,10 +713,17 @@ def main() -> None:
         )
     elif not args.no_embed:
         print("No changed summaries to embed.")
-    print(json.dumps({
+    run_report = {
         "counts": dict(counts), "processed": processed, "stop_reason": stop_reason,
         "elapsed_seconds": round(time.monotonic() - started, 3),
-    }, ensure_ascii=False))
+        "items": audit_items,
+    }
+    if args.audit_output:
+        args.audit_output.parent.mkdir(parents=True, exist_ok=True)
+        args.audit_output.write_text(
+            json.dumps(run_report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8",
+        )
+    print(json.dumps(run_report, ensure_ascii=False))
 
 
 if __name__ == "__main__":

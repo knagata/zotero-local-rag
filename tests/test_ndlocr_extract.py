@@ -25,6 +25,24 @@ class NdlocrExtractTests(unittest.TestCase):
         texts, _ = lines_from_ndlocr_payload(payload)
         self.assertEqual(texts, ["First line\nSecond line"])
 
+    def test_discards_layout_repeat_artifacts_and_exact_duplicate_lines(self):
+        payload = {"contents": [[
+            {"id": 0, "text": "本文です。", "boundingBox": [[0, 0], [0, 10], [100, 0], [100, 10]]},
+            {"id": 1, "text": "子" * 40, "boundingBox": [[0, 20], [0, 30], [100, 20], [100, 30]]},
+            {"id": 2, "text": "本文です。", "boundingBox": [[0, 40], [0, 50], [100, 40], [100, 50]]},
+            {"id": 3, "text": "次の行です。", "boundingBox": [[0, 60], [0, 70], [100, 60], [100, 70]]},
+        ]]}
+        texts, _ = lines_from_ndlocr_payload(payload)
+        self.assertEqual(texts, ["本文です。\n次の行です。"])
+
+    def test_trims_long_adjacent_region_overlap(self):
+        payload = {"contents": [[
+            {"id": 0, "text": "前半から重複する十分に長い文章です。", "boundingBox": [[0, 0], [0, 10], [100, 0], [100, 10]]},
+            {"id": 1, "text": "重複する十分に長い文章です。後半へ続きます。", "boundingBox": [[0, 20], [0, 30], [100, 20], [100, 30]]},
+        ]]}
+        texts, _ = lines_from_ndlocr_payload(payload)
+        self.assertEqual(texts, ["前半から重複する十分に長い文章です。\n後半へ続きます。"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -8,10 +8,16 @@ MAX_HOURS="${NIGHTLY_MAX_HOURS:-5}"
 MAX_ITEMS="${NIGHTLY_MAX_ITEMS:-20}"
 LLM="${NIGHTLY_LLM:-codex_cli:gpt-5.6-luna}"
 LOG="$ROOT/data/nightly_summaries.log"
+REOCR_CANDIDATES="${NIGHTLY_REOCR_CANDIDATES:-$ROOT/data/quality/reocr-candidates.json}"
+REOCR_MAX_ITEMS="${NIGHTLY_REOCR_MAX_ITEMS:-2}"
 
 if [[ "${1:-}" == "--check" ]]; then
   [[ -x "$PYTHON" ]] || { echo "Python not executable: $PYTHON"; exit 1; }
   command -v codex >/dev/null || { echo "codex CLI not found"; exit 1; }
+  if [[ "${NIGHTLY_REOCR_ENABLE:-0}" == "1" ]]; then
+    command -v ndlocr-lite >/dev/null || { echo "ndlocr-lite not found"; exit 1; }
+    [[ -f "$REOCR_CANDIDATES" ]] || { echo "re-OCR candidates not found: $REOCR_CANDIDATES"; exit 1; }
+  fi
   echo "nightly prerequisites: ok (execution not started)"
   exit 0
 fi
@@ -25,6 +31,11 @@ mkdir -p "$ROOT/data"
 exec >>"$LOG" 2>&1
 echo "[$(date -Iseconds)] nightly summaries start"
 cd "$ROOT"
+if [[ "${NIGHTLY_REOCR_ENABLE:-0}" == "1" ]]; then
+  "$PYTHON" scripts/run_reocr_queue.py \
+    --candidates "$REOCR_CANDIDATES" --limit "$REOCR_MAX_ITEMS" --llm "$LLM" \
+    --output data/nightly_reocr_report.json
+fi
 caffeinate -i "$PYTHON" -m src.build_summaries \
   --mode llm --llm "$LLM" --stop-on-rate-limit \
   --max-hours "$MAX_HOURS" --max-items "$MAX_ITEMS"
