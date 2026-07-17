@@ -203,11 +203,19 @@ class CanonicalWorksTests(unittest.TestCase):
             "ITEM1", "c1", [{
                 "description": "交換の事例", "region": "Melanesia",
                 "practices": ["kula"], "phenomena": ["reciprocity"],
+                "evidence_quote": "Kula exchange was observed in Melanesia.",
             }], model="test",
         )
         self.assertEqual(db_relations.get_item_summary("ITEM1")["summary_en"], "English summary")
         self.assertEqual(db_relations.get_section_summaries("ITEM1")[0]["chapter"], "第一章")
         self.assertEqual(db_relations.get_case_annotations("ITEM1")[0]["practices"], "kula")
+        self.assertEqual(
+            db_relations.get_case_annotations("ITEM1")[0]["evidence_quote"],
+            "Kula exchange was observed in Melanesia.",
+        )
+        db_relations.delete_section_summary("ITEM1", "c1")
+        self.assertEqual(db_relations.get_section_summaries("ITEM1"), [])
+        self.assertEqual(db_relations.get_case_annotations("ITEM1"), [])
 
 
 if __name__ == "__main__":

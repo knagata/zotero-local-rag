@@ -25,13 +25,17 @@ class ReferenceReviewTests(unittest.TestCase):
         self.tempdir.cleanup()
 
     def test_staging_is_idempotent_and_does_not_create_work_edges(self):
-        references = [{"raw": "Author (2020). A title.", "title": "A title", "year": 2020}]
+        references = [{
+            "raw": "Author (2020). A title.", "title": "A title", "year": 2020,
+            "contributors": [{"name": "Author", "role": "author"}],
+        }]
         first = db_relations.stage_reference_candidates("ITEM", "heuristic", references)
         second = db_relations.stage_reference_candidates("ITEM", "heuristic", references)
         self.assertEqual(first, {"staged": 1, "updated": 0})
         self.assertEqual(second, {"staged": 0, "updated": 1})
         rows = db_relations.get_reference_review_candidates("pending")
         self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["contributors"], [{"name": "Author", "role": "author"}])
         self.assertTrue(db_relations.set_reference_review_status(rows[0]["review_id"], "rejected", "bad"))
         self.assertEqual(len(db_relations.get_reference_review_candidates("rejected")), 1)
         connection = db_relations.get_db_connection()

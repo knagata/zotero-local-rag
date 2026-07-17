@@ -16,8 +16,8 @@ import httpx
 try:
     from .chunk_store import active_collection_name, get_item_chunks, list_item_keys
     from .db_relations import (
-        get_case_annotations, get_item_summary, get_section_summaries, replace_case_annotations,
-        save_item_summary, save_section_summary, update_case_chunk,
+        delete_section_summary, get_case_annotations, get_item_summary, get_section_summaries,
+        replace_case_annotations, save_item_summary, save_section_summary, update_case_chunk,
     )
     from .embedder import create_embedding_function, open_chroma_collection, resolve_embedder_settings
     from .llm_client import LLMError, RateLimitReached, get_llm
@@ -26,8 +26,8 @@ try:
 except ImportError:  # pragma: no cover
     from chunk_store import active_collection_name, get_item_chunks, list_item_keys
     from db_relations import (
-        get_case_annotations, get_item_summary, get_section_summaries, replace_case_annotations,
-        save_item_summary, save_section_summary, update_case_chunk,
+        delete_section_summary, get_case_annotations, get_item_summary, get_section_summaries,
+        replace_case_annotations, save_item_summary, save_section_summary, update_case_chunk,
     )
     from embedder import create_embedding_function, open_chroma_collection, resolve_embedder_settings
     from llm_client import LLMError, RateLimitReached, get_llm
@@ -56,19 +56,59 @@ SECTION_SCHEMA: dict[str, Any] = {
                 "period": {"type": ["string", "null"]},
                 "locator_hint": {"type": ["string", "null"]},
                 "source_kind": {"type": ["string", "null"]},
+                "evidence_quote": {"type": "string"},
             },
             "required": [
                 "description", "region", "group", "practices", "phenomena", "period",
-                "locator_hint", "source_kind",
+                "locator_hint", "source_kind", "evidence_quote",
             ],
             "additionalProperties": False,
         }},
-        "chapter_authors": {"type": "array", "items": {"type": "string"}},
-        "first_publication_note": {"type": ["string", "null"]},
+        "chapter_authors": {"type": "array", "items": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "evidence_quote": {"type": "string"},
+            },
+            "required": ["name", "evidence_quote"],
+            "additionalProperties": False,
+        }},
+        "first_publication_note": {
+            "anyOf": [{
+                "type": "object",
+                "properties": {
+                    "note": {"type": "string"},
+                    "evidence_quote": {"type": "string"},
+                },
+                "required": ["note", "evidence_quote"],
+                "additionalProperties": False,
+            }, {"type": "null"}],
+        },
     },
     "required": ["summary", "cases", "chapter_authors", "first_publication_note"],
     "additionalProperties": False,
 }
+
+NON_CONTENT_HEADING_RE = re.compile(
+    r"^\s*(?:"
+    r"目次|contents?|table\s+of\s+contents|図版一覧|表一覧|口絵|凡例|奥付|索引|index|"
+    r"copyright|著作権(?:について|表示|注意)?|colophon|標題紙|title\s+page|half\s+title|"
+    r"cover|本著作物について|list\s+of\s+(?:illustrations|figures|tables)|"
+    r"series(?:\s+page|\s+list)?|シリーズ一覧|叢書一覧"
+    r")\s*$",
+    re.I,
+)
+TOC_ENTRY_RE = re.compile(r"(?:\.{3,}|…{2,}|・{3,})\s*\d+\s*$")
+CHAPTER_MARKER_RE = re.compile(
+    r"(?:第[一二三四五六七八九十百0-9]+章|序章|終章|chapter\s+\d+)", re.I,
+)
+SPECIFIC_VALUE_RE = re.compile(
+    r"https?://\S+|10\.\d{4,9}/\S+|"
+    r"(?:ISBN(?:-1[03])?[:\s]*)?[0-9Xx][0-9Xx\- ]{8,}|"
+    r"(?:18|19|20)\d{2}|\d+(?:\.\d+)?",
+    re.I,
+)
+QUOTED_VALUE_RE = re.compile(r"[『「“\"]([^』」”\"]{2,})[』」”\"]")
 
 ITEM_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -97,6 +137,159 @@ def split_sections(chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "chunks": ungrouped[start : start + SECTION_WINDOW],
         })
     return sections
+
+
+def _section_source_text(section: dict[str, Any]) -> str:
+    return "\n\n".join(
+        str(chunk.get("text") or "") for chunk in section["chunks"] if chunk.get("text")
+    )[:30000]
+
+
+def classify_section_content(section: dict[str, Any]) -> str:
+    """Conservatively reject front matter and table-of-contents-like sections."""
+    text = _section_source_text(section).strip()
+    minimum = max(0, int(os.environ.get("SUMMARY_MIN_SECTION_CHARS", "400")))
+    if len(text) < minimum:
+        return "non_content"
+    chapter = str(section.get("chapter") or "").strip()
+    first_line = text.splitlines()[0].strip() if text else ""
+    for heading in (chapter, first_line[:160]):
+        if heading and NON_CONTENT_HEADING_RE.fullmatch(heading):
+            return "non_content"
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    page_entries = sum(bool(TOC_ENTRY_RE.search(line)) for line in lines)
+    if len(lines) >= 5 and page_entries >= 3 and page_entries / len(lines) >= 0.3:
+        return "non_content"
+    # OCR often collapses a table of contents into long lines. Multiple chapter
+    # markers in a short section are safer to skip than to let the model fill in.
+    if len(text) < 5000 and len(CHAPTER_MARKER_RE.findall(text)) >= 3:
+        return "non_content"
+    return "content"
+
+
+def _normalize_evidence(value: Any) -> str:
+    return " ".join(str(value or "").split())
+
+
+def _new_verification_stats() -> dict[str, Any]:
+    return {
+        "cases": {"generated": 0, "kept": 0, "discarded": 0, "reasons": {}},
+        "chapter_authors": {"generated": 0, "kept": 0, "discarded": 0, "reasons": {}},
+        "first_publication_note": {"generated": 0, "kept": 0, "discarded": 0, "reasons": {}},
+        "total_generated": 0, "total_kept": 0, "total_discarded": 0,
+        "discard_rate": 0.0, "suspicious_section": False,
+    }
+
+
+def _record_verification(stats: dict[str, Any], field: str, kept: bool, reason: str = "") -> None:
+    bucket = stats[field]
+    bucket["generated"] += 1
+    stats["total_generated"] += 1
+    if kept:
+        bucket["kept"] += 1
+        stats["total_kept"] += 1
+    else:
+        bucket["discarded"] += 1
+        stats["total_discarded"] += 1
+        bucket["reasons"][reason] = bucket["reasons"].get(reason, 0) + 1
+
+
+def _note_values_supported(note: str, evidence_quote: str) -> bool:
+    normalized_quote = _normalize_evidence(evidence_quote).casefold()
+    specific = [match.group(0).rstrip(".,;:。、）)") for match in SPECIFIC_VALUE_RE.finditer(note)]
+    quoted = QUOTED_VALUE_RE.findall(note)
+    return all(_normalize_evidence(value).casefold() in normalized_quote for value in specific + quoted)
+
+
+def _case_specific_values_supported(case: dict[str, Any], evidence_quote: str) -> bool:
+    """Require dates, counts, identifiers, and other numerals to occur in the evidence."""
+    normalized_quote = _normalize_evidence(evidence_quote).casefold()
+    checked = " ".join(filter(None, [
+        str(case.get("description") or ""), str(case.get("period") or ""),
+        str(case.get("locator_hint") or ""),
+    ]))
+    values = [match.group(0).rstrip(".,;:。、）)") for match in SPECIFIC_VALUE_RE.finditer(checked)]
+    return all(_normalize_evidence(value).casefold() in normalized_quote for value in values)
+
+
+def _evidence_chunk_id(evidence_quote: str, chunks: list[dict[str, Any]]) -> str | None:
+    needle = _normalize_evidence(evidence_quote)
+    if not needle:
+        return None
+    for chunk in chunks:
+        if needle in _normalize_evidence(chunk.get("text")):
+            value = chunk.get("id")
+            return str(value) if value is not None else None
+    return None
+
+
+def _verify_section_result(
+    result: dict[str, Any], source_text: str, chunks: list[dict[str, Any]] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Keep only structured fields backed by an exact quote from the LLM input."""
+    normalized_source = _normalize_evidence(source_text)
+    verified: dict[str, Any] = {
+        "summary": str(result.get("summary") or ""),
+        "cases": [], "chapter_authors": [], "first_publication_note": None,
+    }
+    stats = _new_verification_stats()
+    for case in result.get("cases") or []:
+        if not isinstance(case, dict):
+            _record_verification(stats, "cases", False, "invalid_shape")
+            continue
+        quote = _normalize_evidence(case.get("evidence_quote"))
+        if not quote or quote not in normalized_source:
+            _record_verification(stats, "cases", False, "evidence_not_in_source")
+            continue
+        chunk_id = _evidence_chunk_id(quote, chunks or []) if chunks is not None else None
+        if chunks is not None and chunk_id is None:
+            _record_verification(stats, "cases", False, "evidence_not_in_chunk")
+            continue
+        if not _case_specific_values_supported(case, quote):
+            _record_verification(stats, "cases", False, "value_not_in_evidence")
+            continue
+        row = dict(case)
+        row["evidence_quote"] = quote
+        if chunks is not None:
+            row["chunk_id"] = chunk_id
+        verified["cases"].append(row)
+        _record_verification(stats, "cases", True)
+    for author in result.get("chapter_authors") or []:
+        if not isinstance(author, dict):
+            _record_verification(stats, "chapter_authors", False, "invalid_shape")
+            continue
+        name = _normalize_evidence(author.get("name"))
+        quote = _normalize_evidence(author.get("evidence_quote"))
+        if not quote or quote not in normalized_source:
+            _record_verification(stats, "chapter_authors", False, "evidence_not_in_source")
+            continue
+        if not name or name.casefold() not in quote.casefold():
+            _record_verification(stats, "chapter_authors", False, "name_not_in_evidence")
+            continue
+        verified["chapter_authors"].append({"name": name, "evidence_quote": quote})
+        _record_verification(stats, "chapter_authors", True)
+    publication = result.get("first_publication_note")
+    if publication is not None:
+        if not isinstance(publication, dict):
+            _record_verification(stats, "first_publication_note", False, "invalid_shape")
+        else:
+            note = _normalize_evidence(publication.get("note"))
+            quote = _normalize_evidence(publication.get("evidence_quote"))
+            if not quote or quote not in normalized_source:
+                _record_verification(
+                    stats, "first_publication_note", False, "evidence_not_in_source",
+                )
+            elif not note or not _note_values_supported(note, quote):
+                _record_verification(
+                    stats, "first_publication_note", False, "value_not_in_evidence",
+                )
+            else:
+                verified["first_publication_note"] = {"note": note, "evidence_quote": quote}
+                _record_verification(stats, "first_publication_note", True)
+    generated = stats["total_generated"]
+    stats["discard_rate"] = round(stats["total_discarded"] / generated, 4) if generated else 0.0
+    stats["suspicious_section"] = bool(generated and stats["discard_rate"] > 0.5)
+    return verified, stats
 
 
 def _metadata(chunks: list[dict[str, Any]]) -> dict[str, Any]:
@@ -156,13 +349,22 @@ def _excluded_from_llm(item_key: str) -> tuple[bool, str | None]:
 
 def _llm_section(section: dict[str, Any]) -> tuple[dict[str, Any], str]:
     client = get_llm("summary")
-    text = "\n\n".join(chunk["text"] for chunk in section["chunks"] if chunk.get("text"))[:30000]
+    text = _section_source_text(section)
     prompt = (
         "以下の学術資料の章を日本語200〜300字で要約し、民族誌的・経験的事例、章著者、"
         "初出情報をJSONで抽出してください。事例の二次言及も source_kind='secondary' として保持し、"
-        "根拠がない値は空配列またはnullにしてください。\n\n" + text
+        "根拠がない値は空配列またはnullにしてください。cases、chapter_authors、"
+        "first_publication_noteには、各値を直接裏付ける入力原文の連続した文字列を"
+        "evidence_quoteとして一字も変えずにコピーしてください。入力に存在しない知識、"
+        "日付、DOI、ISBN、著者名、誌名、URLを補完しないでください。各caseの"
+        "evidence_quoteはdescription・region・group・periodに書くすべての具体的事実を"
+        "その一つの引用だけで直接支持する必要があります。複数箇所を組み合わせないと"
+        "支持できないcaseは出力しないでください。OCR誤字や空白も修正せずコピーしてください。\n\n" + text
     )
-    return client.generate_json(prompt, schema=SECTION_SCHEMA, timeout=300), f"{client.provider}:{client.model}"
+    generated = client.generate_json(prompt, schema=SECTION_SCHEMA, timeout=300)
+    verified, stats = _verify_section_result(generated, text, section["chunks"])
+    verified["_verification"] = stats
+    return verified, f"{client.provider}:{client.model}"
 
 
 def _llm_item(title: str, section_rows: list[dict[str, Any]]) -> tuple[dict[str, Any], str]:
@@ -198,7 +400,13 @@ def build_item(item_key: str, *, mode: str = "extractive", force: bool = False) 
     section_rows: list[dict[str, Any]] = []
     model = "extractive"
     use_llm = mode == "llm"
+    skipped_non_content = 0
+    verification_by_section: list[dict[str, Any]] = []
     for section in split_sections(chunks):
+        if mode == "llm" and classify_section_content(section) == "non_content":
+            delete_section_summary(item_key, section["section_id"])
+            skipped_non_content += 1
+            continue
         if use_llm:
             try:
                 result, model = _llm_section(section)
@@ -212,18 +420,27 @@ def build_item(item_key: str, *, mode: str = "extractive", force: bool = False) 
         summary = str(result.get("summary") or "").strip()
         row = {"section_id": section["section_id"], "chapter": section["chapter"], "summary": summary}
         section_rows.append(row)
+        if result.get("_verification"):
+            verification_by_section.append({
+                "section_id": section["section_id"], **result["_verification"],
+            })
         authors = result.get("chapter_authors") or []
+        author_names = [
+            str(author.get("name") or "").strip() for author in authors if isinstance(author, dict)
+        ] if isinstance(authors, list) else []
+        publication = result.get("first_publication_note")
+        publication_note = publication.get("note") if isinstance(publication, dict) else None
         save_section_summary(
             item_key, section["section_id"], summary, chapter=section["chapter"], model=model,
             chunk_count=len(section["chunks"]),
-            chapter_authors="; ".join(authors) if isinstance(authors, list) else str(authors),
-            first_publication_note=result.get("first_publication_note"),
+            chapter_authors="; ".join(filter(None, author_names)),
+            first_publication_note=publication_note,
         )
         replace_case_annotations(item_key, section["section_id"], result.get("cases") or [], model=model)
 
     metadata = _metadata(chunks)
     title = str(metadata.get("title") or "")
-    if use_llm and model != "extractive":
+    if section_rows and use_llm and model != "extractive":
         try:
             item_result, model = _llm_item(title, section_rows)
         except RateLimitReached:
@@ -238,7 +455,21 @@ def build_item(item_key: str, *, mode: str = "extractive", force: bool = False) 
         item_key, summary, model, summary_en=str(item_result.get("summary_en") or ""),
         keywords="; ".join(keywords), chunk_count=len(chunks), source_mtime=source_mtime,
     )
-    return {"item_key": item_key, "status": "updated", "sections": len(section_rows), "model": model}
+    total_generated = sum(row["total_generated"] for row in verification_by_section)
+    total_discarded = sum(row["total_discarded"] for row in verification_by_section)
+    return {
+        "item_key": item_key, "status": "updated", "sections": len(section_rows), "model": model,
+        "skipped_non_content": skipped_non_content,
+        "verification": {
+            "total_generated": total_generated,
+            "total_discarded": total_discarded,
+            "discard_rate": round(total_discarded / total_generated, 4) if total_generated else 0.0,
+            "suspicious_sections": [
+                row["section_id"] for row in verification_by_section if row["suspicious_section"]
+            ],
+            "sections": verification_by_section,
+        },
+    }
 
 
 def embed_summaries(

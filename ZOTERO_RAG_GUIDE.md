@@ -53,6 +53,8 @@
 ### 5. `get_item_summary` / `search_cases`
 
 - `get_item_summary(item_key=...)`: 保存済みの資料要約全文をローカルDBから取得します。
+- 要約は検索候補を絞るための索引であり、引用可能な事実源ではありません。研究上の主張や
+  書誌情報は、検索結果の原文チャンクまたはZotero原資料で必ず確認してください。
 - `search_cases(query=..., region=...)`: 構造化された事例注釈と `rag_search(search_mode="case")` を統合します。事例注釈が未生成でも、直接段落検索へ自動フォールバックします。
 
 ### 4. `get_chunk_context` (文脈拡張・低コスト)

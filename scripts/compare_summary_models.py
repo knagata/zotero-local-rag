@@ -29,15 +29,26 @@ def compare_item(item_key: str, *, max_sections: int) -> dict:
     output = []
     for section in sections:
         extractive = build_summaries._extractive_section(section)
+        if build_summaries.classify_section_content(section) == "non_content":
+            output.append({
+                "section_id": section["section_id"], "chapter": section["chapter"],
+                "status": "skipped_non_content", "extractive_summary": extractive["summary"],
+                "llm_summary": None, "cases": [], "chapter_authors": [],
+                "first_publication_note": None, "verification": None,
+            })
+            continue
         generated, model = build_summaries._llm_section(section)
         output.append({
             "section_id": section["section_id"], "chapter": section["chapter"],
-            "model": model, "extractive_summary": extractive["summary"],
+            "status": "generated", "model": model, "extractive_summary": extractive["summary"],
             "llm_summary": generated.get("summary"), "cases": generated.get("cases") or [],
             "chapter_authors": generated.get("chapter_authors") or [],
             "first_publication_note": generated.get("first_publication_note"),
+            "verification": generated.get("_verification"),
         })
-    return {"item_key": item_key, "status": "compared", "sections": output}
+    statuses = {section["status"] for section in output}
+    status = "skipped_non_content" if statuses == {"skipped_non_content"} else "compared"
+    return {"item_key": item_key, "status": status, "sections": output}
 
 
 def main() -> None:

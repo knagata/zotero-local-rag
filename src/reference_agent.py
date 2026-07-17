@@ -46,10 +46,21 @@ REFERENCE_SCHEMA: dict[str, Any] = {
             "doi": {"type": ["string", "null"]}, "isbn": {"type": ["string", "null"]},
             "lang": {"type": ["string", "null"]}, "type": {"type": ["string", "null"]},
             "translation_note": {"type": ["string", "null"]},
+            "contributors": {"type": "array", "items": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "role": {"type": "string", "enum": [
+                        "author", "editor", "translator", "interviewer", "interviewee", "other",
+                    ]},
+                },
+                "required": ["name", "role"],
+                "additionalProperties": False,
+            }},
         },
         "required": [
             "raw", "authors", "title", "container", "year", "volume", "pages",
-            "publisher", "doi", "isbn", "lang", "type", "translation_note",
+            "publisher", "doi", "isbn", "lang", "type", "translation_note", "contributors",
         ],
         "additionalProperties": False,
     }}},
@@ -120,7 +131,10 @@ def extract_references(
         prompt = (
             "以下の参考文献・注記候補から各文献をJSONで構造化してください。rawは入力に存在する"
             "原文をそのまま返し、推測で文献を追加しないでください。邦訳併記はtranslation_noteへ"
-            "保存してください。\n\n" + text[:30000]
+            "保存してください。新聞・雑誌の欄名やコーナー名を著作タイトルにしないでください。"
+            "著者・編者・翻訳者・聞き手・被面接者はcontributorsで役割を区別してください。"
+            "――、同上等の著者略記は、入力中で直前の著者を確認できる場合だけ同一人物として"
+            "展開してください。\n\n" + text[:30000]
         )
         try:
             client = get_llm("extract")

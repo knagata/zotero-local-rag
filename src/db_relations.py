@@ -152,10 +152,15 @@ def _init_db(conn: sqlite3.Connection) -> None:
             period TEXT,
             chunk_id TEXT,
             source_kind TEXT,
+            evidence_quote TEXT,
             model TEXT,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+    try:
+        cursor.execute("ALTER TABLE case_annotations ADD COLUMN evidence_quote TEXT")
+    except sqlite3.OperationalError:
+        pass
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_case_item ON case_annotations(item_key)")
 
     # 外部論文（S2 paperId）の概要キャッシュ。
@@ -250,6 +255,7 @@ def _init_db(conn: sqlite3.Connection) -> None:
             raw_reference TEXT NOT NULL,
             title TEXT,
             authors_json TEXT,
+            contributors_json TEXT,
             year INTEGER,
             doi TEXT,
             isbn TEXT,
@@ -268,6 +274,7 @@ def _init_db(conn: sqlite3.Connection) -> None:
         )
     ''')
     for sql in (
+        "ALTER TABLE reference_review_queue ADD COLUMN contributors_json TEXT",
         "ALTER TABLE reference_review_queue ADD COLUMN committed_edge_id INTEGER",
         "ALTER TABLE reference_review_queue ADD COLUMN committed_at TIMESTAMP",
     ):
@@ -607,13 +614,14 @@ def stage_reference_candidates(
             authors = reference.get("authors") or []
             conn.execute('''
                 INSERT INTO reference_review_queue
-                    (item_key, raw_hash, raw_reference, title, authors_json, year,
+                    (item_key, raw_hash, raw_reference, title, authors_json, contributors_json, year,
                      doi, isbn, container, lang, work_type, extraction_model, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 ON CONFLICT(item_key, raw_hash) DO UPDATE SET
                     raw_reference = excluded.raw_reference,
                     title = excluded.title,
                     authors_json = excluded.authors_json,
+                    contributors_json = excluded.contributors_json,
                     year = excluded.year,
                     doi = excluded.doi,
                     isbn = excluded.isbn,
@@ -624,7 +632,9 @@ def stage_reference_candidates(
                     updated_at = CURRENT_TIMESTAMP
             ''', (
                 item_key, raw_hash, raw, reference.get("title"),
-                json.dumps(authors, ensure_ascii=False), reference.get("year"),
+                json.dumps(authors, ensure_ascii=False),
+                json.dumps(reference.get("contributors") or [], ensure_ascii=False),
+                reference.get("year"),
                 reference.get("doi"), reference.get("isbn"), reference.get("container"),
                 reference.get("lang"), reference.get("type"), model,
             ))
@@ -655,6 +665,10 @@ def get_reference_review_candidates(status: Optional[str] = None) -> List[Dict[s
                 row["authors"] = json.loads(row.pop("authors_json") or "[]")
             except (json.JSONDecodeError, TypeError):
                 row["authors"] = []
+            try:
+                row["contributors"] = json.loads(row.pop("contributors_json") or "[]")
+            except (json.JSONDecodeError, TypeError):
+                row["contributors"] = []
         return rows
     finally:
         conn.close()
@@ -812,6 +826,23 @@ def save_section_summary(
         conn.close()
 
 
+def delete_section_summary(item_key: str, section_id: str) -> None:
+    """Remove a skipped section and its derived cases idempotently."""
+    conn = get_db_connection()
+    try:
+        conn.execute(
+            "DELETE FROM case_annotations WHERE item_key = ? AND section_id = ?",
+            (item_key, section_id),
+        )
+        conn.execute(
+            "DELETE FROM section_summaries WHERE item_key = ? AND section_id = ?",
+            (item_key, section_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def replace_case_annotations(
     item_key: str, section_id: str, cases: List[Dict[str, Any]], *, model: str = "",
 ) -> None:
@@ -824,14 +855,15 @@ def replace_case_annotations(
         conn.executemany('''
             INSERT INTO case_annotations
                 (item_key, section_id, description, region, grp, practices, phenomena,
-                 period, chunk_id, source_kind, model, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                 period, chunk_id, source_kind, evidence_quote, model, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
         ''', [(
             item_key, section_id, case.get("description") or "", case.get("region"),
             case.get("group") or case.get("grp"),
             "; ".join(case.get("practices") or []) if isinstance(case.get("practices"), list) else case.get("practices"),
             "; ".join(case.get("phenomena") or []) if isinstance(case.get("phenomena"), list) else case.get("phenomena"),
-            case.get("period"), case.get("chunk_id"), case.get("source_kind"), model,
+            case.get("period"), case.get("chunk_id"), case.get("source_kind"),
+            case.get("evidence_quote"), model,
         ) for case in cases if case.get("description")])
         conn.commit()
     finally:

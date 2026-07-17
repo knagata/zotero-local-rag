@@ -1033,7 +1033,7 @@ def rag_search(
 
 @mcp.tool()
 def get_item_summary(item_key: str) -> Dict[str, Any]:
-    """Return a stored full-document summary without sending text to an external service."""
+    """Return a local search-index summary; verify research claims against source chunks."""
     summary = load_item_summary((item_key or "").strip())
     return {"item_key": item_key, "summary": summary}
 
