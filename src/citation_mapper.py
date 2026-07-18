@@ -561,7 +561,7 @@ def map_item_global_citations(item_key: str, title: str = "", year: str = "", cr
                 "mapped_count": 0}
 
     # S2 メタ情報を DB に保存（以降の処理でも参照できるよう早めに記録）
-    # 注: アブストラクトは Citation-Update では取得しない（S2 依存・API 制限回避）。
+    # 注: Citation Network更新ではアブストラクトを取得しない（S2依存・API制限回避）。
     #     概要は概要パネルの取得ボタンから Zotero local API 等でオンデマンド取得する。
     update_item_citation_status(
         item_key, "mapped",

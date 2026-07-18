@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Citation DB サマリーを表示する。
-Citation-Update.command の完了時に呼ばれる。
+Citation Network更新後のDB概要確認に使用する。
 """
 import os
 import sqlite3

@@ -64,7 +64,7 @@ rsync -a \
 # Ensure update scripts are executable
 chmod +x "$SCRIPT_DIR/Software-Update.command"
 chmod +x "$SCRIPT_DIR/Setup.command"
-chmod +x "$SCRIPT_DIR/Library-Update.command"
+chmod +x "$SCRIPT_DIR/Maintenance-Widget.command"
 
 echo "[4/4] Cleaning up temporary files..."
 rm -rf "$TMP_DIR" "$TMP_ZIP"

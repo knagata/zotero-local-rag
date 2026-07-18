@@ -2,7 +2,7 @@
 
 S2 を引用関係（被引用・参照）の取得に専念させ、以下を Crossref で補う:
   1. 外部論文ノードのアブストラクト表示（概要パネル）
-  2. Citation-Update で S2 に見つからなかった資料の書誌情報フォールバック
+  2. Citation Network更新で S2 に見つからなかった資料の書誌情報フォールバック
      （年・被引用数）
 
 Crossref（https://api.crossref.org）は認証不要・登録不要。User-Agent に

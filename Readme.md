@@ -69,9 +69,23 @@ Coreだけでも `search_zotero_items`、`search_items`、`rag_search`、`get_ch
 
 ## 日常の使い方
 
+### 三つの更新をまとめて実行する（推奨）
+
+macOSでは `Maintenance-Widget.command` をダブルクリックします。Terminalで次の三処理を実行するか順番に確認され、すべて既定値は「実行」です。通常運用ではEnterを4回押すだけで三処理を開始できます。
+
+1. ライブラリ更新
+2. 抽出型要約更新
+3. Citation Network更新
+
+```bash
+bash Maintenance-Widget.command
+```
+
+不要な処理だけ `n` を入力して除外できます。ログはそのままTerminalへ表示され、処理順は上記の順番に固定されます。前段が失敗した場合は、安全のため後続処理を開始しません。
+
 ### Zoteroライブラリを更新する
 
-Zoteroへ資料を追加・変更した後は、macOSで `Library-Update.command` をダブルクリックします。通常はメニュー1で差分だけ索引化されます。
+Zoteroへ資料を追加・変更した後は、統合commandでライブラリ更新だけを選ぶか、次を実行します。
 
 ```bash
 uv run src/index_from_zotero.py --progress
@@ -79,7 +93,7 @@ uv run src/index_from_zotero.py --progress
 
 ### 抽出型要約を更新する（Core）
 
-`Summary-Update.command` をダブルクリックするか、次を実行します。本文は外部へ送信されません。
+統合commandで抽出型要約だけを選ぶか、次を実行します。本文は外部へ送信されません。
 
 ```bash
 uv run python -m src.build_summaries
@@ -87,7 +101,7 @@ uv run python -m src.build_summaries
 
 ### Citation Networkを更新する（Level 2）
 
-`Citation-Update.command` をダブルクリックします。通常はメニュー3を選ぶと未処理・エラー分だけ再開します。
+統合commandでCitation Networkだけを選ぶか、次を実行します。未処理・エラー分だけ再開します。
 
 ```bash
 uv run src/update_citations.py --all
@@ -111,7 +125,7 @@ uv run python -m src.build_summaries --mode llm
 uv run python -m src.extract_references --item ITEMKEY
 ```
 
-参考文献抽出の通常操作は `Citation-Update.command` のメニュー6（プレビュー）と7（保存）からも実行できます。保存前後に原文根拠と安定識別子を検証し、不確実な候補は審査キューへ保留します。
+保存する場合は `--stage` で審査キューへ送り、レビュー後に確実な候補だけを反映します。原文根拠と安定識別子を検証し、不確実な候補は保留します。
 
 利用可能なMCPツールと推奨検索手順は [ZOTERO_RAG_GUIDE.md](ZOTERO_RAG_GUIDE.md) を参照してください。
 
@@ -266,9 +280,9 @@ macOSでは `Software-Update.command` をダブルクリックできます。`.e
 | 症状 | 確認事項 |
 |---|---|
 | `chroma_dir_exists: false` | `CHROMA_DIR`と初回インデックスを確認 |
-| `No collections found` | `Library-Update.command`またはインデクサーを実行 |
+| `No collections found` | 統合commandのライブラリ更新またはインデクサーを実行 |
 | `EMB resolve error` | `EMB_PROFILE`とモデルのローカルパスを確認 |
-| S2の429 | 待ってメニュー3を再実行。必要なら`S2_API_KEY`を設定 |
+| S2の429 | 待ってCitation Network更新を再実行。必要なら`S2_API_KEY`を設定 |
 | LLM処理が即停止 | APIキー、CLIログイン、除外タグ/全許可ポリシーを確認 |
 
 ログはMCPの `get_debug_logs` または `data/zotero-rag.log` で確認できます。

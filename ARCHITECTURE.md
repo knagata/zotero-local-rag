@@ -8,14 +8,14 @@
 flowchart TB
   subgraph CLIENT["👤 クライアント"]
     CD["Claude Desktop\n(LLM / MCPクライアント)"]
-    LUC["Library-Update\n.command / .bat"]
-    CUC["Citation-Update\n.command / .bat"]
-    SC["Setup\n.command / .bat"]
+    MUC["Maintenance-Widget.command\n日常更新の統合ランチャー"]
+    SC["Setup.command"]
   end
 
   subgraph CORE["⚙️ コアプログラム (src/)"]
     MCP["rag_mcp_server.py\nMCPサーバー"]
     IDX["index_from_zotero.py\nインデクサー"]
+    SUM["build_summaries.py\n抽出型要約"]
     UCT["update_citations.py\n引用情報CLIツール"]
   end
 
@@ -37,8 +37,9 @@ flowchart TB
   end
 
   CD -- "MCP プロトコル" --> MCP
-  LUC -- "uv run" --> IDX
-  CUC -- "uv run" --> UCT
+  MUC -- "1. uv run" --> IDX
+  MUC -- "2. uv run" --> SUM
+  MUC -- "3. uv run" --> UCT
   SC -- "setup_wizard.py" --> IDX
 
   MCP -- "ベクトル検索" --> CHROMA
@@ -66,7 +67,7 @@ flowchart TB
 
 ## 2. インデックス構築パイプライン
 
-`Library-Update.command` → `src/index_from_zotero.py` の処理フロー。
+`Maintenance-Widget.command` のライブラリ更新 → `src/index_from_zotero.py` の処理フロー。
 
 ```mermaid
 flowchart LR
@@ -165,11 +166,11 @@ flowchart LR
 
 ## 4. 引用ネットワーク構築フロー
 
-`build_citation_network` ツール（または `Citation-Update.command`）の処理フロー。`--resume-skipped` モードでスキップ済み EPUB 参照を後から再解決できます。
+`build_citation_network` ツール（または `Maintenance-Widget.command` のCitation Network更新）の処理フロー。`--resume-skipped` モードでスキップ済み EPUB 参照を後から再解決できます。
 
 ```mermaid
 flowchart TD
-  START["Citation-Update / build_citation_network\n(item_key)"] --> ZITEM
+  START["Citation Network更新 / build_citation_network\n(item_key)"] --> ZITEM
   RESUME["--resume-skipped モード"] --> RESUME_FIND
 
   subgraph PREP["準備 (update_citations.py)"]
@@ -235,7 +236,7 @@ flowchart TD
 |---|---|---|
 | `rag_mcp_server.py` | MCPサーバー本体。ツール定義・クエリ処理・Chroma接続管理 | 全 MCP ツール関数、`_col()`, `_z_api()` |
 | `index_from_zotero.py` | インデックス構築 CLI。Zotero 添付ファイルを全件処理 | `main_async()`, `_upsert_in_subbatches()` |
-| `update_citations.py` | 引用ネットワーク更新 CLI（Citation-Update 用）。`--resume-skipped` / `--epub-budget` フラグ対応。OpenAlex による DOI 解決・Zotero Web API 書き戻し | `main()`, `process_item()`, `query_openalex()`, `_zotero_web_patch_doi()`, `get_all_items()` |
+| `update_citations.py` | 引用ネットワーク更新 CLI。`--resume-skipped` / `--epub-budget` フラグ対応。OpenAlex による DOI 解決・Zotero Web API 書き戻し | `main()`, `process_item()`, `query_openalex()`, `_zotero_web_patch_doi()`, `get_all_items()` |
 | `citation_mapper.py` | S2 API 連携・引用チャンク照合・レート管理。EPUB 参照バジェット管理・スキップ済み再解決 | `find_s2_paper_id()`, `map_item_global_citations()`, `map_item_local_references()`, `resolve_skipped_epub_refs()`, `s2_request()`, `_s2_wait_and_claim()`, `_load_chunks_for_item()` |
 | `db_relations.py` | relations.sqlite3 の CRUD 操作。削除済みアイテムの purge・スキップ済み参照の再解決サポート | `insert_citation()`, `insert_reference()`, `get_citations_for_chunk()`, `get_references_for_item()`, `purge_removed_items()`, `get_skipped_epub_refs()`, `get_items_with_skipped_epub_refs()`, `update_reference_s2_data()` |
 | `embedder.py` | 埋め込みモデルのロード・ChromaDB コレクション初期化 | `get_collection()`, `_resolve_embedder_settings()` |

@@ -4927,7 +4927,7 @@ console.log('[RAG] sigma ready – nodes:', graph.order, 'edges:', graph.size,
       <div style="font-weight:600;margin-bottom:6px">Zoteroで編集してください</div>
       <ol>
         <li>Zoteroで該当アイテムの DOI / ISBN を修正する</li>
-        <li><code>Citation-Update.command</code> を実行する</li>
+        <li><code>Maintenance-Widget.command</code> でCitation Network更新を実行する</li>
         <li>ブラウザをリロードする</li>
       </ol>
       <div class="zeh-actions">

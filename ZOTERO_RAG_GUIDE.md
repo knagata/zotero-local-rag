@@ -112,7 +112,7 @@ ChromaDBのインデックスとメタデータを強制的にリロードしま
 
 - **`item_key`**: 対象のZotero `itemKey`。
 
-> **EPUB参照バジェットについて**: 脚注が大量にある書籍（編著など）では、重要度の低い参照は `s2_status='skipped'` として保留されます。`Citation-Update` のメニュー項目5「Resume skipped EPUB refs」（`--resume-skipped`）でバジェットを増やして後から再解決できます。
+> **EPUB参照バジェットについて**: 脚注が大量にある書籍（編著など）では、重要度の低い参照は `s2_status='skipped'` として保留されます。`uv run src/update_citations.py --resume-skipped` でバジェットを増やして後から再解決できます。
 
 ### 12. `get_references_for_item` / `get_chunk_references` (参照文献の取得)
 
@@ -284,7 +284,7 @@ PDF・HTML・EPUBの参考文献候補を構造化し、正準worksグラフへ�
    )
    → 関心のある所蔵文献群をまとめて引用している隣接研究を発見
 
-4. DOI・タイトルを確認してZoteroへ追加し、Library-Update後にrag_searchで本文を探索
+4. DOI・タイトルを確認してZoteroへ追加し、ライブラリ更新後にrag_searchで本文を探索
 ```
 
 結果にはランキング根拠となる所蔵 `itemKey` が含まれます。現段階の同一文献判定は
