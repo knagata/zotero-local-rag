@@ -167,7 +167,9 @@ def _process_item(
     replaced = db_relations.replace_extractive_summary_bundle(
         item_key, item_result["summary"], section_rows, model=model_name,
         chunk_count=len(chunks),
-        source_mtime=build_summaries._source_mtime(chunks, load_manifest()),
+        source_mtime=build_summaries._source_mtime(
+            chunks, load_manifest(build_summaries.MANIFEST_PATH),
+        ),
     )
     if not replaced:
         return {"item_key": item_key, "status": "protected_existing"}
