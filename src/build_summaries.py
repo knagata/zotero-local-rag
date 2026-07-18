@@ -140,6 +140,23 @@ ITEM_SCHEMA: dict[str, Any] = {
     "additionalProperties": False,
 }
 
+SUMMARY_ONLY_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "sentences": {"type": "array", "items": {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string"},
+                "evidence_unit_ids": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["text", "evidence_unit_ids"],
+            "additionalProperties": False,
+        }},
+    },
+    "required": ["sentences"],
+    "additionalProperties": False,
+}
+
 SELECTOR_SECTION_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -456,6 +473,114 @@ def _section_evidence_units(section: dict[str, Any]) -> list[dict[str, str]]:
                 "unit_id": f"u{len(units) + 1:04d}", "chunk_id": chunk_id, "text": text,
             })
     return units
+
+
+def _verify_summary_only_result(
+    result: dict[str, Any], units: list[dict[str, str]],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Validate sentence citations and source-bound concrete values."""
+    lookup = {unit["unit_id"]: unit for unit in units}
+    verified_sentences: list[dict[str, Any]] = []
+    reasons: Counter[str] = Counter()
+    generated = 0
+    for sentence in result.get("sentences") or []:
+        generated += 1
+        if not isinstance(sentence, dict):
+            reasons["invalid_shape"] += 1
+            continue
+        text = _normalize_evidence(sentence.get("text"))
+        ids = list(dict.fromkeys(
+            str(value or "") for value in sentence.get("evidence_unit_ids") or []
+        ))
+        if not text:
+            reasons["empty_sentence"] += 1
+            continue
+        if not ids:
+            reasons["missing_evidence_ids"] += 1
+            continue
+        if any(unit_id not in lookup for unit_id in ids):
+            reasons["invalid_evidence_id"] += 1
+            continue
+        evidence = " ".join(lookup[unit_id]["text"] for unit_id in ids)
+        if not _note_values_supported(text, evidence):
+            reasons["value_not_in_evidence"] += 1
+            continue
+        verified_sentences.append({
+            "text": text, "evidence_unit_ids": ids,
+            "evidence": [lookup[unit_id]["text"] for unit_id in ids],
+        })
+    summary = "".join(row["text"] for row in verified_sentences)
+    if is_meta_summary(summary):
+        reasons["meta_response"] += len(verified_sentences)
+        verified_sentences = []
+        summary = ""
+    kept = len(verified_sentences)
+    discarded = max(0, generated - kept)
+    discard_rate = round(discarded / generated, 4) if generated else 0.0
+    stats = {
+        "generated_sentences": generated, "kept_sentences": kept,
+        "discarded_sentences": discarded,
+        "discard_rate": discard_rate,
+        "reasons": dict(reasons),
+        "accepted": bool(kept >= 3 and discard_rate <= 0.5),
+    }
+    return {"summary": summary, "sentences": verified_sentences}, stats
+
+
+def _llm_summary_only_section(
+    section: dict[str, Any], *, model: str = "deepseek-v4-pro",
+    reasoning: str = "disabled",
+) -> tuple[dict[str, Any], str]:
+    """Generate only a cited section summary, without cases or quote transcription."""
+    units = _section_evidence_units(section)
+    if not units:
+        raise InvalidLLMResponse("Summary-only input has no evidence units.")
+    client = DeepSeekClient(model, thinking=reasoning)
+    source = "\n\n".join(f"[{unit['unit_id']}]\n{unit['text']}" for unit in units)
+    prompt = (
+        "以下の学術資料の節を、入力された内容だけに基づいて日本語で要約してください。"
+        "3〜5文、全体で200〜400字を目安にし、中心的な主張、対象、方法、具体的知見を"
+        "優先してください。各文には、その文全体を直接支持するevidence_unit_idsを1〜3個"
+        "付けてください。一つの文を支持できない複数箇所の寄せ集めは禁止します。"
+        "入力にない人物、場所、年代、数量、因果関係、評価を補わないでください。"
+        "事例、章著者、初出情報、引用文の抽出は行わず、要約文だけを返してください。\n\n"
+        + source
+    )
+    generated = client.generate_json(prompt, schema=SUMMARY_ONLY_SCHEMA, timeout=300)
+    verified, stats = _verify_summary_only_result(generated, units)
+    verified["_verification"] = stats
+    return verified, f"deepseek:{model}:summary-only:{reasoning}"
+
+
+def _llm_summary_only_item(
+    title: str, section_summaries: list[dict[str, Any]], *,
+    model: str = "deepseek-v4-pro", reasoning: str = "disabled",
+) -> tuple[dict[str, Any], str]:
+    """Synthesize a cited item summary from already verified section summaries."""
+    units = [
+        {
+            "unit_id": f"s{index:04d}",
+            "chunk_id": str(section.get("section_id") or ""),
+            "text": str(section.get("summary") or "").strip(),
+        }
+        for index, section in enumerate(section_summaries, start=1)
+        if str(section.get("summary") or "").strip()
+    ]
+    if not units:
+        raise InvalidLLMResponse("No verified section summaries are available.")
+    client = DeepSeekClient(model, thinking=reasoning)
+    source = "\n\n".join(f"[{unit['unit_id']}]\n{unit['text']}" for unit in units)
+    prompt = (
+        f"次の資料『{title}』の検証済み節要約を統合してください。"
+        "日本語4〜7文、400〜700字程度で、資料全体の主題、中心的主張、方法・対象、"
+        "主要な展開や結論を簡潔にまとめてください。各文に、その文全体を直接支持する"
+        "evidence_unit_idsを1〜3個付けてください。入力にない事実・数値・固有名詞を"
+        "補わず、著者評価やメタコメントも書かないでください。\n\n" + source
+    )
+    generated = client.generate_json(prompt, schema=SUMMARY_ONLY_SCHEMA, timeout=300)
+    verified, stats = _verify_summary_only_result(generated, units)
+    verified["_verification"] = stats
+    return verified, f"deepseek:{model}:summary-only:{reasoning}"
 
 
 def _hydrate_selector_result(
@@ -986,6 +1111,7 @@ def embed_summaries(
         chunks = get_item_chunks(item_key, chroma_dir=CHROMA_DIR, collection_name=base)
         metadata = _metadata(chunks)
         if summary:
+            summary_model = str(summary.get("model") or "")
             document = "\n".join(filter(None, [
                 str(metadata.get("title") or ""), str(metadata.get("creators") or ""),
                 str(summary.get("keywords") or ""), str(summary.get("summary") or ""),
@@ -994,15 +1120,20 @@ def embed_summaries(
             item_rows.append((f"sum:item:{item_key}", document, {
                 "itemKey": item_key, "title": str(metadata.get("title") or ""),
                 "creators": str(metadata.get("creators") or ""), "year": int(metadata.get("year") or 0),
+                "summary_model": summary_model,
+                "summary_kind": "extractive" if summary_model == "extractive" else "llm",
             }))
         for section in get_section_summaries(item_key):
+            section_model = str(section.get("model") or "")
             section_rows.append((
                 f"sum:sec:{item_key}:{section['section_id']}",
                 "\n".join(filter(None, [
                     str(metadata.get("title") or ""), str(section.get("chapter") or ""), section["summary"]
                 ]))[:900],
                 {"itemKey": item_key, "title": str(metadata.get("title") or ""),
-                 "chapter": str(section.get("chapter") or ""), "section_id": section["section_id"]},
+                 "chapter": str(section.get("chapter") or ""), "section_id": section["section_id"],
+                 "summary_model": section_model,
+                 "summary_kind": "extractive" if section_model == "extractive" else "llm"},
             ))
     for case in get_case_annotations():
         if item_keys is not None and case["item_key"] not in item_keys:

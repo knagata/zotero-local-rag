@@ -1309,6 +1309,49 @@ def save_section_summary(
         conn.close()
 
 
+def replace_extractive_summary_bundle(
+    item_key: str, item_summary: str, section_summaries: List[Dict[str, Any]], *,
+    model: str, chunk_count: Optional[int] = None, source_mtime: Optional[float] = None,
+) -> bool:
+    """Atomically replace one extractive hierarchy with verified LLM summaries.
+
+    If another process has already installed a non-extractive item summary, this
+    returns ``False`` and leaves every row unchanged.
+    """
+    conn = get_db_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT model FROM item_summaries WHERE item_key = ?", (item_key,),
+        ).fetchone()
+        if row is None or row["model"] != "extractive":
+            conn.rollback()
+            return False
+        conn.execute("DELETE FROM section_summaries WHERE item_key = ?", (item_key,))
+        for section in section_summaries:
+            conn.execute('''
+                INSERT INTO section_summaries
+                    (item_key, section_id, chapter, summary, model, chunk_count,
+                     chapter_authors, first_publication_note, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, CURRENT_TIMESTAMP)
+            ''', (
+                item_key, section["section_id"], section.get("chapter"),
+                section["summary"], model, section.get("chunk_count"),
+            ))
+        conn.execute('''
+            UPDATE item_summaries SET summary = ?, summary_en = NULL, keywords = NULL,
+                model = ?, chunk_count = ?, source_mtime = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE item_key = ?
+        ''', (item_summary, model, chunk_count, source_mtime, item_key))
+        conn.commit()
+        return True
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def delete_section_summary(item_key: str, section_id: str) -> None:
     """Remove a skipped section and its derived cases idempotently."""
     conn = get_db_connection()

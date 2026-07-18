@@ -29,6 +29,7 @@ class SummaryPipelineTests(unittest.TestCase):
                 assert_strict(variant)
 
         assert_strict(build_summaries.SECTION_SCHEMA)
+        assert_strict(build_summaries.SUMMARY_ONLY_SCHEMA)
         assert_strict(build_summaries.SELECTOR_SECTION_SCHEMA)
         assert_strict(build_summaries.SELECTOR_CASE_JUDGE_SCHEMA)
         assert_strict(build_summaries.ITEM_SCHEMA)
@@ -59,6 +60,61 @@ class SummaryPipelineTests(unittest.TestCase):
         self.assertEqual(len(source), 30000)
         self.assertTrue(all(unit["text"] in source for unit in units))
         self.assertEqual(sum(len(unit["text"]) for unit in units), 29998)
+
+    def test_summary_only_requires_valid_ids_and_supported_values(self):
+        units = [{
+            "unit_id": "u0001", "chunk_id": "a",
+            "text": "Alice conducted fieldwork in Fiji in 2020.",
+        }]
+        result = {"sentences": [{
+            "text": "Aliceは2020年にフィジーで現地調査を行った。",
+            "evidence_unit_ids": ["u0001"],
+        }, {
+            "text": "調査は2025年に終了した。", "evidence_unit_ids": ["u0001"],
+        }, {
+            "text": "存在しない根拠。", "evidence_unit_ids": ["u9999"],
+        }]}
+        verified, stats = build_summaries._verify_summary_only_result(result, units)
+        self.assertEqual(len(verified["sentences"]), 1)
+        self.assertEqual(verified["sentences"][0]["evidence_unit_ids"], ["u0001"])
+        self.assertEqual(stats["reasons"], {
+            "value_not_in_evidence": 1, "invalid_evidence_id": 1,
+        })
+        self.assertFalse(stats["accepted"])
+
+    def test_summary_only_accepts_three_fully_grounded_sentences(self):
+        units = [
+            {"unit_id": "u0001", "chunk_id": "a", "text": "The study began in 2020."},
+            {"unit_id": "u0002", "chunk_id": "a", "text": "It examined village exchange."},
+        ]
+        result = {"sentences": [
+            {"text": "研究は2020年に始まった。", "evidence_unit_ids": ["u0001"]},
+            {"text": "村落交換を検討した。", "evidence_unit_ids": ["u0002"]},
+            {"text": "研究は2020年の開始である。", "evidence_unit_ids": ["u0001"]},
+        ]}
+        verified, stats = build_summaries._verify_summary_only_result(result, units)
+        self.assertEqual(
+            verified["summary"],
+            "研究は2020年に始まった。村落交換を検討した。研究は2020年の開始である。",
+        )
+        self.assertTrue(stats["accepted"])
+
+    def test_item_summary_only_uses_verified_section_ids(self):
+        generated = {"sentences": [
+            {"text": "研究は2020年に開始された。", "evidence_unit_ids": ["s0001"]},
+            {"text": "村落交換を検討した。", "evidence_unit_ids": ["s0002"]},
+            {"text": "調査対象は交換実践である。", "evidence_unit_ids": ["s0002"]},
+        ]}
+        client = Mock(provider="deepseek", model="deepseek-v4-pro")
+        client.generate_json.return_value = generated
+        with patch.object(build_summaries, "DeepSeekClient", return_value=client):
+            result, model = build_summaries._llm_summary_only_item("Title", [
+                {"section_id": "w0", "summary": "研究は2020年に開始された。"},
+                {"section_id": "w1", "summary": "村落交換の実践を調査対象として検討した。"},
+            ])
+        self.assertTrue(result["_verification"]["accepted"])
+        self.assertEqual(result["sentences"][0]["evidence_unit_ids"], ["s0001"])
+        self.assertEqual(model, "deepseek:deepseek-v4-pro:summary-only:disabled")
 
     def test_selector_hydrates_quote_locally_and_rejects_unknown_id(self):
         section = {

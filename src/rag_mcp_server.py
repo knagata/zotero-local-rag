@@ -1037,10 +1037,12 @@ def hierarchical_search(
     return_summaries: bool = True,
     auto_expand: bool = True,
 ) -> Dict[str, Any]:
-    """Search item/section summaries, then retrieve evidence paragraphs.
+    """Search LLM item/section summaries, then retrieve evidence paragraphs.
 
     Use this for overview questions, literature discovery, or comparisons across
-    documents. For an exact quotation or an out-of-theme ethnographic case, use
+    documents that already have LLM summaries. Extractive-only documents bypass
+    summary routing and remain discoverable through the direct paragraph search.
+    For an exact quotation or an out-of-theme ethnographic case, use
     ``rag_search`` directly. Global paragraph retrieval remains enabled by default
     as a recall safeguard when a summary misses the relevant detail.
     """
@@ -1065,6 +1067,7 @@ def hierarchical_search(
             summary_collection = client.get_collection(f"{base_name}__{suffix}")
             response = summary_collection.query(
                 query_embeddings=embeddings, n_results=result_count,
+                where={"summary_kind": "llm"},
                 include=["metadatas", "documents", "distances"],
             )
         except Exception as exc:

@@ -254,6 +254,28 @@ class CanonicalWorksTests(unittest.TestCase):
         self.assertEqual(db_relations.get_section_summaries("ITEM1"), [])
         self.assertEqual(db_relations.get_case_annotations("ITEM1"), [])
 
+    def test_extractive_summary_bundle_replacement_is_atomic_and_guarded(self):
+        db_relations.save_item_summary("ITEM", "extractive", "extractive", chunk_count=2)
+        db_relations.save_section_summary(
+            "ITEM", "w0", "old section", model="extractive", chunk_count=1,
+        )
+        replaced = db_relations.replace_extractive_summary_bundle(
+            "ITEM", "LLM item", [{
+                "section_id": "w1", "chapter": "Chapter", "summary": "LLM section",
+                "chunk_count": 2,
+            }], model="deepseek:test", chunk_count=2, source_mtime=3.0,
+        )
+        self.assertTrue(replaced)
+        self.assertEqual(db_relations.get_item_summary("ITEM")["model"], "deepseek:test")
+        self.assertEqual(
+            [row["section_id"] for row in db_relations.get_section_summaries("ITEM")], ["w1"],
+        )
+        refused = db_relations.replace_extractive_summary_bundle(
+            "ITEM", "other", [], model="deepseek:other",
+        )
+        self.assertFalse(refused)
+        self.assertEqual(db_relations.get_item_summary("ITEM")["summary"], "LLM item")
+
 
 if __name__ == "__main__":
     unittest.main()

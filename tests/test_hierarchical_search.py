@@ -1,0 +1,43 @@
+from __future__ import annotations
+
+import sys
+import unittest
+from pathlib import Path
+from unittest.mock import Mock, patch
+
+
+ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
+import rag_mcp_server  # noqa: E402
+
+
+class HierarchicalSearchTests(unittest.TestCase):
+    def test_summary_routing_only_queries_llm_summaries(self):
+        summary_collection = Mock()
+        summary_collection.query.return_value = {
+            "metadatas": [[{"itemKey": "LLM", "title": "LLM summary"}]],
+        }
+        client = Mock()
+        client.get_collection.return_value = summary_collection
+        paragraphs = Mock()
+        paragraphs._embedding_function.return_value = [[0.1, 0.2]]
+        paragraphs._chroma_client = client
+
+        with patch.object(rag_mcp_server, "_col", return_value=paragraphs), patch.object(
+            rag_mcp_server, "rag_search", return_value={"results": []}
+        ), patch.object(
+            rag_mcp_server, "load_item_summary", return_value=None
+        ):
+            response = rag_mcp_server.hierarchical_search("gift exchange", auto_expand=False)
+
+        self.assertEqual(response["candidate_items"][0]["item_key"], "LLM")
+        self.assertEqual(summary_collection.query.call_count, 2)
+        for call in summary_collection.query.call_args_list:
+            self.assertEqual(call.kwargs["where"], {"summary_kind": "llm"})
+
+
+if __name__ == "__main__":
+    unittest.main()
