@@ -32,6 +32,7 @@ data/mapping_debug_ref.log
 data/pdf_cache/
 data/backups/
 data/quality/
+data/nightly_checkpoint/
 data/nightly_report.json
 
 # ── 設計メモ ─────────────────────────────────────────────
