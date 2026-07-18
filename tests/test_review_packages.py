@@ -35,6 +35,18 @@ class ReferenceReviewPackageTests(unittest.TestCase):
         self.assertNotIn("literal_isbn", classify_candidate(false_row)["flags"])
         self.assertIn("literal_isbn", classify_candidate(true_row)["flags"])
 
+    def test_detects_zwsp_obfuscated_doi_without_false_compound_year(self):
+        row = {
+            "review_id": 3, "item_key": "ITEM", "authors": [],
+            "raw_reference": (
+                "Author (2011). Title. https://\u200bdoi.\u200borg/\u200b"
+                "10.\u200b1016/\u200bj.\u200bgiq.\u200b2010.\u200b06.\u200b010"
+            ),
+        }
+        result = classify_candidate(row)
+        self.assertEqual(result["literal_identifiers"]["dois"], ["10.1016/j.giq.2010.06.010"])
+        self.assertNotIn("compound_reference", result["flags"])
+
     def test_package_fails_closed_for_blocked_item(self):
         rows = [
             {"review_id": 1, "item_key": "ALLOW", "raw_reference": "Author (2020). Title.", "authors": []},

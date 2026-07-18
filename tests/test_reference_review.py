@@ -138,6 +138,22 @@ class ReferenceReviewTests(unittest.TestCase):
             db_relations.get_reference_review_candidates("pending")[0]["status"], "pending"
         )
 
+    def test_zwsp_obfuscated_literal_doi_can_be_approved_and_committed(self):
+        raw = (
+            "Author (2020). A sufficiently distinctive title. "
+            "https://\u200bdoi.\u200borg/\u200b10.\u200b1145/\u200b3430368"
+        )
+        db_relations.stage_reference_candidates(
+            "ITEM", "epub-unverified", [{"raw": raw, "title": None}],
+        )
+        review_id = db_relations.get_reference_review_candidates()[0]["review_id"]
+        self.assertTrue(db_relations.apply_reference_review_decision({
+            "review_id": review_id, "status": "approved",
+            "title": "A sufficiently distinctive title", "authors": ["Author"],
+            "year": 2020, "doi": "10.1145/3430368", "note": "literal DOI with ZWSP",
+        }))
+        self.assertEqual(commit_approved_reference_candidates()["committed"], 1)
+
     def test_claude_decision_batch_is_atomic(self):
         db_relations.stage_reference_candidates("ITEM", "test", [
             {"raw": "Author (2020). First title.", "title": "First title"},

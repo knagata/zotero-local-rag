@@ -18,6 +18,7 @@ if str(ROOT) not in sys.path:
 from src.db_relations import get_reference_review_candidates
 from src.env_utils import load_dotenv_native
 from src.reference_agent import _item_excluded
+from src.reference_text import strip_unicode_format_characters
 
 DEFAULT_OUTPUT = ROOT / "dev-notes" / "reference_review_batches"
 DOI_RE = re.compile(r"\b10\.\d{4,9}/[-._;()/:a-z0-9]+", re.IGNORECASE)
@@ -39,10 +40,15 @@ INSTRUCTIONS = [
 
 def classify_candidate(row: dict[str, Any]) -> dict[str, Any]:
     raw = unicodedata.normalize("NFKC", str(row.get("raw_reference") or ""))
-    dois = sorted(set(match.rstrip(".,;)") for match in DOI_RE.findall(raw)))
-    isbns = sorted(set(re.sub(r"[^0-9Xx]", "", match) for match in ISBN_RE.findall(raw)))
+    identifier_text = strip_unicode_format_characters(raw)
+    dois = sorted(set(match.rstrip(".,;)") for match in DOI_RE.findall(identifier_text)))
+    isbns = sorted(set(
+        re.sub(r"[^0-9Xx]", "", match) for match in ISBN_RE.findall(identifier_text)
+    ))
     years = sorted(set(YEAR_RE.findall(raw)))
-    compound = len(years) > 1 or raw.count(";") >= 2
+    text_without_dois = DOI_RE.sub("", identifier_text)
+    bibliographic_years = set(YEAR_RE.findall(text_without_dois))
+    compound = len(bibliographic_years) > 1 or raw.count(";") >= 2
     flags = []
     if not row.get("title"):
         flags.append("missing_title")

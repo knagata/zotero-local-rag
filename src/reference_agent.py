@@ -20,12 +20,14 @@ try:
     )
     from .llm_client import LLMError, get_llm
     from .ndl_client import search_ndl
+    from .reference_text import strip_unicode_format_characters
 except ImportError:  # pragma: no cover
     from cinii_client import search_cinii
     from chunk_store import get_item_chunks
     from db_relations import get_canonical_work_id, get_reference_review_candidates, get_resolver_cache, mark_reference_review_committed, normalize_work_title, resolve_work, save_resolver_cache, save_work_edge
     from llm_client import LLMError, get_llm
     from ndl_client import search_ndl
+    from reference_text import strip_unicode_format_characters
 
 
 REFERENCE_HEADING = re.compile(
@@ -306,7 +308,7 @@ def commit_approved_reference_candidates(*, limit: int = 100) -> dict[str, Any]:
             totals["already_committed"] += 1
             continue
         raw = str(row.get("raw_reference") or "")
-        raw_folded = raw.casefold()
+        raw_folded = strip_unicode_format_characters(raw).casefold()
         doi = str(row.get("doi") or "").strip()
         isbn = str(row.get("isbn") or "").strip()
         doi_norm = re.sub(r"^(?:https?://(?:dx\.)?doi\.org/|doi:\s*)", "", doi.casefold())

@@ -113,7 +113,8 @@ uv run python -m src.reference_quality_report --status pending
 
 `apply-decisions` でも `approved` にできるのは、原文中に同じDOIまたはISBNが文字どおり
 存在する候補だけです。タイトル・年・識別子の捏造は一括適用時に拒否され、バッチ内に
-1件でも不正な判定があれば全件ロールバックされます。
+1件でも不正な判定があれば全件ロールバックされます。PDF等がURLへ挿入するゼロ幅
+スペースなどのUnicode書式文字は、可視本文を変えず識別子の検出・照合時だけ除去します。
 
 Gold QAは、保存済みケースと原文根拠からClaude向け候補を作り、返却結果を検証してから
 評価用JSONLへ変換できます。

@@ -8,6 +8,11 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
+try:
+    from .reference_text import strip_unicode_format_characters
+except ImportError:  # pragma: no cover - direct src/ entrypoints
+    from reference_text import strip_unicode_format_characters
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DB_PATH = os.environ.get("RELATIONS_DB_PATH", os.path.join(ROOT, "data", "relations.db"))
 _db_initialized = False
@@ -297,7 +302,9 @@ def _init_db(conn: sqlite3.Connection) -> None:
 
 
 def _normalize_identifier(value: Optional[str], kind: str) -> Optional[str]:
-    normalized = unicodedata.normalize("NFKC", value or "").strip().casefold()
+    normalized = unicodedata.normalize(
+        "NFKC", strip_unicode_format_characters(value),
+    ).strip().casefold()
     if not normalized:
         return None
     if kind == "doi":
@@ -727,8 +734,10 @@ def _prepare_reference_review_decision(
     if row is None:
         raise ValueError(f"review {review_id}: not found")
     raw = unicodedata.normalize("NFKC", str(row["raw_reference"] or ""))
+    identifier_raw = strip_unicode_format_characters(raw)
     raw_folded = raw.casefold()
-    raw_compact = re.sub(r"[^0-9x]", "", raw_folded)
+    identifier_raw_folded = identifier_raw.casefold()
+    raw_compact = re.sub(r"[^0-9x]", "", identifier_raw_folded)
 
     title = str(decision.get("title") or "").strip() or None
     if title:
@@ -742,7 +751,7 @@ def _prepare_reference_review_decision(
             raise ValueError(f"review {review_id}: year is not present in raw reference")
     doi = str(decision.get("doi") or "").strip() or None
     doi_norm = _normalize_identifier(doi, "doi") if doi else None
-    doi_verified = bool(doi_norm and doi_norm in raw_folded)
+    doi_verified = bool(doi_norm and doi_norm in identifier_raw_folded)
     if doi and not doi_verified:
         raise ValueError(f"review {review_id}: DOI is not present in raw reference")
     isbn = str(decision.get("isbn") or "").strip() or None

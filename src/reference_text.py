@@ -22,6 +22,11 @@ DOI_RE = re.compile(r"\b10\.\d{4,9}/[-._;()/:a-z0-9]+", re.IGNORECASE)
 REVIEW_RE = re.compile(r"\b(?:book\s+review|review\s+of)\b", re.IGNORECASE)
 
 
+def strip_unicode_format_characters(value: str | None) -> str:
+    """Remove invisible Unicode formatting characters without changing visible text."""
+    return "".join(char for char in (value or "") if unicodedata.category(char) != "Cf")
+
+
 def normalize_reference_text(value: str | None) -> str:
     """Normalize bibliographic text while retaining Unicode letters and words."""
     text = unicodedata.normalize("NFKD", value or "").casefold()
@@ -50,7 +55,7 @@ def s2_candidate_is_supported(raw_reference: str | None, candidate: dict[str, An
     author surname must occur. For legacy results without author metadata, an
     exact title plus matching year remains acceptable.
     """
-    raw = raw_reference or ""
+    raw = strip_unicode_format_characters(raw_reference)
     if not raw or is_short_form_reference(raw):
         return False
 
