@@ -20,7 +20,7 @@ if str(ROOT) not in sys.path:
 from src import build_summaries
 from src.chunk_store import get_item_chunks, list_item_keys
 from src.env_utils import load_dotenv_native
-from src.llm_client import LLMError, RateLimitReached
+from src.llm_client import InvalidLLMResponse, LLMError, RateLimitReached
 
 
 def _write_json_atomic(path: Path, value: dict) -> None:
@@ -62,7 +62,16 @@ def _compare_section(section: dict) -> dict:
         }
         result["classification"] = _classify(result)
         return result
-    generated, model = build_summaries._llm_section(section)
+    try:
+        generated, model = build_summaries._llm_section(section)
+    except InvalidLLMResponse as exc:
+        return {
+            "section_id": section["section_id"], "chapter": section["chapter"],
+            "status": "model_quality_failure", "classification": "model_quality_failure",
+            "error": str(exc), "extractive_summary": extractive["summary"],
+            "llm_summary": None, "cases": [], "chapter_authors": [],
+            "first_publication_note": None, "verification": None,
+        }
     result = {
         "section_id": section["section_id"], "chapter": section["chapter"],
         "status": "generated", "model": model, "extractive_summary": extractive["summary"],

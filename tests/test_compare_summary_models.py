@@ -6,9 +6,26 @@ from pathlib import Path
 from unittest.mock import patch
 
 from scripts import compare_summary_models
+from src.llm_client import InvalidLLMResponse
 
 
 class SummaryComparisonTests(unittest.TestCase):
+    def test_invalid_json_is_a_section_model_failure_not_provider_outage(self):
+        section = {
+            "section_id": "c0", "chapter": "Chapter",
+            "chunks": [{"id": "a", "text": "source text", "metadata": {}}],
+        }
+        with patch.object(
+            compare_summary_models.build_summaries, "classify_section_content",
+            return_value="content",
+        ), patch.object(
+            compare_summary_models.build_summaries, "_llm_section",
+            side_effect=InvalidLLMResponse("malformed JSON"),
+        ):
+            result = compare_summary_models._compare_section(section)
+        self.assertEqual(result["status"], "model_quality_failure")
+        self.assertEqual(result["classification"], "model_quality_failure")
+
     def test_zero_generated_evidence_is_accepted(self):
         result = {
             "status": "generated", "llm_summary": "資料の内容を要約した。",
