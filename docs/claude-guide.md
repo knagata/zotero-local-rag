@@ -122,11 +122,22 @@ ChromaDBのインデックスとメタデータを強制的にリロードしま
 - `get_references_for_item`: 資料全体に対する参照文献の一覧を取得
 - `get_chunk_references`: 特定の段落チャンクIDに対する参照文献を取得
 
+結果の `relation_key` は誤関係の報告に使う安定IDです。`context_count` と `raw_reference_count` は原文根拠の有無を判断する手がかりです。
+
 ### `get_cited_chunks_for_item` / `get_chunk_citations`
 
 マッピング済みのデータベースから、特定の資料（または段落チャンク）が「外部の論文からどのような文脈で引用されているか」を取得します。これにより、「この文献の中で最も外部から議論されている（引用されている）重要な段落はどこか？」を特定できます。
 - `get_cited_chunks_for_item`: 資料全体で被引用数が多い順にチャンク一覧を取得
 - `get_chunk_citations`: 特定の段落チャンクIDに対する被引用コンテキストの一覧を取得
+
+### `report_citation_relation` / `list_citation_relation_reports`
+
+- `report_citation_relation(relation_key, reason, details)`: 具体的な根拠がある誤関係を人間の確認待ちとして報告
+- `list_citation_relation_reports(status=...)`: `pending`、`disabled`、`kept`、`all` の報告状態を参照
+
+Semantic Scholarの関係は原則として信頼します。分野の違いや意外性だけでは報告してはいけません。原資料の参考文献一覧に存在しない、識別子が別著作を指す、引用方向が逆などの具体的根拠がある場合だけ報告します。
+
+報告は即時Disableではありません。最終判断は `Maintenance-Widget.command` で人間が行います。ClaudeはDisableやKeepを実行できません。
 
 ### `suggest_unowned_works`（未所蔵文献）
 

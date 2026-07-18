@@ -145,6 +145,13 @@ def get_item_ref_counts(conn: sqlite3.Connection, item_keys: list[str]) -> dict[
         SELECT citing_item_key, COUNT(DISTINCT cited_paper_id) AS ref_count
         FROM global_references
         WHERE citing_item_key IN ({placeholders})
+          AND NOT EXISTS (
+              SELECT 1 FROM relation_reports rr
+              WHERE rr.direction = 'references'
+                AND rr.item_key = global_references.citing_item_key
+                AND rr.external_paper_id = global_references.cited_paper_id
+                AND rr.status = 'disabled'
+          )
         GROUP BY citing_item_key
     """, item_keys).fetchall()
     return {r[0]: r[1] for r in rows}
@@ -170,8 +177,20 @@ def get_top_items(conn: sqlite3.Connection, limit: int) -> list[dict]:
             ics.isbn
         FROM (
             SELECT cited_item_key  AS item_key FROM global_citations
+            WHERE NOT EXISTS (
+                SELECT 1 FROM relation_reports rr
+                WHERE rr.direction = 'citations'
+                  AND rr.item_key = global_citations.cited_item_key
+                  AND rr.external_paper_id = global_citations.citing_paper_id
+                  AND rr.status = 'disabled')
             UNION
             SELECT citing_item_key AS item_key FROM global_references
+            WHERE NOT EXISTS (
+                SELECT 1 FROM relation_reports rr
+                WHERE rr.direction = 'references'
+                  AND rr.item_key = global_references.citing_item_key
+                  AND rr.external_paper_id = global_references.cited_paper_id
+                  AND rr.status = 'disabled')
         ) k
         LEFT JOIN (
             SELECT
@@ -179,6 +198,12 @@ def get_top_items(conn: sqlite3.Connection, limit: int) -> list[dict]:
                 COUNT(DISTINCT citing_paper_id)     AS citer_count,
                 COUNT(*)                            AS context_count
             FROM global_citations
+            WHERE NOT EXISTS (
+                SELECT 1 FROM relation_reports rr
+                WHERE rr.direction = 'citations'
+                  AND rr.item_key = global_citations.cited_item_key
+                  AND rr.external_paper_id = global_citations.citing_paper_id
+                  AND rr.status = 'disabled')
             GROUP BY cited_item_key
         ) cit ON cit.item_key = k.item_key
         LEFT JOIN item_citation_status ics ON ics.item_key = k.item_key
@@ -212,11 +237,25 @@ def get_item_row(conn: sqlite3.Connection, item_key: str) -> dict | None:
                 COUNT(*)                            AS context_count
             FROM global_citations
             WHERE cited_item_key = ?
+              AND NOT EXISTS (
+                  SELECT 1 FROM relation_reports rr
+                  WHERE rr.direction = 'citations'
+                    AND rr.item_key = global_citations.cited_item_key
+                    AND rr.external_paper_id = global_citations.citing_paper_id
+                    AND rr.status = 'disabled')
             GROUP BY cited_item_key
         ) cit ON 1=1
         LEFT JOIN item_citation_status ics ON ics.item_key = ?
         WHERE cit.item_key IS NOT NULL
-           OR EXISTS (SELECT 1 FROM global_references WHERE citing_item_key = ?)
+           OR EXISTS (
+               SELECT 1 FROM global_references
+               WHERE citing_item_key = ?
+                 AND NOT EXISTS (
+                     SELECT 1 FROM relation_reports rr
+                     WHERE rr.direction = 'references'
+                       AND rr.item_key = global_references.citing_item_key
+                       AND rr.external_paper_id = global_references.cited_paper_id
+                       AND rr.status = 'disabled'))
     """, (item_key, item_key, item_key, item_key)).fetchone()
     return dict(row) if row else None
 
@@ -241,6 +280,13 @@ def get_citers(conn: sqlite3.Connection, item_keys: list[str], per_item: int,
         FROM global_citations
         WHERE cited_item_key IN ({placeholders})
           AND citing_paper_id IS NOT NULL
+          AND NOT EXISTS (
+              SELECT 1 FROM relation_reports rr
+              WHERE rr.direction = 'citations'
+                AND rr.item_key = global_citations.cited_item_key
+                AND rr.external_paper_id = global_citations.citing_paper_id
+                AND rr.status = 'disabled'
+          )
           {cc_filter}
         GROUP BY cited_item_key, citing_paper_id
         ORDER BY cited_item_key, citing_citation_count DESC, context_count DESC
@@ -276,6 +322,13 @@ def get_refs(conn: sqlite3.Connection, item_keys: list[str], per_item: int,
         FROM global_references
         WHERE citing_item_key IN ({placeholders})
           AND cited_paper_id IS NOT NULL
+          AND NOT EXISTS (
+              SELECT 1 FROM relation_reports rr
+              WHERE rr.direction = 'references'
+                AND rr.item_key = global_references.citing_item_key
+                AND rr.external_paper_id = global_references.cited_paper_id
+                AND rr.status = 'disabled'
+          )
           {cc_filter}
         GROUP BY citing_item_key, cited_paper_id
         ORDER BY citing_item_key, cited_citation_count DESC, context_count DESC
@@ -312,6 +365,12 @@ def get_contexts_for_edge(db_path: str, src_id: str, tgt_id: str) -> list[dict]:
             rows = conn.execute("""
                 SELECT context_snippet, page_hint FROM global_citations
                 WHERE citing_paper_id = ? AND cited_item_key = ?
+                  AND NOT EXISTS (
+                      SELECT 1 FROM relation_reports rr
+                      WHERE rr.direction = 'citations'
+                        AND rr.item_key = global_citations.cited_item_key
+                        AND rr.external_paper_id = global_citations.citing_paper_id
+                        AND rr.status = 'disabled')
                   AND (context_snippet IS NOT NULL OR page_hint IS NOT NULL)
                 ORDER BY CASE WHEN context_snippet IS NOT NULL THEN 0 ELSE 1 END
             """, (_pid(src_id), _pid(tgt_id))).fetchall()
@@ -320,6 +379,12 @@ def get_contexts_for_edge(db_path: str, src_id: str, tgt_id: str) -> list[dict]:
             rows = conn.execute("""
                 SELECT context_snippet, page_hint FROM global_references
                 WHERE citing_item_key = ? AND cited_paper_id = ?
+                  AND NOT EXISTS (
+                      SELECT 1 FROM relation_reports rr
+                      WHERE rr.direction = 'references'
+                        AND rr.item_key = global_references.citing_item_key
+                        AND rr.external_paper_id = global_references.cited_paper_id
+                        AND rr.status = 'disabled')
                   AND (context_snippet IS NOT NULL OR page_hint IS NOT NULL)
                 ORDER BY CASE WHEN context_snippet IS NOT NULL THEN 0 ELSE 1 END
             """, (_pid(src_id), _pid(tgt_id))).fetchall()
@@ -2922,7 +2987,13 @@ renderer.on('clickEdge', function (ev) {
   var src  = graph.source(edge), tgt = graph.target(edge);
   var srcA = graph.getNodeAttributes(src);
   var tgtA = graph.getNodeAttributes(tgt);
+  var edgeA = graph.getEdgeAttributes(edge);
   var myReq = ++_ctxPaneReq;
+  var reportButton = edgeA.relationKey
+    ? '<button id="relation-report-btn" style="margin-left:auto;background:none;' +
+      'border:1px solid var(--outline-variant);border-radius:4px;color:var(--on-surface-variant);' +
+      'padding:3px 7px;cursor:pointer;font-size:10.5px">誤りを報告</button>'
+    : '';
 
   _showContextPane(
     '<div class="ctx-pane-header">' +
@@ -2931,6 +3002,7 @@ renderer.on('clickEdge', function (ev) {
         ' <span style="opacity:.6;font-size:0.85em">→</span> ' +
         esc(tgtA.fullTitle || tgtA.label) +
       '</div>' +
+      reportButton +
       '<div class="ctx-translate-wrap">' +
         '<span class="ctx-translate-label">翻訳</span>' +
         '<button class="ctx-toggle-btn' + (_translateToggle ? ' on' : '') + '" id="ctx-toggle"></button>' +
@@ -2938,6 +3010,39 @@ renderer.on('clickEdge', function (ev) {
     '</div>' +
     '<div id="ctx-body"><div class="edge-ctx-loading">読み込み中…</div></div>'
   );
+
+  var relationReportBtn = document.getElementById('relation-report-btn');
+  if (relationReportBtn) {
+    relationReportBtn.addEventListener('click', function() {
+      var details = window.prompt(
+        '誤りと思う具体的な根拠を入力してください。\n' +
+        '分野が違うという印象だけでなく、原資料に存在しない、別著作の識別子である、などを記載してください。'
+      );
+      if (!details || !details.trim()) return;
+      relationReportBtn.disabled = true;
+      relationReportBtn.textContent = '報告中…';
+      fetch('/api/relation/report', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          direction: edgeA.direction,
+          item_key: edgeA.itemKey,
+          external_paper_id: edgeA.externalPaperId,
+          external_title: edgeA.externalTitle || '',
+          reason: 'other',
+          details: details.trim()
+        })
+      }).then(function(r) { return r.json(); }).then(function(d) {
+        if (d.error) throw new Error(d.error);
+        relationReportBtn.textContent = '報告済み';
+        relationReportBtn.title = 'メンテナンス時の確認待ちです';
+      }).catch(function(e) {
+        relationReportBtn.disabled = false;
+        relationReportBtn.textContent = '誤りを報告';
+        window.alert('報告できませんでした: ' + e.message);
+      });
+    });
+  }
 
   fetch('/api/edge/contexts?src=' + encodeURIComponent(src) + '&tgt=' + encodeURIComponent(tgt))
     .then(function(r) { return r.json(); })
@@ -5315,6 +5420,11 @@ def build_graph_data(
                 "size":   max(0.5, min(4.0, d["context_count"] * 0.4)),
                 "color":  PALETTE["edgeDefault"],
                 "type":   "arrow",
+                "direction": "citations",
+                "itemKey": d["cited_item_key"],
+                "externalPaperId": pid,
+                "externalTitle": title,
+                "relationKey": f"citations:{d['cited_item_key']}:{pid}",
             })
 
     # ── reference-paper nodes + edges ─────────────────────────────────────
@@ -5382,6 +5492,11 @@ def build_graph_data(
                 "size":   max(0.5, min(3.0, d["context_count"] * 0.3)),
                 "color":  PALETTE["edgeDefault"],
                 "type":   "arrow",
+                "direction": "references",
+                "itemKey": d["citing_item_key"],
+                "externalPaperId": pid,
+                "externalTitle": title,
+                "relationKey": f"references:{d['citing_item_key']}:{pid}",
             })
 
     n_nodes = len(nodes)
@@ -5754,6 +5869,36 @@ def _route_edge_contexts(src: str, tgt: str) -> dict:
     return {"contexts": contexts}
 
 
+class _RelationReportRequest(BaseModel):
+    direction: str
+    item_key: str
+    external_paper_id: str
+    external_title: str = ""
+    reason: str = "other"
+    details: str
+
+
+@app.post("/api/relation/report")
+def _route_relation_report(body: _RelationReportRequest) -> JSONResponse:
+    """Queue a graph relation for human review; do not hide it immediately."""
+    try:
+        from db_relations import submit_relation_report
+        report = submit_relation_report(
+            direction=body.direction,
+            item_key=body.item_key,
+            external_paper_id=body.external_paper_id,
+            external_title=body.external_title,
+            reason=body.reason,
+            details=body.details,
+            reporter="citation-graph",
+        )
+        return JSONResponse({"ok": True, "report": report})
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
 _SRC_DIR = str(PROJECT_ROOT / "src")
 if _SRC_DIR not in sys.path:
     sys.path.insert(0, _SRC_DIR)
@@ -6082,6 +6227,13 @@ def main() -> None:
     if not os.path.exists(DB_PATH):
         print(f"Error: DB not found: {DB_PATH}", file=sys.stderr)
         sys.exit(1)
+
+    # Apply backward-compatible DB migrations before the visualizer's direct
+    # SQLite queries (notably the relation_reports exception table).
+    from src import db_relations as _db_relations
+    _db_relations.DB_PATH = DB_PATH
+    _migration_conn = _db_relations.get_db_connection()
+    _migration_conn.close()
 
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row

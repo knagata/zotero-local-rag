@@ -25,6 +25,7 @@ ask_enabled() {
 run_library=0
 run_summaries=0
 run_citations=0
+review_relations=0
 
 if ask_enabled "1. ライブラリを差分更新する"; then
     run_library=1
@@ -35,14 +36,18 @@ fi
 if ask_enabled "3. Citation Networkの未処理・エラー分を更新する"; then
     run_citations=1
 fi
+if ask_enabled "4. 報告された引用関係を確認する"; then
+    review_relations=1
+fi
 
 echo ""
 echo "実行予定:"
 if [[ "$run_library" == "1" ]]; then echo "  ✓ ライブラリ更新"; fi
 if [[ "$run_summaries" == "1" ]]; then echo "  ✓ 抽出型要約更新"; fi
 if [[ "$run_citations" == "1" ]]; then echo "  ✓ Citation Network更新"; fi
+if [[ "$review_relations" == "1" ]]; then echo "  ✓ 引用関係レポート確認"; fi
 
-if [[ "$run_library" == "0" && "$run_summaries" == "0" && "$run_citations" == "0" ]]; then
+if [[ "$run_library" == "0" && "$run_summaries" == "0" && "$run_citations" == "0" && "$review_relations" == "0" ]]; then
     echo "  （選択なし）"
     echo ""
     echo "更新を行わず終了します。"
@@ -82,6 +87,10 @@ fi
 
 if [[ "$run_citations" == "1" ]]; then
     run_step "Citation Network更新" uv run src/update_citations.py --all
+fi
+
+if [[ "$review_relations" == "1" ]]; then
+    run_step "引用関係レポート確認" uv run python scripts/review_relation_reports.py
 fi
 
 echo ""

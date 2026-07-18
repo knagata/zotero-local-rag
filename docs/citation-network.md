@@ -4,7 +4,7 @@ Citation Network更新は、Zotero資料の被引用情報とEPUBの参照文献
 
 ## 通常の更新
 
-macOSでは `Maintenance-Widget.command` をダブルクリックし、不要な処理を `n` で外して実行します。Citation Networkだけを実行する場合は、最初の二項目を `n`、三項目目をEnterで選択します。
+macOSでは `Maintenance-Widget.command` をダブルクリックし、不要な処理を `n` で外して実行します。Citation Network更新だけを実行する場合は、一・二・四項目を `n`、三項目をEnterで選択します。
 
 CLIから直接実行する場合:
 
@@ -46,6 +46,18 @@ uv run src/update_citations.py --resume-skipped --epub-budget 300
 7. `data/relations.db`へ保存
 
 OpenAlexの一致はタイトル類似度で検証されます。`ZOTERO_USER_ID`と`ZOTERO_API_KEY`の両方がある場合だけ、解決したDOIをZotero Web APIへ書き戻します。
+
+## S2データの訂正
+
+Semantic Scholarの引用・参照関係は原則としてそのまま利用します。全件をLLMや原文照合で再検証することはしません。
+
+誤った関係を見つけた場合は、Citation GraphのエッジまたはClaudeのMCPツールから報告できます。報告時点では関係は消えません。`Maintenance-Widget.command` の確認工程で人間が判断します。
+
+- Disable: 誤関係としてグラフ・MCP検索・推薦から除外
+- Keep: 正しい関係として維持
+- Enter: 判断せず保留
+
+DisableはDB行の削除ではなく、所蔵アイテムキーとS2 paper IDの安定した組み合わせで保存されます。Citation Networkを再取得しても復活しません。
 
 ## ステータス
 

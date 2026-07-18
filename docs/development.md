@@ -9,6 +9,15 @@ uv run python -m unittest discover -s tests -q
 uv run python -m compileall -q src scripts tests
 ```
 
+## 引用関係レポート
+
+```bash
+uv run python scripts/review_relation_reports.py
+uv run python scripts/review_relation_reports.py --list
+```
+
+Disableは元のS2データを削除せず、`relation_reports` の安定キーで検索・グラフから除外します。
+
 ## 主なディレクトリ
 
 | 場所 | 内容 |

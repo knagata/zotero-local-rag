@@ -317,6 +317,34 @@ def _init_db(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_reference_review_status "
         "ON reference_review_queue(status, item_key)"
     )
+
+    # Human-in-the-loop exception layer for S2 citation/reference relations.
+    # The stable identity is direction + local item key + external paper ID, so
+    # a disabled relation stays disabled even when S2 data is refreshed.
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS relation_reports (
+            report_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            direction TEXT NOT NULL CHECK(direction IN ('references', 'citations')),
+            item_key TEXT NOT NULL,
+            external_paper_id TEXT NOT NULL,
+            external_title TEXT,
+            reason TEXT NOT NULL,
+            details TEXT,
+            reporter TEXT NOT NULL DEFAULT 'mcp',
+            status TEXT NOT NULL DEFAULT 'pending'
+                CHECK(status IN ('pending', 'disabled', 'kept')),
+            report_count INTEGER NOT NULL DEFAULT 1,
+            reviewer_note TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            reviewed_at TIMESTAMP,
+            UNIQUE(direction, item_key, external_paper_id)
+        )
+    ''')
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_relation_reports_status "
+        "ON relation_reports(status, direction, item_key)"
+    )
     
     conn.commit()
 
@@ -1459,6 +1487,13 @@ def get_citations_for_chunk(chunk_id: str, limit: int = 3) -> List[Dict[str, Any
         query = '''
             SELECT * FROM global_citations
             WHERE cited_chunk_id = ?
+              AND NOT EXISTS (
+                  SELECT 1 FROM relation_reports rr
+                  WHERE rr.direction = 'citations'
+                    AND rr.item_key = global_citations.cited_item_key
+                    AND rr.external_paper_id = global_citations.citing_paper_id
+                    AND rr.status = 'disabled'
+              )
             ORDER BY citing_influential_count DESC, citing_citation_count DESC, similarity_distance ASC
         '''
         params = [chunk_id]
@@ -1479,6 +1514,13 @@ def get_cited_chunks_for_item(item_key: str) -> List[Dict[str, Any]]:
         FROM global_citations
         WHERE cited_item_key = ?
           AND cited_chunk_id IS NOT NULL
+          AND NOT EXISTS (
+              SELECT 1 FROM relation_reports rr
+              WHERE rr.direction = 'citations'
+                AND rr.item_key = global_citations.cited_item_key
+                AND rr.external_paper_id = global_citations.citing_paper_id
+                AND rr.status = 'disabled'
+          )
         GROUP BY cited_chunk_id
         ORDER BY citation_count DESC, best_distance ASC
     ''', (item_key,))
@@ -1514,6 +1556,13 @@ def get_references_for_chunk(chunk_id: str) -> List[Dict[str, Any]]:
                    cited_citation_count, cited_influential_count
             FROM global_references
             WHERE citing_chunk_id = ?
+              AND NOT EXISTS (
+                  SELECT 1 FROM relation_reports rr
+                  WHERE rr.direction = 'references'
+                    AND rr.item_key = global_references.citing_item_key
+                    AND rr.external_paper_id = global_references.cited_paper_id
+                    AND rr.status = 'disabled'
+              )
             ORDER BY cited_influential_count DESC, cited_citation_count DESC, similarity_distance ASC
         ''', (chunk_id,))
         rows = cursor.fetchall()
@@ -1528,12 +1577,282 @@ def get_references_for_item(item_key: str) -> List[Dict[str, Any]]:
         SELECT citing_chunk_id, COUNT(*) as reference_count, MIN(similarity_distance) as best_distance
         FROM global_references 
         WHERE citing_item_key = ? 
+          AND NOT EXISTS (
+              SELECT 1 FROM relation_reports rr
+              WHERE rr.direction = 'references'
+                AND rr.item_key = global_references.citing_item_key
+                AND rr.external_paper_id = global_references.cited_paper_id
+                AND rr.status = 'disabled'
+          )
         GROUP BY citing_chunk_id
         ORDER BY reference_count DESC, best_distance ASC
     ''', (item_key,))
     rows = cursor.fetchall()
     conn.close()
     return [dict(row) for row in rows]
+
+
+RELATION_REPORT_REASONS = {
+    "not_in_source", "wrong_work", "wrong_direction", "metadata_error", "other",
+}
+
+
+def relation_key(direction: str, item_key: str, external_paper_id: str) -> str:
+    """Return the stable public identifier used by the UI and MCP tools."""
+    return f"{direction}:{item_key.strip()}:{external_paper_id.strip()}"
+
+
+def _validate_relation_identity(
+    direction: str, item_key: str, external_paper_id: str,
+) -> tuple[str, str, str]:
+    direction = (direction or "").strip().lower()
+    item_key = (item_key or "").strip()
+    external_paper_id = (external_paper_id or "").strip()
+    if direction not in {"references", "citations"}:
+        raise ValueError("direction must be 'references' or 'citations'.")
+    if not item_key or not external_paper_id:
+        raise ValueError("item_key and external_paper_id are required.")
+    return direction, item_key, external_paper_id
+
+
+def _relation_exists(conn: sqlite3.Connection, direction: str, item_key: str,
+                     external_paper_id: str) -> bool:
+    if direction == "references":
+        row = conn.execute(
+            "SELECT 1 FROM global_references WHERE citing_item_key = ? "
+            "AND cited_paper_id = ? LIMIT 1",
+            (item_key, external_paper_id),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            "SELECT 1 FROM global_citations WHERE cited_item_key = ? "
+            "AND citing_paper_id = ? LIMIT 1",
+            (item_key, external_paper_id),
+        ).fetchone()
+    return row is not None
+
+
+def submit_relation_report(
+    *, direction: str, item_key: str, external_paper_id: str,
+    reason: str, details: Optional[str] = None, reporter: str = "mcp",
+    external_title: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Create or reopen a report without hiding the relation before review."""
+    direction, item_key, external_paper_id = _validate_relation_identity(
+        direction, item_key, external_paper_id,
+    )
+    reason = (reason or "").strip().lower()
+    if reason not in RELATION_REPORT_REASONS:
+        raise ValueError(
+            "reason must be one of: " + ", ".join(sorted(RELATION_REPORT_REASONS))
+        )
+    details = (details or "").strip() or None
+    reporter = (reporter or "mcp").strip() or "mcp"
+    external_title = (external_title or "").strip() or None
+    conn = get_db_connection()
+    try:
+        if not _relation_exists(conn, direction, item_key, external_paper_id):
+            raise ValueError("The specified citation/reference relation does not exist.")
+        conn.execute('''
+            INSERT INTO relation_reports
+                (direction, item_key, external_paper_id, external_title,
+                 reason, details, reporter, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')
+            ON CONFLICT(direction, item_key, external_paper_id) DO UPDATE SET
+                external_title = COALESCE(excluded.external_title, relation_reports.external_title),
+                reason = excluded.reason,
+                details = excluded.details,
+                reporter = excluded.reporter,
+                status = CASE WHEN relation_reports.status = 'disabled'
+                              THEN 'disabled' ELSE 'pending' END,
+                report_count = relation_reports.report_count + 1,
+                updated_at = CURRENT_TIMESTAMP,
+                reviewed_at = CASE WHEN relation_reports.status = 'disabled'
+                                   THEN relation_reports.reviewed_at ELSE NULL END
+        ''', (direction, item_key, external_paper_id, external_title,
+              reason, details, reporter))
+        conn.commit()
+        row = conn.execute('''
+            SELECT * FROM relation_reports
+            WHERE direction = ? AND item_key = ? AND external_paper_id = ?
+        ''', (direction, item_key, external_paper_id)).fetchone()
+        result = dict(row)
+        result["relation_key"] = relation_key(direction, item_key, external_paper_id)
+        return result
+    finally:
+        conn.close()
+
+
+def get_relation_reports(status: Optional[str] = "pending") -> List[Dict[str, Any]]:
+    """List relation reports, enriched with the latest stored relation metadata."""
+    if status is not None and status not in {"pending", "disabled", "kept"}:
+        raise ValueError("status must be pending, disabled, kept, or None.")
+    conn = get_db_connection()
+    try:
+        where = "WHERE rr.status = ?" if status is not None else ""
+        params = (status,) if status is not None else ()
+        rows = conn.execute(f'''
+            SELECT rr.*,
+                   COALESCE(rr.external_title,
+                       CASE rr.direction
+                           WHEN 'references' THEN (
+                               SELECT MAX(r.cited_title) FROM global_references r
+                               WHERE r.citing_item_key = rr.item_key
+                                 AND r.cited_paper_id = rr.external_paper_id)
+                           ELSE (
+                               SELECT MAX(c.citing_title) FROM global_citations c
+                               WHERE c.cited_item_key = rr.item_key
+                                 AND c.citing_paper_id = rr.external_paper_id)
+                       END) AS relation_title,
+                   CASE rr.direction
+                       WHEN 'references' THEN (
+                           SELECT COUNT(*) FROM global_references r
+                           WHERE r.citing_item_key = rr.item_key
+                             AND r.cited_paper_id = rr.external_paper_id)
+                       ELSE (
+                           SELECT COUNT(*) FROM global_citations c
+                           WHERE c.cited_item_key = rr.item_key
+                             AND c.citing_paper_id = rr.external_paper_id)
+                   END AS record_count,
+                   CASE rr.direction
+                       WHEN 'references' THEN (
+                           SELECT COUNT(*) FROM global_references r
+                           WHERE r.citing_item_key = rr.item_key
+                             AND r.cited_paper_id = rr.external_paper_id
+                             AND NULLIF(TRIM(r.context_snippet), '') IS NOT NULL)
+                       ELSE (
+                           SELECT COUNT(*) FROM global_citations c
+                           WHERE c.cited_item_key = rr.item_key
+                             AND c.citing_paper_id = rr.external_paper_id
+                             AND NULLIF(TRIM(c.context_snippet), '') IS NOT NULL)
+                   END AS context_count,
+                   CASE rr.direction
+                       WHEN 'references' THEN (
+                           SELECT MAX(r.raw_reference_text) FROM global_references r
+                           WHERE r.citing_item_key = rr.item_key
+                             AND r.cited_paper_id = rr.external_paper_id)
+                       ELSE NULL
+                   END AS sample_raw_reference,
+                   CASE rr.direction
+                       WHEN 'references' THEN (
+                           SELECT MAX(r.context_snippet) FROM global_references r
+                           WHERE r.citing_item_key = rr.item_key
+                             AND r.cited_paper_id = rr.external_paper_id)
+                       ELSE (
+                           SELECT MAX(c.context_snippet) FROM global_citations c
+                           WHERE c.cited_item_key = rr.item_key
+                             AND c.citing_paper_id = rr.external_paper_id)
+                   END AS sample_context
+            FROM relation_reports rr
+            {where}
+            ORDER BY rr.updated_at, rr.report_id
+        ''', params).fetchall()
+        output = []
+        for row in rows:
+            item = dict(row)
+            item["relation_key"] = relation_key(
+                item["direction"], item["item_key"], item["external_paper_id"],
+            )
+            output.append(item)
+        return output
+    finally:
+        conn.close()
+
+
+def review_relation_report(report_id: int, decision: str,
+                           reviewer_note: Optional[str] = None) -> bool:
+    """Resolve a pending report. ``disable`` hides it; ``keep`` retains it."""
+    status = {"disable": "disabled", "keep": "kept"}.get((decision or "").lower())
+    if status is None:
+        raise ValueError("decision must be 'disable' or 'keep'.")
+    conn = get_db_connection()
+    try:
+        cursor = conn.execute('''
+            UPDATE relation_reports
+            SET status = ?, reviewer_note = ?, reviewed_at = CURRENT_TIMESTAMP,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE report_id = ?
+        ''', (status, (reviewer_note or "").strip() or None, int(report_id)))
+        conn.commit()
+        return cursor.rowcount > 0
+    finally:
+        conn.close()
+
+
+def get_reference_relations_for_item(item_key: str,
+                                     include_disabled: bool = False) -> List[Dict[str, Any]]:
+    """Return one evidence-aware row per outgoing external relation."""
+    conn = get_db_connection()
+    try:
+        disabled = "" if include_disabled else "AND COALESCE(rr.status, '') <> 'disabled'"
+        rows = conn.execute(f'''
+            SELECT r.citing_item_key AS item_key, r.cited_paper_id AS external_paper_id,
+                   MAX(r.cited_title) AS external_title, MAX(r.cited_authors) AS external_authors,
+                   MAX(r.cited_year) AS external_year, MAX(r.cited_doi) AS external_doi,
+                   COUNT(*) AS record_count,
+                   SUM(CASE WHEN NULLIF(TRIM(r.context_snippet), '') IS NOT NULL THEN 1 ELSE 0 END)
+                       AS context_count,
+                   SUM(CASE WHEN NULLIF(TRIM(r.raw_reference_text), '') IS NOT NULL THEN 1 ELSE 0 END)
+                       AS raw_reference_count,
+                   GROUP_CONCAT(DISTINCT r.source) AS sources,
+                   rr.status AS review_status, rr.report_id
+            FROM global_references r
+            LEFT JOIN relation_reports rr
+              ON rr.direction = 'references' AND rr.item_key = r.citing_item_key
+             AND rr.external_paper_id = r.cited_paper_id
+            WHERE r.citing_item_key = ? AND NULLIF(TRIM(r.cited_paper_id), '') IS NOT NULL
+              {disabled}
+            GROUP BY r.citing_item_key, r.cited_paper_id
+            ORDER BY MAX(r.cited_citation_count) DESC, external_title COLLATE NOCASE
+        ''', (item_key,)).fetchall()
+        output = []
+        for row in rows:
+            item = dict(row)
+            item["direction"] = "references"
+            item["relation_key"] = relation_key(
+                "references", item_key, item["external_paper_id"],
+            )
+            output.append(item)
+        return output
+    finally:
+        conn.close()
+
+
+def get_citation_relations_for_item(item_key: str,
+                                    include_disabled: bool = False) -> List[Dict[str, Any]]:
+    """Return one evidence-aware row per incoming external relation."""
+    conn = get_db_connection()
+    try:
+        disabled = "" if include_disabled else "AND COALESCE(rr.status, '') <> 'disabled'"
+        rows = conn.execute(f'''
+            SELECT c.cited_item_key AS item_key, c.citing_paper_id AS external_paper_id,
+                   MAX(c.citing_title) AS external_title, MAX(c.citing_authors) AS external_authors,
+                   MAX(c.citing_year) AS external_year, MAX(c.citing_doi) AS external_doi,
+                   COUNT(*) AS record_count,
+                   SUM(CASE WHEN NULLIF(TRIM(c.context_snippet), '') IS NOT NULL THEN 1 ELSE 0 END)
+                       AS context_count,
+                   0 AS raw_reference_count, 's2' AS sources,
+                   rr.status AS review_status, rr.report_id
+            FROM global_citations c
+            LEFT JOIN relation_reports rr
+              ON rr.direction = 'citations' AND rr.item_key = c.cited_item_key
+             AND rr.external_paper_id = c.citing_paper_id
+            WHERE c.cited_item_key = ? AND NULLIF(TRIM(c.citing_paper_id), '') IS NOT NULL
+              {disabled}
+            GROUP BY c.cited_item_key, c.citing_paper_id
+            ORDER BY MAX(c.citing_citation_count) DESC, external_title COLLATE NOCASE
+        ''', (item_key,)).fetchall()
+        output = []
+        for row in rows:
+            item = dict(row)
+            item["direction"] = "citations"
+            item["relation_key"] = relation_key(
+                "citations", item_key, item["external_paper_id"],
+            )
+            output.append(item)
+        return output
+    finally:
+        conn.close()
 
 
 def normalize_work_title(title: Optional[str]) -> str:
@@ -1650,6 +1969,20 @@ def aggregate_unowned_works(
         WHEN NULLIF(TRIM({doi_col}), '') IS NOT NULL THEN 'doi:' || LOWER(TRIM({doi_col}))
         ELSE 'title:' || LOWER(TRIM({title_col})) END'''
     where = [f"NULLIF(TRIM({title_col}), '') IS NOT NULL"]
+    if direction == "references":
+        where.append(
+            "NOT EXISTS (SELECT 1 FROM relation_reports rr "
+            "WHERE rr.direction = 'references' "
+            f"AND rr.item_key = {item_col} AND rr.external_paper_id = {s2_col} "
+            "AND rr.status = 'disabled')"
+        )
+    else:
+        where.append(
+            "NOT EXISTS (SELECT 1 FROM relation_reports rr "
+            "WHERE rr.direction = 'citations' "
+            f"AND rr.item_key = {item_col} AND rr.external_paper_id = {s2_col} "
+            "AND rr.status = 'disabled')"
+        )
     params: list[Any] = []
     if scope_item_keys:
         placeholders = ",".join("?" for _ in scope_item_keys)
@@ -1729,12 +2062,26 @@ def get_coupling_pairs(item_key: str, limit: int = 100) -> List[Dict[str, Any]]:
                 FROM global_references r
                 WHERE r.citing_item_key = ?
                   AND NULLIF(TRIM(r.cited_title), '') IS NOT NULL
+                  AND NOT EXISTS (
+                      SELECT 1 FROM relation_reports rr
+                      WHERE rr.direction = 'references'
+                        AND rr.item_key = r.citing_item_key
+                        AND rr.external_paper_id = r.cited_paper_id
+                        AND rr.status = 'disabled'
+                  )
             ), candidate_refs AS (
                 SELECT DISTINCT c.citing_item_key AS item_key,
                        {candidate_identity} AS work_key
                 FROM global_references c
                 WHERE c.citing_item_key <> ?
                   AND NULLIF(TRIM(c.cited_title), '') IS NOT NULL
+                  AND NOT EXISTS (
+                      SELECT 1 FROM relation_reports rr
+                      WHERE rr.direction = 'references'
+                        AND rr.item_key = c.citing_item_key
+                        AND rr.external_paper_id = c.cited_paper_id
+                        AND rr.status = 'disabled'
+                  )
             )
             SELECT candidate_refs.item_key,
                    COUNT(*) AS shared_reference_count
@@ -1762,11 +2109,25 @@ def get_cocitation_pairs(item_key: str, limit: int = 100) -> List[Dict[str, Any]
                 FROM global_citations
                 WHERE cited_item_key = ?
                   AND NULLIF(TRIM(citing_paper_id), '') IS NOT NULL
+                  AND NOT EXISTS (
+                      SELECT 1 FROM relation_reports rr
+                      WHERE rr.direction = 'citations'
+                        AND rr.item_key = global_citations.cited_item_key
+                        AND rr.external_paper_id = global_citations.citing_paper_id
+                        AND rr.status = 'disabled'
+                  )
             ), candidate_pairs AS (
                 SELECT DISTINCT c.cited_item_key AS item_key, c.citing_paper_id
                 FROM global_citations c
                 JOIN target_citers t ON t.citing_paper_id = c.citing_paper_id
                 WHERE c.cited_item_key <> ?
+                  AND NOT EXISTS (
+                      SELECT 1 FROM relation_reports rr
+                      WHERE rr.direction = 'citations'
+                        AND rr.item_key = c.cited_item_key
+                        AND rr.external_paper_id = c.citing_paper_id
+                        AND rr.status = 'disabled'
+                  )
             )
             SELECT item_key, COUNT(*) AS shared_citer_count
             FROM candidate_pairs

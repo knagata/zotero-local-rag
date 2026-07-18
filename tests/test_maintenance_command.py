@@ -40,25 +40,27 @@ class MaintenanceCommandTests(unittest.TestCase):
             calls = log_path.read_text(encoding="utf-8").splitlines() if log_path.exists() else []
             return result, calls
 
-    def test_enter_defaults_run_all_three_updates(self):
-        result, calls = self.run_command("\n\n\n\n")
+    def test_enter_defaults_run_all_maintenance_steps(self):
+        result, calls = self.run_command("\n\n\n\n\n")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(calls, [
             "run src/index_from_zotero.py --progress",
             "run python -m src.build_summaries",
             "run src/update_citations.py --all",
+            "run python scripts/review_relation_reports.py",
         ])
 
     def test_user_can_skip_one_update(self):
-        result, calls = self.run_command("\nn\n\n\n")
+        result, calls = self.run_command("\nn\n\n\n\n")
         self.assertEqual(result.returncode, 0)
         self.assertEqual(calls, [
             "run src/index_from_zotero.py --progress",
             "run src/update_citations.py --all",
+            "run python scripts/review_relation_reports.py",
         ])
 
     def test_failure_stops_later_updates(self):
-        result, calls = self.run_command("\n\n\n\n", fail_first=True)
+        result, calls = self.run_command("\n\n\n\n\n", fail_first=True)
         self.assertEqual(result.returncode, 7)
         self.assertEqual(calls, ["run src/index_from_zotero.py --progress"])
         self.assertIn("後続処理を実行せず終了", result.stdout)

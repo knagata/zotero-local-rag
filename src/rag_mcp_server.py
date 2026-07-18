@@ -1622,6 +1622,11 @@ def get_chunk_citations(chunk_id: str) -> Dict[str, Any]:
     try:
         from db_relations import get_citations_for_chunk
         citations = get_citations_for_chunk(chunk_id)
+        for citation in citations:
+            if citation.get("cited_item_key") and citation.get("citing_paper_id"):
+                citation["relation_key"] = (
+                    f"citations:{citation['cited_item_key']}:{citation['citing_paper_id']}"
+                )
         return {
             "chunk_id": chunk_id,
             "citation_count": len(citations),
@@ -1646,8 +1651,13 @@ def get_cited_chunks_for_item(item_key: str, max_citations_per_chunk: int = 3) -
         return {"status": "blocked", "message": msg}
 
     try:
-        from db_relations import get_cited_chunks_for_item as get_chunks, get_citations_for_chunk
+        from db_relations import (
+            get_cited_chunks_for_item as get_chunks,
+            get_citation_relations_for_item,
+            get_citations_for_chunk,
+        )
         chunks = get_chunks(item_key)
+        relations = get_citation_relations_for_item(item_key)
         
         # Hydrate with actual chunk text via direct SQLite (avoids ChromaDB lock/hang)
         if chunks:
@@ -1667,7 +1677,13 @@ def get_cited_chunks_for_item(item_key: str, max_citations_per_chunk: int = 3) -
         return {
             "item_key": item_key,
             "cited_chunks_count": len(chunks),
-            "cited_chunks": chunks
+            "cited_chunks": chunks,
+            "citation_relations_count": len(relations),
+            "citation_relations": relations,
+            "reporting_note": (
+                "If a relation is demonstrably wrong, pass its relation_key to "
+                "report_citation_relation. Topic mismatch alone is not sufficient evidence."
+            ),
         }
     except Exception as e:
         return {"status": "error", "message": str(e)}
@@ -1723,6 +1739,11 @@ def get_chunk_references(chunk_id: str) -> Dict[str, Any]:
     try:
         from db_relations import get_references_for_chunk
         references = get_references_for_chunk(chunk_id)
+        for reference in references:
+            if reference.get("citing_item_key") and reference.get("cited_paper_id"):
+                reference["relation_key"] = (
+                    f"references:{reference['citing_item_key']}:{reference['cited_paper_id']}"
+                )
         return {
             "chunk_id": chunk_id,
             "reference_count": len(references),
@@ -1732,13 +1753,14 @@ def get_chunk_references(chunk_id: str) -> Dict[str, Any]:
         return {"status": "error", "message": str(e)}
 
 @mcp.tool()
-def get_references_for_item(item_key: str) -> Dict[str, Any]:
+def get_references_for_item(item_key: str, include_disabled: bool = False) -> Dict[str, Any]:
     """
     List all paragraph chunks within a specific Zotero item that cite external papers.
     Use this to see which parts of a document rely most heavily on external literature.
 
     Args:
         item_key: The parent Zotero item key (e.g., 'BGZ9UFUJ')
+        include_disabled: Include relations previously confirmed as wrong. Use only for auditing.
     """
 
     blocked, msg = _check_indexing_lock()
@@ -1746,8 +1768,15 @@ def get_references_for_item(item_key: str) -> Dict[str, Any]:
         return {"status": "blocked", "message": msg}
 
     try:
-        from db_relations import get_references_for_item as get_ref_chunks, get_references_for_chunk
+        from db_relations import (
+            get_reference_relations_for_item,
+            get_references_for_item as get_ref_chunks,
+            get_references_for_chunk,
+        )
         chunks = get_ref_chunks(item_key)
+        relations = get_reference_relations_for_item(
+            item_key, include_disabled=include_disabled,
+        )
 
         # Hydrate with chunk text via direct SQLite query (avoids ChromaDB lock/hang)
         if chunks:
@@ -1765,10 +1794,90 @@ def get_references_for_item(item_key: str) -> Dict[str, Any]:
         return {
             "item_key": item_key,
             "citing_chunks_count": len(chunks),
-            "citing_chunks": chunks
+            "citing_chunks": chunks,
+            "reference_relations_count": len(relations),
+            "reference_relations": relations,
+            "reporting_note": (
+                "Semantic Scholar relations are trusted by default. Report only a concrete "
+                "error, such as absence from the source bibliography or a wrong-work match; "
+                "topic mismatch alone is not sufficient evidence."
+            ),
         }
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
+
+@mcp.tool()
+def report_citation_relation(relation_key: str, reason: str, details: str) -> Dict[str, Any]:
+    """Report a demonstrably incorrect citation/reference relation for human review.
+
+    Reporting does not immediately hide the relation. A person decides whether to disable
+    or keep it during maintenance. Use a relation_key returned by get_references_for_item,
+    get_chunk_references, get_cited_chunks_for_item, or get_chunk_citations.
+
+    Do not report a relation merely because its subject area looks surprising. Report only
+    when there is concrete evidence, for example the cited work is absent from the source
+    bibliography, the identifier resolves to a different work, or the direction is wrong.
+
+    Args:
+        relation_key: Stable key in the form references:ITEMKEY:S2ID or citations:ITEMKEY:S2ID.
+        reason: One of not_in_source, wrong_work, wrong_direction, metadata_error, other.
+        details: Concise evidence explaining why review is warranted.
+    """
+    parts = (relation_key or "").strip().split(":", 2)
+    if len(parts) != 3 or not all(parts):
+        return {
+            "status": "error",
+            "message": "relation_key must be direction:ITEMKEY:EXTERNAL_PAPER_ID.",
+        }
+    if len((details or "").strip()) < 10:
+        return {
+            "status": "error",
+            "message": "details must contain concrete evidence (at least 10 characters).",
+        }
+    try:
+        from db_relations import submit_relation_report
+        report = submit_relation_report(
+            direction=parts[0], item_key=parts[1], external_paper_id=parts[2],
+            reason=reason, details=details, reporter="mcp:claude",
+        )
+        return {
+            "status": "reported",
+            "message": (
+                "The relation remains visible until a human reviews it during maintenance."
+            ),
+            "report": report,
+        }
+    except ValueError as exc:
+        return {"status": "error", "message": str(exc)}
+    except Exception as exc:
+        return {"status": "error", "message": f"Could not save report: {exc}"}
+
+
+@mcp.tool()
+def list_citation_relation_reports(status: str = "pending") -> Dict[str, Any]:
+    """List relation reports for audit without allowing Claude to decide the outcome.
+
+    Human review through Maintenance-Widget.command is required to Disable or Keep a
+    reported relation.
+
+    Args:
+        status: pending, disabled, kept, or all.
+    """
+    normalized = (status or "pending").strip().lower()
+    if normalized not in {"pending", "disabled", "kept", "all"}:
+        return {"status": "error", "message": "status must be pending, disabled, kept, or all."}
+    try:
+        from db_relations import get_relation_reports
+        reports = get_relation_reports(None if normalized == "all" else normalized)
+        return {
+            "status": normalized,
+            "report_count": len(reports),
+            "reports": reports,
+            "review_note": "Only a human maintenance review can Disable or Keep reports.",
+        }
+    except Exception as exc:
+        return {"status": "error", "message": str(exc)}
 
 
 @mcp.tool()

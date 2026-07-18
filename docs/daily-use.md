@@ -10,13 +10,14 @@ macOSでは `Maintenance-Widget.command` をダブルクリックします。
 bash Maintenance-Widget.command
 ```
 
-次の三項目がすべて既定で有効です。
+次の四項目がすべて既定で有効です。
 
 1. ライブラリ差分更新
 2. ローカル抽出型要約更新
 3. Citation Network更新
+4. Citation GraphまたはClaudeから報告された引用関係の確認
 
-通常はEnterを4回押すだけで開始できます。実行しない項目だけ `n` を入力します。前段が失敗した場合は、古いデータで後続処理をしないよう自動停止します。
+通常はEnterを5回押すだけで開始できます。実行しない項目だけ `n` を入力します。未確認レポートがある場合は、その後に個別にDisable、Keep、保留を選びます。Enterは安全側の保留です。前段が失敗した場合は、古いデータで後続処理をしないよう自動停止します。
 
 ## 個別にCLI実行する
 
@@ -29,6 +30,9 @@ uv run python -m src.build_summaries
 
 # Citation Network
 uv run src/update_citations.py --all
+
+# 報告された引用関係を確認
+uv run python scripts/review_relation_reports.py
 ```
 
 ## 基本的な検索の頼み方

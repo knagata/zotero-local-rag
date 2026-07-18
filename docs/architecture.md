@@ -258,7 +258,7 @@ flowchart TD
 |---|---|---|---|
 | `chroma/` | `data/chroma/` | ChromaDB (SQLite + HNSW) | 段落テキストの埋め込みベクトル、および `itemKey`, `attachmentKey`, `page`, `chapter`, `source_type` 等のメタデータ |
 | `manifest.json` | `data/` | JSON | 処理済み添付ファイルの `attachmentKey → mtime` マップ。差分インデックス更新に使用 |
-| `relations.db` | `data/` | SQLite | 著作、引用・参照、要約、審査キューを格納 |
+| `relations.db` | `data/` | SQLite | 著作、引用・参照、要約、審査キュー、誤関係の報告・Disable判定を格納 |
 | `zotero.sqlite` | Zoteroデータフォルダ | SQLite | Zoteroが管理する書誌データ。通常はローカルAPI経由で参照 |
 | `zotero-rag.log` | `data/` | テキスト | MCP サーバーのデバッグログ。`get_debug_logs` ツールで参照可能 |
 | `s2_rate.lock` | `data/` | テキスト | Semantic Scholar API のレート管理用タイムスタンプ。`fcntl.flock` によるプロセス間排他制御 |

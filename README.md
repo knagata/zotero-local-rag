@@ -55,11 +55,12 @@ Citation NetworkにはSemantic ScholarのAPIキーが必要です。
 
 macOSでは [Maintenance-Widget.command](Maintenance-Widget.command) をダブルクリックします。
 
-次の三処理が既定で選択されているため、通常はEnterを4回押すだけです。
+次の四処理が既定で選択されているため、通常はEnterを5回押すだけです。
 
 1. Zoteroライブラリの差分更新
 2. ローカル抽出型要約の更新
 3. Citation Networkの更新
+4. 報告された引用関係の確認
 
 不要な項目だけ `n` を入力して除外できます。ログはTerminalへ表示されます。
 
