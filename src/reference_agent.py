@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import re
+import unicodedata
 from difflib import SequenceMatcher
 from typing import Any
 
@@ -16,6 +17,7 @@ try:
     from .chunk_store import get_item_chunks
     from .db_relations import (
         apply_reference_metadata_resolution, apply_reference_metadata_resolutions,
+        apply_reference_structure_decisions,
         get_canonical_work_id,
         get_reference_review_candidates, get_resolver_cache,
         mark_reference_review_committed, normalize_work_title, resolve_work, save_resolver_cache,
@@ -31,7 +33,7 @@ except ImportError:  # pragma: no cover
     from cinii_client import search_cinii
     from crossref_client import search_crossref
     from chunk_store import get_item_chunks
-    from db_relations import apply_reference_metadata_resolution, apply_reference_metadata_resolutions, get_canonical_work_id, get_reference_review_candidates, get_resolver_cache, mark_reference_review_committed, normalize_work_title, resolve_work, save_resolver_cache, save_work_edge
+    from db_relations import apply_reference_metadata_resolution, apply_reference_metadata_resolutions, apply_reference_structure_decisions, get_canonical_work_id, get_reference_review_candidates, get_resolver_cache, mark_reference_review_committed, normalize_work_title, resolve_work, save_resolver_cache, save_work_edge
     from llm_client import LLMError, get_llm
     from ndl_client import search_ndl
     from reference_text import is_compound_reference, is_short_form_reference, normalize_reference_text, strip_unicode_format_characters
@@ -75,6 +77,35 @@ REFERENCE_SCHEMA: dict[str, Any] = {
         "additionalProperties": False,
     }}},
     "required": ["references"],
+    "additionalProperties": False,
+}
+
+REFERENCE_STRUCTURE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {"items": {"type": "array", "items": {
+        "type": "object",
+        "properties": {
+            "review_id": {"type": "integer"},
+            "classification": {
+                "type": "string",
+                "enum": ["full_reference", "short_citation", "commentary_or_body"],
+            },
+            "authors": {"type": "array", "items": {"type": "string"}},
+            "title": {"type": ["string", "null"]},
+            "year": {"type": ["integer", "null"]},
+            "container": {"type": ["string", "null"]},
+            "publisher": {"type": ["string", "null"]},
+            "doi": {"type": ["string", "null"]},
+            "isbn": {"type": ["string", "null"]},
+            "type": {"type": ["string", "null"]},
+        },
+        "required": [
+            "review_id", "classification", "authors", "title", "year", "container",
+            "publisher", "doi", "isbn", "type",
+        ],
+        "additionalProperties": False,
+    }}},
+    "required": ["items"],
     "additionalProperties": False,
 }
 
@@ -480,8 +511,16 @@ def resolve_reference(reference: dict[str, Any]) -> dict[str, Any]:
         if identified["status"] == "matched":
             candidate = identified["candidate"]
             confidence = float(identified["evidence"]["score"])
+            candidate_base = {
+                **base,
+                "title": candidate.get("title") or base["title"],
+                "authors": candidate.get("authors") or base["authors"],
+                "year": candidate.get("year") or base["year"],
+                "container": candidate.get("container") or base["container"],
+                "work_type": candidate.get("type") or base["work_type"],
+            }
             result = {
-                "work_id": resolve_work(**{**base, **{
+                "work_id": resolve_work(**{**candidate_base, **{
                     key: candidate.get(key) for key in STABLE_IDENTIFIER_FIELDS
                 }}),
                 "confidence": confidence, "source": candidate.get("source"),
@@ -567,7 +606,8 @@ def commit_approved_reference_candidates(*, limit: int = 100) -> dict[str, Any]:
         if metadata and stored_evidence.get("accepted"):
             reference_for_check = {
                 "raw": raw, "title": row.get("title"), "authors": row.get("authors") or [],
-                "year": row.get("year"),
+                "year": row.get("year"), "container": row.get("container"),
+                "type": row.get("work_type"),
             }
             rechecked = assess_metadata_candidate(
                 reference_for_check, metadata,
@@ -604,6 +644,173 @@ def commit_approved_reference_candidates(*, limit: int = 100) -> dict[str, Any]:
         if mark_reference_review_committed(int(row["review_id"]), edge_id):
             totals["committed"] += 1
     return totals
+
+
+def _validate_structure_decision(
+    row: dict[str, Any], decision: dict[str, Any],
+) -> dict[str, Any]:
+    review_id = int(row["review_id"])
+    if int(decision.get("review_id") or -1) != review_id:
+        raise ValueError(f"review {review_id}: structure response id mismatch")
+    classification = str(decision.get("classification") or "")
+    if classification not in {"full_reference", "short_citation", "commentary_or_body"}:
+        raise ValueError(f"review {review_id}: invalid structure classification")
+    normalized = dict(decision)
+    if classification != "full_reference":
+        return normalized
+    raw = str(row.get("raw_reference") or "")
+    normalized_raw = normalize_reference_text(raw)
+    title = str(decision.get("title") or "").strip()
+    if not title or normalize_reference_text(title).replace(" ", "") not in normalized_raw.replace(" ", ""):
+        raise ValueError(f"review {review_id}: extracted title is not present in raw reference")
+    authors = decision.get("authors")
+    if not isinstance(authors, list) or not authors:
+        raise ValueError(f"review {review_id}: full reference has no extracted author")
+    authors = [
+        str(author).strip() for author in authors
+        if normalize_reference_text(str(author)) not in {"et al", "ほか"}
+    ]
+    if not authors:
+        raise ValueError(f"review {review_id}: full reference has no explicit author")
+    normalized["authors"] = authors
+    raw_tokens = set(normalized_raw.split())
+    for author in authors:
+        signature = _author_signature(str(author))
+        if signature is None or signature[0] not in raw_tokens:
+            raise ValueError(f"review {review_id}: extracted author is not present in raw reference")
+    year = decision.get("year")
+    normalized_visible_raw = unicodedata.normalize(
+        "NFKC", strip_unicode_format_characters(raw),
+    )
+    if year is not None and str(int(year)) not in normalized_visible_raw:
+        raise ValueError(f"review {review_id}: extracted year is not present in raw reference")
+    raw_folded = strip_unicode_format_characters(raw).casefold()
+    doi = str(decision.get("doi") or "").strip()
+    if doi:
+        doi_normalized = re.sub(
+            r"^(?:https?://(?:dx\.)?doi\.org/|doi:\s*)", "", doi.casefold(),
+        )
+        if doi_normalized not in raw_folded:
+            raise ValueError(f"review {review_id}: extracted DOI is not present in raw reference")
+    isbn = str(decision.get("isbn") or "").strip()
+    if isbn:
+        isbn_normalized = re.sub(r"[^0-9x]", "", isbn.casefold())
+        raw_isbn = re.sub(r"[^0-9x]", "", raw_folded)
+        if len(isbn_normalized) not in {10, 13} or isbn_normalized not in raw_isbn:
+            raise ValueError(f"review {review_id}: extracted ISBN is not present in raw reference")
+    return normalized
+
+
+def restructure_unparsed_epub_references(
+    *, limit: int = 100, batch_size: int = 20,
+    reconsider_short: bool = False,
+    note_prefix: str = "unresolved: insufficient stable identifier",
+) -> dict[str, Any]:
+    """Classify and structure legacy EPUB note targets without changing the DB."""
+    # get_llm loads .env and .env.policy before the fail-closed tag checks below.
+    client = get_llm("extract")
+    eligible: list[dict[str, Any]] = []
+    excluded = 0
+    for row in get_reference_review_candidates("rejected", source_kind="epub-unverified"):
+        if len(eligible) >= max(limit, 0):
+            break
+        is_initial_candidate = bool(
+            not row.get("title")
+            and not row.get("structure_classification")
+            and str(row.get("reviewer_note") or "").startswith(note_prefix)
+        )
+        is_short_reconsideration = bool(
+            reconsider_short
+            and not row.get("title")
+            and row.get("structure_classification") == "short_citation"
+        )
+        if not (is_initial_candidate or is_short_reconsideration):
+            continue
+        is_excluded, _reason = _item_excluded(str(row["item_key"]))
+        if is_excluded:
+            excluded += 1
+            continue
+        eligible.append(row)
+    totals: dict[str, Any] = {
+        "examined": len(eligible), "excluded": excluded, "valid": 0, "invalid": 0,
+        "full_reference": 0, "short_citation": 0, "commentary_or_body": 0,
+        "model": None, "results": [],
+    }
+    if not eligible:
+        return totals
+    totals["model"] = f"{client.provider}:{client.model}"
+    batch_size = max(1, min(batch_size, 50))
+    for offset in range(0, len(eligible), batch_size):
+        batch = eligible[offset : offset + batch_size]
+        prompt_rows = [
+            {"review_id": int(row["review_id"]), "raw_reference": row["raw_reference"]}
+            for row in batch
+        ]
+        prompt = (
+            "EPUBの脚注・巻末注・参考文献候補を分類してください。full_referenceは、著者と"
+            "著作を同定できる書誌記述です。short_citationは前の注や参考文献一覧に依存する"
+            "短縮引用です。commentary_or_bodyは本文、注釈、単なる著作への言及、その他の"
+            "非書誌ノイズです。本文中で著作に触れているだけの場合はfull_referenceにしないで"
+            "ください。著者・書名に加えて刊年、出版社、掲載誌などがあり著作を単独で検索できる"
+            "記述は、末尾に参照ページがあってもfull_referenceです。著者と短い書名とページだけで"
+            "刊年・掲載先がなく、別の完全書誌に依存する場合だけshort_citationです。値を推測せず、"
+            "入力に明記された情報だけを返してください。非full_reference"
+            "では書誌フィールドをnullまたは空配列にしてください。各review_idをちょうど一度返して"
+            "ください。\n\n" + json.dumps(prompt_rows, ensure_ascii=False)
+        )
+        output = client.generate_json(prompt, schema=REFERENCE_STRUCTURE_SCHEMA, timeout=300)
+        decisions = output.get("items") or []
+        expected_ids = {int(row["review_id"]) for row in batch}
+        actual_ids = [int(decision.get("review_id") or -1) for decision in decisions]
+        if len(actual_ids) != len(set(actual_ids)) or set(actual_ids) != expected_ids:
+            raise ValueError("structure response coverage mismatch")
+        rows_by_id = {int(row["review_id"]): row for row in batch}
+        for decision in decisions:
+            review_id = int(decision["review_id"])
+            result = dict(decision)
+            try:
+                _validate_structure_decision(rows_by_id[review_id], decision)
+                result["valid"] = True
+                totals["valid"] += 1
+                totals[decision["classification"]] += 1
+            except ValueError as exc:
+                result["valid"] = False
+                result["validation_error"] = str(exc)
+                totals["invalid"] += 1
+            totals["results"].append(result)
+    return totals
+
+
+def apply_reference_structure_report(
+    results: list[dict[str, Any]], *, model: str,
+) -> dict[str, int]:
+    """Revalidate and atomically apply valid structure classifications."""
+    current = {
+        int(row["review_id"]): row
+        for row in get_reference_review_candidates("rejected", source_kind="epub-unverified")
+    }
+    decisions: list[dict[str, Any]] = []
+    skipped_invalid = 0
+    for result in results:
+        review_id = int(result["review_id"])
+        row = current.get(review_id)
+        if row is None:
+            raise ValueError(f"review {review_id}: no longer eligible for structure classification")
+        decision = {
+            key: value for key, value in result.items()
+            if key not in {"valid", "validation_error"}
+        }
+        try:
+            decisions.append(_validate_structure_decision(row, decision))
+        except ValueError:
+            if result.get("valid"):
+                raise
+            skipped_invalid += 1
+    applied = apply_reference_structure_decisions(decisions, model=model) if decisions else 0
+    return {
+        "valid_in_report": len(decisions), "skipped_invalid": skipped_invalid,
+        "applied": applied,
+    }
 
 
 def resolve_reference_review_candidates(
@@ -666,6 +873,7 @@ def apply_reference_metadata_report(
         reference = {
             "raw": row.get("raw_reference"), "title": row.get("title"),
             "authors": row.get("authors") or [], "year": row.get("year"),
+            "container": row.get("container"), "type": row.get("work_type"),
         }
         evidence = assess_metadata_candidate(
             reference, candidate,
@@ -683,6 +891,7 @@ def apply_reference_metadata_report(
 __all__ = [
     "detect_reference_sections", "extract_references", "extract_references_for_item",
     "commit_approved_reference_candidates", "identify_reference_metadata",
-    "apply_reference_metadata_report", "parse_reference_lines", "resolve_reference",
+    "apply_reference_metadata_report", "apply_reference_structure_report",
+    "parse_reference_lines", "resolve_reference", "restructure_unparsed_epub_references",
     "resolve_reference_review_candidates",
 ]

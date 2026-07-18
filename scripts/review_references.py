@@ -17,8 +17,9 @@ from src.db_relations import (
     set_reference_review_status,
 )
 from src.reference_agent import (
-    apply_reference_metadata_report, commit_approved_reference_candidates,
-    resolve_reference_review_candidates,
+    apply_reference_metadata_report, apply_reference_structure_report,
+    commit_approved_reference_candidates, resolve_reference_review_candidates,
+    restructure_unparsed_epub_references,
 )
 
 
@@ -53,6 +54,13 @@ def main() -> None:
     resolve_parser.add_argument("--output", type=Path)
     apply_metadata_parser = subparsers.add_parser("apply-metadata-report")
     apply_metadata_parser.add_argument("path", type=Path)
+    restructure_parser = subparsers.add_parser("restructure-epub")
+    restructure_parser.add_argument("--limit", type=int, default=100)
+    restructure_parser.add_argument("--batch-size", type=int, default=20)
+    restructure_parser.add_argument("--reconsider-short", action="store_true")
+    restructure_parser.add_argument("--output", type=Path)
+    apply_structure_parser = subparsers.add_parser("apply-structure-report")
+    apply_structure_parser.add_argument("path", type=Path)
     apply_parser = subparsers.add_parser("apply-decisions")
     apply_parser.add_argument("path", type=Path)
     apply_parser.add_argument("--expected-batch", type=Path)
@@ -86,6 +94,32 @@ def main() -> None:
             raise ValueError("metadata report must contain a results array")
         print(json.dumps(
             apply_reference_metadata_report(results), ensure_ascii=False, indent=2,
+        ))
+        return
+    if args.command == "restructure-epub":
+        result = restructure_unparsed_epub_references(
+            limit=args.limit, batch_size=args.batch_size,
+            reconsider_short=args.reconsider_short,
+        )
+        rendered = json.dumps(result, ensure_ascii=False, indent=2)
+        if args.output:
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            args.output.write_text(rendered + "\n", encoding="utf-8")
+            print(json.dumps({
+                key: value for key, value in result.items() if key != "results"
+            }, ensure_ascii=False, indent=2))
+        else:
+            print(rendered)
+        return
+    if args.command == "apply-structure-report":
+        payload = json.loads(args.path.read_text(encoding="utf-8"))
+        results = payload.get("results") if isinstance(payload, dict) else None
+        model = payload.get("model") if isinstance(payload, dict) else None
+        if not isinstance(results, list) or not isinstance(model, str) or not model:
+            raise ValueError("structure report must contain model and results")
+        print(json.dumps(
+            apply_reference_structure_report(results, model=model),
+            ensure_ascii=False, indent=2,
         ))
         return
     if args.command == "apply-decisions":

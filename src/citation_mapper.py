@@ -833,8 +833,12 @@ def map_item_local_references(item_key: str, epub_path: str, epub_budget: int = 
         return {"status": "success", "message": "No EPUB references found.", "mapped_count": 0}
 
     # S2 lookups per item are capped to avoid 429 storms on EPUBs with hundreds of references.
-    # Sort by cite_count desc (document-level citation frequency) then by chunk match distance.
-    local_refs.sort(key=lambda r: (-r.get("cite_count", 1), r.get("similarity_distance", 1.0)))
+    # Resolve explicit bibliography/endnote evidence before footnotes, then rank by use frequency.
+    zone_priority = {"bibliography": 0, "endnote": 1, "footnote": 2}
+    local_refs.sort(key=lambda r: (
+        zone_priority.get(r.get("source_zone"), 9),
+        -r.get("cite_count", 1), r.get("similarity_distance", 1.0),
+    ))
 
     mapped_count = 0
     total = len(local_refs)

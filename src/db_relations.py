@@ -280,6 +280,9 @@ def _init_db(conn: sqlite3.Connection) -> None:
             resolution_confidence REAL,
             resolution_metadata_json TEXT,
             resolution_evidence_json TEXT,
+            structure_classification TEXT,
+            structure_model TEXT,
+            structure_evidence_json TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(item_key, raw_hash)
@@ -296,6 +299,9 @@ def _init_db(conn: sqlite3.Connection) -> None:
         "ALTER TABLE reference_review_queue ADD COLUMN resolution_confidence REAL",
         "ALTER TABLE reference_review_queue ADD COLUMN resolution_metadata_json TEXT",
         "ALTER TABLE reference_review_queue ADD COLUMN resolution_evidence_json TEXT",
+        "ALTER TABLE reference_review_queue ADD COLUMN structure_classification TEXT",
+        "ALTER TABLE reference_review_queue ADD COLUMN structure_model TEXT",
+        "ALTER TABLE reference_review_queue ADD COLUMN structure_evidence_json TEXT",
     ):
         try:
             cursor.execute(sql)
@@ -711,6 +717,7 @@ def get_reference_review_candidates(
             for source, target in (
                 ("resolution_metadata_json", "resolution_metadata"),
                 ("resolution_evidence_json", "resolution_evidence"),
+                ("structure_evidence_json", "structure_evidence"),
             ):
                 try:
                     row[target] = json.loads(row.pop(source) or "null")
@@ -832,6 +839,107 @@ def apply_reference_review_decisions(decisions: List[Dict[str, Any]]) -> int:
 def apply_reference_review_decision(decision: Dict[str, Any]) -> bool:
     """Apply one reviewer decision through the atomic batch validator."""
     return apply_reference_review_decisions([decision]) == 1
+
+
+def _prepare_reference_structure_decision(
+    conn: sqlite3.Connection, decision: Dict[str, Any], model: str,
+) -> tuple[Any, ...]:
+    review_id = int(decision["review_id"])
+    classification = str(decision.get("classification") or "").strip()
+    if classification not in {"full_reference", "short_citation", "commentary_or_body"}:
+        raise ValueError(f"review {review_id}: unsupported structure classification")
+    row = conn.execute('''
+        SELECT raw_reference, status, source_kind, committed_edge_id
+        FROM reference_review_queue WHERE review_id = ?
+    ''', (review_id,)).fetchone()
+    if row is None:
+        raise ValueError(f"review {review_id}: not found")
+    if row["status"] != "rejected" or row["source_kind"] != "epub-unverified" or row["committed_edge_id"]:
+        raise ValueError(f"review {review_id}: row is not eligible for structure classification")
+    raw = unicodedata.normalize("NFKC", str(row["raw_reference"] or ""))
+    raw_normalized = normalize_work_title(raw)
+    raw_tokens = set(re.findall(r"\w+", raw.casefold(), flags=re.UNICODE))
+    raw_identifier = strip_unicode_format_characters(raw).casefold()
+    raw_compact = re.sub(r"[^0-9x]", "", raw_identifier)
+
+    title = authors_json = year = doi = isbn = container = work_type = None
+    if classification == "full_reference":
+        title = str(decision.get("title") or "").strip() or None
+        if not title or normalize_work_title(title) not in raw_normalized:
+            raise ValueError(f"review {review_id}: structured title is not supported by raw reference")
+        authors = decision.get("authors")
+        if not isinstance(authors, list) or not authors or not all(
+            isinstance(author, str) and author.strip() for author in authors
+        ):
+            raise ValueError(f"review {review_id}: full reference requires authors")
+        for author in authors:
+            author_tokens = re.findall(r"\w+", author.casefold(), flags=re.UNICODE)
+            family = author_tokens[0] if "," in author else author_tokens[-1]
+            if family not in raw_tokens:
+                raise ValueError(f"review {review_id}: structured author is not supported by raw reference")
+        authors_json = json.dumps(authors, ensure_ascii=False)
+        if decision.get("year") is not None:
+            year = int(decision["year"])
+            if str(year) not in raw:
+                raise ValueError(f"review {review_id}: structured year is not present in raw reference")
+        doi_value = str(decision.get("doi") or "").strip()
+        if doi_value:
+            doi = _normalize_identifier(doi_value, "doi")
+            if doi not in raw_identifier:
+                raise ValueError(f"review {review_id}: structured DOI is not present in raw reference")
+        isbn_value = str(decision.get("isbn") or "").strip()
+        if isbn_value:
+            isbn = _normalize_identifier(isbn_value, "isbn")
+            if len(isbn) not in {10, 13} or isbn not in raw_compact:
+                raise ValueError(f"review {review_id}: structured ISBN is not present in raw reference")
+        container = str(decision.get("container") or "").strip() or None
+        work_type = str(decision.get("type") or "").strip() or None
+        note = "unresolved: insufficient stable identifier; structured from epub note"
+    elif classification == "short_citation":
+        note = "short citation: requires bibliography or preceding-note linkage"
+    else:
+        note = "not a bibliographic reference: structure classification"
+    return (
+        note, title, authors_json, year, doi, isbn, container, work_type,
+        classification, model, json.dumps(decision, ensure_ascii=False), review_id,
+    )
+
+
+def apply_reference_structure_decisions(
+    decisions: List[Dict[str, Any]], *, model: str,
+) -> int:
+    """Atomically store validated DeepSeek classification without writing Work edges."""
+    review_ids = [int(decision["review_id"]) for decision in decisions]
+    if len(review_ids) != len(set(review_ids)):
+        raise ValueError("duplicate review_id in structure classification batch")
+    conn = get_db_connection()
+    try:
+        prepared = [
+            _prepare_reference_structure_decision(conn, decision, model)
+            for decision in decisions
+        ]
+        applied = 0
+        for params in prepared:
+            cursor = conn.execute('''
+                UPDATE reference_review_queue
+                SET reviewer_note = ?, title = COALESCE(?, title),
+                    authors_json = COALESCE(?, authors_json), year = COALESCE(?, year),
+                    doi = COALESCE(?, doi), isbn = COALESCE(?, isbn),
+                    container = COALESCE(?, container), work_type = COALESCE(?, work_type),
+                    structure_classification = ?, structure_model = ?,
+                    structure_evidence_json = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE review_id = ? AND status = 'rejected' AND committed_edge_id IS NULL
+            ''', params)
+            if cursor.rowcount != 1:
+                raise ValueError(f"review {params[-1]}: row changed during structure classification")
+            applied += 1
+        conn.commit()
+        return applied
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def _prepare_metadata_resolution(

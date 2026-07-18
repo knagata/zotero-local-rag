@@ -20,6 +20,17 @@ class _FakeLLM:
         ]}
 
 
+class _FakeStructureLLM:
+    provider = "deepseek"
+    model = "test-structure"
+
+    def __init__(self, decisions):
+        self.decisions = decisions
+
+    def generate_json(self, prompt, *, schema, timeout):
+        return {"items": self.decisions}
+
+
 class ReferenceAgentTests(unittest.TestCase):
     def test_reference_schema_is_strict_for_codex(self):
         schema = reference_agent.REFERENCE_SCHEMA
@@ -129,6 +140,32 @@ class ReferenceAgentTests(unittest.TestCase):
         self.assertTrue(result["evidence"]["title_supported"])
         self.assertTrue(result["evidence"]["author_supported"])
 
+    def test_resolved_work_uses_trusted_external_bibliographic_metadata(self):
+        reference = {
+            "raw": "A. Smith. A Distinctive Article. Example Journal (2020).",
+            "title": "A Distinctive Article", "authors": ["A. Smith"], "year": 2020,
+        }
+        candidate = {
+            "title": "A Distinctive Article", "authors": "Alice Smith", "year": 2020,
+            "container": "Example Journal", "type": "journal-article",
+            "doi": "10.1234/external-metadata", "source": "crossref",
+        }
+        with patch.object(reference_agent, "search_crossref", return_value=[candidate]), patch.object(
+            reference_agent, "search_cinii", return_value=[]
+        ), patch.object(reference_agent, "search_ndl", return_value=[]):
+            result = reference_agent.resolve_reference(reference)
+        connection = db_relations.get_db_connection()
+        try:
+            work = connection.execute(
+                "SELECT authors, container, work_type FROM works WHERE work_id = ?",
+                (result["work_id"],),
+            ).fetchone()
+        finally:
+            connection.close()
+        self.assertEqual(work["authors"], "Alice Smith")
+        self.assertEqual(work["container"], "Example Journal")
+        self.assertEqual(work["work_type"], "journal-article")
+
     def test_competing_external_records_remain_ambiguous(self):
         reference = {
             "raw": "Alice Smith. A Distinctive Article. Example Journal 12 (2020): 1-9.",
@@ -209,6 +246,102 @@ class ReferenceAgentTests(unittest.TestCase):
             "doi": "10.1234/wrong-type", "source": "crossref", "type": "journal-article",
         }
         self.assertFalse(reference_agent.assess_metadata_candidate(reference, candidate)["accepted"])
+
+    def test_restructures_legacy_epub_candidates_without_graph_writes(self):
+        candidates = [
+            {
+                "raw": "Alice Smith (2020). First Work. Example Journal.",
+                "title": None, "source_kind": "epub-unverified",
+            },
+            {
+                "raw": "Smith, First Work, 42.", "title": None,
+                "source_kind": "epub-unverified",
+            },
+            {
+                "raw": "This is an ordinary explanatory paragraph rather than a citation.",
+                "title": None, "source_kind": "epub-unverified",
+            },
+        ]
+        db_relations.stage_reference_candidates("ITEM", "epub-unverified", candidates)
+        rows = db_relations.get_reference_review_candidates("pending")
+        for row in rows:
+            db_relations.set_reference_review_status(
+                row["review_id"], "rejected", "unresolved: insufficient stable identifier",
+            )
+        decisions = [
+            {
+                "review_id": rows[0]["review_id"], "classification": "full_reference",
+                "authors": ["Alice Smith"], "title": "First Work", "year": 2020,
+                "container": "Example Journal", "publisher": None,
+                "doi": None, "isbn": None, "type": "journal-article",
+            },
+            {
+                "review_id": rows[1]["review_id"], "classification": "short_citation",
+                "authors": [], "title": None, "year": None, "container": None,
+                "publisher": None, "doi": None, "isbn": None, "type": None,
+            },
+            {
+                "review_id": rows[2]["review_id"], "classification": "commentary_or_body",
+                "authors": [], "title": None, "year": None, "container": None,
+                "publisher": None, "doi": None, "isbn": None, "type": None,
+            },
+        ]
+        with patch.object(reference_agent, "_item_excluded", return_value=(False, None)), patch.object(
+            reference_agent, "get_llm", return_value=_FakeStructureLLM(decisions)
+        ):
+            report = reference_agent.restructure_unparsed_epub_references(limit=10)
+        self.assertEqual(report["valid"], 3)
+        self.assertEqual(report["full_reference"], 1)
+        applied = reference_agent.apply_reference_structure_report(
+            report["results"], model=report["model"],
+        )
+        self.assertEqual(applied["applied"], 3)
+        updated = {
+            row["structure_classification"]: row
+            for row in db_relations.get_reference_review_candidates("rejected")
+        }
+        self.assertEqual(updated["full_reference"]["title"], "First Work")
+        self.assertEqual(updated["full_reference"]["authors"], ["Alice Smith"])
+        self.assertIsNone(updated["short_citation"]["title"])
+        connection = db_relations.get_db_connection()
+        try:
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM work_edges").fetchone()[0], 0)
+        finally:
+            connection.close()
+
+    def test_structure_report_revalidates_all_rows_before_applying(self):
+        db_relations.stage_reference_candidates("ITEM", "epub-unverified", [
+            {
+                "raw": "Alice Smith (2020). First Work.", "title": None,
+                "source_kind": "epub-unverified",
+            },
+            {
+                "raw": "Bob Jones (2021). Second Work.", "title": None,
+                "source_kind": "epub-unverified",
+            },
+        ])
+        rows = db_relations.get_reference_review_candidates("pending")
+        for row in rows:
+            db_relations.set_reference_review_status(
+                row["review_id"], "rejected", "unresolved: insufficient stable identifier",
+            )
+        results = [
+            {
+                "review_id": rows[0]["review_id"], "classification": "short_citation",
+                "authors": [], "title": None, "year": None, "container": None,
+                "publisher": None, "doi": None, "isbn": None, "type": None, "valid": True,
+            },
+            {
+                "review_id": rows[1]["review_id"], "classification": "full_reference",
+                "authors": ["Bob Jones"], "title": "Invented Work", "year": 2021,
+                "container": None, "publisher": None, "doi": None, "isbn": None,
+                "type": None, "valid": True,
+            },
+        ]
+        with self.assertRaisesRegex(ValueError, "title is not present"):
+            reference_agent.apply_reference_structure_report(results, model="deepseek:test")
+        unchanged = db_relations.get_reference_review_candidates("rejected")
+        self.assertTrue(all(row["structure_classification"] is None for row in unchanged))
 
     def test_reference_exclusion_fails_closed_when_tags_cannot_be_checked(self):
         with patch.dict(os.environ, {"EXTRACT_EXCLUDE_TAGS": "private"}, clear=False), patch.object(

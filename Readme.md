@@ -104,6 +104,18 @@ uv run python scripts/review_references.py apply-decisions decisions.json \
 # no-cloudを除外し、Claude向けJSONを25件ずつ生成
 uv run python scripts/build_reference_review_package.py --batch-size 25
 
+# EPUBの未構造化候補をDeepSeekで書誌・短縮引用・本文に分類（DB無変更）
+uv run python scripts/review_references.py restructure-epub --limit 200 \
+  --batch-size 20 --output data/quality/reference-structure.json
+
+# 原文根拠を再検証し、分類・書誌フィールドだけをtransaction適用（Work edgeは未作成）
+uv run python scripts/review_references.py apply-structure-report \
+  data/quality/reference-structure.json
+
+# short扱いを、参照ページ付き完全書誌との区別を強調して再評価
+uv run python scripts/review_references.py restructure-epub --reconsider-short \
+  --output data/quality/reference-short-reconsider.json
+
 # 識別子不足候補をCrossref/CiNii/NDLで同定（DB無変更）
 uv run python scripts/review_references.py resolve-metadata --limit 100 \
   --output data/quality/reference-metadata-resolution.json
@@ -127,6 +139,11 @@ uv run python -m src.reference_quality_report --status pending
 スペースなどのUnicode書式文字は、可視本文を変えず識別子の検出・照合時だけ除去します。
 副題の有無だけが異なる候補は、筆頭著者・刊年・正規化した主題が一致し、資料種別に
 矛盾がなく、同じ複合キーの次点候補がない場合に限って同一著作として扱います。
+
+EPUBの参照抽出は、参考文献見出し、`epub:type=noteref`、脚注・巻末注見出し、相互
+backlinkを優先します。表形式の注は行単位で切り出し、通常の章・節番号リンクや本文段落を
+参考文献として扱いません。DeepSeek分類だけではWorkを作らず、外部書誌との決定的照合を
+通過した候補だけをグラフへ反映します。
 
 Gold QAは、保存済みケースと原文根拠からClaude向け候補を作り、返却結果を検証してから
 評価用JSONLへ変換できます。
