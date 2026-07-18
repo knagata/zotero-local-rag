@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Generate a no-write extractive/Codex section-summary quality comparison."""
+"""Generate a resumable, no-database-write section-summary quality comparison."""
 from __future__ import annotations
 
 import argparse
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import hashlib
 import json
 import os
+import signal
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -21,17 +23,47 @@ from src.env_utils import load_dotenv_native
 from src.llm_client import LLMError, RateLimitReached
 
 
+def _write_json_atomic(path: Path, value: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(
+        json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8",
+    )
+    temporary.replace(path)
+
+
+def _section_hash(section: dict) -> str:
+    return hashlib.sha256(
+        build_summaries._section_source_text(section).encode("utf-8")
+    ).hexdigest()
+
+
+def _classify(result: dict) -> str:
+    if result["status"] == "skipped_non_content":
+        return "non_content"
+    if build_summaries.is_meta_summary(str(result.get("llm_summary") or "")):
+        return "model_quality_failure"
+    verification = result.get("verification") or {}
+    # A section that generated no structured evidence is valid; only generated
+    # fields that were actually discarded can make the section suspicious.
+    if verification.get("total_generated", 0) and verification.get("discard_rate", 0) > 0.5:
+        return "model_quality_failure"
+    return "accepted"
+
+
 def _compare_section(section: dict) -> dict:
     extractive = build_summaries._extractive_section(section)
     if build_summaries.classify_section_content(section) == "non_content":
-        return {
+        result = {
             "section_id": section["section_id"], "chapter": section["chapter"],
             "status": "skipped_non_content", "extractive_summary": extractive["summary"],
             "llm_summary": None, "cases": [], "chapter_authors": [],
             "first_publication_note": None, "verification": None,
         }
+        result["classification"] = _classify(result)
+        return result
     generated, model = build_summaries._llm_section(section)
-    return {
+    result = {
         "section_id": section["section_id"], "chapter": section["chapter"],
         "status": "generated", "model": model, "extractive_summary": extractive["summary"],
         "llm_summary": generated.get("summary"), "cases": generated.get("cases") or [],
@@ -39,19 +71,62 @@ def _compare_section(section: dict) -> dict:
         "first_publication_note": generated.get("first_publication_note"),
         "verification": generated.get("_verification"),
     }
+    result["classification"] = _classify(result)
+    return result
 
 
-def compare_item(item_key: str, *, max_sections: int, workers: int = 1) -> dict:
+def compare_item(
+    item_key: str, *, max_sections: int, workers: int = 1,
+    checkpoint_dir: Path | None = None, llm_spec: str = "",
+) -> dict:
     excluded, reason = build_summaries._excluded_from_llm(item_key)
     if excluded:
         return {"item_key": item_key, "status": "excluded", "reason": reason, "sections": []}
     chunks = get_item_chunks(item_key)
     sections = build_summaries.split_sections(chunks)[:max(max_sections, 0)]
+    checkpoint_path = checkpoint_dir / f"{item_key}.json" if checkpoint_dir else None
+    checkpoint: dict = {"item_key": item_key, "llm": llm_spec, "sections": {}}
+    if checkpoint_path and checkpoint_path.exists():
+        try:
+            loaded = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+            if loaded.get("item_key") == item_key and loaded.get("llm") == llm_spec:
+                checkpoint = loaded
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    output_by_id: dict[str, dict] = {}
+    pending: list[dict] = []
+    for section in sections:
+        section_id = section["section_id"]
+        input_hash = _section_hash(section)
+        cached = checkpoint["sections"].get(section_id)
+        if cached and cached.get("input_hash") == input_hash and isinstance(cached.get("result"), dict):
+            output_by_id[section_id] = cached["result"]
+        else:
+            checkpoint["sections"].pop(section_id, None)
+            pending.append(section)
+
+    def save_result(section: dict, result: dict) -> None:
+        section_id = section["section_id"]
+        output_by_id[section_id] = result
+        checkpoint["sections"][section_id] = {
+            "input_hash": _section_hash(section),
+            "classification": result["classification"],
+            "result": result,
+        }
+        if checkpoint_path:
+            _write_json_atomic(checkpoint_path, checkpoint)
+
     if workers == 1:
-        output = [_compare_section(section) for section in sections]
+        for section in pending:
+            save_result(section, _compare_section(section))
     else:
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            output = list(pool.map(_compare_section, sections))
+            futures = {pool.submit(_compare_section, section): section for section in pending}
+            for future in as_completed(futures):
+                save_result(futures[future], future.result())
+
+    output = [output_by_id[section["section_id"]] for section in sections]
     statuses = {section["status"] for section in output}
     status = "skipped_non_content" if statuses == {"skipped_non_content"} else "compared"
     return {"item_key": item_key, "status": status, "sections": output}
@@ -62,9 +137,17 @@ def main() -> None:
     parser.add_argument("--item", action="append")
     parser.add_argument("--max-items", type=int, default=20)
     parser.add_argument("--max-sections", type=int, default=3)
-    parser.add_argument("--workers", type=int, default=1)
-    parser.add_argument("--llm", default="codex_cli:gpt-5.6-luna")
+    parser.add_argument("--workers", type=int, default=4)
+    parser.add_argument("--llm", default="deepseek:deepseek-v4-pro")
     parser.add_argument("--output", type=Path)
+    parser.add_argument(
+        "--checkpoint-dir", type=Path,
+        default=ROOT / "data" / "nightly_checkpoint" / "deepseek-pilot",
+    )
+    parser.add_argument(
+        "--stop-file", type=Path,
+        help="Stop before starting the next item while this file exists.",
+    )
     args = parser.parse_args()
     if args.workers < 1:
         parser.error("--workers must be positive")
@@ -75,10 +158,26 @@ def main() -> None:
         "created_at": datetime.now().astimezone().isoformat(), "llm": args.llm,
         "writes_database": False, "items": [], "stop_reason": "completed",
     }
+    output = args.output or ROOT / "data" / "quality" / "summary-comparison.json"
+    signal_state = {"requested": False}
+
+    def request_stop(_signum: int, _frame: object) -> None:
+        signal_state["requested"] = True
+
+    previous_handlers = {
+        signum: signal.signal(signum, request_stop)
+        for signum in (signal.SIGINT, signal.SIGTERM)
+    }
     for key in keys:
+        if signal_state["requested"] or (
+            args.stop_file is not None and args.stop_file.exists()
+        ):
+            report["stop_reason"] = "stop_requested"
+            break
         try:
             report["items"].append(compare_item(
                 key, max_sections=args.max_sections, workers=args.workers,
+                checkpoint_dir=args.checkpoint_dir, llm_spec=args.llm,
             ))
         except RateLimitReached as exc:
             report["stop_reason"] = "rate_limit"
@@ -86,9 +185,10 @@ def main() -> None:
             break
         except LLMError as exc:
             report["items"].append({"item_key": key, "status": "error", "error": str(exc)})
-    output = args.output or ROOT / "data" / "quality" / "summary-comparison.json"
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        _write_json_atomic(output, report)
+    for signum, handler in previous_handlers.items():
+        signal.signal(signum, handler)
+    _write_json_atomic(output, report)
     print(json.dumps({
         "output": str(output), "items": len(report["items"]),
         "stop_reason": report["stop_reason"],
