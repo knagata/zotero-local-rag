@@ -123,38 +123,9 @@ def main():
         print("\n2. Which Embedding Model Profile do you want to use?")
         print("   [1] fast (Default, smaller/faster, good for standard text)")
         print("   [2] bge  (BGE-M3, heavier, supports extensive multilingual text)")
-        print("   [3] gemini (Google Gemini Embedding API, requires GEMINI_API_KEY)")
-        emb_choice = input("Select [1, 2, or 3, default is 1]: ").strip()
+        emb_choice = input("Select [1 or 2, default is 1]: ").strip()
 
-        if emb_choice == "3":
-            print("\n" + "=" * 60)
-            print("   [Gemini Embedding Notice]")
-            print("=" * 60)
-            print("   - Uses Google Gemini Embedding API (internet connection required)")
-            print("   - Batch API for indexing: $0.075 / 1M input tokens (50% cheaper)")
-            print("   - Online API for queries: $0.0001 / 1K input tokens")
-            print("   - Batch jobs may take 5 minutes to several hours (max 24h)")
-            print("   - Free tier available: https://ai.google.dev/pricing")
-            print("   - API key sign-up: https://aistudio.google.com/apikey")
-            print("   - Model: gemini-embedding-001 (768-dim)")
-            print()
-
-            current_key = existing_config.get("GEMINI_API_KEY", "")
-            if current_key:
-                masked = current_key[:8] + "..." if len(current_key) > 8 else "(set)"
-                print(f"   Current GEMINI_API_KEY: {masked}")
-                change_key = input("   Change API key? [y/N]: ").strip().lower()
-                if change_key == "y":
-                    new_key = input("   Enter new GEMINI_API_KEY: ").strip()
-                    if new_key:
-                        existing_config["GEMINI_API_KEY"] = new_key
-            else:
-                new_key = input("   Enter your GEMINI_API_KEY (or leave blank to set later): ").strip()
-                if new_key:
-                    existing_config["GEMINI_API_KEY"] = new_key
-
-            existing_config["EMB_PROFILE"] = "gemini"
-        elif emb_choice == "2":
+        if emb_choice == "2":
             existing_config["EMB_PROFILE"] = "bge"
         else:
             existing_config["EMB_PROFILE"] = "fast"
@@ -172,10 +143,7 @@ def main():
     print("3. Configure Claude Desktop MCP server")
     ans = input("Register zotero-rag in Claude Desktop's MCP config? [y/N]: ").strip().lower()
     if ans == "y":
-        env_overrides = {}
-        if emb_profile == "gemini" and existing_config.get("GEMINI_API_KEY"):
-            env_overrides["GEMINI_API_KEY"] = existing_config["GEMINI_API_KEY"]
-        configure_claude_mcp(root_dir, chroma_dir, emb_profile, env_overrides)
+        configure_claude_mcp(root_dir, chroma_dir, emb_profile)
     else:
         print("\nSkipped MCP config.")
         print("To set up manually, add the following to claude_desktop_config.json:")
@@ -184,8 +152,6 @@ def main():
             "CHROMA_DIR": str(chroma_dir),
             "EMB_PROFILE": emb_profile,
         }
-        if emb_profile == "gemini" and existing_config.get("GEMINI_API_KEY"):
-            manual_env["GEMINI_API_KEY"] = existing_config["GEMINI_API_KEY"]
         manual = {
             "zotero-rag": {
                 "command": uv_path,

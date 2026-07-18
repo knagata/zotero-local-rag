@@ -287,29 +287,18 @@ def _col():
     if _EMB_FN is None:
         cfg = resolve_embedder_settings(Path(ROOT))
         try:
-            if cfg.provider == "gemini":
-                provider_label = f"Gemini API ({cfg.model_name})"
-            else:
-                provider_label = f"local model '{cfg.model_name}'"
+            provider_label = f"local model '{cfg.model_name}'"
             print(f"[PROGRESS] Initializing {provider_label} (this may take a moment)...", file=sys.stderr)
             _EMB_FN = create_embedding_function(cfg, task_type="RETRIEVAL_QUERY")
         except Exception as e:
-            if cfg.provider == "gemini":
-                raise RuntimeError(
-                    "Failed to initialize Gemini embedding function.\n"
-                    f"Model: {cfg.model_name}\n"
-                    "Check that GEMINI_API_KEY is correctly set and the model name is valid.\n"
-                    f"Original error: {e}"
-                )
-            else:
-                raise RuntimeError(
-                    "Failed to initialize local embedding model.\n"
-                    f"EMB_MODEL={cfg.model_name}\n"
-                    f"EMB_DEVICE={cfg.device}\n"
-                    "If you are running offline, ensure the model is already cached for this Python environment.\n"
-                    "Try once online (example): python -c 'from sentence_transformers import SentenceTransformer; SentenceTransformer(\"sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2\")'\n"
-                    f"Original error: {e}"
-                )
+            raise RuntimeError(
+                "Failed to initialize local embedding model.\n"
+                f"EMB_MODEL={cfg.model_name}\n"
+                f"EMB_DEVICE={cfg.device}\n"
+                "If you are running offline, ensure the model is already cached for this Python environment.\n"
+                "Try once online (example): python -c 'from sentence_transformers import SentenceTransformer; SentenceTransformer(\"sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2\")'\n"
+                f"Original error: {e}"
+            )
 
     emb_fn = _EMB_FN
 

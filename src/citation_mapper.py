@@ -112,10 +112,7 @@ def _get_emb_fn():
 
     from embedder import resolve_embedder_settings, create_embedding_function
     cfg = resolve_embedder_settings(ROOT)
-    if cfg.provider == "gemini":
-        provider_label = f"Gemini API ({cfg.model_name})"
-    else:
-        provider_label = f"'{cfg.model_name}' on {cfg.device}"
+    provider_label = f"'{cfg.model_name}' on {cfg.device}"
     print(f"[citation_mapper] Loading embedding function: {provider_label} ...", file=sys.stderr)
     _EMB_FN_CACHE = create_embedding_function(cfg)
     # Warmup

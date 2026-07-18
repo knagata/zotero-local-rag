@@ -34,22 +34,6 @@ from lexical_index import upsert_chunks as upsert_lexical_chunks
 from manifest import load_manifest, save_manifest
 from db_relations import invalidate_item_summaries, purge_removed_items
 
-# Gemini batch embedding pipeline (used when EMB_PROFILE=gemini)
-try:
-    from gemini_batch import (
-        prepare_batch_requests,
-        submit_batch_job,
-        poll_batch_job,
-        download_batch_results,
-        ingest_embeddings,
-        save_job_state,
-        load_job_state,
-        clear_job_state,
-    )
-    _HAS_GEMINI_BATCH = True
-except ImportError:
-    _HAS_GEMINI_BATCH = False
-
 
 
 # ----------------------------
@@ -494,22 +478,6 @@ async def main_async(args: argparse.Namespace) -> None:
         chroma_collection_default=CHROMA_COLLECTION_DEFAULT,
     )
 
-    # Detect Gemini batch mode (indexing uses batch API for 50% cost savings).
-    # Batch is Gemini-only: local models (fast/bge) don't have a batch API.
-    _use_gemini_batch = (
-        _HAS_GEMINI_BATCH
-        and os.environ.get("EMB_PROFILE", "").strip().lower() == "gemini"
-    )
-    _gemini_chunks: list[tuple[str, str, dict[str, Any]]] = []
-    if _use_gemini_batch:
-        print(
-            "[INFO] Gemini batch mode: all chunks will be collected first, "
-            "then embedded via the Gemini Batch API.\n"
-            "       This is cost-optimized ($0.075/1M tokens) but may take "
-            "minutes to hours for the batch job to complete.",
-            file=sys.__stderr__,
-        )
-
     # Delete stale attachment items (skipped during selective re-parsing)
     deleted_stale = 0
     if not args.reparse_corrupted and not reocr_routes:
@@ -750,32 +718,6 @@ async def main_async(args: argparse.Namespace) -> None:
                 skipped_pdf += 1
             continue
 
-        # --- Gemini batch path: accumulate chunks, defer embedding ---
-        if _use_gemini_batch:
-            for cid, text, md in chunks:
-                _gemini_chunks.append((cid, text, md))
-
-            pending_manifest_updates[a.attachmentKey] = {
-                "mtime": mtime,
-                "size": size,
-                "pdf_path": str(file_path),
-                "title": a.title,
-                "quality": quality_info,
-            }
-            for ak, entry in pending_manifest_updates.items():
-                files_manifest[ak] = entry
-            for t in pending_source_types.values():
-                if t == "html":
-                    updated_html += 1
-                elif t == "epub":
-                    updated_epub += 1
-                else:
-                    updated_pdf += 1
-            pending_manifest_updates.clear()
-            pending_source_types.clear()
-            continue
-        # --- End Gemini batch path ---
-
         pending_delete_attachment_keys.add(a.attachmentKey)
 
         for cid, text, md in chunks:
@@ -859,114 +801,6 @@ async def main_async(args: argparse.Namespace) -> None:
         pending_source_types.clear()
 
     # ------------------------------------------------------------------
-    # Gemini Batch pipeline: submit → poll → download → ingest
-    # ------------------------------------------------------------------
-    if _use_gemini_batch and _gemini_chunks:
-        if show_progress:
-            print(
-                f"\n[GEMINI-BATCH] Collected {len(_gemini_chunks):,} chunks. "
-                f"Starting batch embedding pipeline ...",
-                file=sys.__stderr__,
-            )
-
-        # Check for a previously saved job (resume)
-        prev_state = load_job_state()
-        if prev_state:
-            prev_job_name = prev_state.get("job_name", "")
-            prev_status = prev_state.get("state", "")
-            print(
-                f"[GEMINI-BATCH] Found saved batch job: {prev_job_name} (state={prev_status})",
-                file=sys.__stderr__,
-            )
-            # If the previous job was successful but ingestion wasn't done,
-            # we need to download and ingest. Re-submit only if failed.
-            if prev_status in ("FAILED", "JOB_STATE_FAILED", "CANCELLED", "JOB_STATE_CANCELLED"):
-                print("[GEMINI-BATCH] Previous job failed. Submitting a new one.", file=sys.__stderr__)
-                clear_job_state()
-                prev_state = None
-
-        if not prev_state:
-            # Prepare JSONL and submit new batch job
-            emb_dim_str = os.environ.get("GEMINI_DIMENSION", "").strip()
-            output_dim = int(emb_dim_str) if emb_dim_str else None
-            jsonl_path = prepare_batch_requests(
-                [(cid, text) for cid, text, _md in _gemini_chunks],
-                output_dimensionality=output_dim,
-            )
-            job_info = submit_batch_job(jsonl_path)
-            print(
-                "\n[GEMINI-BATCH] ==========================================\n"
-                f"  Batch job submitted: {job_info['job_name']}\n"
-                "  The job is now processing on Google's servers.\n"
-                "  This may take 5 minutes to several hours (max 24h).\n"
-                "  If you interrupt this process, re-running the indexer\n"
-                "  will resume from the saved job state.\n"
-                "==========================================\n",
-                file=sys.__stderr__,
-            )
-
-            # Poll until complete
-            try:
-                job = poll_batch_job(job_info["job_name"])
-            except Exception as e:
-                print(f"[GEMINI-BATCH] Batch job failed: {e}", file=sys.__stderr__)
-                print(
-                    "Re-run the indexer to submit a new batch job.",
-                    file=sys.__stderr__,
-                )
-                raise SystemExit(1)
-        else:
-            # Resume: poll existing job
-            job_name = prev_state["job_name"]
-            print(f"[GEMINI-BATCH] Resuming batch job: {job_name}", file=sys.__stderr__)
-            try:
-                job = poll_batch_job(job_name)
-            except Exception as e:
-                print(f"[GEMINI-BATCH] Batch job failed: {e}", file=sys.__stderr__)
-                raise SystemExit(1)
-
-        # Download results
-        embeddings = download_batch_results(job)
-        if not embeddings:
-            print(
-                "[GEMINI-BATCH] No embeddings returned from batch job. Aborting.",
-                file=sys.__stderr__,
-            )
-            raise SystemExit(1)
-
-        # Ingest into ChromaDB
-        gemini_model = os.environ.get("EMB_MODEL", "gemini-embedding-001").strip()
-        print(
-            f"[GEMINI-BATCH] Ingesting {len(embeddings):,} embeddings into ChromaDB ...",
-            file=sys.__stderr__,
-        )
-        ingested = ingest_embeddings(
-            col,
-            embeddings,
-            _gemini_chunks,
-            batch_size=UPSERT_BATCH_SIZE,
-            show_progress=show_progress,
-        )
-        print(
-            f"[GEMINI-BATCH] Ingested {ingested:,} chunks into ChromaDB.",
-            file=sys.__stderr__,
-        )
-
-        # Clear job state on success
-        clear_job_state()
-
-        # Manifest already updated per-attachment during collection
-        updated_pdf = updated_html = updated_epub = 0
-        for _cid, _text, md in _gemini_chunks:
-            st = md.get("source_type", "pdf")
-            if st == "html":
-                updated_html += 1
-            elif st == "epub":
-                updated_epub += 1
-            else:
-                updated_pdf += 1
-
-    # ----------------------------
     # Notes -> chunks (indexed, but excluded from rag_search by default)
     # ----------------------------
     try:

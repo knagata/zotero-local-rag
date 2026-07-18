@@ -23,9 +23,9 @@ except Exception:  # pragma: no cover
 @dataclass
 class EmbedderConfig:
     """Resolved embedder configuration."""
-    provider: str       # "sentence_transformers" | "gemini"
+    provider: str       # "sentence_transformers"
     model_name: str     # model name or path
-    device: str         # "cpu" | "mps" | "api"
+    device: str         # "cpu" | "mps" | "cuda"
 
 
 # ---------------------------------------------------------------------------
@@ -55,9 +55,12 @@ def resolve_embedder_settings(project_root: Path) -> EmbedderConfig:
     Profiles:
       - fast  (default): multilingual MiniLM (local, 384-dim)
       - bge  : BGE-M3 (local, 1024-dim)
-      - gemini: Gemini text-embedding (API, 768-dim)
     """
     profile = (os.environ.get("EMB_PROFILE") or "fast").strip().lower()
+    if profile == "gemini":
+        raise RuntimeError(
+            "EMB_PROFILE=gemini is no longer supported. Use the local 'fast' or 'bge' profile."
+        )
     offline = (os.environ.get("HF_HUB_OFFLINE") == "1") or (os.environ.get("TRANSFORMERS_OFFLINE") == "1")
 
     def _pick_device(default: str = "cpu") -> str:
@@ -97,33 +100,6 @@ def resolve_embedder_settings(project_root: Path) -> EmbedderConfig:
             "\"from sentence_transformers import SentenceTransformer; "
             f"SentenceTransformer('{model}')\"\n"
             "  (2) Or set EMB_MODEL to a local directory path containing the model files.\n"
-        )
-
-    # --- Gemini profile (API-based) ---
-    if profile == "gemini":
-        if offline:
-            raise RuntimeError(
-                "Gemini embedding requires an active internet connection.\n"
-                "Offline mode (HF_HUB_OFFLINE=1 or TRANSFORMERS_OFFLINE=1) is "
-                "incompatible with EMB_PROFILE=gemini."
-            )
-        api_key = os.environ.get("GEMINI_API_KEY", "").strip()
-        if not api_key:
-            raise RuntimeError(
-                "Gemini embedding selected (EMB_PROFILE=gemini) but GEMINI_API_KEY is not set.\n\n"
-                "Gemini embedding is a paid Google Cloud API service.\n"
-                "Pricing: $0.075/1M input tokens (batch) | $0.0001/1K tokens (online)\n"
-                "Free tier available: https://ai.google.dev/pricing\n\n"
-                "Get an API key: https://aistudio.google.com/apikey\n"
-                "Then set it in your .env file:\n"
-                "  GEMINI_API_KEY=your_key_here\n\n"
-                "Or export it in your environment."
-            )
-        model = os.environ.get("EMB_MODEL", "gemini-embedding-001").strip()
-        return EmbedderConfig(
-            provider="gemini",
-            model_name=model,
-            device="api",
         )
 
     # --- Explicit EMB_MODEL override (assumes sentence_transformers) ---
@@ -197,27 +173,15 @@ def create_embedding_function(cfg: EmbedderConfig, task_type: str = "RETRIEVAL_D
 
     Returns a callable with signature List[str] -> List[np.ndarray].
 
-    For batch indexing (Gemini), use gemini_batch.py instead.
-
     Args:
         cfg: Resolved embedder configuration.
-        task_type: Gemini task type ("RETRIEVAL_DOCUMENT" for indexing,
-                   "RETRIEVAL_QUERY" for search). Ignored for local models.
+        task_type: Retained for call-site compatibility; local models ignore it.
     """
-    if cfg.provider == "gemini":
-        from chromadb.utils.embedding_functions import GoogleGeminiEmbeddingFunction
-
-        return GoogleGeminiEmbeddingFunction(
-            model_name=cfg.model_name,
-            task_type=task_type,
-            api_key_env_var="GEMINI_API_KEY",
-        )
-    else:
-        return embedding_functions.SentenceTransformerEmbeddingFunction(
-            model_name=cfg.model_name,
-            device=cfg.device,
-            normalize_embeddings=True,
-        )
+    return embedding_functions.SentenceTransformerEmbeddingFunction(
+        model_name=cfg.model_name,
+        device=cfg.device,
+        normalize_embeddings=True,
+    )
 
 
 # ---------------------------------------------------------------------------

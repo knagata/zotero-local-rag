@@ -29,8 +29,6 @@ def _resolve_chunk_limits():
 
     if profile == "bge":
         token_budget = 8000   # BGE-M3: 8192 tokens
-    elif profile == "gemini":
-        token_budget = 2000   # Gemini: 2048 tokens
     else:
         token_budget = 400    # MiniLM: 512 tokens, ~400 effective
 

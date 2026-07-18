@@ -72,7 +72,7 @@ export LLM_EXTRACT="deepseek:deepseek-v4-pro"
 対応プロバイダは `gemini`、`anthropic`、`deepseek`、`openai_compat`、`codex_cli`、
 `claude_cli` です。Geminiには `GEMINI_API_KEY`、Anthropicには `ANTHROPIC_API_KEY`、
 DeepSeekには `DEEPSEEK_API_KEY` が必要です。生成LLMの既定はDeepSeek V4 Proです。
-Geminiは既存環境との互換性と任意の埋め込み用途のため利用可能なまま残しています。Anthropic SDKは
+Geminiは生成LLMの後方互換プロバイダとしてのみ残しており、埋め込みには対応しません。Anthropic SDKは
 `uv sync --extra llm-anthropic` で追加できます。Ollama・LM Studio・vLLMなどは
 `LLM_OPENAI_BASE_URL`（例: `http://localhost:11434/v1`）を設定して `openai_compat` を使います。
 CLIプロバイダは各CLIで事前にサインインされている必要があります。
