@@ -61,7 +61,7 @@ Zoteroから「贈与と互酬性」に関係する資料を探して
 
 ## 引用グラフを開く
 
-`Show-Citation-Graph.command`をダブルクリックします。先にCitation Network更新を済ませてください。
+`Show-Citation-Graph.command`をダブルクリックします。先にCitation Network更新を済ませてください。画面の見方は [Show Citation Networkガイド](show-citation-network.md) を参照してください。
 
 ## アプリケーションを更新する
 

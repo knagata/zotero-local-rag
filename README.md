@@ -65,6 +65,12 @@ macOSでは [Maintenance-Widget.command](Maintenance-Widget.command) をダブ�
 
 詳しくは [日常の使い方](docs/daily-use.md) を参照してください。
 
+## Citation Networkを見る
+
+[Show-Citation-Graph.command](Show-Citation-Graph.command) をダブルクリックすると、Zoteroの所蔵資料と引用元・参照先の関係をブラウザで確認できます。
+
+この画面は保存済みデータを表示するものです。先に `Maintenance-Widget.command` でCitation Networkを更新してください。詳しい見方は [Show Citation Networkガイド](docs/show-citation-network.md) にまとめています。
+
 ## プライバシー
 
 Core機能はローカルで処理できます。LLMへ本文を送る機能は、送信ポリシーが設定されていない場合は安全のため停止します。
@@ -79,6 +85,7 @@ Core機能はローカルで処理できます。LLMへ本文を送る機能は�
 | 普段の更新・検索 | [日常の使い方](docs/daily-use.md) |
 | 何ができるか確認する | [機能と必要な設定](docs/features.md) |
 | Citation Networkを使う | [Citation Network](docs/citation-network.md) |
+| 引用グラフを見る | [Show Citation Network](docs/show-citation-network.md) |
 | LLMと送信制御を設定する | [LLMとプライバシー](docs/llm-and-privacy.md) |
 | `.env`を手動設定する | [環境設定](docs/configuration.md) |
 | エラーを解決する | [トラブルシューティング](docs/troubleshooting.md) |
