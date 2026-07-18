@@ -15,6 +15,7 @@ REOCR_CANDIDATES="${NIGHTLY_REOCR_CANDIDATES:-$ROOT/data/quality/reocr-candidate
 REOCR_MAX_ITEMS="${NIGHTLY_REOCR_MAX_ITEMS:-2}"
 MIN_WEEKLY_REMAINING="${NIGHTLY_MIN_WEEKLY_REMAINING_PERCENT:-20}"
 LOCK_DIR="$ROOT/data/nightly_summaries.lock"
+STOP_FILE="${NIGHTLY_STOP_FILE:-$ROOT/data/nightly.stop}"
 
 if [[ "${1:-}" == "--check" ]]; then
   [[ -x "$PYTHON" ]] || { echo "Python not executable: $PYTHON"; exit 1; }
@@ -64,6 +65,7 @@ fi
 caffeinate -i "$PYTHON" -m src.build_summaries \
   --mode llm --llm "$LLM" --stop-on-rate-limit \
   --max-hours "$MAX_HOURS" --max-items "$MAX_ITEMS" \
+  --stop-file "$STOP_FILE" \
   --min-weekly-remaining-percent "$MIN_WEEKLY_REMAINING"
 echo "[$(date -Iseconds)] nightly summaries end"
 "$PYTHON" scripts/nightly_report.py \

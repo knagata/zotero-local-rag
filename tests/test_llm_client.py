@@ -10,6 +10,7 @@ from src.llm_client import (
     OpenAICompatibleClient, ProviderUnavailable, RateLimitReached,
     _extract_json, _is_rate_limit, _retry, get_llm,
 )
+from src import llm_client
 
 
 class FakeClient:
@@ -26,6 +27,14 @@ class FakeClient:
 
 
 class LLMClientTests(unittest.TestCase):
+    def test_default_llm_is_deepseek_v4_pro(self):
+        with patch.dict(os.environ, {}, clear=True), patch.object(
+            llm_client, "load_dotenv_native"
+        ):
+            client = get_llm("unconfigured_task")
+        self.assertIsInstance(client, DeepSeekClient)
+        self.assertEqual(client.model, "deepseek-v4-pro")
+
     def test_extract_json_from_fence_and_cli_envelope(self):
         self.assertEqual(_extract_json("```json\n{\"ok\": true}\n```"), {"ok": True})
         self.assertEqual(_extract_json({"structured_output": {"ok": True}}), {"ok": True})

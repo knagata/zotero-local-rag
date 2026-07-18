@@ -4328,11 +4328,11 @@ function _applyExternalToggle(targets) {
     });
 }
 
-// 選択可能な Gemini モデル（バックエンドの GEMINI_MODELS と対応）
+// 選択可能な要約モデル（バックエンドの SUMMARY_MODELS と対応）
 var _SUMMARY_MODELS = [
-  ['gemini-3.1-flash-lite', 'Gemini 3.1 Flash Lite'],
+  ['deepseek-v4-pro', 'DeepSeek V4 Pro'],
 ];
-var _SUMMARY_MODEL_DEFAULT = 'gemini-3.1-flash-lite';
+var _SUMMARY_MODEL_DEFAULT = 'deepseek-v4-pro';
 
 function _getSummaryModel() {
   var saved = localStorage.getItem('aiSummaryModel');
@@ -5758,13 +5758,11 @@ _SRC_DIR = str(PROJECT_ROOT / "src")
 if _SRC_DIR not in sys.path:
     sys.path.insert(0, _SRC_DIR)
 
-# Gemini API で選択可能なモデル（key: API モデルID, value: 表示名）
-# 注: Gemma 4 31B は generateContent 経由の日本語要約で指示追従が弱く（要約せず
-#     指示文を復唱する）、プロンプト調整でも改善しなかったため選択肢から除外した。
-GEMINI_MODELS = {
-    "gemini-3.1-flash-lite": "Gemini 3.1 Flash Lite",
+# オンデマンド要約で選択可能なモデル（key: APIモデルID, value: 表示名）。
+SUMMARY_MODELS = {
+    "deepseek-v4-pro": "DeepSeek V4 Pro",
 }
-GEMINI_DEFAULT_MODEL = "gemini-3.1-flash-lite"
+SUMMARY_DEFAULT_MODEL = "deepseek-v4-pro"
 
 
 @app.get("/api/node/abstract")
@@ -5905,7 +5903,7 @@ class _SummaryRequest(BaseModel):
     item_key: str
     title:    str = ""
     force:    bool = False
-    model:    str = GEMINI_DEFAULT_MODEL
+    model:    str = SUMMARY_DEFAULT_MODEL
 
 
 def _natural_key(s: str) -> list:
@@ -5915,8 +5913,9 @@ def _natural_key(s: str) -> list:
 
 @app.post("/api/node/summary")
 def _route_generate_summary(body: _SummaryRequest) -> JSONResponse:
-    """ChromaDB チャンクから Gemini で要約を生成してキャッシュする。"""
+    """ChromaDB チャンクからDeepSeekで要約を生成してキャッシュする。"""
     from db_relations import get_item_summary, save_item_summary
+    from llm_client import DeepSeekClient, LLMError
 
     # キャッシュ済みで force=False なら即返す
     if not body.force:
@@ -5927,11 +5926,11 @@ def _route_generate_summary(body: _SummaryRequest) -> JSONResponse:
                 "updated_at": cached["updated_at"], "cached": True,
             })
 
-    api_key = os.environ.get("GEMINI_API_KEY", "")
+    api_key = os.environ.get("DEEPSEEK_API_KEY", "")
     if not api_key:
-        return JSONResponse({"error": "GEMINI_API_KEY が .env に設定されていません"}, status_code=503)
+        return JSONResponse({"error": "DEEPSEEK_API_KEY が .env に設定されていません"}, status_code=503)
 
-    model = body.model if body.model in GEMINI_MODELS else GEMINI_DEFAULT_MODEL
+    model = body.model if body.model in SUMMARY_MODELS else SUMMARY_DEFAULT_MODEL
 
     try:
         chunks_text = [chunk["text"] for chunk in get_item_chunks(body.item_key) if chunk["text"]]
@@ -5944,11 +5943,7 @@ def _route_generate_summary(body: _SummaryRequest) -> JSONResponse:
     # チャンクを連結（最大 60,000 文字）
     combined = "\n\n".join(chunks_text)[:60000]
 
-    # Gemini API 呼び出し（APIキーはURLでなくヘッダーで渡す）
-    import urllib.request as _ur, urllib.error as _ue
     title_hint = f"（タイトル: {body.title}）" if body.title else ""
-    # 末尾に出力マーカーを置くことで、指示追従が弱い Gemma 系でも
-    # 「要約：」の続きとして本文を生成させ、指示の復唱を防ぐ。
     prompt = (
         f"次に示すのは学術資料のテキスト断片です{title_hint}。\n"
         "この資料の内容を研究者向けに日本語で 400〜600 字程度に要約してください。\n"
@@ -5957,29 +5952,18 @@ def _route_generate_summary(body: _SummaryRequest) -> JSONResponse:
         f"=== 資料ここから ===\n{combined}\n=== 資料ここまで ===\n\n"
         "日本語要約："
     )
-    payload = {"contents": [{"parts": [{"text": prompt}]}]}
-    api_url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
     try:
-        req = _ur.Request(
-            api_url,
-            data=json.dumps(payload).encode(),
-            headers={"Content-Type": "application/json", "x-goog-api-key": api_key},
-            method="POST",
+        summary_text = DeepSeekClient(model).generate_text(
+            prompt, max_tokens=2048, timeout=120,
         )
-        with _ur.urlopen(req, timeout=120) as r:
-            resp_body = json.loads(r.read())
-        summary_text = resp_body["candidates"][0]["content"]["parts"][0]["text"]
-    except _ue.HTTPError as e:
-        return JSONResponse({"error": f"Gemini API エラー {e.code}: {e.read().decode()[:200]}"}, status_code=500)
-    except (KeyError, IndexError):
-        return JSONResponse({"error": "Gemini API の応答形式が想定外でした（安全フィルタ等で出力が空の可能性）"}, status_code=500)
-    except Exception as e:
-        return JSONResponse({"error": f"Gemini API エラー: {e}"}, status_code=500)
+    except LLMError as e:
+        return JSONResponse({"error": f"DeepSeek API エラー: {e}"}, status_code=502)
 
-    save_item_summary(body.item_key, summary_text, model)
+    stored_model = f"deepseek:{model}"
+    save_item_summary(body.item_key, summary_text, stored_model)
     saved = get_item_summary(body.item_key)
     return JSONResponse({
-        "summary": summary_text, "model": model,
+        "summary": summary_text, "model": stored_model,
         "updated_at": saved["updated_at"] if saved else None, "cached": False,
     })
 

@@ -24,7 +24,7 @@ except ImportError:  # pragma: no cover - exercised by direct script execution
     from env_utils import load_dotenv_native
 
 
-DEFAULT_LLM = "gemini:gemini-3.1-flash-lite"
+DEFAULT_LLM = "deepseek:deepseek-v4-pro"
 DEFAULT_MODELS = {
     "gemini": "gemini-3.1-flash-lite",
     "anthropic": "claude-haiku-4-5",

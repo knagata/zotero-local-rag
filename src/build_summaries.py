@@ -6,6 +6,7 @@ import gc
 import json
 import os
 import re
+import signal
 import time
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -275,11 +276,20 @@ def _verify_section_result(
         "cases": [], "chapter_authors": [], "first_publication_note": None,
     }
     stats = _new_verification_stats()
+
+    def has_ellipsis(quote: str) -> bool:
+        # Ellipses commonly join non-contiguous fragments and therefore cannot
+        # serve as a single verbatim evidence span.
+        return bool(re.search(r"(?:…|‥|\.{3,})", quote))
+
     for case in result.get("cases") or []:
         if not isinstance(case, dict):
             _record_verification(stats, "cases", False, "invalid_shape")
             continue
         quote = _normalize_evidence(case.get("evidence_quote"))
+        if has_ellipsis(quote):
+            _record_verification(stats, "cases", False, "composite_quote")
+            continue
         if not quote or quote not in normalized_source:
             _record_verification(stats, "cases", False, "evidence_not_in_source")
             continue
@@ -302,6 +312,9 @@ def _verify_section_result(
             continue
         name = _normalize_evidence(author.get("name"))
         quote = _normalize_evidence(author.get("evidence_quote"))
+        if has_ellipsis(quote):
+            _record_verification(stats, "chapter_authors", False, "composite_quote")
+            continue
         if not quote or quote not in normalized_source:
             _record_verification(stats, "chapter_authors", False, "evidence_not_in_source")
             continue
@@ -317,7 +330,11 @@ def _verify_section_result(
         else:
             note = _normalize_evidence(publication.get("note"))
             quote = _normalize_evidence(publication.get("evidence_quote"))
-            if not quote or quote not in normalized_source:
+            if has_ellipsis(quote):
+                _record_verification(
+                    stats, "first_publication_note", False, "composite_quote",
+                )
+            elif not quote or quote not in normalized_source:
                 _record_verification(
                     stats, "first_publication_note", False, "evidence_not_in_source",
                 )
@@ -401,7 +418,9 @@ def _llm_section(section: dict[str, Any]) -> tuple[dict[str, Any], str]:
         "日付、DOI、ISBN、著者名、誌名、URLを補完しないでください。各caseの"
         "evidence_quoteはdescription・region・group・periodに書くすべての具体的事実を"
         "その一つの引用だけで直接支持する必要があります。複数箇所を組み合わせないと"
-        "支持できないcaseは出力しないでください。OCR誤字や空白も修正せずコピーしてください。\n\n" + text
+        "支持できないcaseは出力しないでください。evidence_quoteは省略記号（…、...、‥）を"
+        "含まない単一の連続文字列にしてください。一つの連続引用で支持できないcaseは"
+        "出力しないでください。OCR誤字や空白も修正せずコピーしてください。\n\n" + text
     )
     generated = client.generate_json(prompt, schema=SECTION_SCHEMA, timeout=300)
     verified, stats = _verify_section_result(generated, text, section["chunks"])
@@ -671,6 +690,10 @@ def main() -> None:
     parser.add_argument("--max-items", type=int, help="Maximum items to update in this run.")
     parser.add_argument("--max-hours", type=float, help="Stop before starting another item after this many hours.")
     parser.add_argument(
+        "--stop-file", type=Path,
+        help="Finish the current item, then stop while this file exists.",
+    )
+    parser.add_argument(
         "--stop-on-rate-limit", action="store_true",
         help="Treat provider quota exhaustion as a resumable normal stop.",
     )
@@ -695,46 +718,65 @@ def main() -> None:
     started = time.monotonic()
     processed = 0
     stop_reason = "completed"
+    signal_state = {"requested": False}
+
+    def request_stop(signum: int, _frame: Any) -> None:
+        signal_state["requested"] = True
+        print(f"Received signal {signum}; stopping after the current item.", flush=True)
+
+    previous_handlers = {
+        signum: signal.signal(signum, request_stop)
+        for signum in (signal.SIGINT, signal.SIGTERM)
+    }
     audit_items: list[dict[str, Any]] = []
-    if not args.embed_only:
-        keys = [args.item] if args.item else list_item_keys()
-        for index, key in enumerate(keys, start=1):
-            if args.max_items is not None and counts["updated"] >= args.max_items:
-                stop_reason = "max_items"
-                break
-            if args.max_hours is not None and time.monotonic() - started >= args.max_hours * 3600:
-                stop_reason = "max_hours"
-                break
-            try:
-                quota_guard = None
-                if args.min_weekly_remaining_percent is not None:
-                    quota_guard = lambda: require_weekly_quota(
-                        args.min_weekly_remaining_percent,
-                    )
-                result = build_item(
-                    key, mode=args.mode, force=args.force, quota_guard=quota_guard,
-                )
-            except CodexQuotaFloorReached as exc:
-                stop_reason = "weekly_quota_floor"
-                print(f"[{index}/{len(keys)}] {exc}; stopping safely", flush=True)
-                break
-            except CodexQuotaError as exc:
-                stop_reason = "quota_unknown"
-                print(f"[{index}/{len(keys)}] quota_unknown ({exc}); stopping safely", flush=True)
-                break
-            except RateLimitReached as exc:
-                counts["rate_limited"] += 1
-                stop_reason = "rate_limit"
-                print(f"[{index}/{len(keys)}] {key}: rate_limit ({exc})", flush=True)
-                if args.stop_on_rate_limit:
+    try:
+        if not args.embed_only:
+            keys = [args.item] if args.item else list_item_keys()
+            for index, key in enumerate(keys, start=1):
+                if signal_state["requested"] or (
+                    args.stop_file is not None and args.stop_file.exists()
+                ):
+                    stop_reason = "stop_requested"
                     break
-                raise
-            processed += 1
-            audit_items.append(result)
-            counts[result["status"]] += 1
-            if result["status"] == "updated":
-                updated_keys.add(key)
-            print(f"[{index}/{len(keys)}] {key}: {result['status']}", flush=True)
+                if args.max_items is not None and counts["updated"] >= args.max_items:
+                    stop_reason = "max_items"
+                    break
+                if args.max_hours is not None and time.monotonic() - started >= args.max_hours * 3600:
+                    stop_reason = "max_hours"
+                    break
+                try:
+                    quota_guard = None
+                    if args.min_weekly_remaining_percent is not None:
+                        quota_guard = lambda: require_weekly_quota(
+                            args.min_weekly_remaining_percent,
+                        )
+                    result = build_item(
+                        key, mode=args.mode, force=args.force, quota_guard=quota_guard,
+                    )
+                except CodexQuotaFloorReached as exc:
+                    stop_reason = "weekly_quota_floor"
+                    print(f"[{index}/{len(keys)}] {exc}; stopping safely", flush=True)
+                    break
+                except CodexQuotaError as exc:
+                    stop_reason = "quota_unknown"
+                    print(f"[{index}/{len(keys)}] quota_unknown ({exc}); stopping safely", flush=True)
+                    break
+                except RateLimitReached as exc:
+                    counts["rate_limited"] += 1
+                    stop_reason = "rate_limit"
+                    print(f"[{index}/{len(keys)}] {key}: rate_limit ({exc})", flush=True)
+                    if args.stop_on_rate_limit:
+                        break
+                    raise
+                processed += 1
+                audit_items.append(result)
+                counts[result["status"]] += 1
+                if result["status"] == "updated":
+                    updated_keys.add(key)
+                print(f"[{index}/{len(keys)}] {key}: {result['status']}", flush=True)
+    finally:
+        for signum, handler in previous_handlers.items():
+            signal.signal(signum, handler)
     if not args.no_embed and (args.embed_only or updated_keys or args.resume_embed):
         embed_keys = None if args.embed_only or (args.resume_embed and not updated_keys) else updated_keys
         embedded = embed_summaries(

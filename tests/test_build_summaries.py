@@ -4,7 +4,9 @@ import io
 import unittest
 import os
 import sys
+import tempfile
 from contextlib import redirect_stdout
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 from src import build_summaries
@@ -133,6 +135,22 @@ class SummaryPipelineTests(unittest.TestCase):
         self.assertEqual(
             stats["first_publication_note"]["reasons"]["value_not_in_evidence"], 1,
         )
+
+    def test_ellipsis_composite_quotes_are_rejected_before_containment(self):
+        for ellipsis in ("…", "...", "‥"):
+            quote = f"Alice observed exchange{ellipsis}in Fiji."
+            result = {
+                "summary": "要約", "chapter_authors": [], "first_publication_note": None,
+                "cases": [{
+                    "description": "exchange in Fiji", "region": "Fiji", "group": None,
+                    "practices": ["exchange"], "phenomena": [], "period": None,
+                    "locator_hint": None, "source_kind": "primary",
+                    "evidence_quote": quote,
+                }],
+            }
+            verified, stats = build_summaries._verify_section_result(result, quote)
+            self.assertEqual(verified["cases"], [])
+            self.assertEqual(stats["cases"]["reasons"]["composite_quote"], 1)
 
     def test_case_date_outside_evidence_is_discarded(self):
         result = {
@@ -263,6 +281,22 @@ class SummaryPipelineTests(unittest.TestCase):
             build_summaries.main()
         self.assertEqual([call.args[0] for call in build.call_args_list], list("ABCD"))
         self.assertIn('"stop_reason": "max_items"', output.getvalue())
+
+    def test_stop_file_prevents_starting_the_next_item(self):
+        output = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            stop_file = Path(tmp) / "nightly.stop"
+            stop_file.touch()
+            with patch.object(build_summaries, "list_item_keys", return_value=["A", "B"]), patch.object(
+                build_summaries, "build_item"
+            ) as build, patch.object(
+                sys, "argv", [
+                    "build_summaries", "--stop-file", str(stop_file), "--no-embed",
+                ],
+            ), redirect_stdout(output):
+                build_summaries.main()
+        build.assert_not_called()
+        self.assertIn('"stop_reason": "stop_requested"', output.getvalue())
 
     def test_quota_guard_runs_before_each_llm_request(self):
         chunks = [{"id": "a", "text": "substantive body " * 40, "metadata": {}}]

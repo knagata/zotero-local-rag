@@ -61,18 +61,18 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 
 ```bash
 # 全タスクの既定（未指定時もこの値）
-export LLM_DEFAULT="gemini:gemini-3.1-flash-lite"
+export LLM_DEFAULT="deepseek:deepseek-v4-pro"
 
 # タスク別の上書き例
-export LLM_EXPAND="gemini:gemini-3.1-flash-lite"
+export LLM_EXPAND="deepseek:deepseek-v4-pro"
 export LLM_SUMMARY="codex_cli:gpt-5.6-luna"
-export LLM_EXTRACT="gemini:gemini-3.1-flash-lite"
+export LLM_EXTRACT="deepseek:deepseek-v4-pro"
 ```
 
 対応プロバイダは `gemini`、`anthropic`、`deepseek`、`openai_compat`、`codex_cli`、
 `claude_cli` です。Geminiには `GEMINI_API_KEY`、Anthropicには `ANTHROPIC_API_KEY`、
-DeepSeekには `DEEPSEEK_API_KEY` が必要です（比較済みの予備プロバイダで、要約の既定には
-使いません）。Anthropic SDKは
+DeepSeekには `DEEPSEEK_API_KEY` が必要です。生成LLMの既定はDeepSeek V4 Proです。
+Geminiは既存環境との互換性と任意の埋め込み用途のため利用可能なまま残しています。Anthropic SDKは
 `uv sync --extra llm-anthropic` で追加できます。Ollama・LM Studio・vLLMなどは
 `LLM_OPENAI_BASE_URL`（例: `http://localhost:11434/v1`）を設定して `openai_compat` を使います。
 CLIプロバイダは各CLIで事前にサインインされている必要があります。
