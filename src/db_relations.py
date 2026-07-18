@@ -714,72 +714,99 @@ def set_reference_review_status(review_id: int, status: str, note: str | None = 
         conn.close()
 
 
-def apply_reference_review_decision(decision: Dict[str, Any]) -> bool:
-    """Apply a reviewer decision, but allow approval only with a literal stable ID."""
+def _prepare_reference_review_decision(
+    conn: sqlite3.Connection, decision: Dict[str, Any],
+) -> tuple[Any, ...]:
     review_id = int(decision["review_id"])
     status = str(decision.get("status") or "pending")
     if status not in {"approved", "rejected", "pending"}:
         raise ValueError("invalid review status")
+    row = conn.execute(
+        "SELECT raw_reference FROM reference_review_queue WHERE review_id = ?", (review_id,)
+    ).fetchone()
+    if row is None:
+        raise ValueError(f"review {review_id}: not found")
+    raw = unicodedata.normalize("NFKC", str(row["raw_reference"] or ""))
+    raw_folded = raw.casefold()
+    raw_compact = re.sub(r"[^0-9x]", "", raw_folded)
+
+    title = str(decision.get("title") or "").strip() or None
+    if title:
+        normalized_title = normalize_work_title(title)
+        if len(normalized_title) < 8 or normalized_title not in normalize_work_title(raw):
+            raise ValueError(f"review {review_id}: title is not supported by raw reference")
+    year = decision.get("year")
+    if year is not None:
+        year = int(year)
+        if str(year) not in raw:
+            raise ValueError(f"review {review_id}: year is not present in raw reference")
+    doi = str(decision.get("doi") or "").strip() or None
+    doi_norm = _normalize_identifier(doi, "doi") if doi else None
+    doi_verified = bool(doi_norm and doi_norm in raw_folded)
+    if doi and not doi_verified:
+        raise ValueError(f"review {review_id}: DOI is not present in raw reference")
+    isbn = str(decision.get("isbn") or "").strip() or None
+    isbn_norm = _normalize_identifier(isbn, "isbn") if isbn else None
+    isbn_verified = bool(
+        isbn_norm and len(isbn_norm) in {10, 13} and isbn_norm in raw_compact
+    )
+    if isbn and not isbn_verified:
+        raise ValueError(f"review {review_id}: ISBN is not present in raw reference")
+    if status == "approved" and not (doi_verified or isbn_verified):
+        raise ValueError(f"review {review_id}: approval requires a literal DOI or ISBN")
+
+    authors = decision.get("authors")
+    authors_json = None
+    if authors is not None:
+        if not isinstance(authors, list) or not all(isinstance(value, str) for value in authors):
+            raise ValueError(f"review {review_id}: authors must be a string array")
+        raw_tokens = set(re.findall(r"\w+", raw_folded, flags=re.UNICODE))
+        for author in authors:
+            author_tokens = re.findall(
+                r"\w+", unicodedata.normalize("NFKC", author).casefold(), flags=re.UNICODE,
+            )
+            if author_tokens and (
+                len(author_tokens[-1]) < 3 or author_tokens[-1] not in raw_tokens
+            ):
+                raise ValueError(f"review {review_id}: author is not supported by raw reference")
+        authors_json = json.dumps(authors, ensure_ascii=False)
+    return (
+        status, decision.get("note"), title, authors_json, year,
+        doi_norm, isbn_norm, review_id,
+    )
+
+
+def apply_reference_review_decisions(decisions: List[Dict[str, Any]]) -> int:
+    """Validate an entire reviewer batch first, then apply it atomically."""
     conn = get_db_connection()
     try:
-        row = conn.execute(
-            "SELECT raw_reference FROM reference_review_queue WHERE review_id = ?", (review_id,)
-        ).fetchone()
-        if row is None:
-            return False
-        raw = unicodedata.normalize("NFKC", str(row["raw_reference"] or ""))
-        raw_folded = raw.casefold()
-        raw_compact = re.sub(r"[^0-9x]", "", raw_folded)
-
-        title = str(decision.get("title") or "").strip() or None
-        if title:
-            normalized_title = normalize_work_title(title)
-            if len(normalized_title) < 8 or normalized_title not in normalize_work_title(raw):
-                raise ValueError(f"review {review_id}: title is not supported by raw reference")
-        year = decision.get("year")
-        if year is not None:
-            year = int(year)
-            if str(year) not in raw:
-                raise ValueError(f"review {review_id}: year is not present in raw reference")
-        doi = str(decision.get("doi") or "").strip() or None
-        doi_norm = _normalize_identifier(doi, "doi") if doi else None
-        doi_verified = bool(doi_norm and doi_norm in raw_folded)
-        if doi and not doi_verified:
-            raise ValueError(f"review {review_id}: DOI is not present in raw reference")
-        isbn = str(decision.get("isbn") or "").strip() or None
-        isbn_norm = _normalize_identifier(isbn, "isbn") if isbn else None
-        isbn_verified = bool(
-            isbn_norm and len(isbn_norm) in {10, 13} and isbn_norm in raw_compact
-        )
-        if isbn and not isbn_verified:
-            raise ValueError(f"review {review_id}: ISBN is not present in raw reference")
-        if status == "approved" and not (doi_verified or isbn_verified):
-            raise ValueError(f"review {review_id}: approval requires a literal DOI or ISBN")
-
-        authors = decision.get("authors")
-        authors_json = None
-        if authors is not None:
-            if not isinstance(authors, list) or not all(isinstance(value, str) for value in authors):
-                raise ValueError(f"review {review_id}: authors must be a string array")
-            authors_json = json.dumps(authors, ensure_ascii=False)
-        cursor = conn.execute('''
+        review_ids = [int(decision["review_id"]) for decision in decisions]
+        if len(review_ids) != len(set(review_ids)):
+            raise ValueError("duplicate review_id in decision batch")
+        prepared = [_prepare_reference_review_decision(conn, decision) for decision in decisions]
+        applied = 0
+        for params in prepared:
+            cursor = conn.execute('''
             UPDATE reference_review_queue
             SET status=?, reviewer_note=?,
                 title=COALESCE(?, title), authors_json=COALESCE(?, authors_json),
                 year=COALESCE(?, year), doi=COALESCE(?, doi), isbn=COALESCE(?, isbn),
                 updated_at=CURRENT_TIMESTAMP
             WHERE review_id=?
-        ''', (
-            status, decision.get("note"), title, authors_json, year,
-            doi_norm, isbn_norm, review_id,
-        ))
+            ''', params)
+            applied += cursor.rowcount
         conn.commit()
-        return cursor.rowcount > 0
+        return applied
     except Exception:
         conn.rollback()
         raise
     finally:
         conn.close()
+
+
+def apply_reference_review_decision(decision: Dict[str, Any]) -> bool:
+    """Apply one reviewer decision through the atomic batch validator."""
+    return apply_reference_review_decisions([decision]) == 1
 
 
 def mark_reference_review_committed(review_id: int, edge_id: int) -> bool:

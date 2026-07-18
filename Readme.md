@@ -98,7 +98,11 @@ uv run python scripts/review_references.py list --status pending \
   --source-kind epub-unverified --limit 20
 
 # Claude等のレビュー判定JSONを決定的検証後に一括適用
-uv run python scripts/review_references.py apply-decisions decisions.json
+uv run python scripts/review_references.py apply-decisions decisions.json \
+  --expected-batch dev-notes/reference_review_batches/batch-001.json
+
+# no-cloudを除外し、Claude向けJSONを25件ずつ生成
+uv run python scripts/build_reference_review_package.py --batch-size 25
 
 # approved候補のうち、原文中にDOI/ISBNが実在するものだけcommit
 uv run python scripts/review_references.py commit-approved --limit 20
@@ -108,7 +112,19 @@ uv run python -m src.reference_quality_report --status pending
 ```
 
 `apply-decisions` でも `approved` にできるのは、原文中に同じDOIまたはISBNが文字どおり
-存在する候補だけです。タイトル・年・識別子の捏造は一括適用時に拒否されます。
+存在する候補だけです。タイトル・年・識別子の捏造は一括適用時に拒否され、バッチ内に
+1件でも不正な判定があれば全件ロールバックされます。
+
+Gold QAは、保存済みケースと原文根拠からClaude向け候補を作り、返却結果を検証してから
+評価用JSONLへ変換できます。
+
+```bash
+uv run python scripts/build_gold_qa_review_package.py --count 40 --seed 20260718
+uv run python scripts/apply_gold_qa_review.py \
+  dev-notes/gold_qa_review_package.json RESPONSE.json \
+  --output data/quality/gold_qa.jsonl
+uv run python scripts/eval_retrieval.py data/quality/gold_qa.jsonl --k 10
+```
 
 要約索引は次のコマンドで差分構築できます。既定の `extractive` は本文を外部へ送信しません。
 

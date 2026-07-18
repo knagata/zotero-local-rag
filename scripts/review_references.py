@@ -13,10 +13,22 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.db_relations import (
-    apply_reference_review_decision, get_reference_review_candidates,
+    apply_reference_review_decisions, get_reference_review_candidates,
     set_reference_review_status,
 )
 from src.reference_agent import commit_approved_reference_candidates
+
+
+def validate_decision_coverage(decisions: list[dict], batch_path: Path) -> None:
+    batch = json.loads(batch_path.read_text(encoding="utf-8"))
+    expected = {int(row["review_id"]) for row in batch.get("candidates") or []}
+    actual = [int(row["review_id"]) for row in decisions]
+    if len(actual) != len(set(actual)):
+        raise ValueError("duplicate review_id in response")
+    if set(actual) != expected:
+        missing = sorted(expected - set(actual))
+        extra = sorted(set(actual) - expected)
+        raise ValueError(f"response coverage mismatch: missing={missing}, extra={extra}")
 
 
 def main() -> None:
@@ -34,6 +46,7 @@ def main() -> None:
     commit_parser.add_argument("--limit", type=int, default=100)
     apply_parser = subparsers.add_parser("apply-decisions")
     apply_parser.add_argument("path", type=Path)
+    apply_parser.add_argument("--expected-batch", type=Path)
     args = parser.parse_args()
 
     if args.command == "list":
@@ -50,7 +63,9 @@ def main() -> None:
         decisions = payload.get("decisions") if isinstance(payload, dict) else payload
         if not isinstance(decisions, list):
             raise ValueError("decision file must be an array or an object containing decisions")
-        applied = sum(bool(apply_reference_review_decision(row)) for row in decisions)
+        if args.expected_batch:
+            validate_decision_coverage(decisions, args.expected_batch)
+        applied = apply_reference_review_decisions(decisions)
         print(json.dumps({"examined": len(decisions), "applied": applied}, ensure_ascii=False, indent=2))
         return
     changed = set_reference_review_status(args.review_id, args.status, args.note)

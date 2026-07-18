@@ -138,6 +138,29 @@ class ReferenceReviewTests(unittest.TestCase):
             db_relations.get_reference_review_candidates("pending")[0]["status"], "pending"
         )
 
+    def test_claude_decision_batch_is_atomic(self):
+        db_relations.stage_reference_candidates("ITEM", "test", [
+            {"raw": "Author (2020). First title.", "title": "First title"},
+            {"raw": "Author (2021). Second title.", "title": "Second title"},
+        ])
+        rows = db_relations.get_reference_review_candidates("pending")
+        with self.assertRaisesRegex(ValueError, "approval requires"):
+            db_relations.apply_reference_review_decisions([
+                {"review_id": rows[0]["review_id"], "status": "rejected", "note": "noise"},
+                {"review_id": rows[1]["review_id"], "status": "approved", "year": 2021},
+            ])
+        self.assertEqual(len(db_relations.get_reference_review_candidates("pending")), 2)
+
+    def test_claude_decision_rejects_author_missing_from_raw(self):
+        db_relations.stage_reference_candidates(
+            "ITEM", "test", [{"raw": "Known Author (2020). A title.", "title": None}],
+        )
+        review_id = db_relations.get_reference_review_candidates()[0]["review_id"]
+        with self.assertRaisesRegex(ValueError, "author is not supported"):
+            db_relations.apply_reference_review_decision({
+                "review_id": review_id, "status": "rejected", "authors": ["Invented Person"],
+            })
+
 
 if __name__ == "__main__":
     unittest.main()
