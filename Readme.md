@@ -1,334 +1,198 @@
-# Zotero Local RAG (MCP サーバー)
+# Zotero Local RAG
 
-ローカルのZoteroライブラリとそれに紐づくPDF/HTML/EPUBドキュメントを、LLM（Claude、Cursor、Zed、Windsurfなど）に直接接続する Model Context Protocol (MCP) サーバーです。
+ZoteroのローカルライブラリにあるPDF・HTML・EPUBを索引化し、Claude Desktop、Cursor、ZedなどからMCPで検索・参照するためのローカルRAGサーバーです。基本検索はローカルで完結し、外部APIやLLMは必要な機能だけ後から追加できます。
 
-決定論的なフィルタリング（確実な絞り込み）を活用することで、コンテキストの文脈を最大化しつつ、トークン消費量を節約する設計となっています。
+## 機能は三段階です
 
-## ✨ 主な機能
+| 段階 | 追加要件 | 主にできること |
+|---|---|---|
+| 1. Core local RAG | ローカル埋め込みモデル | Zotero書誌検索、本文の意味検索・語彙検索、前後文脈、目次、資料・章の抽出型要約、関連資料検索 |
+| 2. Citation Network | インターネット接続。`S2_API_KEY`は任意 | Semantic Scholarの被引用取得、EPUBの参照文献照合、引用グラフ、未所蔵文献候補、Crossref・CiNii・NDLによる書誌照合 |
+| 3. LLM-assisted | DeepSeek API、Codex CLI、Claude CLI、またはローカル互換API | クエリ拡張、LLM要約・事例抽出、PDF/HTMLからの高品質な参考文献抽出、曖昧な書誌候補の整理 |
 
-- **ローカル環境で実行**: ローカルZoteroストレージから直接段落を抽出し、インデックス化します。リモートへの依存は埋め込みモデル（HuggingFace等で完全オフライン・キャッシュ可能）のみです。
-- **段階的な検索**: 用途に合わせて検索レイヤーを最適化しています。
-  1. `search_zotero_items`: ベクトルインデックスを介さず、Zotero Local APIからタイトル・著者名・出版年などを超高速で直接検索（部分一致など）できる書誌検索。
-  2. `search_items`: ベクトル検索を利用しつつ本文テキストを返さず、メタデータとRRF（密度ベース）スコアのみで関連資料をスクリーニング。
-  3. `rag_search`: 意味検索（セマンティック検索）による、ピンポイントな段落レベルのテキスト抽出。
-  4. `hierarchical_search`: 資料要約・章要約で候補を絞り、直接段落検索も融合する俯瞰検索。
-  5. `get_chunk_context`: 指定した段落前後の文脈をデータベースから直接取得。
-- **多言語ハイブリッド検索**: 日英クエリ拡張、FTS5 trigram語彙検索、任意の日英結果クオータを利用できます。
-- **要約・事例レイヤー**: ローカル抽出型要約を無償で構築でき、明示的に選んだ場合のみ共通LLMクライアントで高品質要約と事例抽出を行います。
-- **引用・被引用ネットワーク分析 (Semantic Scholar連携)**:
-  - `build_citation_network`: 指定した資料について、EPUBからの引用先抽出（References）とSemantic Scholarからの被引用取得（Citations）を両方とも一括で実行してデータベースを構築。
-  - `get_references_for_item` / `get_chunk_references`: 特定の段落チャンクが「どの文献を引用しているか」の参照先ネットワークを取得・分析。
-  - `get_cited_chunks_for_item` / `get_citations_for_chunk`: 特定の段落チャンクが「外部の論文からどのような文脈で引用されているか」の被引用ネットワークを取得・分析。
-- **高度な最適化**:
-  - **Reciprocal Rank Fusion (RRF)**: 複数クエリからの検索結果をシームレスに統合し、「キーワードの密度が高い」資料や段落を上位に引き上げます。
-  - **既知IDの除外 (`exclude_chunk_ids`)**: LLMが直前のやり取りで既に読んだテキストのチャンクIDを自動的にブラックリスト化し、毎回の検索で100%新しい情報だけを取得してトークンを節約します。
-- **サーバー状態の確認 (`server_status`)**: ChromaDBの接続状態・コレクション数・埋め込みモデルの設定をClaudeから直接確認できます。
-- **インデックスの強制リロード (`force_reload_index`)**: インデクサー実行後に検索結果が反映されない場合、ChromaDBのインデックスを強制再読み込みします。
-- **デバッグログの取得 (`get_debug_logs`)**: サーバーのログファイルを参照し、エラーやイベントのトレースバックをClaudeから直接確認できます。
+この区分には二つの注意点があります。
 
-## 🚀 インストールとセットアップ
+- Semantic ScholarはAPIキーなしでも共有枠で動作します。キーは速度と安定性のために推奨されますが、必須ではありません。
+- EPUBの構造的な参照抽出と簡易ヒューリスティック抽出はLLMなしでも可能です。LLMはPDF/HTMLや複雑な注記の精度、自動要約・整理を高める追加機能です。
 
-このパッケージは、高速な依存関係解決のためにパッケージマネージャー `uv` に依存しています。
+外部機能はCoreの上に追加されます。最初はCoreだけで開始し、必要になった時点でセットアップウィザードを再実行して拡張できます。
 
-### 1. 必須要件
+## クイックスタート
 
-システムに [uv](https://github.com/astral-sh/uv) がインストールされていることを確認してください。
+### 必須要件
+
+- Python 3.10
+- [uv](https://docs.astral.sh/uv/)
+- Zoteroデスクトップとローカルライブラリ
+
+macOSでuvを導入する例:
 
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-### 2. ワンクリック・セットアップ (推奨)
+### セットアップウィザード（推奨）
 
-手動で環境変数を設定しなくても、ターミナルを開かずにダブルクリックだけでセットアップ可能なウィザードを用意しています。
-
-- **Mac ユーザー**: `Setup.command` をダブルクリック
-- **Windows ユーザー**: `Setup.bat` をダブルクリック
-
-ウィザードでは以下のステップを順に案内します。Enterを押すだけで進めます（2回目以降の起動では設定変更をスキップできます）。
-
-1. **Zoteroデータフォルダの指定** — デフォルトは `~/Zotero`
-2. **埋め込みモデルの選択** — `fast`（デフォルト・軽量多言語）または `bge`（BGE-M3・高精度多言語）
-3. **Claude DesktopへのMCP設定の自動登録** — `claude_desktop_config.json` に正しいコマンドを自動で書き込みます（デフォルトはスキップ）
-4. **埋め込みインデクサーの実行** — ZoteroのPDF/HTML/EPUBをベクトル化してChroma DBに保存します（デフォルトは実行）
-
-> **埋め込みの更新**: Zoteroに新しい文献を追加した後は、ウィザードを再起動してEnterを連打するだけで差分インデックスが更新されます。
-
-### LLMプロバイダ設定（拡張機能用）
-
-クエリ拡張・要約・参考文献抽出などの段階的に追加される機能は、共通のLLM設定を使います。
-指定形式は `provider:model` で、カンマ区切りにすると左から順にフォールバックします。
+macOSでは `Setup.command` をダブルクリックします。ターミナルからは次を実行できます。
 
 ```bash
-# 全タスクの既定（未指定時もこの値）
-export LLM_DEFAULT="deepseek:deepseek-v4-pro"
-
-# タスク別の上書き例
-export LLM_EXPAND="deepseek:deepseek-v4-pro"
-export LLM_SUMMARY="codex_cli:gpt-5.6-luna"
-export LLM_EXTRACT="deepseek:deepseek-v4-pro"
+uv run scripts/setup_wizard.py
 ```
 
-対応プロバイダは `gemini`、`anthropic`、`deepseek`、`openai_compat`、`codex_cli`、
-`claude_cli` です。Geminiには `GEMINI_API_KEY`、Anthropicには `ANTHROPIC_API_KEY`、
-DeepSeekには `DEEPSEEK_API_KEY` が必要です。生成LLMの既定はDeepSeek V4 Proです。
-Geminiは生成LLMの後方互換プロバイダとしてのみ残しており、埋め込みには対応しません。Anthropic SDKは
-`uv sync --extra llm-anthropic` で追加できます。Ollama・LM Studio・vLLMなどは
-`LLM_OPENAI_BASE_URL`（例: `http://localhost:11434/v1`）を設定して `openai_compat` を使います。
-CLIプロバイダは各CLIで事前にサインインされている必要があります。
-永続化する場合は [`.env.example`](.env.example) から必要な項目だけを `.env` にコピーしてください。
+ウィザードでは次の項目を選べます。
 
-参考文献抽出は `Citation-Update` のメニュー6で書き込みなしのプレビュー、メニュー7で保存できます。
-CiNii Research v2を解決先に使う場合は、公式登録で得た `CINII_APP_ID` を設定してください。
-NDL Search SRUはアプリケーションIDなしで利用します。
+1. Zoteroデータフォルダ
+2. 埋め込みモデル: `fast`（軽量）または `bge`（BGE-M3、高品質・重量級）
+3. 機能段階: Core、Citation Network、LLM-assisted
+4. Citationを選んだ場合の任意のSemantic Scholar APIキー
+5. LLMを選んだ場合のプロバイダとクラウド送信ポリシー
+6. Claude DesktopへのMCP登録
+7. 初回インデックスの作成
 
-全量保存前のレビューには、引用グラフを変更しないステージングキューを使用できます。
+設定はGit管理外の `.env` に機能別のまとまりで保存されます。再実行すると現在の段階と設定済み機能を確認でき、既存の未知の設定も保持されます。APIキーは入力中も画面に表示されません。
+
+秘密値を表示せず現在の設定状態だけを確認するには、次を使います。
 
 ```bash
-# ローカルヒューリスティックで候補をレビューキューへ保存
-uv run python -m src.extract_references --item ITEMKEY --stage --heuristic
-
-# pending候補の確認・判定
-uv run python scripts/review_references.py list --status pending --limit 20
-uv run python scripts/review_references.py set 123 rejected --note "本文の誤検出"
-
-# EPUB照合で確定できなかった候補を、グラフ無変更でレビューキューへstage
-uv run python scripts/stage_unverified_epub_refs.py --commit
-uv run python scripts/review_references.py list --status pending \
-  --source-kind epub-unverified --limit 20
-
-# Claude等のレビュー判定JSONを決定的検証後に一括適用
-uv run python scripts/review_references.py apply-decisions decisions.json \
-  --expected-batch dev-notes/reference_review_batches/batch-001.json
-
-# no-cloudを除外し、Claude向けJSONを25件ずつ生成
-uv run python scripts/build_reference_review_package.py --batch-size 25
-
-# EPUBの未構造化候補をDeepSeekで書誌・短縮引用・本文に分類（DB無変更）
-uv run python scripts/review_references.py restructure-epub --limit 200 \
-  --batch-size 20 --output data/quality/reference-structure.json
-
-# 原文根拠を再検証し、分類・書誌フィールドだけをtransaction適用（Work edgeは未作成）
-uv run python scripts/review_references.py apply-structure-report \
-  data/quality/reference-structure.json
-
-# short扱いを、参照ページ付き完全書誌との区別を強調して再評価
-uv run python scripts/review_references.py restructure-epub --reconsider-short \
-  --output data/quality/reference-short-reconsider.json
-
-# 旧抽出で連結された複合候補をDeepSeekで保守的に分割提案（DB無変更）
-uv run python scripts/review_references.py split-compound --limit 100 \
-  --batch-size 5 --output data/quality/reference-compound-split.json
-
-# 子書誌が原文中に順番どおり存在する安全な分割だけをtransaction適用
-uv run python scripts/review_references.py apply-compound-report \
-  data/quality/reference-compound-split.json
-
-# 識別子不足候補をCrossref/CiNii/NDLで同定（DB無変更）
-uv run python scripts/review_references.py resolve-metadata --limit 100 \
-  --output data/quality/reference-metadata-resolution.json
-
-# 書名・著者・年・候補差を再検証し、確実一致だけをtransaction適用
-uv run python scripts/review_references.py apply-metadata-report \
-  data/quality/reference-metadata-resolution.json
-
-# 原文中の識別子、または検証済み外部書誌resolutionを持つapproved候補をcommit
-uv run python scripts/review_references.py commit-approved --limit 20
-
-# completenessの自動レポート（precision/recallは目視評価が必要）
-uv run python -m src.reference_quality_report --status pending
+uv run scripts/setup_wizard.py --status
 ```
 
-`apply-decisions` で直接 `approved` にできるのは、原文中に同じDOIまたはISBNが文字どおり
-存在する候補だけです。識別子が引用表記にない通常の文献は `resolve-metadata` で外部書誌を
-検索し、書名・著者・年が原文と一致し、安定IDを持ち、次点候補との差が十分な場合だけ
-`apply-metadata-report` で承認できます。タイトル・年・識別子の捏造は一括適用時に拒否され、バッチ内に
-1件でも不正な判定があれば全件ロールバックされます。PDF等がURLへ挿入するゼロ幅
-スペースなどのUnicode書式文字は、可視本文を変えず識別子の検出・照合時だけ除去します。
-副題の有無だけが異なる候補は、筆頭著者・刊年・正規化した主題が一致し、資料種別に
-矛盾がなく、同じ複合キーの次点候補がない場合に限って同一著作として扱います。
+### 初回動作確認
 
-EPUBの参照抽出は、参考文献見出し、`epub:type=noteref`、脚注・巻末注見出し、相互
-backlinkを優先します。表形式の注は行単位で切り出し、通常の章・節番号リンクや本文段落を
-参考文献として扱いません。DeepSeek分類だけではWorkを作らず、外部書誌との決定的照合を
-通過した候補だけをグラフへ反映します。複合候補の分割では親行を証跡として残し、2件以上の
-完全書誌について、各子項目の原文・著者・書名・刊年が親原文に明記されている場合だけ子行を
-審査キューへ追加します。本文混在、短縮引用、境界不明、原文にない補完は自動分割しません。
+インデックス完了後にClaude Desktopなどを再起動し、MCPから `server_status` を呼び出します。次に、例えば以下を依頼します。
 
-Gold QAは、保存済みケースと原文根拠からClaude向け候補を作り、返却結果を検証してから
-評価用JSONLへ変換できます。
-
-```bash
-uv run python scripts/build_gold_qa_review_package.py --count 40 --seed 20260718
-uv run python scripts/apply_gold_qa_review.py \
-  dev-notes/gold_qa_review_package.json RESPONSE.json \
-  --output data/quality/gold_qa.jsonl
-uv run python scripts/eval_retrieval.py data/quality/gold_qa.jsonl --k 10
+```text
+Zoteroから「修復的司法」に関係する資料を検索して
 ```
 
-要約索引は次のコマンドで差分構築できます。既定の `extractive` は本文を外部へ送信しません。
+Coreだけでも `search_zotero_items`、`search_items`、`rag_search`、`get_chunk_context`、`get_document_outline` を利用できます。
+
+## 日常の使い方
+
+### Zoteroライブラリを更新する
+
+Zoteroへ資料を追加・変更した後は、macOSで `Library-Update.command` をダブルクリックします。通常はメニュー1で差分だけ索引化されます。
 
 ```bash
-# ローカル抽出型要約 + 要約コレクション
+uv run src/index_from_zotero.py --progress
+```
+
+### 抽出型要約を更新する（Core）
+
+`Summary-Update.command` をダブルクリックするか、次を実行します。本文は外部へ送信されません。
+
+```bash
 uv run python -m src.build_summaries
-
-# LLM要約（本文を設定済みプロバイダへ送信するため、除外タグを設定して明示実行）
-SUMMARY_EXCLUDE_TAGS=private,confidential uv run python -m src.build_summaries --mode llm
-
-# 既存ChromaからFTS5を初回構築
-uv run python -m src.lexical_index --rebuild
-
-# 既存チャンクにlangを後付け（埋め込み再計算なし、FTSも同期再構築）
-uv run python -m src.backfill_languages --batch-size 5000
 ```
 
-`SUMMARY_EXCLUDE_TAGS` / `EXTRACT_EXCLUDE_TAGS` が未設定の場合、本文を外部LLMへ送る処理は
-fail-closedで停止します。全資料の送信を許可する場合だけ、対応する
-`SUMMARY_ALLOW_CLOUD_ALL=1` / `EXTRACT_ALLOW_CLOUD_ALL=1` を明示設定してください。
-秘密値と分けたい場合は、Git除外される `.env.policy` に除外タグだけを記録できます。
+### Citation Networkを更新する（Level 2）
 
-### 夜間Codex要約（品質ゲート後に有効化）
-
-> **現在は有効化しないでください。** ゲート2は条件付き合格しましたが、監査で発見した
-> 非本文メタ応答の修正とゲート3が完了するまで、夜間ランナーは無効のままです。
-
-まずDBを書き換えない比較を行います。
+`Citation-Update.command` をダブルクリックします。通常はメニュー3を選ぶと未処理・エラー分だけ再開します。
 
 ```bash
-uv run python scripts/compare_summary_models.py \
-  --item ITEMKEY --llm codex_cli:gpt-5.6-luna --max-sections 3
-
-# APIプロバイダのDB非書込み並列比較（小さい並列数から開始）
-uv run python scripts/compare_summary_models.py \
-  --item ITEMKEY --llm deepseek:deepseek-v4-pro --max-sections 4 --workers 4
+uv run src/update_citations.py --all
 ```
 
-再OCR候補は、DBを変更せずJSONとMarkdownへ出力できます。
+処理にはSemantic Scholar/OpenAlexへの接続が必要です。`S2_API_KEY`がなくても動作しますが、共有枠のため低速です。429エラーや再開方法は [CITATION_UPDATE_GUIDE.md](CITATION_UPDATE_GUIDE.md) を参照してください。
+
+引用グラフは `Show-Citation-Graph.command` で開けます。
+
+### LLM機能を使う（Level 3）
+
+LLM要約:
 
 ```bash
-uv run python scripts/list_reocr_candidates.py \
-  --comparison data/quality/summary-comparison.json \
-  --json-output data/quality/reocr-candidates.json \
-  --markdown-output data/quality/reocr-candidates.md
+uv run python -m src.build_summaries --mode llm
 ```
 
-候補JSONを明示して再OCRする場合だけ、言語ルーティングが有効になります。`ja` は
-NDLOCR-Lite、`en` / `other` はDoclingへ送られます。元のZotero PDFは変更しません。
-再抽出に成功すると古い要約・事例は無効化されるため、続けてLuna要約を再生成してください。
+参考文献抽出のプレビュー:
 
 ```bash
-uv run src/index_from_zotero.py --progress \
-  --reocr-candidates data/quality/reocr-candidates.json --reocr-limit 2
-
-uv run python -m src.build_summaries --mode llm --force --item ITEMKEY \
-  --llm codex_cli:gpt-5.6-luna
+uv run python -m src.extract_references --item ITEMKEY
 ```
 
-`scripts/run_grounding_gate.py` は指定資料の要約DBを置換する手動品質ゲート専用です。
-`--write-database` の明示指定が必要で、通常運用や夜間runnerからは呼び出しません。
+参考文献抽出の通常操作は `Citation-Update.command` のメニュー6（プレビュー）と7（保存）からも実行できます。保存前後に原文根拠と安定識別子を検証し、不確実な候補は審査キューへ保留します。
 
-夜間ランナーは既定で最大5時間・更新20資料、Codex単独で実行し、レート制限時は正常停止します。
-更新不要の資料は20件上限に数えず、未処理資料まで走査します。Codexの週次利用枠も実行前と
-各LLMリクエストの直前に確認し、既定では残量が20%以下になると処理を見送ります。
-残量を取得できない場合も安全のため見送ります。週次枠のリセット後は、次回の夜間実行から
-自動的に再開します。閾値は `NIGHTLY_MIN_WEEKLY_REMAINING_PERCENT` で変更できます。
-再OCR工程は別ガード `NIGHTLY_REOCR_ENABLE=1` がない限り実行されません。有効時も候補上位2件が既定上限で、
-索引・要約のバックアップ、文字数・異常反復・grounding破棄率の前後レポートを
-`data/nightly_reocr_report.json` に保存します。品質ゲート失敗時は、その夜の後続処理を停止します。
+利用可能なMCPツールと推奨検索手順は [ZOTERO_RAG_GUIDE.md](ZOTERO_RAG_GUIDE.md) を参照してください。
 
-```bash
-scripts/nightly_summaries.sh --check
-NIGHTLY_ENABLE=1 NIGHTLY_MAX_HOURS=5 NIGHTLY_MAX_ITEMS=20 scripts/nightly_summaries.sh
+## クラウド送信の安全設定
 
-# ゲート3完了後、再OCR候補も明示的に処理する場合のみ
-NIGHTLY_ENABLE=1 NIGHTLY_REOCR_ENABLE=1 \
-  NIGHTLY_REOCR_CANDIDATES=data/quality/reocr-candidates.json \
-  scripts/nightly_summaries.sh
+LLM要約とLLM参考文献抽出は、送信ポリシーがない場合にfail-closedで停止します。推奨設定はZoteroタグによるブラックリストです。
+
+```dotenv
+SUMMARY_EXCLUDE_TAGS=private,confidential,no-cloud
+EXTRACT_EXCLUDE_TAGS=private,confidential,no-cloud
 ```
 
-夜間実行時刻は `.env` の `NIGHTLY_START_TIME=03:30` のように24時間表記で指定します。
-macOSのシステムタイムゾーンが使われるため、JST設定のMacではJST 03:30です。設定後に
-`scripts/install_nightly_launchd.sh` を実行すると、launchd設定を生成・登録します。時刻を変更した場合も
-同じコマンドを再実行してください。`scripts/install_nightly_launchd.sh --check` は設定を変更せず状態を表示します。
-リポジトリがmacOSで保護されるDocuments配下にある場合は、`.env` に
-`NIGHTLY_LAUNCH_MODE=terminal` を設定してください。03:30にTerminalが開き、その権限で処理を実行します。
-進捗はTerminalへリアルタイム表示され、同じ内容が `data/nightly_summaries.log` にも保存されます。
+すべての資料を送信してよい場合だけ、明示的に次を設定します。
 
-### 3. アプリケーションの更新（新バージョンへの移行）
-
-GitHubから最新バージョンを自動でダウンロードして上書きする更新スクリプトを用意しています。`.env` とインデックスデータ（`data/`）は保持されます。
-
-- **Mac ユーザー**: `Software-Update.command` をダブルクリック
-- **Windows ユーザー**: `Software-Update.bat` をダブルクリック
-
-更新後はClaude Desktopを再起動してください。
-
-### 4. 日本語PDFのテキスト抽出品質を上げる（任意）
-
-一部のPDF（独自フォントを使用しているもの）では、PyMuPDF がテキストを正しく抽出できない場合があります。そのような場合、Tesseract OCR をフォールバックとして使用することで、ページを画像化してOCRし、正しいテキストを取得できます。
-
-```bash
-# macOS
-brew install tesseract tesseract-lang
-
-# Linux
-sudo apt install tesseract-ocr tesseract-ocr-jpn
+```dotenv
+SUMMARY_ALLOW_CLOUD_ALL=1
+EXTRACT_ALLOW_CLOUD_ALL=1
 ```
 
-インストール後は自動的に日本語＋英語のOCRが有効になります。Tesseract が無い場合もエラーにはならず、通常のPyMuPDF抽出のみで動作します。
+秘密値と分けたい場合は、Git管理外の `.env.policy` に除外タグを保存できます。タグ確認ができない場合も、安全のため送信は停止します。
 
-### 5. 引用ネットワークの更新（Semantic Scholar連携）
+## `.env` の管理
 
-Zotero文献の被引用情報（どの論文に引用されているか）をSemantic Scholar APIから取得してデータベースに保存します。`build_citation_network` ツールをMCP経由でClaudeに依頼するか、以下のスクリプトから手動で実行できます。
+通常はウィザードで管理してください。手動設定のひな形は [.env.example](.env.example) にあります。
 
-- **Mac ユーザー**: `Citation-Update.command` をダブルクリック
-- **Windows ユーザー**: `Citation-Update.bat` をダブルクリック
+### Level 1: Core
 
-実行時は対象（特定アイテム指定 / 全アイテム一括 / スキップ済みEPUB参照の再解決）を選択するメニューが表示されます。Semantic Scholar APIのレート制限（APIキーあり: 2.5秒間隔、なし: 3.5秒間隔）により、大規模ライブラリの全件更新は時間がかかります。
-
-> **S2 APIキー**: `S2_API_KEY` を `.env` に設定するとレート制限が緩和されます。また `ZOTERO_USER_ID` + `ZOTERO_API_KEY` を設定すると、解決した DOI が Zotero ライブラリに自動書き戻しされます（詳細は下記の環境変数表を参照）。
-
-> **詳細ヘルプ**: メニューの選び方、ステータスの意味、429エラーやエラー回復の仕組みについては [`CITATION_UPDATE_GUIDE.md`](./CITATION_UPDATE_GUIDE.md) を参照してください。エラーが出た場合も Force rebuild は不要で、メニュー3の再実行だけで該当分が自動回収されます。
-
-### 6. 環境変数（手動設定の場合）
-
-手動でMCP設定を記述する場合に必要な環境変数です。
-
-| 変数名 | 説明 | デフォルト |
+| 変数 | 用途 | 既定値 |
 |---|---|---|
-| `CHROMA_DIR` | ChromaDBの保存先（絶対パス） | `<プロジェクトルート>/data/chroma` |
-| `EMB_PROFILE` | 埋め込みモデルプロファイル（`fast` または `bge`） | `fast` |
-| `EMB_MODEL` | 埋め込みモデルの明示的な指定（ローカルパスまたはHugging Face ID） | プロファイルから自動選択 |
-| `EMB_DEVICE` | 推論デバイス（`cpu`、`mps`、`cuda`） | `cpu`（bge: macは`mps`） |
-| `HF_HUB_OFFLINE` | `1` に設定するとHugging Faceへのアクセスを無効化 | — |
-| `ZOTERO_LOCAL_API_BASE` | Zotero Local HTTP APIのベースURL | `http://127.0.0.1:23119/api` |
-| `ZOTERO_LOCAL_API_PREFIX` | ZoteroローカルAPIのパスプレフィックス | `users/0` |
-| `ZOTERO_API_KEY` | Zotero Web APIキー（`ZOTERO_USER_ID` と合わせて設定すると DOI 書き戻しが有効になる） | — |
-| `ZOTERO_USER_ID` | Zotero ユーザーID（数値。zotero.org/settings/keys で確認可能） | — |
-| `S2_API_KEY` | Semantic Scholar APIキー（設定すると間隔が 3.5s → 2.5s に短縮） | — |
+| `FEATURE_LEVEL` | ウィザードで選んだ設定段階。機能制限ではなく管理用マーカー | `core` |
+| `ZOTERO_DATA_DIR` | `zotero.sqlite` と `storage/` がある場所 | `~/Zotero` |
+| `CHROMA_DIR` | ベクトル索引の保存先 | `data/chroma` |
+| `EMB_PROFILE` | `fast` または `bge` | `fast` |
+| `EMB_MODEL` | 埋め込みモデルのローカルパスまたはHugging Face ID | プロファイルから選択 |
+| `EMB_DEVICE` | `cpu`、`mps`、`cuda` | 環境から選択 |
+| `HF_HUB_OFFLINE` | `1`でHugging Faceへのアクセスを禁止 | 任意 |
 
----
+`FEATURE_LEVEL`は説明・管理用であり、セキュリティ境界ではありません。外部送信の可否はAPIキーと送信ポリシーで決まります。
 
-## 🛠 各クライアントでの使用方法
+### Level 2: Citation Network
 
-> **注意**: このMCPサーバーはPyPIには公開されていません。`uvx zotero-local-rag` は動作しません。ローカルのプロジェクトディレクトリを指定した `uv run` を使用してください。
+| 変数 | 用途 | 必須性 |
+|---|---|---|
+| `S2_API_KEY` | Semantic Scholarの専用枠 | 任意。未設定時は共有枠 |
+| `ZOTERO_USER_ID` + `ZOTERO_API_KEY` | OpenAlexで解決したDOIをZotero Web APIへ書き戻す | 任意 |
+| `CINII_APP_ID` | CiNii Research v2による書誌照合 | 任意 |
+| `CROSSREF_MAILTO` | Crossref polite pool用連絡先 | 任意 |
 
-### Claude Desktop
+### Level 3: LLM-assisted
 
-`claude_desktop_config.json` に以下を追記してください。セットアップウィザードを使った場合は自動で登録されます。
+タスク設定は `provider:model` 形式です。カンマ区切りでフォールバック順を指定できます。
+
+```dotenv
+LLM_DEFAULT=deepseek:deepseek-v4-pro
+LLM_EXPAND=deepseek:deepseek-v4-pro
+LLM_SUMMARY=deepseek:deepseek-v4-pro
+LLM_EXTRACT=deepseek:deepseek-v4-pro
+DEEPSEEK_API_KEY=...
+```
+
+対応プロバイダ:
+
+- `deepseek`: `DEEPSEEK_API_KEY`
+- `codex_cli`: ローカルのCodexログインと利用枠
+- `claude_cli`: ローカルのClaudeログインと利用枠
+- `openai_compat`: `LLM_OPENAI_BASE_URL` と必要に応じて `LLM_OPENAI_API_KEY`
+- `anthropic`: `ANTHROPIC_API_KEY` と `uv sync --extra llm-anthropic`
+- `gemini`: 後方互換の生成LLMプロバイダ。埋め込みには使用不可
+
+## MCPクライアントへの接続
+
+Claude Desktopはウィザードから自動登録できます。手動設定例:
 
 ```json
 {
   "mcpServers": {
     "zotero-rag": {
-      "command": "/Users/<username>/.local/bin/uv",
+      "command": "/absolute/path/to/uv",
       "args": [
-        "--directory",
-        "/absolute/path/to/zotero-local-rag",
-        "run",
-        "python",
-        "-u",
-        "src/rag_mcp_server.py"
+        "--directory", "/absolute/path/to/zotero-local-rag",
+        "run", "python", "-u", "src/rag_mcp_server.py"
       ],
       "env": {
         "CHROMA_DIR": "/absolute/path/to/zotero-local-rag/data/chroma",
@@ -339,74 +203,96 @@ Zotero文献の被引用情報（どの論文に引用されているか）をSe
 }
 ```
 
-`command` のuvのパスは `which uv` で確認できます。
+CursorやZedでも、作業ディレクトリをこのリポジトリに指定して次のコマンドをMCPサーバーとして登録します。
 
-### Cursor
-
-Cursorの `Settings` → `Features` → `MCP` にて：
-
-1. **+ Add new MCP server** をクリック
-2. Name: `zotero-rag`
-3. Type: `command`
-4. Command:
-   ```bash
-   uv --directory /absolute/path/to/zotero-local-rag run python -u src/rag_mcp_server.py
-   ```
-   環境変数 `CHROMA_DIR` は別途 `env` フィールドで指定してください。
-
-### Zed
-
-Zedの設定画面 (`settings.json`) にて：
-
-```json
-{
-  "context_servers": {
-    "zotero-rag": {
-      "command": "uv",
-      "args": [
-        "--directory",
-        "/absolute/path/to/zotero-local-rag",
-        "run",
-        "python",
-        "-u",
-        "src/rag_mcp_server.py"
-      ],
-      "env": {
-        "CHROMA_DIR": "/absolute/path/to/zotero-local-rag/data/chroma",
-        "EMB_PROFILE": "fast"
-      }
-    }
-  }
-}
+```bash
+uv run python -u src/rag_mcp_server.py
 ```
 
----
+このプロジェクトはPyPI未公開のため、`uvx zotero-local-rag` ではなくローカルディレクトリから実行してください。
 
-## 🔍 サーバーが反応しない場合
+## 任意機能
 
-Claudeからサーバーが応答しないと感じた場合は、`server_status` ツールを呼び出してください。以下の情報が返ります：
+### 日本語PDFのOCR
 
-- ChromaDBのパスが存在するか
-- コレクション名とドキュメント数
-- 埋め込みモデルの設定
-- エラーがあれば具体的な原因と対処法
+一部のPDFでテキストが崩れる場合にTesseractを利用できます。
 
-一般的な原因と対処法：
+```bash
+# macOS
+brew install tesseract tesseract-lang
 
-| 症状 | 原因 | 対処 |
-|---|---|---|
-| `chroma_dir_exists: false` | インデクサーが未実行 | ウィザードを起動してインデクサーを実行 |
-| `No collections found` | インデクサーが途中で失敗 | ウィザードを再実行 |
-| `EMB resolve error` | モデルがオフラインキャッシュにない | 一度オンラインで実行してモデルをキャッシュ |
+# Debian/Ubuntu
+sudo apt install tesseract-ocr tesseract-ocr-jpn
+```
 
----
+高度な再OCR候補キューはNDLOCR-Liteにも対応します。元のZotero添付ファイルは変更しません。
 
-## 📖 LLM向けのベストプラクティス
+### 夜間要約
 
-このパッケージには、提供されたツールをLLMが最適に活用するための指示書 `ZOTERO_RAG_GUIDE.md` が同梱されています。自律的な反復リサーチタスクを行わせるために、この手順書をシステムプロンプトに組み込むか、事前に読み込ませることを推奨します。
+夜間処理は初期状態では無効です。`.env` で時刻・件数・Codex週次残量の下限を管理できます。
 
----
+```dotenv
+NIGHTLY_ENABLE=1
+NIGHTLY_START_TIME=03:30
+NIGHTLY_LAUNCH_MODE=terminal
+NIGHTLY_MAX_HOURS=5
+NIGHTLY_MAX_ITEMS=20
+NIGHTLY_MIN_WEEKLY_REMAINING_PERCENT=20
+```
 
-## 🗺 アーキテクチャ
+macOSへ登録または状態確認:
 
-システムの全体図・処理パイプライン・モジュール一覧・データストア構成は [`ARCHITECTURE.md`](./ARCHITECTURE.md) を参照してください。
+```bash
+scripts/install_nightly_launchd.sh
+scripts/install_nightly_launchd.sh --check
+```
+
+Documents配下などmacOSの保護対象にリポジトリがある場合は、`NIGHTLY_LAUNCH_MODE=terminal`を使用します。ログはTerminalと `data/nightly_summaries.log` に表示・保存されます。
+
+### アプリケーション更新
+
+macOSでは `Software-Update.command` をダブルクリックできます。`.env`、`data/`、`.venv/`、`.claude/` は保持されます。更新後はClaude DesktopなどのMCPクライアントを再起動してください。
+
+## データとバックアップ
+
+索引、DB、ログ、品質評価、バックアップはすべて `data/` 以下に置かれ、Gitには追加されません。通常運用で重要なのは現在の `relations.db`、`chroma/`、`lexical.sqlite3`、`manifest.json`です。
+
+大規模な修復前だけ `data/backups/` にスナップショットを作成し、修復・整合性検査・回帰テストが完了したら古い中間バックアップを削除してください。バックアップは自動同期されないため、必要なら利用者側の暗号化バックアップへコピーしてください。
+
+## トラブルシューティング
+
+まずMCPから `server_status` を呼び出してください。
+
+| 症状 | 確認事項 |
+|---|---|
+| `chroma_dir_exists: false` | `CHROMA_DIR`と初回インデックスを確認 |
+| `No collections found` | `Library-Update.command`またはインデクサーを実行 |
+| `EMB resolve error` | `EMB_PROFILE`とモデルのローカルパスを確認 |
+| S2の429 | 待ってメニュー3を再実行。必要なら`S2_API_KEY`を設定 |
+| LLM処理が即停止 | APIキー、CLIログイン、除外タグ/全許可ポリシーを確認 |
+
+ログはMCPの `get_debug_logs` または `data/zotero-rag.log` で確認できます。
+
+## 開発・高度な運用
+
+```bash
+# 全回帰テスト
+uv run python -m unittest discover -s tests -q
+
+# 参考文献候補の状態確認
+uv run python scripts/review_references.py list --status pending --limit 20
+
+# 検索品質評価
+uv run python scripts/eval_retrieval.py data/quality/gold_qa.jsonl --k 10
+```
+
+詳細資料:
+
+- [ZOTERO_RAG_GUIDE.md](ZOTERO_RAG_GUIDE.md): MCPツールと検索ワークフロー
+- [CITATION_UPDATE_GUIDE.md](CITATION_UPDATE_GUIDE.md): Citation Networkの更新・再開・レート制限
+- [ARCHITECTURE.md](ARCHITECTURE.md): 処理フロー、モジュール、データストア
+- [.env.example](.env.example): 全設定のひな形
+
+## ライセンス
+
+[MIT License](LICENSE)
