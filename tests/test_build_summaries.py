@@ -239,6 +239,24 @@ class SummaryPipelineTests(unittest.TestCase):
             result = build_summaries.build_item("ITEM", mode="llm")
         self.assertEqual(result["status"], "excluded")
 
+    def test_force_does_not_replace_luna_with_deepseek_without_explicit_override(self):
+        chunks = [{"id": "a", "text": "body", "metadata": {}}]
+        existing = {
+            "chunk_count": 1, "source_mtime": 0.0,
+            "model": "codex_cli:gpt-5.6-luna",
+        }
+        deepseek = Mock(provider="deepseek", model="deepseek-v4-pro")
+        with patch.object(build_summaries, "get_item_chunks", return_value=chunks), patch.object(
+            build_summaries, "load_manifest", return_value={}
+        ), patch.object(build_summaries, "get_item_summary", return_value=existing), patch.object(
+            build_summaries, "_source_mtime", return_value=0.0
+        ), patch.object(build_summaries, "get_llm", return_value=deepseek), patch.object(
+            build_summaries, "_excluded_from_llm"
+        ) as exclusion:
+            result = build_summaries.build_item("ITEM", mode="llm", force=True)
+        self.assertEqual(result["status"], "protected_existing")
+        exclusion.assert_not_called()
+
     def test_summary_exclusion_fails_closed_when_tags_cannot_be_checked(self):
         with patch.dict(os.environ, {"SUMMARY_EXCLUDE_TAGS": "private"}, clear=False), patch.object(
             build_summaries.httpx, "get", side_effect=RuntimeError("offline")

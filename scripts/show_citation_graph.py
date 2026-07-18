@@ -5915,6 +5915,7 @@ def _natural_key(s: str) -> list:
 def _route_generate_summary(body: _SummaryRequest) -> JSONResponse:
     """ChromaDB チャンクからDeepSeekで要約を生成してキャッシュする。"""
     from db_relations import get_item_summary, save_item_summary
+    from build_summaries import _excluded_from_llm
     from llm_client import DeepSeekClient, LLMError
 
     # キャッシュ済みで force=False なら即返す
@@ -5925,6 +5926,12 @@ def _route_generate_summary(body: _SummaryRequest) -> JSONResponse:
                 "summary": cached["summary"], "model": cached["model"],
                 "updated_at": cached["updated_at"], "cached": True,
             })
+
+    excluded, exclusion_reason = _excluded_from_llm(body.item_key)
+    if excluded:
+        return JSONResponse(
+            {"error": f"クラウド要約対象外です: {exclusion_reason}"}, status_code=403,
+        )
 
     api_key = os.environ.get("DEEPSEEK_API_KEY", "")
     if not api_key:

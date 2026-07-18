@@ -442,6 +442,7 @@ def build_item(
     item_key: str, *, mode: str = "extractive", force: bool = False,
     audit_sections: list[dict[str, Any]] | None = None,
     quota_guard: Callable[[], Any] | None = None,
+    allow_model_migration: bool = False,
 ) -> dict[str, Any]:
     chunks = get_item_chunks(item_key)
     if not chunks:
@@ -449,6 +450,15 @@ def build_item(
     manifest = load_manifest(MANIFEST_PATH)
     source_mtime = _source_mtime(chunks, manifest)
     existing = get_item_summary(item_key)
+    if mode == "llm" and force and existing and not allow_model_migration:
+        existing_model = str(existing.get("model") or "").casefold()
+        target_client = get_llm("summary")
+        target_spec = f"{target_client.provider}:{target_client.model}".casefold()
+        if "luna" in existing_model and "deepseek" in target_spec:
+            return {
+                "item_key": item_key, "status": "protected_existing",
+                "reason": "explicit --allow-model-migration is required to replace a Luna result",
+            }
     same_source = (
         existing
         and existing.get("chunk_count") == len(chunks)
@@ -678,6 +688,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--item")
     parser.add_argument("--force", action="store_true")
+    parser.add_argument(
+        "--allow-model-migration", action="store_true",
+        help="Allow --force to replace an existing result produced by another model family.",
+    )
     parser.add_argument("--mode", choices=("extractive", "llm"), default="extractive")
     parser.add_argument("--no-embed", action="store_true")
     parser.add_argument("--embed-only", action="store_true")
@@ -752,6 +766,7 @@ def main() -> None:
                         )
                     result = build_item(
                         key, mode=args.mode, force=args.force, quota_guard=quota_guard,
+                        allow_model_migration=args.allow_model_migration,
                     )
                 except CodexQuotaFloorReached as exc:
                     stop_reason = "weekly_quota_floor"

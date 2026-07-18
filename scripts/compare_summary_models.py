@@ -184,7 +184,11 @@ def main() -> None:
             report["error"] = str(exc)
             break
         except LLMError as exc:
-            report["items"].append({"item_key": key, "status": "error", "error": str(exc)})
+            report["items"].append({
+                "item_key": key, "status": "provider_unavailable", "error": str(exc),
+            })
+            report["stop_reason"] = "provider_unavailable"
+            break
         _write_json_atomic(output, report)
     for signum, handler in previous_handlers.items():
         signal.signal(signum, handler)
