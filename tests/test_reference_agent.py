@@ -146,6 +146,70 @@ class ReferenceAgentTests(unittest.TestCase):
         self.assertEqual(result["status"], "ambiguous")
         self.assertEqual(result["evidence"]["margin"], 0.0)
 
+    def test_primary_title_match_accepts_subtitle_difference(self):
+        reference = {
+            "raw": "M. Eriksson (2019). Spotify Teardown: Inside the Black Box of Streaming Music.",
+            "title": "Spotify Teardown: Inside the Black Box of Streaming Music",
+            "authors": ["M. Eriksson"], "year": 2019, "type": "book",
+        }
+        candidate = {
+            "title": "Spotify Teardown", "authors": "Maria Eriksson, Rasmus Fleischer",
+            "year": 2019, "doi": "10.7551/mitpress/example", "source": "crossref",
+            "type": "book",
+        }
+        evidence = reference_agent.assess_metadata_candidate(reference, candidate)
+        self.assertTrue(evidence["accepted"])
+        self.assertEqual(evidence["title_match_mode"], "primary")
+        self.assertTrue(evidence["strong_author_supported"])
+
+    def test_simple_primary_title_is_allowed_with_strong_author_and_year(self):
+        reference = {
+            "raw": "Alice B. Smith (2020). Introduction: A Longer Subtitle.",
+            "title": "Introduction: A Longer Subtitle", "authors": ["Alice B. Smith"],
+            "year": 2020,
+        }
+        candidate = {
+            "title": "Introduction", "authors": "Alice Smith", "year": 2020,
+            "doi": "10.1234/introduction", "source": "crossref",
+        }
+        self.assertTrue(reference_agent.assess_metadata_candidate(reference, candidate)["accepted"])
+
+    def test_primary_title_match_rejects_different_author_initial(self):
+        reference = {
+            "raw": "Alice Smith (2020). Introduction: A Longer Subtitle.",
+            "title": "Introduction: A Longer Subtitle", "authors": ["Alice Smith"],
+            "year": 2020,
+        }
+        candidate = {
+            "title": "Introduction", "authors": "Bob Smith", "year": 2020,
+            "doi": "10.1234/wrong", "source": "crossref",
+        }
+        self.assertFalse(reference_agent.assess_metadata_candidate(reference, candidate)["accepted"])
+
+    def test_primary_title_match_rejects_different_full_name_with_same_initial(self):
+        reference = {
+            "raw": "Alice Smith (2020). Introduction: A Longer Subtitle.",
+            "title": "Introduction: A Longer Subtitle", "authors": ["Alice Smith"],
+            "year": 2020,
+        }
+        candidate = {
+            "title": "Introduction", "authors": "Andrew Smith", "year": 2020,
+            "doi": "10.1234/wrong-given-name", "source": "crossref",
+        }
+        self.assertFalse(reference_agent.assess_metadata_candidate(reference, candidate)["accepted"])
+
+    def test_primary_title_match_rejects_bibliographic_type_conflict(self):
+        reference = {
+            "raw": "Alice Smith (2020). Introduction: A Longer Subtitle. Example Press.",
+            "title": "Introduction: A Longer Subtitle", "authors": ["Alice Smith"],
+            "year": 2020, "type": "book",
+        }
+        candidate = {
+            "title": "Introduction", "authors": "Alice Smith", "year": 2020,
+            "doi": "10.1234/wrong-type", "source": "crossref", "type": "journal-article",
+        }
+        self.assertFalse(reference_agent.assess_metadata_candidate(reference, candidate)["accepted"])
+
     def test_reference_exclusion_fails_closed_when_tags_cannot_be_checked(self):
         with patch.dict(os.environ, {"EXTRACT_EXCLUDE_TAGS": "private"}, clear=False), patch.object(
             reference_agent.httpx, "get", side_effect=RuntimeError("offline")

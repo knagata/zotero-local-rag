@@ -42,6 +42,7 @@ REFERENCE_HEADING = re.compile(
     re.I,
 )
 YEAR_RE = re.compile(r"(?:\(|（)?((?:18|19|20)\d{2})(?:\)|）)?")
+SUBTITLE_SEPARATOR_RE = re.compile(r"\s*(?::|：|—|–|―)\s*")
 
 REFERENCE_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -180,11 +181,108 @@ def _item_excluded(item_key: str) -> tuple[bool, str | None]:
         return True, f"could not verify exclusion tags: {exc}"
 
 
+def _primary_title(value: Any) -> str:
+    return normalize_reference_text(SUBTITLE_SEPARATOR_RE.split(str(value or ""), maxsplit=1)[0])
+
+
+def _first_author(value: Any, *, source: str = "") -> str:
+    if isinstance(value, list):
+        return str(value[0] if value else "").strip()
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if ";" in text:
+        return text.split(";", 1)[0].strip()
+    if source == "crossref" and "," in text:
+        return text.split(",", 1)[0].strip()
+    return text
+
+
+def _author_signature(
+    value: str,
+) -> tuple[str, str, frozenset[str], tuple[str, ...]] | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if "," in text:
+        family_text, given_text = text.split(",", 1)
+        family_tokens = normalize_reference_text(family_text).split()
+        given_tokens = normalize_reference_text(given_text).split()
+        if not family_tokens:
+            return None
+        family = family_tokens[-1]
+    else:
+        tokens = normalize_reference_text(text).split()
+        if not tokens:
+            return None
+        family, given_tokens = tokens[-1], tokens[:-1]
+    initials = "".join(token[0] for token in given_tokens if token)
+    return family, initials, frozenset(normalize_reference_text(text).split()), tuple(given_tokens)
+
+
+def _strong_first_author_match(reference: dict[str, Any], candidate: dict[str, Any]) -> bool:
+    reference_name = _first_author(reference.get("authors"))
+    candidate_name = _first_author(
+        candidate.get("authors"), source=str(candidate.get("source") or ""),
+    )
+    reference_signature = _author_signature(reference_name)
+    candidate_signature = _author_signature(candidate_name)
+    if not reference_signature or not candidate_signature:
+        return False
+    ref_family, ref_initials, ref_tokens, ref_given = reference_signature
+    candidate_family, candidate_initials, candidate_tokens, candidate_given = candidate_signature
+    given_names_match = bool(
+        ref_given and candidate_given
+        and (
+            ref_given[0] == candidate_given[0]
+            if len(ref_given[0]) > 1 and len(candidate_given[0]) > 1
+            else ref_initials[0] == candidate_initials[0]
+        )
+    )
+    names_match = bool(
+        ref_tokens == candidate_tokens
+        or (
+            ref_family == candidate_family
+            and given_names_match
+        )
+    )
+    raw_tokens = set(normalize_reference_text(reference.get("raw")).split())
+    return names_match and ref_family in raw_tokens
+
+
+def _bibliographic_type_conflict(reference: dict[str, Any], candidate: dict[str, Any]) -> bool:
+    def family(value: Any) -> str | None:
+        normalized = normalize_reference_text(str(value or ""))
+        if "chapter" in normalized:
+            return "chapter"
+        if "book" in normalized or "monograph" in normalized:
+            return "book"
+        if "article" in normalized or "journal" in normalized:
+            return "article"
+        return None
+
+    reference_family = family(reference.get("type") or reference.get("work_type"))
+    candidate_family = family(candidate.get("type") or candidate.get("work_type"))
+    return bool(reference_family and candidate_family and reference_family != candidate_family)
+
+
 def _candidate_score(reference: dict[str, Any], candidate: dict[str, Any]) -> float:
     title_score = SequenceMatcher(
         None, normalize_work_title(reference.get("title")), normalize_work_title(candidate.get("title"))
     ).ratio()
     ref_year, candidate_year = reference.get("year"), candidate.get("year")
+    primary_title_match = bool(
+        _primary_title(reference.get("title"))
+        and _primary_title(reference.get("title")) == _primary_title(candidate.get("title"))
+    )
+    if (
+        primary_title_match
+        and ref_year is not None and candidate_year is not None
+        and int(ref_year) == int(candidate_year)
+        and _strong_first_author_match(reference, candidate)
+        and not _bibliographic_type_conflict(reference, candidate)
+    ):
+        return 1.0
     if ref_year and candidate_year and abs(int(ref_year) - int(candidate_year)) > 1:
         title_score *= 0.7
     ref_authors = reference.get("authors") or []
@@ -253,28 +351,53 @@ def assess_metadata_candidate(
     score = _candidate_score(reference, candidate)
     title_supported = _candidate_title_in_raw(raw, candidate)
     author_supported = _candidate_author_in_raw(raw, candidate)
+    strong_author_supported = _strong_first_author_match(reference, candidate)
     raw_years = {int(value) for value in YEAR_RE.findall(raw)}
     candidate_year = candidate.get("year")
     year_supported = bool(
         candidate_year is not None and raw_years and int(candidate_year) in raw_years
     )
+    primary_title = _primary_title(reference.get("title"))
+    candidate_primary_title = _primary_title(candidate.get("title"))
+    primary_title_supported = bool(
+        primary_title and primary_title == candidate_primary_title
+        and primary_title in normalize_reference_text(raw)
+    )
+    type_conflict = _bibliographic_type_conflict(reference, candidate)
     margin = score - runner_up_score
+    full_title_score = SequenceMatcher(
+        None,
+        normalize_work_title(reference.get("title")),
+        normalize_work_title(candidate.get("title")),
+    ).ratio()
+    full_title_match = bool(
+        title_supported and full_title_score >= 0.90 and author_supported
+    )
+    primary_title_match = bool(
+        primary_title_supported and strong_author_supported and year_supported
+    )
     accepted = bool(
         not is_short_form_reference(raw)
         and not is_compound_reference(raw)
         and identity
-        and title_supported
-        and author_supported
         and year_supported
+        and not type_conflict
+        and (full_title_match or primary_title_match)
         and score >= 0.90
         and margin >= 0.05
     )
     return {
         "accepted": accepted,
-        "score": round(score, 6), "runner_up_score": round(runner_up_score, 6),
+        "score": round(score, 6), "full_title_score": round(full_title_score, 6),
+        "runner_up_score": round(runner_up_score, 6),
         "margin": round(margin, 6), "stable_identifier": identity,
         "title_supported": title_supported, "author_supported": author_supported,
-        "year_supported": year_supported,
+        "strong_author_supported": strong_author_supported,
+        "primary_title_supported": primary_title_supported,
+        "title_match_mode": (
+            "full" if full_title_match else "primary" if primary_title_match else None
+        ),
+        "year_supported": year_supported, "type_conflict": type_conflict,
     }
 
 
