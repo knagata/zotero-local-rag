@@ -50,6 +50,15 @@ class SetupWizardTests(unittest.TestCase):
         self.assertEqual(config["EXTRACT_EXCLUDE_TAGS"], "private,no-cloud")
         self.assertNotIn("SUMMARY_ALLOW_CLOUD_ALL", config)
 
+    def test_citation_level_reprompts_until_s2_key_is_entered(self):
+        config: dict[str, str] = {}
+        with patch("builtins.input", side_effect=["2"]), patch(
+            "getpass.getpass", side_effect=["", "required-key"],
+        ), patch("sys.stdout", StringIO()):
+            setup_wizard.configure_feature_level(config)
+        self.assertEqual(config["FEATURE_LEVEL"], "citation")
+        self.assertEqual(config["S2_API_KEY"], "required-key")
+
     def test_status_never_prints_secret_values(self):
         config = {
             "FEATURE_LEVEL": "llm", "S2_API_KEY": "do-not-print",

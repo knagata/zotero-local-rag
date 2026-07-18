@@ -21,7 +21,7 @@ flowchart TB
 
   subgraph DATA["💾 データストア (data/)"]
     CHROMA[("ChromaDB\nchroma/\n段落ベクトル＋メタデータ")]
-    RELS[("relations.sqlite3\n引用・参照ネットワーク")]
+    RELS[("relations.db\n著作・引用・参照ネットワーク")]
     MANI["manifest.json\nインデックス更新状態"]
     LOG["zotero-rag.log\nサーバーログ"]
     S2L["s2_rate.lock\nS2 APIレート管理"]
@@ -225,7 +225,7 @@ flowchart TD
   RESOLVE --> UPDATE_REF
   UPDATE_REF --> RELS2
 
-  RELS2[("relations.sqlite3\n引用・参照テーブル")]
+  RELS2[("relations.db\n著作・引用・参照テーブル")]
 ```
 
 ---
@@ -238,7 +238,7 @@ flowchart TD
 | `index_from_zotero.py` | インデックス構築 CLI。Zotero 添付ファイルを全件処理 | `main_async()`, `_upsert_in_subbatches()` |
 | `update_citations.py` | 引用ネットワーク更新 CLI。`--resume-skipped` / `--epub-budget` フラグ対応。OpenAlex による DOI 解決・Zotero Web API 書き戻し | `main()`, `process_item()`, `query_openalex()`, `_zotero_web_patch_doi()`, `get_all_items()` |
 | `citation_mapper.py` | S2 API 連携・引用チャンク照合・レート管理。EPUB 参照バジェット管理・スキップ済み再解決 | `find_s2_paper_id()`, `map_item_global_citations()`, `map_item_local_references()`, `resolve_skipped_epub_refs()`, `s2_request()`, `_s2_wait_and_claim()`, `_load_chunks_for_item()` |
-| `db_relations.py` | relations.sqlite3 の CRUD 操作。削除済みアイテムの purge・スキップ済み参照の再解決サポート | `insert_citation()`, `insert_reference()`, `get_citations_for_chunk()`, `get_references_for_item()`, `purge_removed_items()`, `get_skipped_epub_refs()`, `get_items_with_skipped_epub_refs()`, `update_reference_s2_data()` |
+| `db_relations.py` | `relations.db` のCRUD操作。著作同一性、引用・参照、要約、審査キューを管理 | `resolve_work()`, `save_work_edge()`, `get_citations_for_chunk()`, `get_references_for_item()`, `purge_removed_items()` |
 | `embedder.py` | 埋め込みモデルのロード・ChromaDB コレクション初期化 | `get_collection()`, `_resolve_embedder_settings()` |
 | `zotero_source_localapi.py` | Zotero ローカル HTTP API (:23119) クライアント | `ZoteroLocalAPI`, `get_item()`, `get_attachments()` |
 | `pdf_extract.py` | PDF ページからの段落抽出（pdfminer ベース） | `extract_chunks_from_pdf()`, `extract_paragraphs_from_pdf_page()` |
@@ -258,8 +258,8 @@ flowchart TD
 |---|---|---|---|
 | `chroma/` | `data/chroma/` | ChromaDB (SQLite + HNSW) | 段落テキストの埋め込みベクトル、および `itemKey`, `attachmentKey`, `page`, `chapter`, `source_type` 等のメタデータ |
 | `manifest.json` | `data/` | JSON | 処理済み添付ファイルの `attachmentKey → mtime` マップ。差分インデックス更新に使用 |
-| `relations.sqlite3` | `data/` | SQLite | 引用ネットワーク。`citations` テーブル（外部論文からの被引用）と `references` テーブル（EPUB からの参照先）を格納 |
-| `zotero.sqlite3` | Zotero App フォルダ | SQLite | Zotero が管理する書誌データ。本システムは直接アクセスせず、ローカル API 経由で取得 |
+| `relations.db` | `data/` | SQLite | 著作、引用・参照、要約、審査キューを格納 |
+| `zotero.sqlite` | Zoteroデータフォルダ | SQLite | Zoteroが管理する書誌データ。通常はローカルAPI経由で参照 |
 | `zotero-rag.log` | `data/` | テキスト | MCP サーバーのデバッグログ。`get_debug_logs` ツールで参照可能 |
 | `s2_rate.lock` | `data/` | テキスト | Semantic Scholar API のレート管理用タイムスタンプ。`fcntl.flock` によるプロセス間排他制御 |
 | `models/` | `data/models/` | バイナリ | HuggingFace からキャッシュされた埋め込みモデルファイル |

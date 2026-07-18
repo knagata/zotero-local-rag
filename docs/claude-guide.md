@@ -1,6 +1,8 @@
-# Zotero Local RAG MCP リファレンス
+# Claude利用ガイド・MCPツールリファレンス
 
-このMCPサーバーは、ユーザーのZoteroライブラリに対する探索・抽出を行うツール群を提供します。最大の特徴は「トークン消費の最適化」と「高度なスコアリング（RRF）」です。状況に応じて自律的に最適なツールとパラメータを選択してください。
+[READMEへ戻る](../README.md)
+
+この文書は、ClaudeがZoteroライブラリを効率よく探索するためのツール選択と検索手順をまとめたものです。
 
 ---
 
@@ -8,7 +10,7 @@
 
 用途と解像度（コスト）に応じて使い分けてください。
 
-### 1. `search_zotero_items` (Zotero直接クイック検索・超高速)
+### `search_zotero_items`（Zotero直接検索）
 
 ベクトルインデックスを介さず、Zotero Local HTTP APIを直接用いてタイトル、著者、出版年などから超高速で部分一致検索を行います。「あのタイトルの論文はあるか？」「あの著者の論文はあるか？」といった明確な目的がある場合に最適です。
 
@@ -16,7 +18,7 @@
 - **`limit`**: 最大取得件数 (デフォルト `20`)。
 - **`qmode`**: 検索モード。`"titleCreatorYear"`（タイトル・著者・出版年のみを検索 - 推奨・超高速）または `"everything"`（添付ファイル本文を含むすべてを検索）。
 
-### 2. `search_items` (資料レベル・低コスト)
+### `search_items`（資料レベル）
 
 本文を返さず、ベクトル検索に合致した資料のメタデータのみを返します。特定のテーマについて、広い範囲から関連文献の当たりをつけるのに最適です。
 
@@ -25,7 +27,7 @@
 - **`where`**: Chromaメタデータフィルター（`source_type`、`itemKey` などで絞り込み可能）。
 - **`include_notes`**: Zoteroノートを検索対象に含めるか (デフォルト `false`)。
 
-### 3. `rag_search` (段落レベル・高コスト)
+### `rag_search`（段落レベル）
 
 検索に合致した具体的な段落（チャンク）の本文テキストを抽出します。
 
@@ -41,7 +43,7 @@
 - **`language_balance`**: 候補に日英両方がある場合、最終結果に各言語を最大2件ずつ確保するか (デフォルト `false`)。利用には `lang` メタデータを含む再インデックスが必要です。
 - **`search_mode`**: 通常は `"default"`、民族誌的・経験的事例を探す場合は `"case"`。事例モードでは仮想事例文（HyDE）と抽象度展開を併用し、前後1段落を既定で返します。
 
-### 4. `hierarchical_search` (資料・章→段落の階層検索)
+### `hierarchical_search`（資料・章→段落）
 
 俯瞰的な質問、関連文献の発見、複数資料の比較では最初に使います。資料要約と章要約から候補を選び、その候補内の段落検索と全体への直接検索をRRFで統合します。
 
@@ -50,39 +52,39 @@
 - **`include_direct`**: 要約で取りこぼした資料を拾う全体段落検索を併用するか (デフォルト `true`)。
 - **`return_summaries`**: 候補資料と段落に要約スニペットを付けるか (デフォルト `true`)。
 
-### 5. `get_item_summary` / `search_cases`
+### `get_item_summary` / `search_cases`
 
 - `get_item_summary(item_key=...)`: 保存済みの資料要約全文をローカルDBから取得します。
 - 要約は検索候補を絞るための索引であり、引用可能な事実源ではありません。研究上の主張や
   書誌情報は、検索結果の原文チャンクまたはZotero原資料で必ず確認してください。
 - `search_cases(query=..., region=...)`: 構造化された事例注釈と `rag_search(search_mode="case")` を統合します。事例注釈が未生成でも、直接段落検索へ自動フォールバックします。
 
-### 4. `get_chunk_context` (文脈拡張・低コスト)
+### `get_chunk_context`（前後文脈）
 
 `rag_search` で取得した特定のチャンクについて、その周辺の段落を再検索（ベクトル計算）なしで取得します。
 
 - **`chunk_id`**: 起点となるチャンクID（例: `ABCDEFGH:p12:para3:part0`）。
 - **`window`**: 前後に展開する段落数 (デフォルト `2`)。
 
-### 5. `get_item_details` (詳細情報取得)
+### `get_item_details`（書誌詳細）
 
 特定の資料の抄録（Abstract）、タグ、全著者リストなどのZoteroメタデータを取得します。
 
 - **`item_key`**: 対象の資料の Zotero `itemKey`。
 
-### 6. `list_recent_items` (ブラウジング)
+### `list_recent_items`（最近の資料）
 
 ライブラリに直近で追加・更新された文献一覧を取得します。
 
 - **`limit`**: 取得件数 (デフォルト `20`)。
 
-### 7. `get_document_outline` (目次取得)
+### `get_document_outline`（目次）
 
 PDFまたはEPUBドキュメントの目次（章構造）を取得します。章単位で検索範囲を絞り込む際の事前調査に使います。
 
 - **`attachment_key`**: ZoteroのattachmentKey（例: `ABCDEFGH`）。
 
-### 8. `server_status` (サーバー状態確認)
+### `server_status`（状態確認）
 
 サーバーの稼働状態と設定を確認します。応答が得られない場合や動作が不安定な場合に最初に呼び出してください。
 
@@ -94,17 +96,17 @@ PDFまたはEPUBドキュメントの目次（章構造）を取得します。�
 - `emb_model_loaded`: 埋め込みモデルが既にメモリにロード済みかどうか
 - `errors`: エラーがある場合の原因と対処法
 
-### 9. `force_reload_index` (インデックスの強制リロード)
+### `force_reload_index`（索引再読込）
 
 ChromaDBのインデックスとメタデータを強制的にリロードします。インデクサーを新たに実行した直後に「Error finding id」エラーや検索結果が空になる場合に使用してください。引数はありません。
 
-### 10. `get_debug_logs` (デバッグログの取得)
+### `get_debug_logs`（ログ）
 
 サーバーのログファイルから最新N行を取得します。ChromaDBエラー、コレクションのリロードイベント、クエリ失敗時のトレースバックを診断するために使用してください。
 
 - **`lines`**: 取得するログ行数（デフォルト `100`、最新行から遡って返します）
 
-### 11. `build_citation_network` (引用・被引用ネットワークの一括構築)
+### `build_citation_network`（引用ネットワーク構築）
 
 特定のZotero文献について、以下の両方を一括で実行し、引用ネットワークのデータベースを構築します。
 1. **引用先の抽出**: EPUBから注釈（脚注・章末注）を自動抽出し、参照頻度（cite_count）の高い順に最大50件をSemantic Scholarで解決して保存。
@@ -114,19 +116,19 @@ ChromaDBのインデックスとメタデータを強制的にリロードしま
 
 > **EPUB参照バジェットについて**: 脚注が大量にある書籍（編著など）では、重要度の低い参照は `s2_status='skipped'` として保留されます。`uv run src/update_citations.py --resume-skipped` でバジェットを増やして後から再解決できます。
 
-### 12. `get_references_for_item` / `get_chunk_references` (参照文献の取得)
+### `get_references_for_item` / `get_chunk_references`
 
 構築済みのデータベースから、特定の資料（または段落チャンク）が「どの文献を引用しているか」を取得します。
 - `get_references_for_item`: 資料全体に対する参照文献の一覧を取得
 - `get_chunk_references`: 特定の段落チャンクIDに対する参照文献を取得
 
-### 13. `get_cited_chunks_for_item` / `get_chunk_citations` (被引用の取得)
+### `get_cited_chunks_for_item` / `get_chunk_citations`
 
 マッピング済みのデータベースから、特定の資料（または段落チャンク）が「外部の論文からどのような文脈で引用されているか」を取得します。これにより、「この文献の中で最も外部から議論されている（引用されている）重要な段落はどこか？」を特定できます。
 - `get_cited_chunks_for_item`: 資料全体で被引用数が多い順にチャンク一覧を取得
 - `get_chunk_citations`: 特定の段落チャンクIDに対する被引用コンテキストの一覧を取得
 
-### 14. `suggest_unowned_works` (未所蔵文献の発見)
+### `suggest_unowned_works`（未所蔵文献）
 
 引用ネットワークを集計し、複数の所蔵文献から参照されているのにライブラリにない文献を
 ランキングします。LLMや外部APIは呼ばず、構築済みのローカルDBだけを使います。
@@ -136,7 +138,7 @@ ChromaDBのインデックスとメタデータを強制的にリロードしま
 - **`k`**: 最大取得件数（デフォルト `20`）。
 - **`min_citing_items`**: 何件以上の異なる所蔵文献に隣接することを求めるか（デフォルト `2`）。
 
-### 15. `related_items` (所蔵文献間の関連発見)
+### `related_items`（関連資料）
 
 指定した所蔵文献に近い別の所蔵文献を、根拠つきで返します。
 
@@ -148,7 +150,7 @@ ChromaDBのインデックスとメタデータを強制的にリロードしま
 
 結果の `evidence` には共有参照数、共引用元数、内容類似度が含まれます。
 
-### 16. `extract_references_for_item` / `confirm_reference_match`
+### `extract_references_for_item` / `confirm_reference_match`
 
 PDF・HTML・EPUBの参考文献候補を構造化し、正準worksグラフへ解決します。
 
@@ -157,7 +159,7 @@ PDF・HTML・EPUBの参考文献候補を構造化し、正準worksグラフへ�
 - 保存時は DOI/ISBN、CiNii Research (`CINII_APP_ID` 設定時)、NDL Searchの順に候補を照合し、低信頼結果も根拠とともに保持します。
 - `confirm_reference_match(edge_id, work_id)` で低信頼エッジを正しいworkへ付け替え、`work_id` を省略すると棄却します。
 
-### 17. `promote_chapters` / `detect_translation`
+### `promote_chapters` / `detect_translation`
 
 - `promote_chapters` は章著者が複数章で明確に異なる場合だけ章を子workへ昇格します。既定はdry-runです。
 - `detect_translation` はZotero Extraの明示原題、次にNDLの原タイトル候補を使います。未検証のLLM推測だけではリンクを作りません。既定はdry-runです。

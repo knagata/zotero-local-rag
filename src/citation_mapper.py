@@ -36,7 +36,7 @@ _load_dotenv()
 _s2_key_at_import = os.environ.get("S2_API_KEY", "")
 print(
     f"[citation_mapper] S2_API_KEY: "
-    + ("SET (length=%d)" % len(_s2_key_at_import) if _s2_key_at_import else "NOT SET — shared 1000 RPS pool"),
+    + ("SET (length=%d)" % len(_s2_key_at_import) if _s2_key_at_import else "NOT SET — Citation Network disabled"),
     file=sys.stderr,
 )
 

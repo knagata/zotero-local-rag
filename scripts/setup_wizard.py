@@ -77,20 +77,34 @@ def _set_optional_secret(config: dict[str, str], key: str, prompt: str) -> None:
         config[key] = value
 
 
+def _set_required_secret(config: dict[str, str], key: str, prompt: str) -> None:
+    """Require a secret while allowing Enter to retain an existing value."""
+    while True:
+        current = bool(config.get(key))
+        suffix = " [configured; Enter keeps it]" if current else " [required]"
+        value = getpass.getpass(prompt + suffix + ": ").strip()
+        if value:
+            config[key] = value
+            return
+        if current:
+            return
+        print(f"{key} is required for Citation Network. Please enter a key.")
+
+
 def configure_feature_level(config: dict[str, str]) -> None:
     current_level = config.get("FEATURE_LEVEL", "core")
     default_choice = {"citation": "2", "llm": "3"}.get(current_level, "1")
     print("\n3. How far do you want to configure this installation?")
     print("   [1] Core local RAG — local embeddings, search, context, outlines")
-    print("   [2] + Citation Network — Semantic Scholar/OpenAlex (internet required)")
+    print("   [2] + Citation Network — Semantic Scholar/OpenAlex (internet + S2 key required)")
     print("   [3] + LLM automation — summaries, query expansion, reference extraction")
     choice = input(f"Select [1-3, default is {default_choice}]: ").strip() or default_choice
     level = {"2": "citation", "3": "llm"}.get(choice, "core")
     config["FEATURE_LEVEL"] = level
 
     if level in {"citation", "llm"}:
-        print("\nSemantic Scholar works without an API key using the slower shared pool.")
-        _set_optional_secret(config, "S2_API_KEY", "Semantic Scholar API key")
+        print("\nA Semantic Scholar API key is required for practical Citation Network use.")
+        _set_required_secret(config, "S2_API_KEY", "Semantic Scholar API key")
 
     if level != "llm":
         return
@@ -158,7 +172,7 @@ def print_configuration_status(config: dict[str, str]) -> None:
     print(f"  level          : {level}")
     print(f"  Zotero data    : {config.get('ZOTERO_DATA_DIR', '~/Zotero')}")
     print(f"  embedding      : {config.get('EMB_PROFILE', 'fast')}")
-    print(f"  S2 API key     : {'configured' if config.get('S2_API_KEY') else 'shared pool'}")
+    print(f"  S2 API key     : {'configured' if config.get('S2_API_KEY') else 'missing'}")
     print(f"  default LLM    : {config.get('LLM_DEFAULT', 'not configured')}")
     if config.get("SUMMARY_EXCLUDE_TAGS") or config.get("EXTRACT_EXCLUDE_TAGS"):
         policy = "tag blacklist"
@@ -377,7 +391,6 @@ def main(argv: list[str] | None = None):
         print("   ℹ️  Tesseract not found. OCR fallback will be unavailable.")
         print("      Japanese PDFs with custom fonts may produce garbled text.")
         print("      Install: brew install tesseract tesseract-lang")
-        print("      (Linux: sudo apt install tesseract-ocr tesseract-ocr-jpn)")
 
     do_rebuild = False
     if profile_changed:

@@ -73,10 +73,9 @@ OpenAlexの一致はタイトル類似度で検証されます。`ZOTERO_USER_ID
 
 全プロセスが `data/s2_rate.lock` を共有し、リクエスト間隔を調整します。429は指数バックオフで最大3回再試行されます。連続失敗時は5分間のサーキットブレーカーが働きます。
 
-| 設定 | 動作 |
-|---|---|
-| `S2_API_KEY`なし | 共有枠。低速だが利用可能 |
-| `S2_API_KEY`あり | 専用キーを使用。速度・安定性を改善 |
+Citation Networkには `S2_API_KEY` が必要です。
+
+[Semantic Scholar APIページ](https://www.semanticscholar.org/product/api)の「Request an API Key」からキーを申請してください。キーなしの共有枠は実用上の制限が厳しいため、このプロジェクトでは必須として扱います。
 
 `.env`で設定します。
 

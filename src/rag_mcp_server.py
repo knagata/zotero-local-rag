@@ -1590,7 +1590,7 @@ def get_zotero_rag_guide_resource() -> str:
     Zotero Local RAG MCP Reference Guide for AI Assistants.
     Provides the best practices and tool usage instructions for querying the Zotero library as a resource.
     """
-    guide_path = os.path.join(ROOT, "ZOTERO_RAG_GUIDE.md")
+    guide_path = os.path.join(ROOT, "docs", "claude-guide.md")
     try:
         with open(guide_path, "r", encoding="utf-8") as f:
             return f.read()
@@ -1603,7 +1603,7 @@ def zotero_rag_guide() -> str:
     Zotero Local RAG MCP Reference Guide for AI Assistants.
     Provides the best practices and tool usage instructions for querying the Zotero library.
     """
-    guide_path = os.path.join(ROOT, "ZOTERO_RAG_GUIDE.md")
+    guide_path = os.path.join(ROOT, "docs", "claude-guide.md")
     try:
         with open(guide_path, "r", encoding="utf-8") as f:
             return f.read()
@@ -1867,6 +1867,12 @@ async def build_citation_network(item_key: str) -> Dict[str, Any]:
     Args:
         item_key: The parent Zotero item key (e.g., 'BGZ9UFUJ')
     """
+
+    if not os.environ.get("S2_API_KEY", "").strip():
+        return {
+            "status": "error",
+            "message": "S2_API_KEY is required. Run Setup.command and configure Citation Network.",
+        }
 
     blocked, msg = _check_indexing_lock()
     if blocked:

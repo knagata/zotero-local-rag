@@ -327,10 +327,10 @@ def main():
     api_key = os.environ.get("S2_API_KEY", "")
     if not api_key:
         print("\n" + "="*60, file=sys.stderr)
-        print("⚠️  [WARNING] Semantic Scholar API Key (S2_API_KEY) is NOT set!", file=sys.stderr)
-        print("Without an API key, the rate limit is strictly enforced (1 request / 3 seconds).", file=sys.stderr)
+        print("[ERROR] S2_API_KEY is required for Citation Network updates.", file=sys.stderr)
+        print("Run Setup.command and choose Citation Network, or set the key in .env.", file=sys.stderr)
         print("="*60 + "\n", file=sys.stderr)
-        time.sleep(3)
+        sys.exit(2)
 
     zotero_data_dir = os.environ.get("ZOTERO_DATA_DIR", os.path.expanduser("~/Zotero"))
 
