@@ -283,6 +283,9 @@ def _init_db(conn: sqlite3.Connection) -> None:
             structure_classification TEXT,
             structure_model TEXT,
             structure_evidence_json TEXT,
+            parent_review_id INTEGER,
+            compound_split_model TEXT,
+            compound_split_evidence_json TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(item_key, raw_hash)
@@ -302,6 +305,9 @@ def _init_db(conn: sqlite3.Connection) -> None:
         "ALTER TABLE reference_review_queue ADD COLUMN structure_classification TEXT",
         "ALTER TABLE reference_review_queue ADD COLUMN structure_model TEXT",
         "ALTER TABLE reference_review_queue ADD COLUMN structure_evidence_json TEXT",
+        "ALTER TABLE reference_review_queue ADD COLUMN parent_review_id INTEGER",
+        "ALTER TABLE reference_review_queue ADD COLUMN compound_split_model TEXT",
+        "ALTER TABLE reference_review_queue ADD COLUMN compound_split_evidence_json TEXT",
     ):
         try:
             cursor.execute(sql)
@@ -718,6 +724,7 @@ def get_reference_review_candidates(
                 ("resolution_metadata_json", "resolution_metadata"),
                 ("resolution_evidence_json", "resolution_evidence"),
                 ("structure_evidence_json", "structure_evidence"),
+                ("compound_split_evidence_json", "compound_split_evidence"),
             ):
                 try:
                     row[target] = json.loads(row.pop(source) or "null")
@@ -935,6 +942,134 @@ def apply_reference_structure_decisions(
             applied += 1
         conn.commit()
         return applied
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def apply_compound_reference_splits(
+    splits: List[Dict[str, Any]], *, model: str,
+) -> Dict[str, int]:
+    """Atomically stage full-reference children while retaining compound parents."""
+    parent_ids = [int(split["review_id"]) for split in splits]
+    if len(parent_ids) != len(set(parent_ids)):
+        raise ValueError("duplicate parent review_id in compound split batch")
+    conn = get_db_connection()
+    try:
+        prepared: list[tuple[sqlite3.Row, Dict[str, Any], list[Dict[str, Any]]]] = []
+        for split in splits:
+            review_id = int(split["review_id"])
+            if split.get("classification") != "multiple_full_references":
+                raise ValueError(f"review {review_id}: split is not multiple_full_references")
+            parent = conn.execute('''
+                SELECT * FROM reference_review_queue WHERE review_id = ?
+            ''', (review_id,)).fetchone()
+            if (
+                parent is None or parent["status"] != "rejected"
+                or parent["source_kind"] != "epub-unverified"
+                or not str(parent["reviewer_note"] or "").startswith("compound reference")
+                or parent["committed_edge_id"]
+            ):
+                raise ValueError(f"review {review_id}: parent is not eligible for compound split")
+            children = split.get("references")
+            if not isinstance(children, list) or len(children) < 2:
+                raise ValueError(f"review {review_id}: split requires at least two references")
+            parent_text = " ".join(str(parent["raw_reference"] or "").split())
+            child_texts: set[str] = set()
+            child_cursor = 0
+            for child in children:
+                raw = " ".join(str(child.get("raw") or "").split())
+                position = parent_text.find(raw, child_cursor) if raw else -1
+                if position < 0:
+                    raise ValueError(
+                        f"review {review_id}: child raw is not sequentially present in parent"
+                    )
+                child_cursor = position + len(raw)
+                if raw in child_texts:
+                    raise ValueError(f"review {review_id}: duplicate child raw")
+                child_texts.add(raw)
+                title = str(child.get("title") or "").strip()
+                if not title or normalize_work_title(title) not in normalize_work_title(raw):
+                    raise ValueError(f"review {review_id}: child title is not supported by child raw")
+                authors = child.get("authors")
+                if not isinstance(authors, list) or not authors:
+                    raise ValueError(f"review {review_id}: child has no authors")
+                raw_tokens = set(re.findall(r"\w+", unicodedata.normalize("NFKC", raw).casefold()))
+                for author in authors:
+                    author_tokens = re.findall(r"\w+", str(author).casefold())
+                    if not author_tokens:
+                        raise ValueError(f"review {review_id}: child has an empty author")
+                    family = author_tokens[0] if "," in str(author) else author_tokens[-1]
+                    if family not in raw_tokens:
+                        raise ValueError(f"review {review_id}: child author is not supported by child raw")
+                year = child.get("year")
+                if year is None or str(int(year)) not in unicodedata.normalize("NFKC", raw):
+                    raise ValueError(f"review {review_id}: child year is not supported by child raw")
+                identifier_raw = strip_unicode_format_characters(
+                    unicodedata.normalize("NFKC", raw),
+                ).casefold()
+                doi = _normalize_identifier(str(child.get("doi") or ""), "doi")
+                if doi and doi not in identifier_raw:
+                    raise ValueError(f"review {review_id}: child DOI is not supported by child raw")
+                isbn = _normalize_identifier(str(child.get("isbn") or ""), "isbn")
+                if isbn:
+                    raw_compact = re.sub(r"[^0-9x]", "", identifier_raw)
+                    if len(isbn) not in {10, 13} or isbn not in raw_compact:
+                        raise ValueError(f"review {review_id}: child ISBN is not supported by child raw")
+            prepared.append((parent, split, children))
+
+        totals = {"parents": 0, "children_staged": 0, "children_existing": 0}
+        for parent, split, children in prepared:
+            review_id = int(split["review_id"])
+            for child in children:
+                raw = " ".join(str(child["raw"]).split())
+                raw_hash = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+                existing = conn.execute(
+                    "SELECT review_id FROM reference_review_queue WHERE item_key = ? AND raw_hash = ?",
+                    (parent["item_key"], raw_hash),
+                ).fetchone()
+                if existing:
+                    totals["children_existing"] += 1
+                    continue
+                conn.execute('''
+                    INSERT INTO reference_review_queue
+                        (item_key, raw_hash, raw_reference, title, authors_json,
+                         contributors_json, year, doi, isbn, container, work_type,
+                         extraction_model, status, reviewer_note, source_reference_id,
+                         source_context, source_kind, structure_classification,
+                         structure_model, structure_evidence_json, parent_review_id,
+                         updated_at)
+                    VALUES (?, ?, ?, ?, ?, '[]', ?, ?, ?, ?, ?, ?, 'rejected', ?, ?, ?,
+                            'epub-compound-child', 'full_reference', ?, ?, ?, CURRENT_TIMESTAMP)
+                ''', (
+                    parent["item_key"], raw_hash, raw, child.get("title"),
+                    json.dumps(child.get("authors") or [], ensure_ascii=False),
+                    child.get("year"),
+                    _normalize_identifier(str(child.get("doi") or ""), "doi"),
+                    _normalize_identifier(str(child.get("isbn") or ""), "isbn"),
+                    child.get("container"), child.get("type"), model,
+                    "unresolved: insufficient stable identifier; split from compound reference",
+                    parent["source_reference_id"], parent["source_context"], model,
+                    json.dumps(child, ensure_ascii=False), review_id,
+                ))
+                totals["children_staged"] += 1
+            cursor = conn.execute('''
+                UPDATE reference_review_queue
+                SET reviewer_note = ?, structure_classification = 'compound_parent',
+                    compound_split_model = ?, compound_split_evidence_json = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE review_id = ? AND status = 'rejected' AND committed_edge_id IS NULL
+            ''', (
+                f"compound reference: split into {len(children)} full references",
+                model, json.dumps(split, ensure_ascii=False), review_id,
+            ))
+            if cursor.rowcount != 1:
+                raise ValueError(f"review {review_id}: parent changed during compound split")
+            totals["parents"] += 1
+        conn.commit()
+        return totals
     except Exception:
         conn.rollback()
         raise

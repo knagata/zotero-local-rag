@@ -16,6 +16,7 @@ try:
     from .crossref_client import search_crossref
     from .chunk_store import get_item_chunks
     from .db_relations import (
+        apply_compound_reference_splits,
         apply_reference_metadata_resolution, apply_reference_metadata_resolutions,
         apply_reference_structure_decisions,
         get_canonical_work_id,
@@ -33,7 +34,7 @@ except ImportError:  # pragma: no cover
     from cinii_client import search_cinii
     from crossref_client import search_crossref
     from chunk_store import get_item_chunks
-    from db_relations import apply_reference_metadata_resolution, apply_reference_metadata_resolutions, apply_reference_structure_decisions, get_canonical_work_id, get_reference_review_candidates, get_resolver_cache, mark_reference_review_committed, normalize_work_title, resolve_work, save_resolver_cache, save_work_edge
+    from db_relations import apply_compound_reference_splits, apply_reference_metadata_resolution, apply_reference_metadata_resolutions, apply_reference_structure_decisions, get_canonical_work_id, get_reference_review_candidates, get_resolver_cache, mark_reference_review_committed, normalize_work_title, resolve_work, save_resolver_cache, save_work_edge
     from llm_client import LLMError, get_llm
     from ndl_client import search_ndl
     from reference_text import is_compound_reference, is_short_form_reference, normalize_reference_text, strip_unicode_format_characters
@@ -103,6 +104,46 @@ REFERENCE_STRUCTURE_SCHEMA: dict[str, Any] = {
             "review_id", "classification", "authors", "title", "year", "container",
             "publisher", "doi", "isbn", "type",
         ],
+        "additionalProperties": False,
+    }}},
+    "required": ["items"],
+    "additionalProperties": False,
+}
+
+COMPOUND_SPLIT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {"items": {"type": "array", "items": {
+        "type": "object",
+        "properties": {
+            "review_id": {"type": "integer"},
+            "classification": {
+                "type": "string",
+                "enum": [
+                    "multiple_full_references", "single_reference",
+                    "commentary_or_body", "mixed_or_unsafe",
+                ],
+            },
+            "references": {"type": "array", "items": {
+                "type": "object",
+                "properties": {
+                    "raw": {"type": "string"},
+                    "authors": {"type": "array", "items": {"type": "string"}},
+                    "title": {"type": "string"},
+                    "year": {"type": ["integer", "string"]},
+                    "container": {"type": ["string", "null"]},
+                    "publisher": {"type": ["string", "null"]},
+                    "doi": {"type": ["string", "null"]},
+                    "isbn": {"type": ["string", "null"]},
+                    "type": {"type": ["string", "null"]},
+                },
+                "required": [
+                    "raw", "authors", "title", "year", "container", "publisher",
+                    "doi", "isbn", "type",
+                ],
+                "additionalProperties": False,
+            }},
+        },
+        "required": ["review_id", "classification", "references"],
         "additionalProperties": False,
     }}},
     "required": ["items"],
@@ -699,6 +740,235 @@ def _validate_structure_decision(
         if len(isbn_normalized) not in {10, 13} or isbn_normalized not in raw_isbn:
             raise ValueError(f"review {review_id}: extracted ISBN is not present in raw reference")
     return normalized
+
+
+def _validate_compound_split(
+    row: dict[str, Any], decision: dict[str, Any],
+) -> dict[str, Any]:
+    """Validate that every proposed child is explicit, verbatim, and ordered."""
+    review_id = int(row["review_id"])
+    if int(decision.get("review_id") or -1) != review_id:
+        raise ValueError(f"review {review_id}: compound response id mismatch")
+    classification = str(decision.get("classification") or "")
+    allowed = {
+        "multiple_full_references", "single_reference",
+        "commentary_or_body", "mixed_or_unsafe",
+    }
+    if classification not in allowed:
+        raise ValueError(f"review {review_id}: invalid compound classification")
+    references = decision.get("references")
+    if not isinstance(references, list):
+        raise ValueError(f"review {review_id}: references must be an array")
+    normalized = dict(decision)
+    if classification != "multiple_full_references":
+        if references:
+            raise ValueError(f"review {review_id}: non-split classification has children")
+        return normalized
+    if len(references) < 2:
+        raise ValueError(f"review {review_id}: split requires at least two references")
+
+    parent = " ".join(str(row.get("raw_reference") or "").split())
+    cursor = 0
+    seen: set[str] = set()
+    validated_children: list[dict[str, Any]] = []
+    for child in references:
+        if not isinstance(child, dict):
+            raise ValueError(f"review {review_id}: child is not an object")
+        raw = " ".join(str(child.get("raw") or "").split())
+        position = parent.find(raw, cursor) if raw else -1
+        if position < 0:
+            raise ValueError(
+                f"review {review_id}: child raw is not a sequential verbatim parent substring"
+            )
+        if raw in seen:
+            raise ValueError(f"review {review_id}: duplicate child raw")
+        cursor = position + len(raw)
+        seen.add(raw)
+
+        title = str(child.get("title") or "").strip()
+        if not title or normalize_reference_text(title).replace(" ", "") not in (
+            normalize_reference_text(raw).replace(" ", "")
+        ):
+            raise ValueError(f"review {review_id}: child title is not present in child raw")
+        authors = child.get("authors")
+        if not isinstance(authors, list) or not authors:
+            raise ValueError(f"review {review_id}: child has no extracted author")
+        authors = [
+            str(author).strip() for author in authors
+            if normalize_reference_text(str(author)) not in {"et al", "ほか"}
+        ]
+        if not authors:
+            raise ValueError(f"review {review_id}: child has no explicit author")
+        raw_tokens = set(normalize_reference_text(raw).split())
+        for author in authors:
+            signature = _author_signature(author)
+            if signature is None or signature[0] not in raw_tokens:
+                raise ValueError(f"review {review_id}: child author is not present in child raw")
+        year = child.get("year")
+        visible_raw = unicodedata.normalize(
+            "NFKC", strip_unicode_format_characters(raw),
+        )
+        try:
+            normalized_year = int(year)
+        except (TypeError, ValueError):
+            raise ValueError(f"review {review_id}: child year is not a valid integer") from None
+        if not 1800 <= normalized_year <= 2099 or str(normalized_year) not in visible_raw:
+            raise ValueError(f"review {review_id}: child year is not present in child raw")
+        raw_folded = strip_unicode_format_characters(raw).casefold()
+        doi = str(child.get("doi") or "").strip()
+        if doi:
+            normalized_doi = re.sub(
+                r"^(?:https?://(?:dx\.)?doi\.org/|doi:\s*)", "", doi.casefold(),
+            )
+            if normalized_doi not in raw_folded:
+                raise ValueError(f"review {review_id}: child DOI is not present in child raw")
+        isbn = str(child.get("isbn") or "").strip()
+        if isbn:
+            normalized_isbn = re.sub(r"[^0-9x]", "", isbn.casefold())
+            raw_isbn = re.sub(r"[^0-9x]", "", raw_folded)
+            if len(normalized_isbn) not in {10, 13} or normalized_isbn not in raw_isbn:
+                raise ValueError(f"review {review_id}: child ISBN is not present in child raw")
+        validated = dict(child)
+        validated["raw"] = raw
+        validated["authors"] = authors
+        validated["year"] = normalized_year
+        validated_children.append(validated)
+    normalized["references"] = validated_children
+    return normalized
+
+
+def split_compound_reference_candidates(
+    *, limit: int = 100, batch_size: int = 5, max_chars: int = 24000,
+    review_ids: set[int] | None = None,
+) -> dict[str, Any]:
+    """Conservatively propose splits for legacy compound EPUB candidates."""
+    client = get_llm("extract")
+    eligible: list[dict[str, Any]] = []
+    excluded = 0
+    for row in get_reference_review_candidates("rejected", source_kind="epub-unverified"):
+        if len(eligible) >= max(limit, 0):
+            break
+        if review_ids is not None and int(row["review_id"]) not in review_ids:
+            continue
+        if (
+            not str(row.get("reviewer_note") or "").startswith("compound reference")
+            or row.get("structure_classification") == "compound_parent"
+        ):
+            continue
+        is_excluded, _reason = _item_excluded(str(row["item_key"]))
+        if is_excluded:
+            excluded += 1
+            continue
+        eligible.append(row)
+    totals: dict[str, Any] = {
+        "examined": len(eligible), "excluded": excluded, "valid": 0, "invalid": 0,
+        "multiple_full_references": 0, "single_reference": 0,
+        "commentary_or_body": 0, "mixed_or_unsafe": 0,
+        "model": None, "results": [],
+    }
+    if not eligible:
+        return totals
+    totals["model"] = f"{client.provider}:{client.model}"
+    batch_size = max(1, min(batch_size, 20))
+    max_chars = max(1000, max_chars)
+    batches: list[list[dict[str, Any]]] = []
+    batch: list[dict[str, Any]] = []
+    chars = 0
+    for row in eligible:
+        raw_length = len(str(row.get("raw_reference") or ""))
+        if raw_length > 30000:
+            totals["invalid"] += 1
+            totals["results"].append({
+                "review_id": int(row["review_id"]), "valid": False,
+                "validation_error": "compound candidate exceeds the 30000-character safety limit",
+            })
+            continue
+        if batch and (len(batch) >= batch_size or chars + raw_length > max_chars):
+            batches.append(batch)
+            batch, chars = [], 0
+        batch.append(row)
+        chars += raw_length
+    if batch:
+        batches.append(batch)
+
+    for current_batch in batches:
+        prompt_rows = [{
+            "review_id": int(row["review_id"]),
+            "raw_reference": row["raw_reference"],
+        } for row in current_batch]
+        prompt = (
+            "Conservatively classify compound bibliography candidates extracted from EPUBs. "
+            "Use multiple_full_references ONLY when the input consists essentially of two or "
+            "more independent, complete bibliographic citations. For that classification, "
+            "return ONE references object PER citation, never the whole parent as one child. "
+            "Copy each raw as an exact contiguous substring in source order. Fill authors, "
+            "title, and year from explicit text in THAT child; these fields must not be empty. "
+            "Do not infer missing data. If two or more fully populated children cannot be "
+            "returned, use mixed_or_unsafe instead. Prose/explanation is commentary_or_body, "
+            "one citation is single_reference, and any mixture of prose, complete citations, "
+            "short citations, or ambiguous boundaries is mixed_or_unsafe. All classifications "
+            "except multiple_full_references must have an empty references array. Return every "
+            "review_id exactly once. Example child: {\"raw\":\"Alice Smith (2020). First "
+            "Work.\",\"authors\":[\"Alice Smith\"],\"title\":\"First Work\",\"year\":2020,"
+            "\"container\":null,\"publisher\":null,\"doi\":null,\"isbn\":null,"
+            "\"type\":null}.\n\n" + json.dumps(prompt_rows, ensure_ascii=False)
+        )
+        output = client.generate_json(prompt, schema=COMPOUND_SPLIT_SCHEMA, timeout=300)
+        decisions = output.get("items") or []
+        expected_ids = {int(row["review_id"]) for row in current_batch}
+        actual_ids = [int(decision.get("review_id") or -1) for decision in decisions]
+        if len(actual_ids) != len(set(actual_ids)) or set(actual_ids) != expected_ids:
+            raise ValueError("compound split response coverage mismatch")
+        rows_by_id = {int(row["review_id"]): row for row in current_batch}
+        for decision in decisions:
+            result = dict(decision)
+            try:
+                validated = _validate_compound_split(
+                    rows_by_id[int(decision["review_id"])], decision,
+                )
+                result.update(validated)
+                result["valid"] = True
+                totals["valid"] += 1
+                totals[str(decision["classification"])] += 1
+            except ValueError as exc:
+                result["valid"] = False
+                result["validation_error"] = str(exc)
+                totals["invalid"] += 1
+            totals["results"].append(result)
+    return totals
+
+
+def apply_compound_reference_report(
+    results: list[dict[str, Any]], *, model: str,
+) -> dict[str, int]:
+    """Revalidate a dry-run report and atomically stage only safe splits."""
+    current = {
+        int(row["review_id"]): row
+        for row in get_reference_review_candidates("rejected", source_kind="epub-unverified")
+    }
+    splits: list[dict[str, Any]] = []
+    skipped_invalid = 0
+    for result in results:
+        if result.get("classification") != "multiple_full_references":
+            continue
+        review_id = int(result["review_id"])
+        row = current.get(review_id)
+        if row is None:
+            raise ValueError(f"review {review_id}: no longer eligible for compound split")
+        decision = {
+            key: value for key, value in result.items()
+            if key not in {"valid", "validation_error"}
+        }
+        try:
+            splits.append(_validate_compound_split(row, decision))
+        except ValueError:
+            if result.get("valid"):
+                raise
+            skipped_invalid += 1
+    applied = apply_compound_reference_splits(splits, model=model) if splits else {
+        "parents": 0, "children_staged": 0, "children_existing": 0,
+    }
+    return {"safe_splits": len(splits), "skipped_invalid": skipped_invalid, **applied}
 
 
 def restructure_unparsed_epub_references(

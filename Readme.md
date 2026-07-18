@@ -116,6 +116,14 @@ uv run python scripts/review_references.py apply-structure-report \
 uv run python scripts/review_references.py restructure-epub --reconsider-short \
   --output data/quality/reference-short-reconsider.json
 
+# 旧抽出で連結された複合候補をDeepSeekで保守的に分割提案（DB無変更）
+uv run python scripts/review_references.py split-compound --limit 100 \
+  --batch-size 5 --output data/quality/reference-compound-split.json
+
+# 子書誌が原文中に順番どおり存在する安全な分割だけをtransaction適用
+uv run python scripts/review_references.py apply-compound-report \
+  data/quality/reference-compound-split.json
+
 # 識別子不足候補をCrossref/CiNii/NDLで同定（DB無変更）
 uv run python scripts/review_references.py resolve-metadata --limit 100 \
   --output data/quality/reference-metadata-resolution.json
@@ -143,7 +151,9 @@ uv run python -m src.reference_quality_report --status pending
 EPUBの参照抽出は、参考文献見出し、`epub:type=noteref`、脚注・巻末注見出し、相互
 backlinkを優先します。表形式の注は行単位で切り出し、通常の章・節番号リンクや本文段落を
 参考文献として扱いません。DeepSeek分類だけではWorkを作らず、外部書誌との決定的照合を
-通過した候補だけをグラフへ反映します。
+通過した候補だけをグラフへ反映します。複合候補の分割では親行を証跡として残し、2件以上の
+完全書誌について、各子項目の原文・著者・書名・刊年が親原文に明記されている場合だけ子行を
+審査キューへ追加します。本文混在、短縮引用、境界不明、原文にない補完は自動分割しません。
 
 Gold QAは、保存済みケースと原文根拠からClaude向け候補を作り、返却結果を検証してから
 評価用JSONLへ変換できます。

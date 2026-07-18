@@ -17,9 +17,10 @@ from src.db_relations import (
     set_reference_review_status,
 )
 from src.reference_agent import (
-    apply_reference_metadata_report, apply_reference_structure_report,
+    apply_compound_reference_report, apply_reference_metadata_report,
+    apply_reference_structure_report,
     commit_approved_reference_candidates, resolve_reference_review_candidates,
-    restructure_unparsed_epub_references,
+    restructure_unparsed_epub_references, split_compound_reference_candidates,
 )
 
 
@@ -61,6 +62,13 @@ def main() -> None:
     restructure_parser.add_argument("--output", type=Path)
     apply_structure_parser = subparsers.add_parser("apply-structure-report")
     apply_structure_parser.add_argument("path", type=Path)
+    split_compound_parser = subparsers.add_parser("split-compound")
+    split_compound_parser.add_argument("--limit", type=int, default=100)
+    split_compound_parser.add_argument("--batch-size", type=int, default=5)
+    split_compound_parser.add_argument("--review-id", type=int, action="append")
+    split_compound_parser.add_argument("--output", type=Path)
+    apply_compound_parser = subparsers.add_parser("apply-compound-report")
+    apply_compound_parser.add_argument("path", type=Path)
     apply_parser = subparsers.add_parser("apply-decisions")
     apply_parser.add_argument("path", type=Path)
     apply_parser.add_argument("--expected-batch", type=Path)
@@ -119,6 +127,32 @@ def main() -> None:
             raise ValueError("structure report must contain model and results")
         print(json.dumps(
             apply_reference_structure_report(results, model=model),
+            ensure_ascii=False, indent=2,
+        ))
+        return
+    if args.command == "split-compound":
+        result = split_compound_reference_candidates(
+            limit=args.limit, batch_size=args.batch_size,
+            review_ids=set(args.review_id) if args.review_id else None,
+        )
+        rendered = json.dumps(result, ensure_ascii=False, indent=2)
+        if args.output:
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            args.output.write_text(rendered + "\n", encoding="utf-8")
+            print(json.dumps({
+                key: value for key, value in result.items() if key != "results"
+            }, ensure_ascii=False, indent=2))
+        else:
+            print(rendered)
+        return
+    if args.command == "apply-compound-report":
+        payload = json.loads(args.path.read_text(encoding="utf-8"))
+        results = payload.get("results") if isinstance(payload, dict) else None
+        model = payload.get("model") if isinstance(payload, dict) else None
+        if not isinstance(results, list) or not isinstance(model, str) or not model:
+            raise ValueError("compound report must contain model and results")
+        print(json.dumps(
+            apply_compound_reference_report(results, model=model),
             ensure_ascii=False, indent=2,
         ))
         return
