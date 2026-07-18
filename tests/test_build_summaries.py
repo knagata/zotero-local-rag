@@ -29,7 +29,133 @@ class SummaryPipelineTests(unittest.TestCase):
                 assert_strict(variant)
 
         assert_strict(build_summaries.SECTION_SCHEMA)
+        assert_strict(build_summaries.SELECTOR_SECTION_SCHEMA)
+        assert_strict(build_summaries.SELECTOR_CASE_JUDGE_SCHEMA)
         assert_strict(build_summaries.ITEM_SCHEMA)
+
+    def test_selector_units_preserve_exact_ocr_text_and_chunk_identity(self):
+        section = {
+            "section_id": "c0", "chapter": "",
+            "chunks": [
+                {"id": "chunk-a", "text": "組谷では交換した。\n次の文。", "metadata": {}},
+                {"id": "chunk-b", "text": "Second chunk remains exact.", "metadata": {}},
+            ],
+        }
+        units = build_summaries._section_evidence_units(section)
+        self.assertEqual([row["chunk_id"] for row in units], ["chunk-a", "chunk-a", "chunk-b"])
+        self.assertEqual(units[0]["text"], "組谷では交換した。")
+        self.assertNotIn("村", units[0]["text"])
+
+    def test_selector_units_match_section_source_budget(self):
+        section = {
+            "section_id": "c0", "chapter": "",
+            "chunks": [
+                {"id": "a", "text": "A" * 20000, "metadata": {}},
+                {"id": "b", "text": "B" * 20000, "metadata": {}},
+            ],
+        }
+        units = build_summaries._section_evidence_units(section)
+        source = build_summaries._section_source_text(section)
+        self.assertEqual(len(source), 30000)
+        self.assertTrue(all(unit["text"] in source for unit in units))
+        self.assertEqual(sum(len(unit["text"]) for unit in units), 29998)
+
+    def test_selector_hydrates_quote_locally_and_rejects_unknown_id(self):
+        section = {
+            "section_id": "c0", "chapter": "",
+            "chunks": [{
+                "id": "chunk-a", "text": "Alice conducted fieldwork in Fiji in 2020.",
+                "metadata": {},
+            }],
+        }
+        units = build_summaries._section_evidence_units(section)
+        generated = {
+            "summary": "要約", "chapter_authors": [], "first_publication_note": None,
+            "cases": [{
+                "description": "2020年にフィジーで調査した。", "region": "Fiji",
+                "group": None, "practices": ["fieldwork"], "phenomena": [],
+                "period": "2020", "locator_hint": None, "source_kind": "primary",
+                "evidence_unit_id": units[0]["unit_id"],
+            }, {
+                "description": "invalid", "region": None, "group": None,
+                "practices": [], "phenomena": [], "period": None,
+                "locator_hint": None, "source_kind": "primary",
+                "evidence_unit_id": "u9999",
+            }],
+        }
+        verified, stats = build_summaries._hydrate_selector_result(generated, units, section)
+        self.assertEqual(len(verified["cases"]), 1)
+        self.assertEqual(
+            verified["cases"][0]["evidence_quote"],
+            "Alice conducted fieldwork in Fiji in 2020.",
+        )
+        self.assertEqual(
+            verified["cases"][0]["description"],
+            "Alice conducted fieldwork in Fiji in 2020.",
+        )
+        self.assertEqual(verified["cases"][0]["region"], "Fiji")
+        self.assertEqual(verified["cases"][0]["practices"], ["fieldwork"])
+        self.assertEqual(verified["cases"][0]["chunk_id"], "chunk-a")
+        self.assertEqual(stats["invalid_evidence_unit_ids"], 1)
+
+    def test_selector_consensus_requires_distinct_sample_votes(self):
+        section = {
+            "section_id": "c0", "chapter": "",
+            "chunks": [{"id": "chunk-a", "text": "People exchanged gifts.", "metadata": {}}],
+        }
+        units = build_summaries._section_evidence_units(section)
+        case = {
+            "description": "贈与交換を行った。", "region": None, "group": None,
+            "practices": ["gift exchange"], "phenomena": [], "period": None,
+            "locator_hint": None, "source_kind": "primary",
+            "evidence_unit_id": units[0]["unit_id"],
+        }
+        base = {
+            "summary": "要約", "chapter_authors": [], "first_publication_note": None,
+        }
+        verified, stats = build_summaries._selector_consensus(
+            [{**base, "cases": [case, case]}, {**base, "cases": [case]}, {**base, "cases": []}],
+            units, section, min_votes=2,
+        )
+        self.assertEqual(len(verified["cases"]), 1)
+        self.assertEqual(stats["selector"]["consensus_cases"], 1)
+        self.assertEqual(stats["selector"]["case_selections"], 3)
+
+    def test_selector_case_judge_uses_majority_and_ignores_unknown_ids(self):
+        class Client:
+            def __init__(self):
+                self.responses = iter([
+                    {"decisions": [
+                        {"evidence_unit_id": "u0001", "is_empirical_case": True},
+                        {"evidence_unit_id": "unknown", "is_empirical_case": True},
+                    ]},
+                    {"decisions": [
+                        {"evidence_unit_id": "u0001", "is_empirical_case": True},
+                        {"evidence_unit_id": "u0002", "is_empirical_case": True},
+                    ]},
+                    {"decisions": [
+                        {"evidence_unit_id": "u0001", "is_empirical_case": False},
+                        {"evidence_unit_id": "u0002", "is_empirical_case": False},
+                    ]},
+                ])
+
+            def generate_json(self, *_args, **_kwargs):
+                return next(self.responses)
+
+        accepted, stats = build_summaries._judge_selector_case_ids(
+            Client(), {"u0001", "u0002"}, [
+                {"unit_id": "u0001", "chunk_id": "a", "text": "A concrete event."},
+                {"unit_id": "u0002", "chunk_id": "a", "text": "An abstract claim."},
+            ], samples=3, min_votes=2,
+        )
+        self.assertEqual(accepted, {"u0001"})
+        self.assertEqual(stats["votes"], {"u0001": 2, "u0002": 1})
+
+    def test_selector_rejects_obvious_fragments_before_judging(self):
+        self.assertFalse(build_summaries._is_self_contained_evidence("roken sentence ending."))
+        self.assertFalse(build_summaries._is_self_contained_evidence("A" * 900))
+        self.assertTrue(build_summaries._is_self_contained_evidence("A complete event happened."))
+        self.assertTrue(build_summaries._is_self_contained_evidence("村で祭礼が行われた。"))
 
     def test_front_matter_and_toc_are_non_content(self):
         fixtures = [

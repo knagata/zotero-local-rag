@@ -14,6 +14,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+SELECTOR_STRATEGY_VERSION = 5
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
@@ -51,7 +52,10 @@ def _classify(result: dict) -> str:
     return "accepted"
 
 
-def _compare_section(section: dict) -> dict:
+def _compare_section(
+    section: dict, *, strategy: str = "quote", samples: int = 3, min_votes: int = 2,
+    judge_samples: int = 3, judge_min_votes: int = 2, judge_reasoning: str = "disabled",
+) -> dict:
     extractive = build_summaries._extractive_section(section)
     if build_summaries.classify_section_content(section) == "non_content":
         result = {
@@ -63,7 +67,14 @@ def _compare_section(section: dict) -> dict:
         result["classification"] = _classify(result)
         return result
     try:
-        generated, model = build_summaries._llm_section(section)
+        if strategy == "selector":
+            generated, model = build_summaries._llm_selector_section(
+                section, samples=samples, min_votes=min_votes,
+                judge_samples=judge_samples, judge_min_votes=judge_min_votes,
+                judge_reasoning=judge_reasoning,
+            )
+        else:
+            generated, model = build_summaries._llm_section(section)
     except InvalidLLMResponse as exc:
         return {
             "section_id": section["section_id"], "chapter": section["chapter"],
@@ -86,7 +97,9 @@ def _compare_section(section: dict) -> dict:
 
 def compare_item(
     item_key: str, *, max_sections: int, workers: int = 1,
-    checkpoint_dir: Path | None = None, llm_spec: str = "",
+    checkpoint_dir: Path | None = None, llm_spec: str = "", strategy: str = "quote",
+    samples: int = 3, min_votes: int = 2,
+    judge_samples: int = 3, judge_min_votes: int = 2, judge_reasoning: str = "disabled",
 ) -> dict:
     excluded, reason = build_summaries._excluded_from_llm(item_key)
     if excluded:
@@ -128,10 +141,21 @@ def compare_item(
 
     if workers == 1:
         for section in pending:
-            save_result(section, _compare_section(section))
+            save_result(section, _compare_section(
+                section, strategy=strategy, samples=samples, min_votes=min_votes,
+                judge_samples=judge_samples, judge_min_votes=judge_min_votes,
+                judge_reasoning=judge_reasoning,
+            ))
     else:
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            futures = {pool.submit(_compare_section, section): section for section in pending}
+            futures = {
+                pool.submit(
+                    _compare_section, section, strategy=strategy,
+                    samples=samples, min_votes=min_votes,
+                    judge_samples=judge_samples, judge_min_votes=judge_min_votes,
+                    judge_reasoning=judge_reasoning,
+                ): section for section in pending
+            }
             for future in as_completed(futures):
                 save_result(futures[future], future.result())
 
@@ -148,6 +172,14 @@ def main() -> None:
     parser.add_argument("--max-sections", type=int, default=3)
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--llm", default="deepseek:deepseek-v4-pro")
+    parser.add_argument("--strategy", choices=["quote", "selector"], default="quote")
+    parser.add_argument("--samples", type=int, default=3)
+    parser.add_argument("--min-votes", type=int, default=2)
+    parser.add_argument("--judge-samples", type=int, default=3)
+    parser.add_argument("--judge-min-votes", type=int, default=2)
+    parser.add_argument(
+        "--judge-reasoning", choices=["enabled", "disabled"], default="disabled",
+    )
     parser.add_argument("--output", type=Path)
     parser.add_argument(
         "--checkpoint-dir", type=Path,
@@ -160,11 +192,29 @@ def main() -> None:
     args = parser.parse_args()
     if args.workers < 1:
         parser.error("--workers must be positive")
+    if args.samples < 1:
+        parser.error("--samples must be positive")
+    if args.min_votes < 1 or args.min_votes > args.samples:
+        parser.error("--min-votes must be between 1 and --samples")
+    if args.judge_samples < 1:
+        parser.error("--judge-samples must be positive")
+    if args.judge_min_votes < 1 or args.judge_min_votes > args.judge_samples:
+        parser.error("--judge-min-votes must be between 1 and --judge-samples")
     load_dotenv_native(ROOT)
     os.environ["LLM_SUMMARY"] = args.llm
     keys = (args.item or list_item_keys())[:max(args.max_items, 0)]
+    checkpoint_spec = (
+        f"{args.llm}|strategy={args.strategy}|version={SELECTOR_STRATEGY_VERSION}"
+        f"|samples={args.samples}|votes={args.min_votes}"
+        f"|judge_samples={args.judge_samples}|judge_votes={args.judge_min_votes}"
+        f"|judge_reasoning={args.judge_reasoning}"
+    )
     report = {
         "created_at": datetime.now().astimezone().isoformat(), "llm": args.llm,
+        "strategy": args.strategy, "samples": args.samples, "min_votes": args.min_votes,
+        "judge_samples": args.judge_samples, "judge_min_votes": args.judge_min_votes,
+        "judge_reasoning": args.judge_reasoning,
+        "strategy_version": SELECTOR_STRATEGY_VERSION if args.strategy == "selector" else None,
         "writes_database": False, "items": [], "stop_reason": "completed",
     }
     output = args.output or ROOT / "data" / "quality" / "summary-comparison.json"
@@ -186,7 +236,10 @@ def main() -> None:
         try:
             report["items"].append(compare_item(
                 key, max_sections=args.max_sections, workers=args.workers,
-                checkpoint_dir=args.checkpoint_dir, llm_spec=args.llm,
+                checkpoint_dir=args.checkpoint_dir, llm_spec=checkpoint_spec,
+                strategy=args.strategy, samples=args.samples, min_votes=args.min_votes,
+                judge_samples=args.judge_samples, judge_min_votes=args.judge_min_votes,
+                judge_reasoning=args.judge_reasoning,
             ))
         except RateLimitReached as exc:
             report["stop_reason"] = "rate_limit"

@@ -143,6 +143,21 @@ class LLMClientTests(unittest.TestCase):
         self.assertIsInstance(client, DeepSeekClient)
         self.assertEqual(client.model, "deepseek-v4-pro")
 
+    def test_deepseek_instance_can_override_reasoning_without_mutating_environment(self):
+        response = SimpleNamespace(
+            status_code=200, raise_for_status=lambda: None,
+            json=lambda: {"choices": [{"message": {"content": '{"ok": true}'}}]},
+        )
+        with patch.dict(os.environ, {
+            "DEEPSEEK_API_KEY": "test-key", "DEEPSEEK_THINKING": "disabled",
+        }, clear=True), patch("src.llm_client.httpx.post", return_value=response) as post:
+            DeepSeekClient(
+                "deepseek-v4-pro", thinking="enabled", reasoning_effort="medium",
+            ).generate_json("Return JSON", schema={"type": "object"})
+        request = post.call_args.kwargs["json"]
+        self.assertEqual(request["thinking"], {"type": "enabled"})
+        self.assertEqual(request["reasoning_effort"], "medium")
+
     def test_deepseek_rejects_json_that_does_not_match_schema(self):
         response = SimpleNamespace(
             status_code=200,

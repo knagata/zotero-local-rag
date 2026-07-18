@@ -360,6 +360,8 @@ class DeepSeekClient:
 
     model: str
     provider: str = "deepseek"
+    thinking: str | None = None
+    reasoning_effort: str | None = None
 
     def _request(
         self, prompt: str, *, max_tokens: int, timeout: float,
@@ -368,7 +370,10 @@ class DeepSeekClient:
         api_key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
         if not api_key:
             raise ProviderUnavailable("DEEPSEEK_API_KEY is not set.")
-        thinking = os.environ.get("DEEPSEEK_THINKING", "disabled").strip().casefold()
+        thinking = (
+            self.thinking if self.thinking is not None
+            else os.environ.get("DEEPSEEK_THINKING", "disabled")
+        ).strip().casefold()
         thinking = thinking if thinking in {"enabled", "disabled"} else "disabled"
         payload: dict[str, Any] = {
             "model": self.model,
@@ -377,8 +382,9 @@ class DeepSeekClient:
             "thinking": {"type": thinking},
         }
         if thinking == "enabled":
-            payload["reasoning_effort"] = os.environ.get(
-                "DEEPSEEK_REASONING_EFFORT", "high"
+            payload["reasoning_effort"] = (
+                self.reasoning_effort if self.reasoning_effort is not None
+                else os.environ.get("DEEPSEEK_REASONING_EFFORT", "high")
             ).strip() or "high"
         if schema is not None:
             # DeepSeek supports JSON object mode, not OpenAI's json_schema mode.

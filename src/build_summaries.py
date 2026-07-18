@@ -21,7 +21,7 @@ try:
         replace_case_annotations, save_item_summary, save_section_summary, update_case_chunk,
     )
     from .embedder import create_embedding_function, open_chroma_collection, resolve_embedder_settings
-    from .llm_client import LLMError, RateLimitReached, get_llm
+    from .llm_client import DeepSeekClient, InvalidLLMResponse, LLMError, RateLimitReached, get_llm
     from .manifest import load_manifest
     from .env_utils import load_dotenv_native
     from .codex_quota import CodexQuotaError, CodexQuotaFloorReached, require_weekly_quota
@@ -32,7 +32,7 @@ except ImportError:  # pragma: no cover
         replace_case_annotations, save_item_summary, save_section_summary, update_case_chunk,
     )
     from embedder import create_embedding_function, open_chroma_collection, resolve_embedder_settings
-    from llm_client import LLMError, RateLimitReached, get_llm
+    from llm_client import DeepSeekClient, InvalidLLMResponse, LLMError, RateLimitReached, get_llm
     from manifest import load_manifest
     from env_utils import load_dotenv_native
     from codex_quota import CodexQuotaError, CodexQuotaFloorReached, require_weekly_quota
@@ -137,6 +137,69 @@ ITEM_SCHEMA: dict[str, Any] = {
         "keywords": {"type": "array", "items": {"type": "string"}},
     },
     "required": ["summary", "summary_en", "keywords"],
+    "additionalProperties": False,
+}
+
+SELECTOR_SECTION_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "summary": {"type": "string"},
+        "cases": {"type": "array", "items": {
+            "type": "object",
+            "properties": {
+                "description": {"type": "string"}, "region": {"type": ["string", "null"]},
+                "group": {"type": ["string", "null"]},
+                "practices": {"type": "array", "items": {"type": "string"}},
+                "phenomena": {"type": "array", "items": {"type": "string"}},
+                "period": {"type": ["string", "null"]},
+                "locator_hint": {"type": ["string", "null"]},
+                "source_kind": {"type": ["string", "null"]},
+                "evidence_unit_id": {"type": "string"},
+            },
+            "required": [
+                "description", "region", "group", "practices", "phenomena", "period",
+                "locator_hint", "source_kind", "evidence_unit_id",
+            ],
+            "additionalProperties": False,
+        }},
+        "chapter_authors": {"type": "array", "items": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"}, "evidence_unit_id": {"type": "string"},
+            },
+            "required": ["name", "evidence_unit_id"],
+            "additionalProperties": False,
+        }},
+        "first_publication_note": {
+            "anyOf": [{
+                "type": "object",
+                "properties": {
+                    "note": {"type": "string"}, "evidence_unit_id": {"type": "string"},
+                },
+                "required": ["note", "evidence_unit_id"],
+                "additionalProperties": False,
+            }, {"type": "null"}],
+        },
+    },
+    "required": ["summary", "cases", "chapter_authors", "first_publication_note"],
+    "additionalProperties": False,
+}
+
+SELECTOR_CASE_JUDGE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "decisions": {"type": "array", "items": {
+            "type": "object",
+            "properties": {
+                "evidence_unit_id": {"type": "string"},
+                "is_empirical_case": {"type": "boolean"},
+                "priority": {"type": "integer"},
+            },
+            "required": ["evidence_unit_id", "is_empirical_case", "priority"],
+            "additionalProperties": False,
+        }},
+    },
+    "required": ["decisions"],
     "additionalProperties": False,
 }
 
@@ -268,6 +331,7 @@ def _evidence_chunk_id(evidence_quote: str, chunks: list[dict[str, Any]]) -> str
 
 def _verify_section_result(
     result: dict[str, Any], source_text: str, chunks: list[dict[str, Any]] | None = None,
+    *, trusted_selected_evidence: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Keep only structured fields backed by an exact quote from the LLM input."""
     normalized_source = _normalize_evidence(source_text)
@@ -287,7 +351,7 @@ def _verify_section_result(
             _record_verification(stats, "cases", False, "invalid_shape")
             continue
         quote = _normalize_evidence(case.get("evidence_quote"))
-        if has_ellipsis(quote):
+        if not trusted_selected_evidence and has_ellipsis(quote):
             _record_verification(stats, "cases", False, "composite_quote")
             continue
         if not quote or quote not in normalized_source:
@@ -312,7 +376,7 @@ def _verify_section_result(
             continue
         name = _normalize_evidence(author.get("name"))
         quote = _normalize_evidence(author.get("evidence_quote"))
-        if has_ellipsis(quote):
+        if not trusted_selected_evidence and has_ellipsis(quote):
             _record_verification(stats, "chapter_authors", False, "composite_quote")
             continue
         if not quote or quote not in normalized_source:
@@ -330,7 +394,7 @@ def _verify_section_result(
         else:
             note = _normalize_evidence(publication.get("note"))
             quote = _normalize_evidence(publication.get("evidence_quote"))
-            if has_ellipsis(quote):
+            if not trusted_selected_evidence and has_ellipsis(quote):
                 _record_verification(
                     stats, "first_publication_note", False, "composite_quote",
                 )
@@ -349,6 +413,262 @@ def _verify_section_result(
     stats["discard_rate"] = round(stats["total_discarded"] / generated, 4) if generated else 0.0
     stats["suspicious_section"] = bool(generated and stats["discard_rate"] > 0.5)
     return verified, stats
+
+
+def _split_exact_units(text: str, max_chars: int = 900) -> list[str]:
+    """Split source into exact, bounded substrings without normalizing OCR text."""
+    candidates = re.split(r"(?<=[。！？.!?])(?:[ \t]+|\n+)|\n{2,}", text)
+    units: list[str] = []
+    for candidate in candidates:
+        value = candidate.strip()
+        while len(value) > max_chars:
+            boundary = max(
+                value.rfind("\n", 0, max_chars + 1),
+                value.rfind(" ", 0, max_chars + 1),
+            )
+            if boundary < max_chars // 2:
+                boundary = max_chars
+            units.append(value[:boundary].strip())
+            value = value[boundary:].strip()
+        if value:
+            units.append(value)
+    return units
+
+
+def _section_evidence_units(section: dict[str, Any]) -> list[dict[str, str]]:
+    units: list[dict[str, str]] = []
+    remaining = 30000
+    has_text = False
+    for chunk_index, chunk in enumerate(section["chunks"]):
+        raw_text = str(chunk.get("text") or "")
+        if not raw_text:
+            continue
+        if has_text:
+            remaining -= 2  # _section_source_text joins non-empty chunks with two newlines.
+        if remaining <= 0:
+            break
+        raw_text = raw_text[:remaining]
+        remaining -= len(raw_text)
+        has_text = True
+        chunk_id = str(chunk.get("id") or f"chunk-{chunk_index}")
+        for text in _split_exact_units(raw_text):
+            units.append({
+                "unit_id": f"u{len(units) + 1:04d}", "chunk_id": chunk_id, "text": text,
+            })
+    return units
+
+
+def _hydrate_selector_result(
+    result: dict[str, Any], units: list[dict[str, str]], section: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Replace selected IDs with exact local source substrings, then run normal gates."""
+    lookup = {unit["unit_id"]: unit for unit in units}
+    invalid_ids = 0
+
+    def evidence(row: dict[str, Any]) -> str:
+        nonlocal invalid_ids
+        unit = lookup.get(str(row.get("evidence_unit_id") or ""))
+        if unit is None:
+            invalid_ids += 1
+            return ""
+        return unit["text"]
+
+    hydrated: dict[str, Any] = {
+        "summary": str(result.get("summary") or ""), "cases": [],
+        "chapter_authors": [], "first_publication_note": None,
+    }
+    for case in result.get("cases") or []:
+        if isinstance(case, dict):
+            row = {key: value for key, value in case.items() if key != "evidence_unit_id"}
+            quote = evidence(case)
+            normalized_quote = _normalize_evidence(quote).casefold()
+            # Selector mode uses the model only to rank source units. Model prose
+            # must not become a factual field without semantic verification.
+            row["description"] = quote
+            for field in ("region", "group", "period", "locator_hint"):
+                value = _normalize_evidence(row.get(field))
+                row[field] = value if value and value.casefold() in normalized_quote else None
+            for field in ("practices", "phenomena"):
+                row[field] = [
+                    value for value in row.get(field) or []
+                    if _normalize_evidence(value).casefold() in normalized_quote
+                ]
+            row["source_kind"] = (
+                row.get("source_kind") if row.get("source_kind") in {"primary", "secondary"}
+                else None
+            )
+            row["evidence_quote"] = quote
+            hydrated["cases"].append(row)
+    for author in result.get("chapter_authors") or []:
+        if isinstance(author, dict):
+            hydrated["chapter_authors"].append({
+                "name": author.get("name"), "evidence_quote": evidence(author),
+            })
+    publication = result.get("first_publication_note")
+    if isinstance(publication, dict):
+        quote = evidence(publication)
+        hydrated["first_publication_note"] = {
+            "note": quote, "evidence_quote": quote,
+        }
+    verified, stats = _verify_section_result(
+        hydrated, _section_source_text(section), section["chunks"],
+        trusted_selected_evidence=True,
+    )
+    stats["invalid_evidence_unit_ids"] = invalid_ids
+    return verified, stats
+
+
+def _selector_consensus(
+    samples: list[dict[str, Any]], units: list[dict[str, str]], section: dict[str, Any],
+    *, min_votes: int, allowed_case_ids: set[str] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Keep structured selections whose evidence unit recurs across model samples."""
+    if not samples:
+        raise ValueError("selector consensus requires at least one sample")
+    minimum = max(1, min(min_votes, len(samples)))
+
+    def recurring_rows(field: str) -> list[dict[str, Any]]:
+        by_unit: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for sample in samples:
+            seen: set[str] = set()
+            for row in sample.get(field) or []:
+                if not isinstance(row, dict):
+                    continue
+                unit_id = str(row.get("evidence_unit_id") or "")
+                if unit_id and unit_id not in seen:
+                    by_unit[unit_id].append(row)
+                    seen.add(unit_id)
+        rows = [rows[0] for rows in by_unit.values() if len(rows) >= minimum]
+        if field == "cases" and allowed_case_ids is not None:
+            rows = [
+                row for row in rows
+                if str(row.get("evidence_unit_id") or "") in allowed_case_ids
+            ]
+        return rows
+
+    publications = [
+        sample["first_publication_note"] for sample in samples
+        if isinstance(sample.get("first_publication_note"), dict)
+    ]
+    publication_by_unit: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in publications:
+        publication_by_unit[str(row.get("evidence_unit_id") or "")].append(row)
+    publication = next((
+        rows[0] for unit_id, rows in publication_by_unit.items()
+        if unit_id and len(rows) >= minimum
+    ), None)
+    # Keep the existing deterministic extractive summary. The model's role here
+    # is evidence selection, not unsupported prose generation.
+    summary = _extractive_section(section)["summary"]
+    selected = {
+        "summary": summary, "cases": recurring_rows("cases"),
+        "chapter_authors": recurring_rows("chapter_authors"),
+        "first_publication_note": publication,
+    }
+    verified, stats = _hydrate_selector_result(selected, units, section)
+    stats["selector"] = {
+        "samples": len(samples), "min_votes": minimum,
+        "case_selections": sum(len(sample.get("cases") or []) for sample in samples),
+        "consensus_cases": len(selected["cases"]),
+    }
+    return verified, stats
+
+
+def _selector_recurring_case_ids(
+    samples: list[dict[str, Any]], *, min_votes: int,
+) -> set[str]:
+    votes: Counter[str] = Counter()
+    for sample in samples:
+        votes.update({
+            str(row.get("evidence_unit_id") or "")
+            for row in sample.get("cases") or [] if isinstance(row, dict)
+        } - {""})
+    return {unit_id for unit_id, count in votes.items() if count >= min_votes}
+
+
+def _is_self_contained_evidence(text: str) -> bool:
+    """Reject obvious OCR/chunk fragments before spending judge requests."""
+    value = str(text or "").strip()
+    if not value:
+        return False
+    first_latin = re.search(r"[A-Za-z]", value[:80])
+    if first_latin and first_latin.group(0).islower():
+        prefix = value[:first_latin.start()].strip()
+        if not prefix or prefix[-1:] not in {'"', "'", "“", "‘", "(", "["}:
+            return False
+    if len(value) >= 880 and value[-1:] not in ".!?。！？』」”’)]":
+        return False
+    return True
+
+
+def _judge_selector_case_ids(
+    client: Any, candidate_ids: set[str], units: list[dict[str, str]],
+    *, samples: int = 3, min_votes: int = 2, max_cases: int = 3,
+) -> tuple[set[str], dict[str, Any]]:
+    """Use a separate classification prompt to remove abstract/non-case selections."""
+    if not candidate_ids:
+        return set(), {
+            "samples": samples, "candidates": 0, "accepted": 0, "votes": {},
+            "max_cases": max_cases,
+        }
+    lookup = {unit["unit_id"]: unit for unit in units}
+    source = "\n\n".join(
+        f"[{unit_id}]\n{lookup[unit_id]['text']}"
+        for unit_id in sorted(candidate_ids) if unit_id in lookup
+    )
+    prompt = (
+        "次の候補を、経験的・民族誌的・歴史的な具体事例として検索結果に保存する価値が"
+        "あるか判定してください。is_empirical_case=trueにするのは、実在する人物・集団・"
+        "組織・場所・制作物等について、具体的な行為、実践、経験、観察、事件、測定結果が"
+        "本文に記述されている場合です。抽象理論、一般論、将来予測、修辞的な問い、章の"
+        "方針説明、評論者の評価だけ、単なる書誌・刊行情報、人物名や著作の列挙はfalseに"
+        "してください。trueはこの節で検索価値が最も高い具体例を最大"
+        f"{max_cases}件までに絞り、1が最重要となるpriorityを付けてください。falseの"
+        "priorityは0にしてください。全IDを一度ずつ返してください。\n\n" + source
+    )
+    votes: Counter[str] = Counter()
+    priority_totals: Counter[str] = Counter()
+    completed = 0
+    last_error: InvalidLLMResponse | None = None
+    for _ in range(samples + 2):
+        try:
+            result = client.generate_json(
+                prompt, schema=SELECTOR_CASE_JUDGE_SCHEMA, timeout=300,
+            )
+        except InvalidLLMResponse as exc:
+            last_error = exc
+            continue
+        completed += 1
+        seen: set[str] = set()
+        positive: list[tuple[int, str]] = []
+        for decision in result.get("decisions") or []:
+            if not isinstance(decision, dict):
+                continue
+            unit_id = str(decision.get("evidence_unit_id") or "")
+            if unit_id in candidate_ids and decision.get("is_empirical_case") is True:
+                priority = int(decision.get("priority") or max_cases + 1)
+                positive.append((priority, unit_id))
+        for priority, unit_id in sorted(positive)[:max_cases]:
+            if unit_id not in seen:
+                votes[unit_id] += 1
+                priority_totals[unit_id] += max(1, priority)
+                seen.add(unit_id)
+        if completed >= samples:
+            break
+    if completed < samples:
+        raise last_error or InvalidLLMResponse("DeepSeek case judge returned too few valid samples.")
+    ranked = sorted(
+        (unit_id for unit_id, count in votes.items() if count >= min_votes),
+        key=lambda unit_id: (
+            -votes[unit_id], priority_totals[unit_id] / votes[unit_id], unit_id,
+        ),
+    )
+    accepted = set(ranked[:max_cases])
+    return accepted, {
+        "samples": completed, "min_votes": min_votes, "candidates": len(candidate_ids),
+        "accepted": len(accepted), "votes": dict(sorted(votes.items())),
+        "max_cases": max_cases,
+    }
 
 
 def _metadata(chunks: list[dict[str, Any]]) -> dict[str, Any]:
@@ -426,6 +746,71 @@ def _llm_section(section: dict[str, Any]) -> tuple[dict[str, Any], str]:
     verified, stats = _verify_section_result(generated, text, section["chunks"])
     verified["_verification"] = stats
     return verified, f"{client.provider}:{client.model}"
+
+
+def _llm_selector_section(
+    section: dict[str, Any], *, samples: int = 3, min_votes: int = 2,
+    judge_samples: int = 3, judge_min_votes: int = 2,
+    judge_reasoning: str = "disabled",
+) -> tuple[dict[str, Any], str]:
+    """Extract evidence by ID selection so the model never transcribes quotations."""
+    if samples < 1:
+        raise ValueError("samples must be positive")
+    units = _section_evidence_units(section)
+    if not units:
+        result = _extractive_section(section)
+        result["_verification"] = _new_verification_stats()
+        return result, "extractive"
+    client = get_llm("summary")
+    source = "\n\n".join(f"[{unit['unit_id']}]\n{unit['text']}" for unit in units)
+    prompt = (
+        "以下は学術資料の一節を、変更不能な原文単位ID付きで示したものです。"
+        "日本語200〜300字の要約と、民族誌的・経験的事例、章著者、初出情報をJSONで"
+        "返してください。構造化項目の根拠本文をコピーせず、必ず入力に存在する"
+        "evidence_unit_idを一つだけ選んでください。一つの原文単位だけで直接支持できない"
+        "項目は出力しないでください。description、region、group、period、locator_hintの"
+        "具体的事実と数値は、選んだ単位だけに明記された範囲に限定してください。"
+        "入力にない知識や表記訂正を補わないでください。同じ根拠単位からcaseを重複して"
+        "作らないでください。事例の二次言及はsource_kind='secondary'としてください。\n\n"
+        + source
+    )
+    generated: list[dict[str, Any]] = []
+    last_error: InvalidLLMResponse | None = None
+    for _ in range(samples + 2):
+        try:
+            generated.append(client.generate_json(
+                prompt, schema=SELECTOR_SECTION_SCHEMA, timeout=300,
+            ))
+        except InvalidLLMResponse as exc:
+            last_error = exc
+        if len(generated) >= samples:
+            break
+    if len(generated) < samples:
+        raise last_error or InvalidLLMResponse("DeepSeek selector returned too few valid samples.")
+    candidate_ids = _selector_recurring_case_ids(generated, min_votes=min_votes)
+    unit_lookup = {unit["unit_id"]: unit for unit in units}
+    fragment_ids = {
+        unit_id for unit_id in candidate_ids
+        if unit_id not in unit_lookup or not _is_self_contained_evidence(unit_lookup[unit_id]["text"])
+    }
+    candidate_ids -= fragment_ids
+    judge_client = client
+    if isinstance(client, DeepSeekClient) and judge_reasoning in {"enabled", "disabled"}:
+        judge_client = DeepSeekClient(
+            client.model, thinking=judge_reasoning,
+            reasoning_effort=client.reasoning_effort,
+        )
+    allowed_case_ids, judge_stats = _judge_selector_case_ids(
+        judge_client, candidate_ids, units, samples=judge_samples, min_votes=judge_min_votes,
+    )
+    verified, stats = _selector_consensus(
+        generated, units, section, min_votes=min_votes, allowed_case_ids=allowed_case_ids,
+    )
+    stats["selector_judge"] = judge_stats
+    stats["selector_judge"]["reasoning"] = judge_reasoning
+    stats["selector_judge"]["fragment_candidates_rejected"] = len(fragment_ids)
+    verified["_verification"] = stats
+    return verified, f"{client.provider}:{client.model}:selector"
 
 
 def _llm_item(title: str, section_rows: list[dict[str, Any]]) -> tuple[dict[str, Any], str]:

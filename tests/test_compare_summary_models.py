@@ -10,6 +10,35 @@ from src.llm_client import InvalidLLMResponse
 
 
 class SummaryComparisonTests(unittest.TestCase):
+    def test_selector_strategy_uses_id_selection_pipeline(self):
+        section = {
+            "section_id": "c0", "chapter": "Chapter",
+            "chunks": [{"id": "a", "text": "source text", "metadata": {}}],
+        }
+        generated = {
+            "summary": "要約", "cases": [], "chapter_authors": [],
+            "first_publication_note": None,
+            "_verification": {"total_generated": 0, "discard_rate": 0.0},
+        }
+        with patch.object(
+            compare_summary_models.build_summaries, "classify_section_content",
+            return_value="content",
+        ), patch.object(
+            compare_summary_models.build_summaries, "_llm_selector_section",
+            return_value=(generated, "deepseek:test:selector"),
+        ) as selector, patch.object(
+            compare_summary_models.build_summaries, "_llm_section",
+        ) as quote:
+            result = compare_summary_models._compare_section(
+                section, strategy="selector", samples=5, min_votes=3,
+            )
+        selector.assert_called_once_with(
+            section, samples=5, min_votes=3, judge_samples=3,
+            judge_min_votes=2, judge_reasoning="disabled",
+        )
+        quote.assert_not_called()
+        self.assertEqual(result["classification"], "accepted")
+
     def test_invalid_json_is_a_section_model_failure_not_provider_outage(self):
         section = {
             "section_id": "c0", "chapter": "Chapter",
