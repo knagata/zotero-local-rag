@@ -103,4 +103,5 @@ uv run python -m unittest discover -s tests -q
 
 ## ライセンス
 
-[MIT License](LICENSE)
+本プロジェクトは [PolyForm Noncommercial License 1.0.0](LICENSE) で公開しています。
+非商用目的での利用・改変・再配布は可能ですが、商用目的での利用や配布は許可されません。
