@@ -2,12 +2,31 @@ from __future__ import annotations
 
 import unittest
 import xml.etree.ElementTree as ET
+import json
+from unittest.mock import MagicMock, patch
 
 from src.cinii_client import _normalize_item
+from src.crossref_client import search_crossref
 from src.ndl_client import _normalize_record
 
 
 class BibliographicClientTests(unittest.TestCase):
+    def test_searches_crossref_by_bibliographic_string(self):
+        payload = {"message": {"items": [{
+            "DOI": "10.1234/example", "title": ["A <i>Distinctive</i> Article"],
+            "author": [{"given": "Alice", "family": "Smith"}],
+            "published": {"date-parts": [[2020]]},
+            "container-title": ["Example Journal"], "type": "journal-article",
+        }]}}
+        response = MagicMock()
+        response.__enter__.return_value.read.return_value = json.dumps(payload).encode()
+        with patch("src.crossref_client.urllib.request.urlopen", return_value=response), patch(
+            "src.crossref_client.time.sleep"
+        ):
+            rows = search_crossref("Smith 2020 A Distinctive Article")
+        self.assertEqual(rows[0]["doi"], "10.1234/example")
+        self.assertEqual(rows[0]["authors"], "Alice Smith")
+
     def test_normalizes_cinii_json_ld(self):
         row = _normalize_item({
             "@id": "https://cir.nii.ac.jp/crid/123",

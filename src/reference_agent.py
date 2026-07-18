@@ -12,22 +12,29 @@ import httpx
 
 try:
     from .cinii_client import search_cinii
+    from .crossref_client import search_crossref
     from .chunk_store import get_item_chunks
     from .db_relations import (
-        get_canonical_work_id, get_reference_review_candidates, get_resolver_cache,
+        apply_reference_metadata_resolution, apply_reference_metadata_resolutions,
+        get_canonical_work_id,
+        get_reference_review_candidates, get_resolver_cache,
         mark_reference_review_committed, normalize_work_title, resolve_work, save_resolver_cache,
         save_work_edge,
     )
     from .llm_client import LLMError, get_llm
     from .ndl_client import search_ndl
-    from .reference_text import strip_unicode_format_characters
+    from .reference_text import (
+        is_compound_reference, is_short_form_reference, normalize_reference_text,
+        strip_unicode_format_characters,
+    )
 except ImportError:  # pragma: no cover
     from cinii_client import search_cinii
+    from crossref_client import search_crossref
     from chunk_store import get_item_chunks
-    from db_relations import get_canonical_work_id, get_reference_review_candidates, get_resolver_cache, mark_reference_review_committed, normalize_work_title, resolve_work, save_resolver_cache, save_work_edge
+    from db_relations import apply_reference_metadata_resolution, apply_reference_metadata_resolutions, get_canonical_work_id, get_reference_review_candidates, get_resolver_cache, mark_reference_review_committed, normalize_work_title, resolve_work, save_resolver_cache, save_work_edge
     from llm_client import LLMError, get_llm
     from ndl_client import search_ndl
-    from reference_text import strip_unicode_format_characters
+    from reference_text import is_compound_reference, is_short_form_reference, normalize_reference_text, strip_unicode_format_characters
 
 
 REFERENCE_HEADING = re.compile(
@@ -196,6 +203,128 @@ def _candidate_score(reference: dict[str, Any], candidate: dict[str, Any]) -> fl
     return title_score
 
 
+STABLE_IDENTIFIER_FIELDS = (
+    "doi", "isbn", "cinii_crid", "ndl_bibid", "openalex_id", "s2_paper_id",
+)
+
+
+def _stable_identity(candidate: dict[str, Any]) -> tuple[str, str] | None:
+    for field in STABLE_IDENTIFIER_FIELDS:
+        value = str(candidate.get(field) or "").strip()
+        if value:
+            return field, value.casefold()
+    return None
+
+
+def _candidate_title_in_raw(raw: str, candidate: dict[str, Any]) -> str | None:
+    normalized_raw = normalize_reference_text(raw)
+    titles = [candidate.get("title"), *(candidate.get("alternative_titles") or [])]
+    for title in titles:
+        normalized = normalize_reference_text(str(title or ""))
+        if len(normalized.replace(" ", "")) >= 8 and normalized in normalized_raw:
+            return str(title)
+    return None
+
+
+def _candidate_author_in_raw(raw: str, candidate: dict[str, Any]) -> bool:
+    normalized_raw = normalize_reference_text(raw)
+    raw_tokens = set(normalized_raw.split())
+    authors = str(candidate.get("authors") or "").strip()
+    if not authors:
+        return False
+    for author in re.split(r"\s*;\s*|\s*,\s*(?=[^,;]+(?:;|$))", authors):
+        normalized = normalize_reference_text(author)
+        if not normalized:
+            continue
+        if normalized in normalized_raw:
+            return True
+        tokens = normalized.split()
+        if tokens and any(len(token) >= 3 and token in raw_tokens for token in (tokens[0], tokens[-1])):
+            return True
+    return False
+
+
+def assess_metadata_candidate(
+    reference: dict[str, Any], candidate: dict[str, Any], *, runner_up_score: float = 0.0,
+) -> dict[str, Any]:
+    """Return deterministic evidence for accepting an external bibliography record."""
+    raw = str(reference.get("raw") or "")
+    identity = _stable_identity(candidate)
+    score = _candidate_score(reference, candidate)
+    title_supported = _candidate_title_in_raw(raw, candidate)
+    author_supported = _candidate_author_in_raw(raw, candidate)
+    raw_years = {int(value) for value in YEAR_RE.findall(raw)}
+    candidate_year = candidate.get("year")
+    year_supported = bool(
+        candidate_year is not None and raw_years and int(candidate_year) in raw_years
+    )
+    margin = score - runner_up_score
+    accepted = bool(
+        not is_short_form_reference(raw)
+        and not is_compound_reference(raw)
+        and identity
+        and title_supported
+        and author_supported
+        and year_supported
+        and score >= 0.90
+        and margin >= 0.05
+    )
+    return {
+        "accepted": accepted,
+        "score": round(score, 6), "runner_up_score": round(runner_up_score, 6),
+        "margin": round(margin, 6), "stable_identifier": identity,
+        "title_supported": title_supported, "author_supported": author_supported,
+        "year_supported": year_supported,
+    }
+
+
+def identify_reference_metadata(reference: dict[str, Any]) -> dict[str, Any]:
+    """Identify a citation by metadata without requiring an identifier in its text."""
+    title = str(reference.get("title") or "").strip()
+    raw = str(reference.get("raw") or "").strip()
+    if not title or not raw or is_short_form_reference(raw) or is_compound_reference(raw):
+        return {
+            "status": "insufficient_metadata", "candidate": None, "evidence": None,
+            "provider_failures": 0,
+        }
+    authors = reference.get("authors") or []
+    authors_text = "; ".join(authors) if isinstance(authors, list) else str(authors)
+    candidates: list[dict[str, Any]] = []
+    failures = 0
+    searches = (
+        lambda: search_crossref(raw, rows=5),
+        lambda: search_cinii(title, author=authors_text.split(";")[0], year=reference.get("year")),
+        lambda: search_ndl(title, author=authors_text.split(";")[0], year=reference.get("year")),
+    )
+    for search in searches:
+        try:
+            candidates.extend(search())
+        except Exception:
+            failures += 1
+    deduplicated: dict[tuple[str, str], dict[str, Any]] = {}
+    for candidate in candidates:
+        identity = _stable_identity(candidate)
+        if identity is not None:
+            deduplicated.setdefault(identity, candidate)
+    scored = sorted(
+        ((_candidate_score(reference, candidate), candidate) for candidate in deduplicated.values()),
+        key=lambda pair: pair[0], reverse=True,
+    )
+    if not scored:
+        status = "provider_unavailable" if failures == len(searches) else "unresolved"
+        return {
+            "status": status, "candidate": None, "evidence": None,
+            "provider_failures": failures,
+        }
+    top_score, candidate = scored[0]
+    runner_up = scored[1][0] if len(scored) > 1 else 0.0
+    evidence = assess_metadata_candidate(reference, candidate, runner_up_score=runner_up)
+    return {
+        "status": "matched" if evidence["accepted"] else "ambiguous",
+        "candidate": candidate, "evidence": evidence, "provider_failures": failures,
+    }
+
+
 def resolve_reference(reference: dict[str, Any]) -> dict[str, Any]:
     """Resolve through stable IDs, CiNii, NDL, then retain an unresolved work."""
     cache_key = hashlib.sha256(json.dumps(reference, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
@@ -214,30 +343,23 @@ def resolve_reference(reference: dict[str, Any]) -> dict[str, Any]:
         "year": reference.get("year"), "doi": reference.get("doi"),
         "isbn": reference.get("isbn"), "lang": reference.get("lang"),
         "container": reference.get("container"), "work_type": reference.get("type"),
+        "cinii_crid": reference.get("cinii_crid"),
+        "ndl_bibid": reference.get("ndl_bibid"),
+        "openalex_id": reference.get("openalex_id"),
+        "s2_paper_id": reference.get("s2_paper_id"),
     }
     external_error = False
-    if reference.get("doi") or reference.get("isbn"):
+    if any(reference.get(field) for field in STABLE_IDENTIFIER_FIELDS):
         result = {"work_id": resolve_work(**base), "confidence": 1.0, "source": "identifier"}
     else:
-        candidates: list[dict[str, Any]] = []
-        for search in (search_cinii, search_ndl):
-            try:
-                candidates.extend(search(
-                    str(reference.get("title") or ""), author=authors_text.split(";")[0],
-                    year=reference.get("year"),
-                ))
-            except Exception:
-                external_error = True
-                continue
-        scored = sorted(
-            ((_candidate_score(reference, candidate), candidate) for candidate in candidates),
-            key=lambda pair: pair[0], reverse=True,
-        )
-        if scored and scored[0][0] >= 0.85:
-            confidence, candidate = scored[0]
+        identified = identify_reference_metadata(reference)
+        external_error = bool(identified.get("provider_failures"))
+        if identified["status"] == "matched":
+            candidate = identified["candidate"]
+            confidence = float(identified["evidence"]["score"])
             result = {
                 "work_id": resolve_work(**{**base, **{
-                    key: candidate.get(key) for key in ("doi", "isbn", "cinii_crid", "ndl_bibid")
+                    key: candidate.get(key) for key in STABLE_IDENTIFIER_FIELDS
                 }}),
                 "confidence": confidence, "source": candidate.get("source"),
             }
@@ -298,7 +420,7 @@ def extract_references_for_item(
 
 
 def commit_approved_reference_candidates(*, limit: int = 100) -> dict[str, Any]:
-    """Commit only approved candidates whose DOI/ISBN is literally present in raw text."""
+    """Commit approved literal identifiers or deterministically matched metadata."""
     totals = {"examined": 0, "committed": 0, "already_committed": 0, "insufficient_evidence": 0}
     for row in get_reference_review_candidates("approved"):
         if totals["examined"] >= max(limit, 0):
@@ -316,7 +438,20 @@ def commit_approved_reference_candidates(*, limit: int = 100) -> dict[str, Any]:
         raw_isbn = re.sub(r"[^0-9x]", "", raw_folded)
         doi_verified = bool(doi_norm and doi_norm in raw_folded)
         isbn_verified = bool(isbn_norm and len(isbn_norm) in {10, 13} and isbn_norm in raw_isbn)
-        if not (doi_verified or isbn_verified):
+        metadata = row.get("resolution_metadata") or {}
+        stored_evidence = row.get("resolution_evidence") or {}
+        metadata_verified = False
+        if metadata and stored_evidence.get("accepted"):
+            reference_for_check = {
+                "raw": raw, "title": row.get("title"), "authors": row.get("authors") or [],
+                "year": row.get("year"),
+            }
+            rechecked = assess_metadata_candidate(
+                reference_for_check, metadata,
+                runner_up_score=float(stored_evidence.get("runner_up_score") or 0),
+            )
+            metadata_verified = rechecked["accepted"] and _stable_identity(metadata) is not None
+        if not (doi_verified or isbn_verified or metadata_verified):
             totals["insufficient_evidence"] += 1
             continue
         reference = {
@@ -325,18 +460,106 @@ def commit_approved_reference_candidates(*, limit: int = 100) -> dict[str, Any]:
             "isbn": isbn if isbn_verified else None, "container": row.get("container"),
             "lang": row.get("lang"), "type": row.get("work_type"),
         }
+        if metadata_verified:
+            for field in STABLE_IDENTIFIER_FIELDS:
+                if metadata.get(field):
+                    reference[field] = metadata[field]
         resolved = resolve_reference(reference)
         citing_work = resolve_work(zotero_item_key=row["item_key"])
         edge_id = save_work_edge(
-            citing_work, resolved["work_id"], source="review-approved",
-            confidence=1.0, raw_reference=raw,
+            citing_work, resolved["work_id"],
+            source=(
+                f"metadata-resolved:{row.get('resolution_source')}"
+                if metadata_verified else "review-approved"
+            ),
+            confidence=(
+                float(row.get("resolution_confidence") or resolved["confidence"])
+                if metadata_verified else 1.0
+            ),
+            raw_reference=raw,
         )
         if mark_reference_review_committed(int(row["review_id"]), edge_id):
             totals["committed"] += 1
     return totals
 
 
+def resolve_reference_review_candidates(
+    *, limit: int = 100, apply: bool = False,
+    note_prefix: str = "unresolved: insufficient stable identifier",
+) -> dict[str, Any]:
+    """Try strict metadata identification for identifier-less reviewed citations."""
+    totals: dict[str, Any] = {
+        "examined": 0, "matched": 0, "ambiguous": 0, "unresolved": 0,
+        "provider_unavailable": 0, "applied": 0, "results": [],
+    }
+    rows = get_reference_review_candidates("rejected")
+    for row in rows:
+        if totals["examined"] >= max(limit, 0):
+            break
+        if not str(row.get("reviewer_note") or "").startswith(note_prefix):
+            continue
+        totals["examined"] += 1
+        reference = {
+            "raw": row.get("raw_reference"), "title": row.get("title"),
+            "authors": row.get("authors") or [], "year": row.get("year"),
+            "container": row.get("container"), "type": row.get("work_type"),
+        }
+        resolution = identify_reference_metadata(reference)
+        status = resolution["status"]
+        totals[status] = totals.get(status, 0) + 1
+        result_row = {
+            "review_id": int(row["review_id"]), "status": status,
+            "candidate": resolution.get("candidate"),
+            "evidence": resolution.get("evidence"),
+        }
+        if apply and status == "matched":
+            if apply_reference_metadata_resolution(
+                int(row["review_id"]), resolution["candidate"], resolution["evidence"],
+            ):
+                totals["applied"] += 1
+                result_row["applied"] = True
+        totals["results"].append(result_row)
+    return totals
+
+
+def apply_reference_metadata_report(
+    results: list[dict[str, Any]], *,
+    note_prefix: str = "unresolved: insufficient stable identifier",
+) -> dict[str, int]:
+    """Revalidate and atomically apply all matched rows from a dry-run report."""
+    current = {
+        int(row["review_id"]): row for row in get_reference_review_candidates("rejected")
+    }
+    resolutions: list[dict[str, Any]] = []
+    for result in results:
+        if result.get("status") != "matched":
+            continue
+        review_id = int(result["review_id"])
+        row = current.get(review_id)
+        if row is None or not str(row.get("reviewer_note") or "").startswith(note_prefix):
+            raise ValueError(f"review {review_id}: no longer eligible for metadata resolution")
+        candidate = result.get("candidate") or {}
+        stored_evidence = result.get("evidence") or {}
+        reference = {
+            "raw": row.get("raw_reference"), "title": row.get("title"),
+            "authors": row.get("authors") or [], "year": row.get("year"),
+        }
+        evidence = assess_metadata_candidate(
+            reference, candidate,
+            runner_up_score=float(stored_evidence.get("runner_up_score") or 0),
+        )
+        if not evidence["accepted"]:
+            raise ValueError(f"review {review_id}: report match failed deterministic recheck")
+        resolutions.append({
+            "review_id": review_id, "candidate": candidate, "evidence": evidence,
+        })
+    applied = apply_reference_metadata_resolutions(resolutions) if resolutions else 0
+    return {"matched_in_report": len(resolutions), "applied": applied}
+
+
 __all__ = [
     "detect_reference_sections", "extract_references", "extract_references_for_item",
-    "commit_approved_reference_candidates", "parse_reference_lines", "resolve_reference",
+    "commit_approved_reference_candidates", "identify_reference_metadata",
+    "apply_reference_metadata_report", "parse_reference_lines", "resolve_reference",
+    "resolve_reference_review_candidates",
 ]

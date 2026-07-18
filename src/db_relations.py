@@ -276,6 +276,10 @@ def _init_db(conn: sqlite3.Connection) -> None:
             source_reference_id INTEGER,
             source_context TEXT,
             source_kind TEXT,
+            resolution_source TEXT,
+            resolution_confidence REAL,
+            resolution_metadata_json TEXT,
+            resolution_evidence_json TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(item_key, raw_hash)
@@ -288,6 +292,10 @@ def _init_db(conn: sqlite3.Connection) -> None:
         "ALTER TABLE reference_review_queue ADD COLUMN source_reference_id INTEGER",
         "ALTER TABLE reference_review_queue ADD COLUMN source_context TEXT",
         "ALTER TABLE reference_review_queue ADD COLUMN source_kind TEXT",
+        "ALTER TABLE reference_review_queue ADD COLUMN resolution_source TEXT",
+        "ALTER TABLE reference_review_queue ADD COLUMN resolution_confidence REAL",
+        "ALTER TABLE reference_review_queue ADD COLUMN resolution_metadata_json TEXT",
+        "ALTER TABLE reference_review_queue ADD COLUMN resolution_evidence_json TEXT",
     ):
         try:
             cursor.execute(sql)
@@ -700,6 +708,14 @@ def get_reference_review_candidates(
                 row["contributors"] = json.loads(row.pop("contributors_json") or "[]")
             except (json.JSONDecodeError, TypeError):
                 row["contributors"] = []
+            for source, target in (
+                ("resolution_metadata_json", "resolution_metadata"),
+                ("resolution_evidence_json", "resolution_evidence"),
+            ):
+                try:
+                    row[target] = json.loads(row.pop(source) or "null")
+                except (json.JSONDecodeError, TypeError):
+                    row[target] = None
         return rows
     finally:
         conn.close()
@@ -816,6 +832,74 @@ def apply_reference_review_decisions(decisions: List[Dict[str, Any]]) -> int:
 def apply_reference_review_decision(decision: Dict[str, Any]) -> bool:
     """Apply one reviewer decision through the atomic batch validator."""
     return apply_reference_review_decisions([decision]) == 1
+
+
+def _prepare_metadata_resolution(
+    review_id: int, candidate: Dict[str, Any], evidence: Dict[str, Any],
+) -> tuple[Any, ...]:
+    if not evidence.get("accepted"):
+        raise ValueError(f"review {review_id}: metadata evidence is not accepted")
+    stable_fields = (
+        "doi", "isbn", "cinii_crid", "ndl_bibid", "openalex_id", "s2_paper_id",
+    )
+    if not any(str(candidate.get(field) or "").strip() for field in stable_fields):
+        raise ValueError(f"review {review_id}: metadata candidate has no stable identifier")
+    source = str(candidate.get("source") or "").strip()
+    if source not in {"crossref", "cinii", "ndl", "openalex", "s2"}:
+        raise ValueError(f"review {review_id}: unsupported metadata source")
+    return (
+        f"metadata-resolved:{source}", candidate.get("title"),
+        candidate.get("doi"), candidate.get("isbn"), source,
+        float(evidence.get("score") or 0),
+        json.dumps(candidate, ensure_ascii=False),
+        json.dumps(evidence, ensure_ascii=False), review_id,
+    )
+
+
+def apply_reference_metadata_resolutions(resolutions: List[Dict[str, Any]]) -> int:
+    """Atomically approve rows using prevalidated external-metadata evidence."""
+    review_ids = [int(row["review_id"]) for row in resolutions]
+    if len(review_ids) != len(set(review_ids)):
+        raise ValueError("duplicate review_id in metadata resolution batch")
+    prepared = [
+        _prepare_metadata_resolution(
+            int(row["review_id"]), row["candidate"], row["evidence"],
+        )
+        for row in resolutions
+    ]
+    conn = get_db_connection()
+    try:
+        applied = 0
+        for params in prepared:
+            cursor = conn.execute('''
+                UPDATE reference_review_queue
+                SET status = 'approved',
+                    reviewer_note = ?,
+                    title = COALESCE(title, ?),
+                    doi = COALESCE(?, doi), isbn = COALESCE(?, isbn),
+                    resolution_source = ?, resolution_confidence = ?,
+                    resolution_metadata_json = ?, resolution_evidence_json = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE review_id = ? AND status = 'rejected' AND committed_edge_id IS NULL
+            ''', params)
+            if cursor.rowcount != 1:
+                raise ValueError(f"review {params[-1]}: row is not eligible for metadata resolution")
+            applied += 1
+        conn.commit()
+        return applied
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def apply_reference_metadata_resolution(
+    review_id: int, candidate: Dict[str, Any], evidence: Dict[str, Any],
+) -> bool:
+    return apply_reference_metadata_resolutions([{
+        "review_id": review_id, "candidate": candidate, "evidence": evidence,
+    }]) == 1
 
 
 def mark_reference_review_committed(review_id: int, edge_id: int) -> bool:

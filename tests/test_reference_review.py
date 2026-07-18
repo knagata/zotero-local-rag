@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from scripts.audit_ambiguous_works import audit
 from src import db_relations
-from src.reference_agent import commit_approved_reference_candidates
+from src.reference_agent import apply_reference_metadata_report, commit_approved_reference_candidates
 from src.reference_quality_report import build_report
 from scripts.stage_unverified_epub_refs import stage
 
@@ -108,6 +108,87 @@ class ReferenceReviewTests(unittest.TestCase):
         result = commit_approved_reference_candidates()
         self.assertEqual(result["insufficient_evidence"], 1)
         self.assertEqual(result["committed"], 0)
+
+    def test_metadata_resolved_identifier_can_be_committed_when_not_literal(self):
+        raw = "Alice Smith. A Distinctive Article. Example Journal 12 (2020): 1-9."
+        db_relations.stage_reference_candidates(
+            "ITEM", "test", [{
+                "raw": raw, "title": "A Distinctive Article",
+                "authors": ["Alice Smith"], "year": 2020,
+            }],
+        )
+        row = db_relations.get_reference_review_candidates()[0]
+        db_relations.set_reference_review_status(
+            row["review_id"], "rejected", "unresolved: insufficient stable identifier",
+        )
+        candidate = {
+            "title": "A Distinctive Article", "authors": "Alice Smith", "year": 2020,
+            "doi": "10.1234/external", "source": "crossref",
+        }
+        evidence = {
+            "accepted": True, "score": 1.0, "runner_up_score": 0.0, "margin": 1.0,
+        }
+        self.assertTrue(db_relations.apply_reference_metadata_resolution(
+            row["review_id"], candidate, evidence,
+        ))
+        result = commit_approved_reference_candidates()
+        self.assertEqual(result["committed"], 1)
+        approved = db_relations.get_reference_review_candidates("approved")[0]
+        self.assertEqual(approved["resolution_source"], "crossref")
+
+    def test_metadata_resolution_is_rechecked_against_raw_before_commit(self):
+        raw = "Alice Smith. A Distinctive Article. Example Journal 12 (2020): 1-9."
+        db_relations.stage_reference_candidates(
+            "ITEM", "test", [{
+                "raw": raw, "title": "A Distinctive Article",
+                "authors": ["Alice Smith"], "year": 2020,
+            }],
+        )
+        row = db_relations.get_reference_review_candidates()[0]
+        db_relations.set_reference_review_status(
+            row["review_id"], "rejected", "unresolved: insufficient stable identifier",
+        )
+        candidate = {
+            "title": "A Different Article", "authors": "Alice Smith", "year": 2020,
+            "doi": "10.1234/wrong", "source": "crossref",
+        }
+        db_relations.apply_reference_metadata_resolution(
+            row["review_id"], candidate,
+            {"accepted": True, "score": 1.0, "runner_up_score": 0.0},
+        )
+        result = commit_approved_reference_candidates()
+        self.assertEqual(result["committed"], 0)
+        self.assertEqual(result["insufficient_evidence"], 1)
+
+    def test_metadata_report_is_revalidated_before_any_rows_are_applied(self):
+        references = [
+            {
+                "raw": f"Alice Smith. {title}. Example Journal 12 (2020): 1-9.",
+                "title": title, "authors": ["Alice Smith"], "year": 2020,
+            }
+            for title in ("First Distinctive Article", "Second Distinctive Article")
+        ]
+        db_relations.stage_reference_candidates("ITEM", "test", references)
+        rows = db_relations.get_reference_review_candidates("pending")
+        for row in rows:
+            db_relations.set_reference_review_status(
+                row["review_id"], "rejected", "unresolved: insufficient stable identifier",
+            )
+        reports = []
+        for index, row in enumerate(rows):
+            candidate_title = row["title"] if index == 0 else "Unsupported Different Article"
+            reports.append({
+                "review_id": row["review_id"], "status": "matched",
+                "candidate": {
+                    "title": candidate_title, "authors": "Alice Smith", "year": 2020,
+                    "doi": f"10.1234/report-{index}", "source": "crossref",
+                },
+                "evidence": {"accepted": True, "runner_up_score": 0.0},
+            })
+        with self.assertRaisesRegex(ValueError, "deterministic recheck"):
+            apply_reference_metadata_report(reports)
+        self.assertEqual(len(db_relations.get_reference_review_candidates("rejected")), 2)
+        self.assertEqual(len(db_relations.get_reference_review_candidates("approved")), 0)
 
     def test_claude_decision_requires_literal_identifier_for_approval(self):
         raw = "Author (2020). A sufficiently distinctive title. doi:10.1234/example"

@@ -104,15 +104,25 @@ uv run python scripts/review_references.py apply-decisions decisions.json \
 # no-cloudを除外し、Claude向けJSONを25件ずつ生成
 uv run python scripts/build_reference_review_package.py --batch-size 25
 
-# approved候補のうち、原文中にDOI/ISBNが実在するものだけcommit
+# 識別子不足候補をCrossref/CiNii/NDLで同定（DB無変更）
+uv run python scripts/review_references.py resolve-metadata --limit 100 \
+  --output data/quality/reference-metadata-resolution.json
+
+# 書名・著者・年・候補差を再検証し、確実一致だけをtransaction適用
+uv run python scripts/review_references.py apply-metadata-report \
+  data/quality/reference-metadata-resolution.json
+
+# 原文中の識別子、または検証済み外部書誌resolutionを持つapproved候補をcommit
 uv run python scripts/review_references.py commit-approved --limit 20
 
 # completenessの自動レポート（precision/recallは目視評価が必要）
 uv run python -m src.reference_quality_report --status pending
 ```
 
-`apply-decisions` でも `approved` にできるのは、原文中に同じDOIまたはISBNが文字どおり
-存在する候補だけです。タイトル・年・識別子の捏造は一括適用時に拒否され、バッチ内に
+`apply-decisions` で直接 `approved` にできるのは、原文中に同じDOIまたはISBNが文字どおり
+存在する候補だけです。識別子が引用表記にない通常の文献は `resolve-metadata` で外部書誌を
+検索し、書名・著者・年が原文と一致し、安定IDを持ち、次点候補との差が十分な場合だけ
+`apply-metadata-report` で承認できます。タイトル・年・識別子の捏造は一括適用時に拒否され、バッチ内に
 1件でも不正な判定があれば全件ロールバックされます。PDF等がURLへ挿入するゼロ幅
 スペースなどのUnicode書式文字は、可視本文を変えず識別子の検出・照合時だけ除去します。
 

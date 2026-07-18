@@ -17,6 +17,14 @@ def is_short_form_reference(value: str | None) -> bool:
     return bool(SHORT_FORM_REFERENCE_RE.search(value or ""))
 
 
+def is_compound_reference(value: str | None) -> bool:
+    """Conservatively flag text that appears to contain multiple citations."""
+    raw = strip_unicode_format_characters(value)
+    without_dois = DOI_RE.sub("", raw)
+    years = set(YEAR_RE.findall(without_dois))
+    return len(years) > 1 or raw.count(";") >= 2
+
+
 YEAR_RE = re.compile(r"(?<!\d)(?:18|19|20)\d{2}(?!\d)")
 DOI_RE = re.compile(r"\b10\.\d{4,9}/[-._;()/:a-z0-9]+", re.IGNORECASE)
 REVIEW_RE = re.compile(r"\b(?:book\s+review|review\s+of)\b", re.IGNORECASE)

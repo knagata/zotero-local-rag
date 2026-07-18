@@ -87,6 +87,56 @@ def _fmt_authors(authors: Optional[list], max_authors: int = 5) -> str:
     return ", ".join(names)
 
 
+def _normalize_message(msg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    titles = msg.get("title") or []
+    title = titles[0].strip() if titles and isinstance(titles[0], str) else ""
+    title = re.sub(r"<[^>]+>", " ", unescape(title))
+    title = re.sub(r"\s+", " ", title).strip()
+    if not title:
+        return None
+    containers = msg.get("container-title") or []
+    publishers = msg.get("publisher") or ""
+    return {
+        "doi": msg.get("DOI") or None,
+        "title": title,
+        "authors": _fmt_authors(msg.get("author")),
+        "year": _extract_year(msg),
+        "container": containers[0] if containers else None,
+        "publisher": publishers or None,
+        "type": msg.get("type") or None,
+        "source": "crossref",
+    }
+
+
+def search_crossref(
+    bibliographic: str, *, rows: int = 5, timeout: float = 15.0,
+) -> list[Dict[str, Any]]:
+    """Search Crossref using a citation/title string and normalize candidates."""
+    global _last_call
+    query = (bibliographic or "").strip()
+    if not query or rows <= 0:
+        return []
+    elapsed = time.time() - _last_call
+    if elapsed < _MIN_INTERVAL:
+        time.sleep(_MIN_INTERVAL - elapsed)
+    params = {"query.bibliographic": query, "rows": min(rows, 20)}
+    mailto = os.environ.get("CROSSREF_MAILTO", "").strip()
+    if mailto:
+        params["mailto"] = mailto
+    request = urllib.request.Request(
+        "https://api.crossref.org/works?" + urllib.parse.urlencode(params),
+        headers={"User-Agent": _user_agent(), "Accept": "application/json"},
+    )
+    _last_call = time.time()
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except Exception as exc:
+        raise CrossrefError(str(exc)) from exc
+    items = (payload.get("message") or {}).get("items") or []
+    return [candidate for item in items if isinstance(item, dict) and (candidate := _normalize_message(item))]
+
+
 def fetch_crossref_by_doi(doi: str, timeout: float = 10.0) -> Optional[Dict[str, Any]]:
     """DOI から Crossref メタデータを取得する。
 

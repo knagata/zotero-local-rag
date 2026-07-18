@@ -16,7 +16,10 @@ from src.db_relations import (
     apply_reference_review_decisions, get_reference_review_candidates,
     set_reference_review_status,
 )
-from src.reference_agent import commit_approved_reference_candidates
+from src.reference_agent import (
+    apply_reference_metadata_report, commit_approved_reference_candidates,
+    resolve_reference_review_candidates,
+)
 
 
 def validate_decision_coverage(decisions: list[dict], batch_path: Path) -> None:
@@ -44,6 +47,12 @@ def main() -> None:
     set_parser.add_argument("--note")
     commit_parser = subparsers.add_parser("commit-approved")
     commit_parser.add_argument("--limit", type=int, default=100)
+    resolve_parser = subparsers.add_parser("resolve-metadata")
+    resolve_parser.add_argument("--limit", type=int, default=100)
+    resolve_parser.add_argument("--apply", action="store_true")
+    resolve_parser.add_argument("--output", type=Path)
+    apply_metadata_parser = subparsers.add_parser("apply-metadata-report")
+    apply_metadata_parser.add_argument("path", type=Path)
     apply_parser = subparsers.add_parser("apply-decisions")
     apply_parser.add_argument("path", type=Path)
     apply_parser.add_argument("--expected-batch", type=Path)
@@ -57,6 +66,27 @@ def main() -> None:
         return
     if args.command == "commit-approved":
         print(json.dumps(commit_approved_reference_candidates(limit=args.limit), ensure_ascii=False, indent=2))
+        return
+    if args.command == "resolve-metadata":
+        result = resolve_reference_review_candidates(limit=args.limit, apply=args.apply)
+        rendered = json.dumps(result, ensure_ascii=False, indent=2)
+        if args.output:
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            args.output.write_text(rendered + "\n", encoding="utf-8")
+            print(json.dumps({
+                key: value for key, value in result.items() if key != "results"
+            }, ensure_ascii=False, indent=2))
+        else:
+            print(rendered)
+        return
+    if args.command == "apply-metadata-report":
+        payload = json.loads(args.path.read_text(encoding="utf-8"))
+        results = payload.get("results") if isinstance(payload, dict) else None
+        if not isinstance(results, list):
+            raise ValueError("metadata report must contain a results array")
+        print(json.dumps(
+            apply_reference_metadata_report(results), ensure_ascii=False, indent=2,
+        ))
         return
     if args.command == "apply-decisions":
         payload = json.loads(args.path.read_text(encoding="utf-8"))

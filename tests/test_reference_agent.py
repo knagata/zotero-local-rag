@@ -85,6 +85,19 @@ class ReferenceAgentTests(unittest.TestCase):
         failure = RuntimeError("offline")
         with patch.object(reference_agent, "search_cinii", side_effect=failure), patch.object(
             reference_agent, "search_ndl", side_effect=failure
+        ), patch.object(
+            reference_agent, "search_crossref", side_effect=failure
+        ), patch.object(reference_agent, "save_resolver_cache") as save:
+            result = reference_agent.resolve_reference(reference)
+        self.assertEqual(result["source"], "unresolved")
+        save.assert_not_called()
+
+    def test_partial_external_outage_does_not_cache_unresolved_result(self):
+        reference = {"raw": "Example", "authors": ["Author"], "title": "Work", "year": 2020}
+        with patch.object(
+            reference_agent, "search_crossref", side_effect=RuntimeError("offline")
+        ), patch.object(reference_agent, "search_cinii", return_value=[]), patch.object(
+            reference_agent, "search_ndl", return_value=[]
         ), patch.object(reference_agent, "save_resolver_cache") as save:
             result = reference_agent.resolve_reference(reference)
         self.assertEqual(result["source"], "unresolved")
@@ -98,6 +111,40 @@ class ReferenceAgentTests(unittest.TestCase):
             reference_agent._candidate_score(reference, matching),
             reference_agent._candidate_score(reference, conflicting),
         )
+
+    def test_identifies_unique_external_record_without_literal_identifier(self):
+        reference = {
+            "raw": "Alice Smith. A Distinctive Article. Example Journal 12 (2020): 1-9.",
+            "title": "A Distinctive Article", "authors": ["Alice Smith"], "year": 2020,
+        }
+        candidate = {
+            "title": "A Distinctive Article", "authors": "Alice Smith", "year": 2020,
+            "doi": "10.1234/example", "source": "crossref",
+        }
+        with patch.object(reference_agent, "search_crossref", return_value=[candidate]), patch.object(
+            reference_agent, "search_cinii", return_value=[]
+        ), patch.object(reference_agent, "search_ndl", return_value=[]):
+            result = reference_agent.identify_reference_metadata(reference)
+        self.assertEqual(result["status"], "matched")
+        self.assertTrue(result["evidence"]["title_supported"])
+        self.assertTrue(result["evidence"]["author_supported"])
+
+    def test_competing_external_records_remain_ambiguous(self):
+        reference = {
+            "raw": "Alice Smith. A Distinctive Article. Example Journal 12 (2020): 1-9.",
+            "title": "A Distinctive Article", "authors": ["Alice Smith"], "year": 2020,
+        }
+        candidates = [
+            {"title": "A Distinctive Article", "authors": "Alice Smith", "year": 2020,
+             "doi": f"10.1234/{suffix}", "source": "crossref"}
+            for suffix in ("one", "two")
+        ]
+        with patch.object(reference_agent, "search_crossref", return_value=candidates), patch.object(
+            reference_agent, "search_cinii", return_value=[]
+        ), patch.object(reference_agent, "search_ndl", return_value=[]):
+            result = reference_agent.identify_reference_metadata(reference)
+        self.assertEqual(result["status"], "ambiguous")
+        self.assertEqual(result["evidence"]["margin"], 0.0)
 
     def test_reference_exclusion_fails_closed_when_tags_cannot_be_checked(self):
         with patch.dict(os.environ, {"EXTRACT_EXCLUDE_TAGS": "private"}, clear=False), patch.object(
