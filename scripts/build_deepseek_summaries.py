@@ -57,6 +57,32 @@ def _backup_database(db_path: Path, backup_path: Path) -> None:
         source.close()
 
 
+def _load_failure_ledger(path: Path) -> dict:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+        if value.get("version") == 1 and isinstance(value.get("items"), dict):
+            return value
+    except (OSError, json.JSONDecodeError, AttributeError):
+        pass
+    return {"version": 1, "items": {}}
+
+
+def _record_failure_attempt(ledger: dict, result: dict) -> None:
+    item_key = result["item_key"]
+    status = result["status"]
+    if status == "updated":
+        ledger["items"].pop(item_key, None)
+    elif status in {"section_failure", "item_failure", "no_content"}:
+        previous = ledger["items"].get(item_key) or {}
+        attempts = int(previous.get("attempts") or 0) + 1
+        if status == "no_content":
+            attempts = max(attempts, 2)
+        ledger["items"][item_key] = {
+            "attempts": attempts, "last_status": status,
+            "updated_at": datetime.now().astimezone().isoformat(),
+        }
+
+
 def _section_hash(section: dict) -> str:
     return hashlib.sha256(
         build_summaries._section_source_text(section).encode("utf-8")
@@ -195,12 +221,25 @@ def main() -> None:
         default=ROOT / "data" / "nightly_checkpoint" / "deepseek-summary-only-batch",
     )
     parser.add_argument("--backup", type=Path)
+    parser.add_argument("--failure-ledger", type=Path)
+    parser.add_argument(
+        "--retry-quarantined", action="store_true",
+        help="Retry items that have already failed two complete item attempts.",
+    )
     args = parser.parse_args()
     if args.max_items < 0 or args.workers < 1 or (args.max_hours is not None and args.max_hours <= 0):
         parser.error("invalid item, worker, or time limit")
     load_dotenv_native(ROOT)
     db_path = Path(os.environ.get("RELATIONS_DB_PATH", ROOT / "data" / "relations.db"))
     eligible = _eligible_keys(db_path)
+    failure_ledger_path = args.failure_ledger or args.checkpoint_dir / "failure-ledger.json"
+    failure_ledger = _load_failure_ledger(failure_ledger_path)
+    quarantined = {
+        key for key, row in failure_ledger["items"].items()
+        if int(row.get("attempts") or 0) >= 2
+    }
+    if not args.retry_quarantined:
+        eligible = [key for key in eligible if key not in quarantined]
     requested = args.item or eligible
     keys = [key for key in requested if key in set(eligible)][:args.max_items]
     stamp = datetime.now().astimezone().strftime("%Y%m%d-%H%M%S")
@@ -208,6 +247,7 @@ def main() -> None:
     report = {
         "created_at": datetime.now().astimezone().isoformat(), "version": VERSION,
         "model": args.model, "items": [], "backup": None, "stop_reason": "completed",
+        "skipped_quarantined": 0 if args.retry_quarantined else len(quarantined),
     }
     stop = {"requested": False}
 
@@ -238,6 +278,8 @@ def main() -> None:
                 report["error"] = str(exc)
                 break
             report["items"].append(result)
+            _record_failure_attempt(failure_ledger, result)
+            _write_json_atomic(failure_ledger_path, failure_ledger)
             if result["status"] == "updated":
                 updated.add(key)
             _write_json_atomic(args.output, report)
