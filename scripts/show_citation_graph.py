@@ -3015,7 +3015,7 @@ renderer.on('clickEdge', function (ev) {
   if (relationReportBtn) {
     relationReportBtn.addEventListener('click', function() {
       var details = window.prompt(
-        '誤りと思う具体的な根拠を入力してください。\n' +
+        '誤りと思う具体的な根拠を入力してください。\\n' +
         '分野が違うという印象だけでなく、原資料に存在しない、別著作の識別子である、などを記載してください。'
       );
       if (!details || !details.trim()) return;
