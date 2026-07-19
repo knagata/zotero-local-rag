@@ -87,10 +87,16 @@ if [[ "$run_summaries" == "1" ]]; then
         run_step "文書構造v2の差分確認" uv run python scripts/rebuild_document_structure.py --all
     fi
     run_step "ローカル抽出型要約更新" uv run python -m src.build_summaries
-    run_step "DeepSeek AI要約更新" uv run python scripts/build_deepseek_summaries.py \
-        --output data/quality/maintenance-summary-report.json
-    run_step "DeepSeek 構造化事例更新" uv run python scripts/build_deepseek_cases.py \
-        --output data/quality/maintenance-case-report.json
+    if [[ "${CASE_PIPELINE_V2_ENABLE:-0}" == "1" ]]; then
+        run_step "DeepSeek 文書構造v2要約更新" uv run python scripts/build_structure_summaries.py --all --mode llm --embed
+        run_step "DeepSeek 文書構造v2事例更新" uv run python scripts/build_structure_cases.py --all \
+            --output data/quality/maintenance-structure-case-report.json
+    else
+        run_step "DeepSeek AI要約更新" uv run python scripts/build_deepseek_summaries.py \
+            --output data/quality/maintenance-summary-report.json
+        run_step "DeepSeek 構造化事例更新" uv run python scripts/build_deepseek_cases.py \
+            --output data/quality/maintenance-case-report.json
+    fi
 fi
 
 if [[ "$run_citations" == "1" ]]; then

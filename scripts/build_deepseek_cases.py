@@ -173,6 +173,9 @@ def main() -> int:
         excluded, reason = build_summaries._excluded_from_llm(item_key)
         if excluded:
             report["items"].append({"item_key": item_key, "status": "excluded", "reason": reason})
+            db_relations.mark_artifact_status(
+                item_key, "cases", "excluded", reason_code="no_cloud", message=str(reason or ""),
+            )
             continue
         attempted += 1
         try:
@@ -201,19 +204,27 @@ def main() -> int:
             )
         except RateLimitReached:
             report["stop_reason"] = "rate_limit"
+            db_relations.mark_artifact_status(item_key, "cases", "failed", reason_code="rate_limited", retryable=True)
             break
         except InvalidLLMResponse as exc:
             report["items"].append({"item_key": item_key, "status": "quality_failure", "error": str(exc)})
+            db_relations.mark_artifact_status(item_key, "cases", "failed", reason_code="validation_failed", message=str(exc), retryable=True)
             _write(args.output, report)
             continue
         except LLMError as exc:
             report["items"].append({"item_key": item_key, "status": "provider_failure", "error": str(exc)})
+            db_relations.mark_artifact_status(item_key, "cases", "failed", reason_code="provider_error", message=str(exc), retryable=True)
             report["stop_reason"] = "provider_unavailable"
             break
         total = sum(len(cases) for _section, cases, _stats in section_results)
         counts = Counter(case["quality_status"] for _section, cases, _stats in section_results for case in cases)
         report["items"].append({"item_key": item_key, "status": "updated", "cases": total,
                                 "quality_statuses": dict(counts)})
+        db_relations.mark_artifact_status(
+            item_key, "cases", "success" if total else "empty",
+            reason_code=None if total else "no_case_found", counts={"cases": total},
+            model="deepseek:case-selector-v1",
+        )
         ledger["items"][item_key] = digest
         _write(args.ledger, ledger)
         updated.add(item_key)

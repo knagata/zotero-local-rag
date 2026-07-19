@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any, Callable
@@ -58,11 +60,29 @@ def evaluate(
     }
 
 
+@contextmanager
+def _temporary_env(values: dict[str, str]):
+    previous = {key: os.environ.get(key) for key in values}
+    os.environ.update(values)
+    try:
+        yield
+    finally:
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("qa", type=Path)
     parser.add_argument("--k", type=int, default=10)
     parser.add_argument("--output", type=Path)
+    parser.add_argument(
+        "--include-hierarchical-v2", action="store_true",
+        help="Also score legacy and canonical-node hierarchical routing. V2 needs prebuilt LLM node summaries.",
+    )
     args = parser.parse_args()
     if args.k <= 0:
         parser.error("--k must be positive")
@@ -79,6 +99,17 @@ def main() -> None:
         name: evaluate(questions, rag_mcp_server.rag_search, k=args.k, kwargs=kwargs)
         for name, kwargs in conditions.items()
     }
+    if args.include_hierarchical_v2:
+        with _temporary_env({"HIERARCHICAL_SEARCH_V2_ENABLE": "0"}):
+            report["hierarchical_legacy"] = evaluate(
+                questions, rag_mcp_server.hierarchical_search, k=args.k,
+                kwargs={"auto_expand": True},
+            )
+        with _temporary_env({"HIERARCHICAL_SEARCH_V2_ENABLE": "1"}):
+            report["hierarchical_v2"] = evaluate(
+                questions, rag_mcp_server.hierarchical_search, k=args.k,
+                kwargs={"auto_expand": True},
+            )
     text = json.dumps(report, ensure_ascii=False, indent=2)
     if args.output:
         args.output.write_text(text + "\n", encoding="utf-8")

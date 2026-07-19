@@ -12,7 +12,7 @@ COMMAND = ROOT / "Maintenance-Widget.command"
 
 
 class MaintenanceCommandTests(unittest.TestCase):
-    def run_command(self, answers: str, *, fail_first: bool = False):
+    def run_command(self, answers: str, *, fail_first: bool = False, extra_env: dict[str, str] | None = None):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory)
             bin_dir = home / ".local" / "bin"
@@ -32,6 +32,7 @@ class MaintenanceCommandTests(unittest.TestCase):
                 "MAINTENANCE_TEST_LOG": str(log_path),
                 "MAINTENANCE_FAIL_FIRST": "1" if fail_first else "0",
             })
+            env.update(extra_env or {})
             result = subprocess.run(
                 ["/bin/bash", str(COMMAND)], input=answers, text=True,
                 encoding="utf-8", errors="replace", capture_output=True,
@@ -74,6 +75,13 @@ class MaintenanceCommandTests(unittest.TestCase):
         self.assertEqual(result.returncode, 7)
         self.assertEqual(calls, ["run src/index_from_zotero.py --progress"])
         self.assertIn("後続処理を実行せず終了", result.stdout)
+
+    def test_v2_case_flag_switches_only_llm_pipeline(self):
+        result, calls = self.run_command("\n\n\n\n\n", extra_env={"CASE_PIPELINE_V2_ENABLE": "1"})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("run python scripts/build_structure_summaries.py --all --mode llm --embed", calls)
+        self.assertIn("run python scripts/build_structure_cases.py --all --output data/quality/maintenance-structure-case-report.json", calls)
+        self.assertNotIn("run python scripts/build_deepseek_cases.py --output data/quality/maintenance-case-report.json", calls)
 
 
 if __name__ == "__main__":

@@ -45,6 +45,8 @@ uv run python -m src.reference_quality_report --status pending
 
 ```bash
 uv run python scripts/eval_retrieval.py data/quality/gold_qa.jsonl --k 10
+# v2のLLMノード要約を生成・埋め込み後に、旧経路との比較も出力する
+uv run python scripts/eval_retrieval.py data/quality/gold_qa.jsonl --k 10 --include-hierarchical-v2
 ```
 
 ## ローカルデータとバックアップ

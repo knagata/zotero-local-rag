@@ -70,6 +70,11 @@ class CitationInsightsApiTests(unittest.TestCase):
         self.assertEqual(states["structure"]["fallback_kind"], "contiguous_semantic_segments")
         self.assertEqual(states["summary"]["reason_code"], "no_cloud")
 
+    def test_outline_route_is_empty_until_structure_exists(self):
+        outline = _json(show_citation_graph._route_node_outline("ITEM"))
+        self.assertIsNone(outline["structure"])
+        self.assertEqual(outline["nodes"], [])
+
     def test_quality_report_route_queues_without_hiding(self):
         case_id = db_relations.get_case_annotations("ITEM")[0]["case_id"]
         response = show_citation_graph._route_quality_report(

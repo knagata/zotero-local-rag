@@ -354,6 +354,24 @@ def main() -> None:
                 report["error"] = str(exc)
                 break
             report["items"].append(result)
+            if result["status"] == "updated":
+                db_relations.mark_artifact_status(
+                    key, "summary", "success", model=str(result.get("model") or ""),
+                    counts={"sections": int(result.get("sections") or 0)},
+                )
+            elif result["status"] == "excluded":
+                db_relations.mark_artifact_status(
+                    key, "summary", "excluded", reason_code="no_cloud",
+                    message=str(result.get("reason") or ""),
+                )
+            elif result["status"] in {"no_chunks", "no_content"}:
+                db_relations.mark_artifact_status(
+                    key, "summary", "empty", reason_code=result["status"],
+                )
+            elif result["status"] not in {"unchanged", "protected_existing"}:
+                db_relations.mark_artifact_status(
+                    key, "summary", "failed", reason_code=result["status"], retryable=True,
+                )
             _record_failure_attempt(failure_ledger, result)
             _write_json_atomic(failure_ledger_path, failure_ledger)
             if result["status"] == "provider_failure":

@@ -107,6 +107,34 @@ def get_processing_overview(item_key: str) -> dict[str, Any]:
     }
 
 
+def get_document_outline(item_key: str) -> dict[str, Any]:
+    """Return the persisted v2 outline with any derived node summaries."""
+    key = _item_key(item_key)
+    structure = db_relations.get_document_structure(key)
+    if structure is None:
+        return {"item_key": key, "structure": None, "nodes": []}
+    summaries = {
+        str(row["node_id"]): row for row in db_relations.get_document_node_summaries(key)
+    }
+    nodes = []
+    for node in db_relations.get_document_nodes(key):
+        summary = summaries.get(str(node["node_id"]))
+        nodes.append({
+            "node_id": node["node_id"], "parent_node_id": node.get("parent_node_id"),
+            "node_type": node["node_type"], "depth": node["depth"],
+            "title": node.get("title") or "", "content_chars": node.get("content_chars") or 0,
+            "first_chunk_id": node.get("first_chunk_id") or "",
+            "last_chunk_id": node.get("last_chunk_id") or "",
+            "source_kind": node.get("source_kind") or "",
+            "confidence": node.get("confidence"),
+            "summary": summary.get("summary") if summary else None,
+            "summary_kind": summary.get("summary_kind") if summary else None,
+            "quality_status": summary.get("quality_status") if summary else None,
+            "summary_parts": db_relations.get_document_node_summary_parts(str(node["node_id"])) if summary else [],
+        })
+    return {"item_key": key, "structure": structure, "nodes": nodes}
+
+
 def get_item_insights(item_key: str) -> dict[str, Any]:
     """Return the lightweight overview and tab counts for one Zotero item."""
     key = _item_key(item_key)

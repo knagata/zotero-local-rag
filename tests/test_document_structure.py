@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from src import db_relations
 from src.build_structure_summaries import build_structure_summaries
+from src.build_structure_cases import build_structure_cases
 from src.document_structure import build_document_structure
 
 
@@ -107,6 +108,56 @@ class DocumentStructureTests(unittest.TestCase):
         rows = db_relations.get_document_node_summaries("ITEM")
         self.assertTrue(rows)
         self.assertTrue(all(row["summary_kind"] == "extractive" and row["searchable"] == 0 for row in rows))
+
+    def test_structure_cases_use_leaf_node_ids_and_source_fingerprint(self):
+        chunks = [
+            _chunk("A:p1", "A documented observation occurred in the village. " * 8,
+                   attachmentKey="A", chapter="Findings"),
+        ]
+        result = build_document_structure("ITEM", chunks)
+        db_relations.replace_document_structure(
+            "ITEM", source_fingerprint=result["source_fingerprint"],
+            structure_version=result["structure_version"], status=result["status"],
+            confidence=result["confidence"], nodes=result["nodes"], diagnostics=result["diagnostics"],
+        )
+        leaf = next(node for node in result["nodes"] if node["chunks"])
+        row = {
+            "title": "Village observation", "case_type": "observation",
+            "description": "A documented observation occurred in the village.",
+            "evidence_quote": "A documented observation occurred in the village.",
+            "chunk_id": "A:p1", "quality_status": "confirmed", "confidence": 0.9,
+            "evidence": [{"field_name": "description", "chunk_id": "A:p1", "evidence_quote": "A documented observation occurred in the village."}],
+        }
+        with patch("src.build_structure_cases.get_item_chunks", return_value=chunks), patch(
+            "src.build_structure_cases.build_summaries._excluded_from_llm", return_value=(False, None),
+        ), patch("src.build_structure_cases.build_summaries.classify_section_content", return_value="content"), patch(
+            "src.build_structure_cases.extract_leaf_cases", return_value=([row], {"saved": 1}),
+        ):
+            output = build_structure_cases("ITEM")
+        self.assertEqual(output["status"], "success")
+        saved = db_relations.get_case_annotations("ITEM")
+        self.assertEqual(saved[0]["node_id"], leaf["node_id"])
+        self.assertEqual(saved[0]["source_fingerprint"], result["source_fingerprint"])
+        self.assertEqual(saved[0]["title"], "Village observation")
+
+    def test_summary_reduction_parts_are_replaced_atomically(self):
+        chunks = [_chunk("A:p1", "text", attachmentKey="A")]
+        result = build_document_structure("ITEM", chunks)
+        db_relations.replace_document_structure(
+            "ITEM", source_fingerprint=result["source_fingerprint"],
+            structure_version=result["structure_version"], status=result["status"],
+            confidence=result["confidence"], nodes=result["nodes"], diagnostics=result["diagnostics"],
+        )
+        node_id = result["nodes"][0]["node_id"]
+        db_relations.replace_document_node_summary_parts(
+            node_id, [{"child_node_ids": ["child-a", "child-b"], "summary": "reduction", "model": "deepseek:test"}],
+            prompt_version="test", source_fingerprint=result["source_fingerprint"],
+        )
+        self.assertEqual(db_relations.get_document_node_summary_parts(node_id)[0]["child_node_ids"], ["child-a", "child-b"])
+        db_relations.replace_document_node_summary_parts(
+            node_id, [], prompt_version="test", source_fingerprint=result["source_fingerprint"],
+        )
+        self.assertEqual(db_relations.get_document_node_summary_parts(node_id), [])
 
 
 if __name__ == "__main__":

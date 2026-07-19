@@ -3309,6 +3309,57 @@ def save_document_node_summary(
         conn.close()
 
 
+def replace_document_node_summary_parts(
+    node_id: str, parts: List[Dict[str, Any]], *, prompt_version: str,
+    source_fingerprint: str,
+) -> None:
+    """Persist ordered intermediate reductions used to make a node summary.
+
+    These rows are audit material, not retrieval inputs.  Replacing them with
+    the final node write keeps retries idempotent and prevents stale reduction
+    traces from being shown after a source or prompt change.
+    """
+    conn = get_db_connection()
+    try:
+        conn.execute("DELETE FROM document_node_summary_parts WHERE node_id = ?", (node_id,))
+        for ordinal, part in enumerate(parts):
+            conn.execute('''
+                INSERT INTO document_node_summary_parts
+                    (node_id, part_ordinal, child_node_ids_json, summary, model,
+                     prompt_version, source_fingerprint)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                node_id, ordinal,
+                json.dumps(list(part.get("child_node_ids") or []), ensure_ascii=False),
+                str(part.get("summary") or ""), str(part.get("model") or ""),
+                prompt_version, source_fingerprint,
+            ))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_document_node_summary_parts(node_id: str) -> List[Dict[str, Any]]:
+    """Return a node's retained reduction inputs in document order."""
+    conn = get_db_connection()
+    try:
+        rows = conn.execute('''
+            SELECT * FROM document_node_summary_parts WHERE node_id = ?
+            ORDER BY part_ordinal ASC
+        ''', (node_id,)).fetchall()
+        result = []
+        for row in rows:
+            value = dict(row)
+            try:
+                value["child_node_ids"] = json.loads(value.pop("child_node_ids_json") or "[]")
+            except (TypeError, ValueError):
+                value["child_node_ids"] = []
+            result.append(value)
+        return result
+    finally:
+        conn.close()
+
+
 def get_document_node_summaries(
     item_key: str, *, searchable_only: bool = False,
 ) -> List[Dict[str, Any]]:

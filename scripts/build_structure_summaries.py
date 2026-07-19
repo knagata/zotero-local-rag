@@ -13,6 +13,7 @@ if str(ROOT) not in sys.path:
 
 from src.build_structure_summaries import build_structure_summaries, embed_structure_summaries
 from src.chunk_store import list_item_keys
+from src.db_relations import mark_artifact_status
 
 
 def main() -> None:
@@ -38,6 +39,11 @@ def main() -> None:
     embedding = None
     if args.embed and not failures:
         embedding = embed_structure_summaries(item_keys=set(keys))
+        for key in keys:
+            mark_artifact_status(
+                key, "embeddings", "success", processor_version="structure-v2-1",
+                counts=embedding, fallback_kind="llm_node_summary_index",
+            )
     print(json.dumps({"items": output, "embedding": embedding, "failed": failures}, ensure_ascii=False, indent=2))
     if failures:
         raise SystemExit(1)

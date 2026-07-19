@@ -12,24 +12,24 @@ import os
 
 try:
     from .build_summaries import (
-        _excluded_from_llm, _extractive_section, _llm_item, _llm_section,
+        _excluded_from_llm, _extractive_section, _llm_summary_only_item, _llm_summary_only_section,
         classify_section_content, is_meta_summary,
     )
     from .chunk_store import get_item_chunks
     from .db_relations import (
         get_all_document_node_summaries, get_document_nodes, get_document_structure, mark_artifact_status,
-        save_document_node_summary,
+        replace_document_node_summary_parts, save_document_node_summary,
     )
     from .embedder import create_embedding_function, open_chroma_collection, resolve_embedder_settings
     from .chunk_store import active_collection_name
-    from .llm_client import LLMError, RateLimitReached
+    from .llm_client import LLMError, RateLimitReached, get_llm_spec
 except ImportError:  # pragma: no cover
-    from build_summaries import _excluded_from_llm, _extractive_section, _llm_item, _llm_section, classify_section_content, is_meta_summary
+    from build_summaries import _excluded_from_llm, _extractive_section, _llm_summary_only_item, _llm_summary_only_section, classify_section_content, is_meta_summary
     from chunk_store import get_item_chunks
-    from db_relations import get_all_document_node_summaries, get_document_nodes, get_document_structure, mark_artifact_status, save_document_node_summary
+    from db_relations import get_all_document_node_summaries, get_document_nodes, get_document_structure, mark_artifact_status, replace_document_node_summary_parts, save_document_node_summary
     from embedder import create_embedding_function, open_chroma_collection, resolve_embedder_settings
     from chunk_store import active_collection_name
-    from llm_client import LLMError, RateLimitReached
+    from llm_client import LLMError, RateLimitReached, get_llm_spec
 
 
 PROMPT_VERSION = "structure-v2-1"
@@ -64,36 +64,49 @@ def _groups(rows: List[Dict[str, Any]]) -> List[List[Dict[str, Any]]]:
     return groups
 
 
-def _parent_summary(title: str, children: List[Dict[str, Any]], *, use_llm: bool) -> tuple[str, str, str]:
+def _deepseek_model(role: str) -> str:
+    """Resolve the configured role while keeping this API-only pipeline explicit."""
+    spec = get_llm_spec(role)
+    provider, separator, model = spec.partition(":")
+    if provider != "deepseek" or not separator or not model:
+        raise LLMError(f"Structure summaries require a DeepSeek API role, got {spec!r}.")
+    return model
+
+
+def _parent_summary(
+    title: str, children: List[Dict[str, Any]], *, use_llm: bool,
+) -> tuple[str, str, str, List[Dict[str, Any]]]:
     """Return summary, kind, model.  Child order is always document order."""
     if not children:
-        return "", "extractive", ""
+        return "", "extractive", "", []
     if not use_llm:
-        return "\n\n".join(str(row["summary"]) for row in children)[:4000], "extractive", "extractive"
+        return "\n\n".join(str(row["summary"]) for row in children)[:4000], "extractive", "extractive", []
     try:
         groups = _groups(children)
         reduced: List[Dict[str, Any]] = []
+        parts: List[Dict[str, Any]] = []
         for index, group in enumerate(groups):
-            result, model = _llm_item(title, [
+            result, model = _llm_summary_only_item(title, [
                 {"section_id": row["node_id"], "summary": row["summary"]} for row in group
-            ])
+            ], model=_deepseek_model("cheap"), reasoning="disabled")
             summary = str(result.get("summary") or "").strip()
             if not summary or is_meta_summary(summary):
                 raise LLMError("node summary was empty or meta")
             reduced.append({"node_id": f"part-{index}", "summary": summary})
+            parts.append({"child_node_ids": [row["node_id"] for row in group], "summary": summary, "model": model})
         if len(reduced) == 1:
-            return reduced[0]["summary"], "llm", model
-        result, model = _llm_item(title, [
+            return reduced[0]["summary"], "llm", model, parts
+        result, model = _llm_summary_only_item(title, [
             {"section_id": row["node_id"], "summary": row["summary"]} for row in reduced
-        ])
+        ], model=_deepseek_model("standard"), reasoning="disabled")
         summary = str(result.get("summary") or "").strip()
         if not summary or is_meta_summary(summary):
             raise LLMError("node summary was empty or meta")
-        return summary, "llm", model
+        return summary, "llm", model, parts
     except RateLimitReached:
         raise
     except LLMError:
-        return "\n\n".join(str(row["summary"]) for row in children)[:4000], "extractive", "extractive"
+        return "\n\n".join(str(row["summary"]) for row in children)[:4000], "extractive", "extractive", []
 
 
 def build_structure_summaries(item_key: str, *, mode: str = "extractive", force: bool = False) -> Dict[str, Any]:
@@ -139,7 +152,9 @@ def build_structure_summaries(item_key: str, *, mode: str = "extractive", force:
                     continue
                 if use_llm:
                     try:
-                        result, model_name = _llm_section(section)
+                        result, model_name = _llm_summary_only_section(
+                            section, model=_deepseek_model("cheap"), reasoning="disabled",
+                        )
                         summary = str(result.get("summary") or "").strip()
                         if not summary or is_meta_summary(summary):
                             raise LLMError("leaf summary was empty or meta")
@@ -154,34 +169,48 @@ def build_structure_summaries(item_key: str, *, mode: str = "extractive", force:
                     summary, kind, quality = str(result.get("summary") or ""), "extractive", "degraded"
                 if not summary:
                     continue
-                generated[node_id] = {"node_id": node_id, "summary": summary, "kind": kind, "model": model_name}
+                generated[node_id] = {
+                    "node_id": node_id, "summary": summary, "kind": kind, "model": model_name,
+                    "source_chunk_count": len(source_chunks),
+                }
                 save_document_node_summary(
                     node_id, item_key, summary, summary_kind=kind, model=model_name,
                     prompt_version=PROMPT_VERSION, source_fingerprint=structure["source_fingerprint"],
                     source_chunk_count=len(source_chunks), source_chars=sum(len(str(row.get("text") or "")) for row in source_chunks),
                     quality_status=quality,
                 )
+                replace_document_node_summary_parts(
+                    node_id, [], prompt_version=PROMPT_VERSION,
+                    source_fingerprint=structure["source_fingerprint"],
+                )
                 continue
             child_rows = [generated[str(child["node_id"])] for child in children.get(node_id, []) if str(child["node_id"]) in generated]
             if not child_rows:
                 continue
-            summary, kind, model_name = _parent_summary(title, child_rows, use_llm=use_llm)
+            summary, kind, model_name, parts = _parent_summary(title, child_rows, use_llm=use_llm)
             if not summary:
                 continue
             quality = "accepted" if kind == "llm" else "degraded"
-            generated[node_id] = {"node_id": node_id, "summary": summary, "kind": kind, "model": model_name}
-            source_chunk_count = sum(int(by_id[row["node_id"]].get("content_chars") > 0) for row in child_rows)
+            source_chunk_count = sum(int(row.get("source_chunk_count") or 0) for row in child_rows)
+            generated[node_id] = {
+                "node_id": node_id, "summary": summary, "kind": kind, "model": model_name,
+                "source_chunk_count": source_chunk_count,
+            }
             save_document_node_summary(
                 node_id, item_key, summary, summary_kind=kind, model=model_name,
                 prompt_version=PROMPT_VERSION, source_fingerprint=structure["source_fingerprint"],
                 source_chunk_count=source_chunk_count, source_chars=int(node.get("content_chars") or 0),
                 quality_status=quality,
             )
+            replace_document_node_summary_parts(
+                node_id, parts, prompt_version=PROMPT_VERSION,
+                source_fingerprint=structure["source_fingerprint"],
+            )
         llm_count = sum(1 for row in generated.values() if row["kind"] == "llm")
-        artifact_status = "success" if llm_count else ("excluded" if excluded else "degraded")
+        artifact_status = "success" if llm_count else ("empty" if not generated else "degraded")
         mark_artifact_status(
             item_key, "summary", artifact_status,
-            reason_code=exclusion_reason if excluded else ("no_llm_summary" if not llm_count else None),
+            reason_code=(exclusion_reason if excluded else ("no_summary_content" if not generated else "no_llm_summary")) if not llm_count else None,
             source_fingerprint=structure["source_fingerprint"], processor_version=PROMPT_VERSION,
             counts={"nodes": len(generated), "llm": llm_count, "extractive": len(generated) - llm_count, "skipped": skipped},
             fallback_kind="extractive_outline" if not llm_count else None,

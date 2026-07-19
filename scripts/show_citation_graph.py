@@ -1738,6 +1738,10 @@ def _build_sigma_html(
   .processing-status.needs-attention, .processing-reason { color: #f5a5a5; }
   .processing-status.degraded { color: #f0c674; }
   .processing-detail { margin-top: 4px; color: var(--text-dis); font-size: 11px; line-height: 1.45; }
+  .outline-node { padding: 7px 6px; border-bottom: 1px solid var(--outline-variant); }
+  .outline-node-title { color: var(--on-surface); font-size: 12px; line-height: 1.45; font-weight: 600; }
+  .outline-node-meta { margin-top: 3px; color: var(--text-dis); font-size: 10.5px; }
+  .outline-node-summary { margin-top: 5px; color: var(--on-surface-variant); font-size: 11.5px; line-height: 1.55; white-space: pre-wrap; }
   .insights-skeleton {
     height: 12px; margin: 0 0 10px; border-radius: var(--radius-sm);
     background: linear-gradient(90deg, var(--surface-container-high), var(--outline-variant), var(--surface-container-high));
@@ -4912,6 +4916,7 @@ var InsightsPane = (function() {
           '</div>' +
           '<div class="insights-tabs" role="tablist" aria-label="資料の詳細">' +
             '<button class="insights-tab" role="tab" id="ins-tab-overview" data-insight-tab="overview" aria-controls="ins-panel-overview" aria-selected="true">概要</button>' +
+            '<button class="insights-tab" role="tab" id="ins-tab-outline" data-insight-tab="outline" aria-controls="ins-panel-outline" aria-selected="false">構造</button>' +
             '<button class="insights-tab" role="tab" id="ins-tab-sections" data-insight-tab="sections" aria-controls="ins-panel-sections" aria-selected="false">節要約 …</button>' +
             '<button class="insights-tab" role="tab" id="ins-tab-cases" data-insight-tab="cases" aria-controls="ins-panel-cases" aria-selected="false">事例 …</button>' +
             '<button class="insights-tab" role="tab" id="ins-tab-processing" data-insight-tab="processing" aria-controls="ins-panel-processing" aria-selected="false">処理状態</button>' +
@@ -4919,6 +4924,7 @@ var InsightsPane = (function() {
         '</div>' +
         '<div class="insights-content" aria-live="polite">' +
           '<section class="insights-panel" role="tabpanel" id="ins-panel-overview" aria-labelledby="ins-tab-overview">' + skeleton() + '</section>' +
+          '<section class="insights-panel" role="tabpanel" id="ins-panel-outline" aria-labelledby="ins-tab-outline" hidden></section>' +
           '<section class="insights-panel" role="tabpanel" id="ins-panel-sections" aria-labelledby="ins-tab-sections" hidden></section>' +
           '<section class="insights-panel" role="tabpanel" id="ins-panel-cases" aria-labelledby="ins-tab-cases" hidden></section>' +
           '<section class="insights-panel" role="tabpanel" id="ins-panel-processing" aria-labelledby="ins-tab-processing" hidden></section>' +
@@ -4972,6 +4978,7 @@ var InsightsPane = (function() {
     });
     if (name === 'sections' && !current.sectionsReady) setupSections(current);
     if (name === 'cases' && !current.casesReady) setupCases(current);
+    if (name === 'outline' && !current.outlineReady) setupOutline(current);
     if (name === 'processing') renderProcessing(current);
   }
 
@@ -5095,6 +5102,33 @@ var InsightsPane = (function() {
           (row.updated_at ? '<div class="processing-detail">最終更新: ' + esc(row.updated_at) + '</div>' : '') +
           '</div>';
       }).join('');
+  }
+
+  function setupOutline(state) {
+    state.outlineReady = true;
+    var panel = document.getElementById('ins-panel-outline');
+    if (!panel) return;
+    panel.innerHTML = skeleton();
+    _insightsApi('/api/node/outline?key=' + encodeURIComponent(state.itemKey)).then(function(data) {
+      if (current !== state) return;
+      var nodes = data.nodes || [];
+      if (!nodes.length) {
+        panel.innerHTML = '<div class="insights-empty">文書構造はまだ作成されていません。Maintenance Widgetでライブラリまたは要約を更新してください。</div>';
+        return;
+      }
+      panel.innerHTML = '<div class="insights-help">原資料の見出し順を保持した構造です。要約は原文チャンクを探すための索引であり、引用根拠ではありません。</div>' +
+        nodes.map(function(row) {
+          var indent = Math.max(0, Number(row.depth || 0) - 1) * 12;
+          var title = row.title || (row.node_type === 'semantic_segment' ? '本文範囲' : row.node_type);
+          var meta = [row.node_type, row.content_chars ? (Number(row.content_chars).toLocaleString() + '字') : '',
+            row.summary_kind === 'extractive' ? '抽出的要約' : (row.summary_kind ? 'AI要約' : '')].filter(Boolean).join(' · ');
+          return '<div class="outline-node" style="margin-left:' + indent + 'px"><div class="outline-node-title">' +
+            esc(title) + '</div><div class="outline-node-meta">' + esc(meta) + '</div>' +
+            (row.summary ? '<div class="outline-node-summary">' + esc(row.summary) + '</div>' : '') + '</div>';
+        }).join('');
+    }).catch(function(error) {
+      if (current === state) panel.innerHTML = '<div class="insights-error">構造を読み込めませんでした: ' + esc(error.message) + '</div>';
+    });
   }
 
   function setupSections(state) {
@@ -5461,7 +5495,7 @@ var InsightsPane = (function() {
   function open(node, requestId) {
     var state = {
       node: node, itemKey: node.itemKey, requestId: requestId, activeTab: 'overview',
-      data: null, sectionsReady: false, casesReady: false,
+      data: null, sectionsReady: false, casesReady: false, outlineReady: false,
       sectionSourceCache: {}, evidenceCache: {}, expandedCases: {}, evidenceOpen: {},
       sectionFetchSeq: 0, caseFetchSeq: 0
     };
@@ -6834,6 +6868,17 @@ def _route_node_processing_status(key: str) -> JSONResponse:
     from src.citation_insights import get_processing_overview
     try:
         return JSONResponse(get_processing_overview(key))
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@app.get("/api/node/outline")
+def _route_node_outline(key: str) -> JSONResponse:
+    from src.citation_insights import get_document_outline
+    try:
+        return JSONResponse(get_document_outline(key))
     except ValueError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
     except Exception as exc:

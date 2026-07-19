@@ -43,6 +43,9 @@ uv run scripts/setup_wizard.py --status
 | `LLM_REVIEW` | 品質確認と最終フォールバック |
 | `DEEPSEEK_API_KEY` | DeepSeek API |
 | `LLM_OPENAI_BASE_URL` | OpenAI互換サーバー |
+| `HIERARCHICAL_SEARCH_V2_ENABLE` | `1`で文書構造v2の要約ノードから子孫チャンクへ検索をルーティングする。Gold QA評価後に有効化 | `0` |
+| `DOCUMENT_STRUCTURE_V2_ENABLE` | 文書構造v2の利用予定を示す互換flag。構造の差分作成自体はMaintenance Widgetで常に行う | `0` |
+| `CASE_PIPELINE_V2_ENABLE` | `1`でMaintenance WidgetのAI要約・事例処理を、文書構造v2の葉単位パイプラインへ切り替える。Gold QA・事例品質確認後に有効化 | `0` |
 
 送信制御は [LLMとプライバシー](llm-and-privacy.md) を参照してください。
 
@@ -57,4 +60,4 @@ CASE_BATCH_WORKERS=10
 CASE_MAX_PER_SECTION=5
 ```
 
-`Maintenance-Widget.command` の要約更新は、ローカル抽出型要約、DeepSeek AI要約、構造化事例の順に差分実行します。事例候補はFlashによる複数回の和集合から集め、Proで順位・状態を判定します。根拠のある候補は `confirmed`、`partial`、`candidate` として段階保存されます。定時スケジューラやCodex利用枠の確認は行いません。
+`Maintenance-Widget.command` の要約更新は、ローカル抽出型要約の後にAI要約・構造化事例を差分実行します。通常は既存パイプラインを使い、`CASE_PIPELINE_V2_ENABLE=1` のときは文書構造v2の葉単位パイプラインへ切り替えます。v2では要約の中間縮約と各事例の根拠ノードを保存し、AI要約だけを検索ルーティングの候補にできます。事例候補はFlashによる複数回の和集合から集め、Proで順位・状態を判定します。根拠のある候補は `confirmed`、`partial`、`candidate` として段階保存されます。定時スケジューラやCodex利用枠の確認は行いません。
