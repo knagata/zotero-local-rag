@@ -5922,6 +5922,115 @@ def _route_node_abstract(key: str) -> JSONResponse:
     })
 
 
+@app.get("/api/node/insights")
+def _route_node_insights(key: str) -> JSONResponse:
+    """Return the lightweight hierarchy overview for one Zotero item."""
+    from src.citation_insights import get_item_insights
+    try:
+        return JSONResponse(get_item_insights(key))
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@app.get("/api/node/sections")
+def _route_node_sections(
+    key: str, q: str = "", cursor: str = "", limit: int = 50,
+) -> JSONResponse:
+    from src.citation_insights import list_sections
+    try:
+        return JSONResponse(list_sections(
+            key, query=q, cursor=cursor or None, limit=limit,
+        ))
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@app.get("/api/node/section-source")
+def _route_node_section_source(key: str, section_id: str) -> JSONResponse:
+    from src.citation_insights import get_section_source
+    try:
+        return JSONResponse(get_section_source(key, section_id))
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    except KeyError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=404)
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@app.get("/api/node/cases")
+def _route_node_cases(
+    key: str, statuses: str = "confirmed,partial", section_id: str = "",
+    q: str = "", cursor: str = "", limit: int = 20,
+) -> JSONResponse:
+    from src.citation_insights import list_cases
+    selected = [value for value in statuses.split(",") if value.strip()]
+    try:
+        return JSONResponse(list_cases(
+            key, query=q, statuses=selected, section_id=section_id,
+            cursor=cursor or None, limit=limit,
+        ))
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@app.get("/api/case/evidence")
+def _route_case_evidence(case_id: int) -> JSONResponse:
+    from src.citation_insights import get_case_evidence
+    try:
+        return JSONResponse(get_case_evidence(case_id))
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    except KeyError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=404)
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+class _QualityReportRequest(BaseModel):
+    target_type: str
+    item_key: str = ""
+    section_id: str = ""
+    case_id: int | None = None
+    reason: str
+    details: str
+    evidence_chunk_ids: list[str] = []
+
+
+@app.post("/api/quality-report")
+def _route_quality_report(body: _QualityReportRequest) -> JSONResponse:
+    """Queue a summary or case issue without immediately hiding its target."""
+    from src.db_relations import submit_case_quality_report, submit_summary_quality_report
+    try:
+        if body.target_type == "case":
+            if body.case_id is None:
+                raise ValueError("case_id is required for a case report.")
+            report = submit_case_quality_report(
+                case_id=body.case_id, reason=body.reason, details=body.details,
+                evidence_chunk_ids=body.evidence_chunk_ids, reporter="citation-graph",
+            )
+        elif body.target_type in {"item_summary", "section_summary"}:
+            report = submit_summary_quality_report(
+                item_key=body.item_key,
+                section_id=body.section_id if body.target_type == "section_summary" else None,
+                reason=body.reason, details=body.details,
+                evidence_chunk_ids=body.evidence_chunk_ids, reporter="citation-graph",
+            )
+        else:
+            raise ValueError("target_type must be item_summary, section_summary, or case.")
+        return JSONResponse({"ok": True, "report": report})
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
 class _FetchAbstractRequest(BaseModel):
     item_key: str
 

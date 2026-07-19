@@ -191,6 +191,16 @@ def _init_db(conn: sqlite3.Connection) -> None:
         WHERE chunk_id IS NOT NULL AND chunk_id <> ''
           AND evidence_quote IS NOT NULL AND evidence_quote <> ''
     ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS insight_generation_status (
+            item_key TEXT NOT NULL,
+            kind TEXT NOT NULL CHECK(kind IN ('sections', 'cases')),
+            status TEXT NOT NULL CHECK(status IN ('processed_empty', 'available')),
+            row_count INTEGER NOT NULL DEFAULT 0,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY(item_key, kind)
+        )
+    ''')
 
     # 外部論文（S2 paperId）の概要キャッシュ。
     # status='found' は abstract か tldr のいずれかが取得できた状態、
@@ -1476,6 +1486,7 @@ def invalidate_item_summaries(item_key: str) -> Dict[str, int]:
         for table in ("case_annotations", "section_summaries", "item_summaries"):
             cursor = conn.execute(f"DELETE FROM {table} WHERE item_key = ?", (item_key,))
             counts[table] = max(0, int(cursor.rowcount))
+        conn.execute("DELETE FROM insight_generation_status WHERE item_key = ?", (item_key,))
         conn.commit()
         return counts
     except Exception:
@@ -1598,10 +1609,35 @@ def replace_item_case_annotations(
                     case_id, str(row.get("field_name") or "description"),
                     str(row.get("chunk_id") or ""), str(row.get("evidence_quote") or ""),
                 ) for row in case.get("evidence") or [] if row.get("chunk_id") and row.get("evidence_quote")])
+        count = int(conn.execute(
+            "SELECT COUNT(*) FROM case_annotations WHERE item_key = ?", (item_key,),
+        ).fetchone()[0])
+        conn.execute('''
+            INSERT INTO insight_generation_status (item_key, kind, status, row_count, updated_at)
+            VALUES (?, 'cases', ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(item_key, kind) DO UPDATE SET
+                status=excluded.status, row_count=excluded.row_count,
+                updated_at=CURRENT_TIMESTAMP
+        ''', (item_key, "available" if count else "processed_empty", count))
         conn.commit()
     except Exception:
         conn.rollback()
         raise
+    finally:
+        conn.close()
+
+
+def get_insight_generation_status(item_key: str, kind: str) -> Optional[Dict[str, Any]]:
+    if kind not in {"sections", "cases"}:
+        raise ValueError("kind must be sections or cases.")
+    conn = get_db_connection()
+    try:
+        row = conn.execute(
+            "SELECT status, row_count, updated_at FROM insight_generation_status "
+            "WHERE item_key = ? AND kind = ?",
+            (item_key, kind),
+        ).fetchone()
+        return dict(row) if row else None
     finally:
         conn.close()
 
