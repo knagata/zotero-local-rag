@@ -27,6 +27,7 @@ from src.manifest import load_manifest
 
 
 VERSION = 2
+FAILURE_LEDGER_VERSION = 2
 
 
 def _deepseek_model_for_role(role: str) -> str:
@@ -70,11 +71,14 @@ def _backup_database(db_path: Path, backup_path: Path) -> None:
 def _load_failure_ledger(path: Path) -> dict:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
-        if value.get("version") == 1 and isinstance(value.get("items"), dict):
+        if (
+            value.get("version") == FAILURE_LEDGER_VERSION
+            and isinstance(value.get("items"), dict)
+        ):
             return value
     except (OSError, json.JSONDecodeError, AttributeError):
         pass
-    return {"version": 1, "items": {}}
+    return {"version": FAILURE_LEDGER_VERSION, "items": {}}
 
 
 def _record_failure_attempt(ledger: dict, result: dict) -> None:

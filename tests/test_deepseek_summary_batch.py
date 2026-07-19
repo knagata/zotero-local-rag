@@ -9,6 +9,19 @@ from scripts import build_deepseek_summaries
 
 
 class DeepSeekSummaryBatchTests(unittest.TestCase):
+    def test_old_strict_gate_failure_ledger_is_retired(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "failure-ledger.json"
+            path.write_text(
+                '{"version": 1, "items": {"OLD": {"attempts": 2}}}',
+                encoding="utf-8",
+            )
+            ledger = build_deepseek_summaries._load_failure_ledger(path)
+        self.assertEqual(ledger, {
+            "version": build_deepseek_summaries.FAILURE_LEDGER_VERSION,
+            "items": {},
+        })
+
     def test_failure_ledger_quarantines_after_two_attempts_and_clears_on_success(self):
         ledger = {"version": 1, "items": {}}
         failure = {"item_key": "ITEM", "status": "section_failure"}
