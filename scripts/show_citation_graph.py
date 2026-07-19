@@ -1727,6 +1727,17 @@ def _build_sigma_html(
     line-height: 1.6; text-align: center;
   }
   .insights-error { color: #f5a5a5; }
+  .processing-summary { margin: var(--space-3) 0; }
+  .processing-overall { margin-bottom: var(--space-2); color: var(--on-surface); font-size: 12px; font-weight: 600; }
+  .processing-row {
+    padding: var(--space-2); margin-bottom: var(--space-2); border: 1px solid var(--outline-variant);
+    border-radius: var(--radius-sm); background: var(--surface-container-low); font-size: 12px;
+  }
+  .processing-row-head { display: flex; justify-content: space-between; gap: var(--space-2); color: var(--on-surface); }
+  .processing-status { color: var(--on-surface-variant); white-space: nowrap; }
+  .processing-status.needs-attention, .processing-reason { color: #f5a5a5; }
+  .processing-status.degraded { color: #f0c674; }
+  .processing-detail { margin-top: 4px; color: var(--text-dis); font-size: 11px; line-height: 1.45; }
   .insights-skeleton {
     height: 12px; margin: 0 0 10px; border-radius: var(--radius-sm);
     background: linear-gradient(90deg, var(--surface-container-high), var(--outline-variant), var(--surface-container-high));
@@ -4903,12 +4914,14 @@ var InsightsPane = (function() {
             '<button class="insights-tab" role="tab" id="ins-tab-overview" data-insight-tab="overview" aria-controls="ins-panel-overview" aria-selected="true">概要</button>' +
             '<button class="insights-tab" role="tab" id="ins-tab-sections" data-insight-tab="sections" aria-controls="ins-panel-sections" aria-selected="false">節要約 …</button>' +
             '<button class="insights-tab" role="tab" id="ins-tab-cases" data-insight-tab="cases" aria-controls="ins-panel-cases" aria-selected="false">事例 …</button>' +
+            '<button class="insights-tab" role="tab" id="ins-tab-processing" data-insight-tab="processing" aria-controls="ins-panel-processing" aria-selected="false">処理状態</button>' +
           '</div>' +
         '</div>' +
         '<div class="insights-content" aria-live="polite">' +
           '<section class="insights-panel" role="tabpanel" id="ins-panel-overview" aria-labelledby="ins-tab-overview">' + skeleton() + '</section>' +
           '<section class="insights-panel" role="tabpanel" id="ins-panel-sections" aria-labelledby="ins-tab-sections" hidden></section>' +
           '<section class="insights-panel" role="tabpanel" id="ins-panel-cases" aria-labelledby="ins-tab-cases" hidden></section>' +
+          '<section class="insights-panel" role="tabpanel" id="ins-panel-processing" aria-labelledby="ins-tab-processing" hidden></section>' +
         '</div>' +
       '</div>'
     );
@@ -4959,6 +4972,7 @@ var InsightsPane = (function() {
     });
     if (name === 'sections' && !current.sectionsReady) setupSections(current);
     if (name === 'cases' && !current.casesReady) setupCases(current);
+    if (name === 'processing') renderProcessing(current);
   }
 
   function updateCounts(state) {
@@ -5023,6 +5037,7 @@ var InsightsPane = (function() {
         '<div id="insight-abstract-body"></div></div>' +
       '<div class="summary-section" id="abs-summary-section"><div class="summary-section-label">AI 要約</div>' +
         '<div id="abs-summary-body"></div></div>' +
+      '<div class="processing-summary" id="processing-summary"></div>' +
       '<div class="insights-help" style="margin-top:16px">検索と読解を補助する自動生成情報です。重要な判断では原文を確認してください。</div>';
     if (state.data.abstract) renderAbstract(state, state.data.abstract);
     else fetchAbstract(state);
@@ -5033,6 +5048,53 @@ var InsightsPane = (function() {
       var label = document.querySelector('#abs-summary-section .summary-section-label');
       if (label) label.textContent = '抽出的要約';
     }
+    renderProcessingSummary(state);
+  }
+
+  function processingLabel(status) {
+    return ({
+      complete: '完了', not_processed: '未処理', pending: '処理待ち',
+      degraded: '代替処理中', needs_attention: '要対応',
+      success: '完了', empty: '空結果', blocked: '処理不能', failed: '失敗',
+      stale: '再処理待ち', running: '実行中', excluded: '除外'
+    })[status] || status || '未確認';
+  }
+
+  function renderProcessingSummary(state) {
+    var target = document.getElementById('processing-summary');
+    if (!target || !state.data || !state.data.processing) return;
+    var processing = state.data.processing;
+    target.innerHTML = '<div class="insights-label">処理状態</div><div class="processing-overall">' +
+      esc(processingLabel(processing.overall)) + '</div>' +
+      '<button class="insight-btn" id="open-processing-tab">工程の詳細を表示</button>';
+    var button = document.getElementById('open-processing-tab');
+    if (button) button.addEventListener('click', function() {
+      var tab = document.getElementById('ins-tab-processing'); if (tab) tab.click();
+    });
+  }
+
+  function renderProcessing(state) {
+    var panel = document.getElementById('ins-panel-processing');
+    if (!panel || current !== state) return;
+    var processing = (state.data && state.data.processing) || {};
+    var artifacts = processing.artifacts || [];
+    if (!artifacts.length) {
+      panel.innerHTML = '<div class="insights-empty">まだ工程別の処理記録はありません。次回のメンテナンスで記録されます。</div>';
+      return;
+    }
+    panel.innerHTML = '<div class="processing-overall">全体: ' + esc(processingLabel(processing.overall)) + '</div>' +
+      artifacts.map(function(row) {
+        var status = String(row.status || '');
+        var detail = [row.reason_code || '', row.message || '', row.fallback_kind ? ('代替: ' + row.fallback_kind) : '']
+          .filter(Boolean).join(' · ');
+        return '<div class="processing-row"><div class="processing-row-head"><span>' +
+          esc(row.artifact_type || '') + '</span><span class="processing-status ' +
+          esc(status === 'blocked' || status === 'failed' ? 'needs-attention' : status) + '">' +
+          esc(processingLabel(status)) + '</span></div>' +
+          (detail ? '<div class="processing-detail">' + esc(detail) + '</div>' : '') +
+          (row.updated_at ? '<div class="processing-detail">最終更新: ' + esc(row.updated_at) + '</div>' : '') +
+          '</div>';
+      }).join('');
   }
 
   function setupSections(state) {
@@ -5312,7 +5374,8 @@ var InsightsPane = (function() {
         var expanded = state.expandedCases[row.case_id];
         var evidenceOpen = state.evidenceOpen[row.case_id];
         return '<article class="insight-card case-card">' +
-          '<div class="case-card-head"><span class="case-badge ' + status[1] + '">' + status[0] + '</span>' + reported + '</div>' +
+          '<div class="case-card-head"><span class="case-badge ' + status[1] + '">' + status[0] + '</span>' + reported +
+            (row.title ? '<span class="insight-card-title">' + esc(row.title) + '</span>' : '') + '</div>' +
           '<div class="case-description' + (expanded ? ' expanded' : '') + '">' + esc(row.description) + '</div>' +
           '<div class="case-chips">' + chipHtml('地域', row.region) + chipHtml('集団', row.group) +
             chipHtml('時期', row.period) + chipHtml('実践', row.practices) + chipHtml('現象', row.phenomena) + '</div>' +
@@ -6763,6 +6826,24 @@ def _route_node_insights(key: str) -> JSONResponse:
         return JSONResponse({"error": str(exc)}, status_code=400)
     except Exception as exc:
         return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@app.get("/api/node/processing-status")
+def _route_node_processing_status(key: str) -> JSONResponse:
+    """Return stage-by-stage status and available fallbacks for one item."""
+    from src.citation_insights import get_processing_overview
+    try:
+        return JSONResponse(get_processing_overview(key))
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@app.get("/api/processing-status/summary")
+def _route_processing_status_summary() -> JSONResponse:
+    from src.db_relations import get_processing_status_summary
+    return JSONResponse({"items": get_processing_status_summary()})
 
 
 @app.get("/api/node/sections")

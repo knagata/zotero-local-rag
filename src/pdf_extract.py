@@ -29,7 +29,9 @@ from text_utils import (
     split_long_paragraph,
     analyze_text_quality,
 )
-from chapter_detect import get_pdf_toc, build_pdf_page_chapter_lookup
+from chapter_detect import (
+    get_pdf_toc, build_pdf_page_chapter_lookup, build_pdf_page_structure_path_lookup,
+)
 
 PDF_DROP_REPEATED_LINES = (os.environ.get("PDF_DROP_REPEATED_LINES") or "1") == "1"
 PDF_STRIP_REPEATED_PREFIX = (os.environ.get("PDF_STRIP_REPEATED_PREFIX") or "1") == "1"
@@ -525,8 +527,10 @@ def extract_chunks_from_pdf(
     try:
         _toc = get_pdf_toc(str(pdf_path))
         _chapter_lookup = build_pdf_page_chapter_lookup(_toc) if _toc else None
+        _structure_path_lookup = build_pdf_page_structure_path_lookup(_toc) if _toc else None
     except Exception:
         _chapter_lookup = None
+        _structure_path_lookup = None
 
     captured_text = ""
     r_fd: Optional[int] = None
@@ -764,6 +768,13 @@ def extract_chunks_from_pdf(
                                         chapter_info["chapter"] = _ch
                                     if _sec:
                                         chapter_info["section"] = _sec
+                                except Exception:
+                                    pass
+                            if _structure_path_lookup is not None:
+                                try:
+                                    structure_path = _structure_path_lookup(pi + 1)
+                                    if structure_path:
+                                        chapter_info["structure_path"] = structure_path
                                 except Exception:
                                     pass
                             md.update(

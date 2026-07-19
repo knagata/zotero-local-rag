@@ -56,6 +56,20 @@ class CitationInsightsApiTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 400)
 
+    def test_processing_status_distinguishes_degraded_and_blocked_work(self):
+        db_relations.mark_artifact_status(
+            "ITEM", "structure", "degraded", reason_code="flat_fallback",
+            fallback_kind="contiguous_semantic_segments",
+        )
+        db_relations.mark_artifact_status(
+            "ITEM", "summary", "blocked", reason_code="no_cloud",
+        )
+        response = _json(show_citation_graph._route_node_processing_status("ITEM"))
+        self.assertEqual(response["overall"], "needs_attention")
+        states = {row["artifact_type"]: row for row in response["artifacts"]}
+        self.assertEqual(states["structure"]["fallback_kind"], "contiguous_semantic_segments")
+        self.assertEqual(states["summary"]["reason_code"], "no_cloud")
+
     def test_quality_report_route_queues_without_hiding(self):
         case_id = db_relations.get_case_annotations("ITEM")[0]["case_id"]
         response = show_citation_graph._route_quality_report(
@@ -79,6 +93,7 @@ class CitationInsightsApiTests(unittest.TestCase):
         self.assertIn('role="tablist" aria-label="資料の詳細"', html)
         self.assertIn("/api/node/sections?key=", html)
         self.assertIn("/api/case/evidence?case_id=", html)
+        self.assertIn('data-insight-tab="processing"', html)
         self.assertIn('aria-modal="true"', html)
         self.assertIn("var MIN_W = 280, MAX_W = 700", html)
 

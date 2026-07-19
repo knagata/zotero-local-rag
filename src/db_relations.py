@@ -23,6 +23,7 @@ def get_db_connection():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
     if not _db_initialized:
         _init_db(conn)
         _db_initialized = True
@@ -199,6 +200,136 @@ def _init_db(conn: sqlite3.Connection) -> None:
             row_count INTEGER NOT NULL DEFAULT 0,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY(item_key, kind)
+        )
+    ''')
+
+    # v2 document structure.  These tables are deliberately separate from the
+    # legacy item/section summary tables so a failed or partial migration never
+    # removes an existing usable index.
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS document_structures (
+            item_key TEXT PRIMARY KEY,
+            source_fingerprint TEXT NOT NULL,
+            structure_version TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN
+                ('exact', 'recovered', 'flat_fallback', 'unavailable')),
+            confidence REAL,
+            node_count INTEGER NOT NULL DEFAULT 0,
+            leaf_count INTEGER NOT NULL DEFAULT 0,
+            diagnostics_json TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS document_nodes (
+            node_id TEXT PRIMARY KEY,
+            item_key TEXT NOT NULL,
+            attachment_key TEXT,
+            parent_node_id TEXT REFERENCES document_nodes(node_id) ON DELETE CASCADE,
+            node_type TEXT NOT NULL,
+            depth INTEGER NOT NULL,
+            ordinal INTEGER NOT NULL,
+            title TEXT,
+            normalized_title TEXT,
+            source_kind TEXT NOT NULL,
+            source_locator_json TEXT,
+            confidence REAL,
+            content_chars INTEGER NOT NULL DEFAULT 0,
+            first_chunk_id TEXT,
+            last_chunk_id TEXT,
+            UNIQUE(item_key, parent_node_id, ordinal)
+        )
+    ''')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_document_nodes_item ON document_nodes(item_key, depth, ordinal)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_document_nodes_parent ON document_nodes(parent_node_id, ordinal)')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS document_node_chunks (
+            node_id TEXT NOT NULL REFERENCES document_nodes(node_id) ON DELETE CASCADE,
+            chunk_id TEXT NOT NULL UNIQUE,
+            ordinal INTEGER NOT NULL,
+            PRIMARY KEY(node_id, chunk_id)
+        )
+    ''')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_document_node_chunks_node ON document_node_chunks(node_id, ordinal)')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS document_node_summaries (
+            node_id TEXT PRIMARY KEY REFERENCES document_nodes(node_id) ON DELETE CASCADE,
+            item_key TEXT NOT NULL,
+            summary TEXT NOT NULL,
+            summary_kind TEXT NOT NULL CHECK(summary_kind IN ('llm', 'extractive')),
+            model TEXT,
+            prompt_version TEXT NOT NULL,
+            source_fingerprint TEXT NOT NULL,
+            source_chunk_count INTEGER NOT NULL,
+            source_chars INTEGER NOT NULL,
+            searchable INTEGER NOT NULL DEFAULT 0,
+            quality_status TEXT NOT NULL CHECK(quality_status IN
+                ('accepted', 'candidate', 'degraded', 'disabled')),
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_document_node_summaries_item ON document_node_summaries(item_key, searchable)')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS document_node_summary_parts (
+            node_id TEXT NOT NULL REFERENCES document_nodes(node_id) ON DELETE CASCADE,
+            part_ordinal INTEGER NOT NULL,
+            child_node_ids_json TEXT NOT NULL,
+            summary TEXT NOT NULL,
+            model TEXT,
+            prompt_version TEXT NOT NULL,
+            source_fingerprint TEXT NOT NULL,
+            PRIMARY KEY(node_id, part_ordinal)
+        )
+    ''')
+    for sql in (
+        "ALTER TABLE case_annotations ADD COLUMN title TEXT",
+        "ALTER TABLE case_annotations ADD COLUMN node_id TEXT",
+        "ALTER TABLE case_annotations ADD COLUMN case_type TEXT",
+        "ALTER TABLE case_annotations ADD COLUMN normalization_version TEXT",
+        "ALTER TABLE case_annotations ADD COLUMN source_fingerprint TEXT",
+    ):
+        try:
+            cursor.execute(sql)
+        except sqlite3.OperationalError:
+            pass
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS artifact_processing_status (
+            item_key TEXT NOT NULL,
+            attachment_key TEXT NOT NULL DEFAULT '',
+            artifact_type TEXT NOT NULL CHECK(artifact_type IN
+                ('extraction', 'structure', 'summary', 'cases', 'references', 'embeddings')),
+            status TEXT NOT NULL CHECK(status IN
+                ('pending', 'running', 'success', 'empty', 'degraded', 'blocked',
+                 'failed', 'stale', 'excluded')),
+            reason_code TEXT,
+            message TEXT,
+            retryable INTEGER NOT NULL DEFAULT 0,
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            source_fingerprint TEXT,
+            processor_version TEXT,
+            model TEXT,
+            counts_json TEXT,
+            fallback_kind TEXT,
+            started_at TIMESTAMP,
+            finished_at TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY(item_key, attachment_key, artifact_type)
+        )
+    ''')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_artifact_processing_item ON artifact_processing_status(item_key, artifact_type)')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS artifact_processing_events (
+            event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            item_key TEXT NOT NULL,
+            attachment_key TEXT NOT NULL DEFAULT '',
+            artifact_type TEXT NOT NULL,
+            from_status TEXT,
+            to_status TEXT NOT NULL,
+            reason_code TEXT,
+            message TEXT,
+            run_id TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
 
@@ -1506,6 +1637,18 @@ def invalidate_item_summaries(item_key: str) -> Dict[str, int]:
         conn.close()
 
 
+def _normalise_case_title(value: Any, description: Any) -> str:
+    """Provide a stable display title when a legacy extractor supplied prose only."""
+    title = " ".join(str(value or "").split())
+    if title:
+        return title[:120]
+    text = " ".join(str(description or "").split())
+    if not text:
+        return ""
+    sentence = re.split(r"(?<=[。.!?])\s*", text, maxsplit=1)[0].strip()
+    return sentence[:80].rstrip("、,;: ") or text[:80]
+
+
 def replace_case_annotations(
     item_key: str, section_id: str, cases: List[Dict[str, Any]], *, model: str = "",
 ) -> None:
@@ -1528,8 +1671,9 @@ def replace_case_annotations(
             INSERT INTO case_annotations
                 (item_key, section_id, description, region, grp, practices, phenomena,
                  period, chunk_id, source_kind, evidence_quote, model,
-                 quality_status, confidence, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                 quality_status, confidence, title, node_id, case_type,
+                 normalization_version, source_fingerprint, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             ''', (
                 item_key, section_id, case.get("description") or "", case.get("region"),
                 case.get("group") or case.get("grp"),
@@ -1537,7 +1681,9 @@ def replace_case_annotations(
                 "; ".join(case.get("phenomena") or []) if isinstance(case.get("phenomena"), list) else case.get("phenomena"),
                 case.get("period"), case.get("chunk_id"), case.get("source_kind"),
                 case.get("evidence_quote"), model, case.get("quality_status") or "confirmed",
-                case.get("confidence"),
+                case.get("confidence"), _normalise_case_title(case.get("title"), case.get("description")),
+                case.get("node_id"), case.get("case_type") or "other",
+                case.get("normalization_version") or "v2-deterministic", case.get("source_fingerprint"),
             ))
             case_id = int(cursor.lastrowid)
             evidence_rows = case.get("evidence") or [{
@@ -1600,8 +1746,9 @@ def replace_item_case_annotations(
                     INSERT INTO case_annotations
                         (item_key, section_id, description, region, grp, practices, phenomena,
                          period, chunk_id, source_kind, evidence_quote, model,
-                         quality_status, confidence, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                         quality_status, confidence, title, node_id, case_type,
+                         normalization_version, source_fingerprint, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 ''', (
                     item_key, section_id, case.get("description"), case.get("region"),
                     case.get("group") or case.get("grp"),
@@ -1609,7 +1756,9 @@ def replace_item_case_annotations(
                     "; ".join(case.get("phenomena") or []) if isinstance(case.get("phenomena"), list) else case.get("phenomena"),
                     case.get("period"), case.get("chunk_id"), case.get("source_kind"),
                     case.get("evidence_quote"), model, case.get("quality_status") or "confirmed",
-                    case.get("confidence"),
+                    case.get("confidence"), _normalise_case_title(case.get("title"), case.get("description")),
+                    case.get("node_id"), case.get("case_type") or "other",
+                    case.get("normalization_version") or "v2-deterministic", case.get("source_fingerprint"),
                 ))
                 case_id = int(cursor.lastrowid)
                 conn.executemany('''
@@ -2950,3 +3099,385 @@ def update_reference_s2_data(
         conn.commit()
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Document structure v2 and processing-state ledger
+
+_ARTIFACT_TYPES = {
+    "extraction", "structure", "summary", "cases", "references", "embeddings",
+}
+_ARTIFACT_STATUSES = {
+    "pending", "running", "success", "empty", "degraded", "blocked", "failed", "stale", "excluded",
+}
+_STRUCTURE_STATUSES = {"exact", "recovered", "flat_fallback", "unavailable"}
+
+
+def replace_document_structure(
+    item_key: str, *, source_fingerprint: str, structure_version: str,
+    status: str, nodes: List[Dict[str, Any]], diagnostics: Optional[Dict[str, Any]] = None,
+    confidence: Optional[float] = None,
+) -> None:
+    """Atomically replace one item's derived document tree.
+
+    ``nodes`` must be parent-first.  Only leaf nodes carry a ``chunks`` list;
+    each chunk ID may belong to exactly one leaf.  The source chunks themselves
+    are never changed by this operation.
+    """
+    if not item_key:
+        raise ValueError("item_key is required")
+    if status not in _STRUCTURE_STATUSES:
+        raise ValueError(f"invalid structure status: {status}")
+    node_ids = [str(node.get("node_id") or "") for node in nodes]
+    if not all(node_ids) or len(node_ids) != len(set(node_ids)):
+        raise ValueError("document structure node_id values must be present and unique")
+    seen_chunks: set[str] = set()
+    for node in nodes:
+        for chunk in node.get("chunks") or []:
+            chunk_id = str(chunk.get("chunk_id") if isinstance(chunk, dict) else chunk)
+            if not chunk_id or chunk_id in seen_chunks:
+                raise ValueError("a source chunk must belong to exactly one document leaf")
+            seen_chunks.add(chunk_id)
+
+    conn = get_db_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("DELETE FROM document_nodes WHERE item_key = ?", (item_key,))
+        leaf_count = 0
+        for node in nodes:
+            chunks = node.get("chunks") or []
+            if chunks:
+                leaf_count += 1
+            conn.execute('''
+                INSERT INTO document_nodes (
+                    node_id, item_key, attachment_key, parent_node_id, node_type, depth, ordinal,
+                    title, normalized_title, source_kind, source_locator_json, confidence,
+                    content_chars, first_chunk_id, last_chunk_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                node["node_id"], item_key, node.get("attachment_key"), node.get("parent_node_id"),
+                node.get("node_type") or "section", int(node.get("depth") or 0),
+                int(node.get("ordinal") or 0), node.get("title"), node.get("normalized_title"),
+                node.get("source_kind") or "semantic_fallback",
+                json.dumps(node.get("source_locator") or {}, ensure_ascii=False, sort_keys=True),
+                node.get("confidence"), int(node.get("content_chars") or 0),
+                node.get("first_chunk_id"), node.get("last_chunk_id"),
+            ))
+            for ordinal, chunk in enumerate(chunks):
+                chunk_id = str(chunk.get("chunk_id") if isinstance(chunk, dict) else chunk)
+                chunk_ordinal = int(chunk.get("ordinal", ordinal) if isinstance(chunk, dict) else ordinal)
+                conn.execute(
+                    "INSERT INTO document_node_chunks (node_id, chunk_id, ordinal) VALUES (?, ?, ?)",
+                    (node["node_id"], chunk_id, chunk_ordinal),
+                )
+        conn.execute('''
+            INSERT INTO document_structures
+                (item_key, source_fingerprint, structure_version, status, confidence,
+                 node_count, leaf_count, diagnostics_json, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(item_key) DO UPDATE SET
+                source_fingerprint=excluded.source_fingerprint,
+                structure_version=excluded.structure_version, status=excluded.status,
+                confidence=excluded.confidence, node_count=excluded.node_count,
+                leaf_count=excluded.leaf_count, diagnostics_json=excluded.diagnostics_json,
+                updated_at=CURRENT_TIMESTAMP
+        ''', (
+            item_key, source_fingerprint, structure_version, status, confidence,
+            len(nodes), leaf_count,
+            json.dumps(diagnostics or {}, ensure_ascii=False, sort_keys=True),
+        ))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def get_document_structure(item_key: str) -> Optional[Dict[str, Any]]:
+    conn = get_db_connection()
+    try:
+        row = conn.execute(
+            "SELECT * FROM document_structures WHERE item_key = ?", (item_key,),
+        ).fetchone()
+        if row is None:
+            return None
+        result = dict(row)
+        try:
+            result["diagnostics"] = json.loads(result.pop("diagnostics_json") or "{}")
+        except (TypeError, ValueError):
+            result["diagnostics"] = {}
+        return result
+    finally:
+        conn.close()
+
+
+def get_document_nodes(item_key: str, *, include_chunks: bool = False) -> List[Dict[str, Any]]:
+    """Return the canonical tree in parent-before-display order."""
+    conn = get_db_connection()
+    try:
+        rows = conn.execute('''
+            WITH RECURSIVE tree AS (
+                SELECT node_id, parent_node_id, 0 AS walk_depth,
+                       printf('%08d', ordinal) AS walk_order
+                FROM document_nodes
+                WHERE item_key = ? AND parent_node_id IS NULL
+                UNION ALL
+                SELECT n.node_id, n.parent_node_id, tree.walk_depth + 1,
+                       tree.walk_order || '.' || printf('%08d', n.ordinal)
+                FROM document_nodes n JOIN tree ON n.parent_node_id = tree.node_id
+            )
+            SELECT n.* FROM document_nodes n JOIN tree ON tree.node_id = n.node_id
+            ORDER BY tree.walk_order
+        ''', (item_key,)).fetchall()
+        result = []
+        for row in rows:
+            node = dict(row)
+            try:
+                node["source_locator"] = json.loads(node.pop("source_locator_json") or "{}")
+            except (TypeError, ValueError):
+                node["source_locator"] = {}
+            if include_chunks:
+                chunks = conn.execute(
+                    "SELECT chunk_id, ordinal FROM document_node_chunks WHERE node_id = ? ORDER BY ordinal",
+                    (node["node_id"],),
+                ).fetchall()
+                node["chunks"] = [dict(chunk) for chunk in chunks]
+            result.append(node)
+        return result
+    finally:
+        conn.close()
+
+
+def get_node_descendant_chunks(node_ids: List[str]) -> List[str]:
+    """Expand structure node IDs to source chunks in stable document order."""
+    ids = [str(value) for value in node_ids if value]
+    if not ids:
+        return []
+    placeholders = ",".join("?" for _ in ids)
+    conn = get_db_connection()
+    try:
+        rows = conn.execute(f'''
+            WITH RECURSIVE descendants(node_id) AS (
+                SELECT node_id FROM document_nodes WHERE node_id IN ({placeholders})
+                UNION
+                SELECT n.node_id FROM document_nodes n
+                JOIN descendants d ON n.parent_node_id = d.node_id
+            )
+            SELECT DISTINCT c.chunk_id, c.ordinal, n.first_chunk_id
+            FROM document_node_chunks c JOIN descendants d ON d.node_id = c.node_id
+            JOIN document_nodes n ON n.node_id = c.node_id
+            ORDER BY n.first_chunk_id, c.ordinal, c.chunk_id
+        ''', ids).fetchall()
+        return [str(row["chunk_id"]) for row in rows]
+    finally:
+        conn.close()
+
+
+def save_document_node_summary(
+    node_id: str, item_key: str, summary: str, *, summary_kind: str, model: str = "",
+    prompt_version: str = "structure-v2", source_fingerprint: str,
+    source_chunk_count: int, source_chars: int, quality_status: str = "accepted",
+) -> None:
+    if summary_kind not in {"llm", "extractive"}:
+        raise ValueError("summary_kind must be llm or extractive")
+    if quality_status not in {"accepted", "candidate", "degraded", "disabled"}:
+        raise ValueError("invalid node summary quality status")
+    searchable = int(summary_kind == "llm" and quality_status in {"accepted", "candidate"})
+    conn = get_db_connection()
+    try:
+        conn.execute('''
+            INSERT INTO document_node_summaries
+                (node_id, item_key, summary, summary_kind, model, prompt_version,
+                 source_fingerprint, source_chunk_count, source_chars, searchable,
+                 quality_status, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(node_id) DO UPDATE SET
+                item_key=excluded.item_key, summary=excluded.summary,
+                summary_kind=excluded.summary_kind, model=excluded.model,
+                prompt_version=excluded.prompt_version,
+                source_fingerprint=excluded.source_fingerprint,
+                source_chunk_count=excluded.source_chunk_count, source_chars=excluded.source_chars,
+                searchable=excluded.searchable, quality_status=excluded.quality_status,
+                updated_at=CURRENT_TIMESTAMP
+        ''', (
+            node_id, item_key, summary, summary_kind, model, prompt_version, source_fingerprint,
+            int(source_chunk_count), int(source_chars), searchable, quality_status,
+        ))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_document_node_summaries(
+    item_key: str, *, searchable_only: bool = False,
+) -> List[Dict[str, Any]]:
+    conn = get_db_connection()
+    try:
+        rows = conn.execute('''
+            SELECT s.*, n.parent_node_id, n.attachment_key, n.node_type, n.depth,
+                   n.title, n.first_chunk_id, n.last_chunk_id
+            FROM document_node_summaries s JOIN document_nodes n ON n.node_id = s.node_id
+            WHERE s.item_key = ? AND (? = 0 OR s.searchable = 1)
+            ORDER BY n.depth ASC, n.first_chunk_id ASC, n.ordinal ASC
+        ''', (item_key, int(searchable_only))).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def get_all_document_node_summaries(*, searchable_only: bool = False) -> List[Dict[str, Any]]:
+    conn = get_db_connection()
+    try:
+        rows = conn.execute('''
+            SELECT s.*, n.parent_node_id, n.attachment_key, n.node_type, n.depth,
+                   n.title, n.first_chunk_id, n.last_chunk_id
+            FROM document_node_summaries s JOIN document_nodes n ON n.node_id = s.node_id
+            WHERE ? = 0 OR s.searchable = 1
+            ORDER BY s.item_key, n.depth ASC, n.first_chunk_id ASC, n.ordinal ASC
+        ''', (int(searchable_only),)).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def delete_document_node_summaries(item_key: str) -> int:
+    conn = get_db_connection()
+    try:
+        cursor = conn.execute("DELETE FROM document_node_summaries WHERE item_key = ?", (item_key,))
+        conn.commit()
+        return max(0, int(cursor.rowcount))
+    finally:
+        conn.close()
+
+
+def _status_counts_json(counts: Optional[Dict[str, Any]]) -> Optional[str]:
+    return json.dumps(counts, ensure_ascii=False, sort_keys=True) if counts is not None else None
+
+
+def mark_artifact_status(
+    item_key: str, artifact_type: str, status: str, *, attachment_key: Optional[str] = None,
+    reason_code: Optional[str] = None, message: Optional[str] = None,
+    retryable: bool = False, source_fingerprint: Optional[str] = None,
+    processor_version: Optional[str] = None, model: Optional[str] = None,
+    counts: Optional[Dict[str, Any]] = None, fallback_kind: Optional[str] = None,
+    run_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Record a processing state transition and append an audit event."""
+    if not item_key:
+        raise ValueError("item_key is required")
+    if artifact_type not in _ARTIFACT_TYPES:
+        raise ValueError(f"invalid artifact type: {artifact_type}")
+    if status not in _ARTIFACT_STATUSES:
+        raise ValueError(f"invalid artifact status: {status}")
+    attachment = str(attachment_key or "")
+    conn = get_db_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        previous = conn.execute('''
+            SELECT status, attempt_count FROM artifact_processing_status
+            WHERE item_key = ? AND attachment_key = ? AND artifact_type = ?
+        ''', (item_key, attachment, artifact_type)).fetchone()
+        previous_status = str(previous["status"]) if previous else None
+        attempts = int(previous["attempt_count"]) if previous else 0
+        if status == "running" and previous_status != "running":
+            attempts += 1
+        started_at = "CURRENT_TIMESTAMP" if status == "running" else "started_at"
+        finished_at = "CURRENT_TIMESTAMP" if status not in {"pending", "running", "stale"} else "NULL"
+        conn.execute(f'''
+            INSERT INTO artifact_processing_status (
+                item_key, attachment_key, artifact_type, status, reason_code, message,
+                retryable, attempt_count, source_fingerprint, processor_version, model,
+                counts_json, fallback_kind, started_at, finished_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                      {started_at if status == 'running' else 'NULL'},
+                      {finished_at}, CURRENT_TIMESTAMP)
+            ON CONFLICT(item_key, attachment_key, artifact_type) DO UPDATE SET
+                status=excluded.status, reason_code=excluded.reason_code, message=excluded.message,
+                retryable=excluded.retryable, attempt_count=excluded.attempt_count,
+                source_fingerprint=COALESCE(excluded.source_fingerprint, artifact_processing_status.source_fingerprint),
+                processor_version=COALESCE(excluded.processor_version, artifact_processing_status.processor_version),
+                model=COALESCE(excluded.model, artifact_processing_status.model),
+                counts_json=COALESCE(excluded.counts_json, artifact_processing_status.counts_json),
+                fallback_kind=excluded.fallback_kind,
+                started_at=CASE WHEN excluded.status = 'running' THEN CURRENT_TIMESTAMP
+                                ELSE artifact_processing_status.started_at END,
+                finished_at=CASE WHEN excluded.status IN ('pending', 'running', 'stale') THEN NULL
+                                 ELSE CURRENT_TIMESTAMP END,
+                updated_at=CURRENT_TIMESTAMP
+        ''', (
+            item_key, attachment, artifact_type, status, reason_code, message,
+            int(bool(retryable)), attempts, source_fingerprint, processor_version, model,
+            _status_counts_json(counts), fallback_kind,
+        ))
+        conn.execute('''
+            INSERT INTO artifact_processing_events
+                (item_key, attachment_key, artifact_type, from_status, to_status,
+                 reason_code, message, run_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (item_key, attachment, artifact_type, previous_status, status, reason_code, message, run_id))
+        row = conn.execute('''
+            SELECT * FROM artifact_processing_status
+            WHERE item_key = ? AND attachment_key = ? AND artifact_type = ?
+        ''', (item_key, attachment, artifact_type)).fetchone()
+        conn.commit()
+        return dict(row)
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def get_item_processing_status(item_key: str) -> List[Dict[str, Any]]:
+    conn = get_db_connection()
+    try:
+        rows = conn.execute('''
+            SELECT * FROM artifact_processing_status
+            WHERE item_key = ? ORDER BY attachment_key, artifact_type
+        ''', (item_key,)).fetchall()
+        result = []
+        for row in rows:
+            record = dict(row)
+            try:
+                record["counts"] = json.loads(record.pop("counts_json") or "{}")
+            except (TypeError, ValueError):
+                record["counts"] = {}
+            result.append(record)
+        return result
+    finally:
+        conn.close()
+
+
+def get_processing_status_summary() -> List[Dict[str, Any]]:
+    conn = get_db_connection()
+    try:
+        rows = conn.execute('''
+            SELECT artifact_type, status, COUNT(*) AS count
+            FROM artifact_processing_status
+            GROUP BY artifact_type, status ORDER BY artifact_type, status
+        ''').fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def recover_interrupted_artifacts(*, older_than_seconds: int = 3600) -> int:
+    """Turn abandoned ``running`` rows into retryable failures on startup."""
+    conn = get_db_connection()
+    try:
+        rows = conn.execute('''
+            SELECT item_key, attachment_key, artifact_type FROM artifact_processing_status
+            WHERE status = 'running'
+              AND started_at IS NOT NULL
+              AND CAST(strftime('%s', 'now') AS INTEGER) - CAST(strftime('%s', started_at) AS INTEGER) >= ?
+        ''', (max(0, int(older_than_seconds)),)).fetchall()
+    finally:
+        conn.close()
+    for row in rows:
+        mark_artifact_status(
+            str(row["item_key"]), str(row["artifact_type"]), "failed",
+            attachment_key=str(row["attachment_key"] or ""), reason_code="interrupted",
+            message="Previous maintenance run did not finish.", retryable=True,
+        )
+    return len(rows)

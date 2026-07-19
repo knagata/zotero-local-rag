@@ -89,8 +89,7 @@ def extract_chunks_from_pdf_with_docling(
     # Group items by page number
     page_contents = defaultdict(list)
     
-    current_chapter = ""
-    current_section = ""
+    current_heading_path: List[str] = []
 
     # Iterate through all parsed items in sequential reading order
     for item, level in doc.iterate_items():
@@ -98,12 +97,15 @@ def extract_chunks_from_pdf_with_docling(
         text = getattr(item, "text", "").strip()
 
         # Capture heading hierarchies
-        if label == "heading":
-            if level == 0 or level == 1:
-                current_chapter = text
-                current_section = ""
-            else:
-                current_section = text
+        if label == "heading" and text:
+            # Docling exposes the full nesting level.  Keep it rather than
+            # reducing every level below chapter to one flat ``section``.
+            try:
+                heading_depth = max(1, int(level) + 1)
+            except (TypeError, ValueError):
+                heading_depth = 1
+            current_heading_path = current_heading_path[: heading_depth - 1]
+            current_heading_path.append(text)
 
         # Get page number from provenance metadata
         page_no = 1
@@ -128,8 +130,9 @@ def extract_chunks_from_pdf_with_docling(
         if text_content:
             page_contents[page_no].append({
                 "text": text_content,
-                "chapter": current_chapter,
-                "section": current_section,
+                "chapter": current_heading_path[0] if current_heading_path else "",
+                "section": current_heading_path[1] if len(current_heading_path) > 1 else "",
+                "structure_path": list(current_heading_path),
             })
 
     chunks: List[Tuple[str, str, Dict[str, Any]]] = []
@@ -177,6 +180,8 @@ def extract_chunks_from_pdf_with_docling(
                     chapter_info["chapter"] = chapter
                 if section:
                     chapter_info["section"] = section
+                if item_data.get("structure_path"):
+                    chapter_info["structure_path"] = item_data["structure_path"]
 
                 md.update({
                     "source_type": "pdf",

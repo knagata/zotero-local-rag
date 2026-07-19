@@ -83,6 +83,30 @@ def _case_report_statuses(
     }
 
 
+def get_processing_overview(item_key: str) -> dict[str, Any]:
+    """Return explicit per-artifact processing state for Citation Insights."""
+    key = _item_key(item_key)
+    rows = db_relations.get_item_processing_status(key)
+    structure = db_relations.get_document_structure(key)
+    statuses = {str(row["status"]) for row in rows}
+    if statuses.intersection({"blocked", "failed"}):
+        overall = "needs_attention"
+    elif statuses.intersection({"pending", "running", "stale"}):
+        overall = "pending"
+    elif "degraded" in statuses:
+        overall = "degraded"
+    elif statuses:
+        overall = "complete"
+    else:
+        overall = "not_processed"
+    return {
+        "item_key": key,
+        "overall": overall,
+        "artifacts": rows,
+        "structure": structure,
+    }
+
+
 def get_item_insights(item_key: str) -> dict[str, Any]:
     """Return the lightweight overview and tab counts for one Zotero item."""
     key = _item_key(item_key)
@@ -124,6 +148,7 @@ def get_item_insights(item_key: str) -> dict[str, Any]:
             "summary": summary,
             "sections": sections,
             "cases": cases,
+            "processing": get_processing_overview(key),
         }
     finally:
         conn.close()
@@ -242,7 +267,10 @@ def list_cases(
             result.append({
                 "case_id": int(row["case_id"]),
                 "section_id": row.get("section_id") or "",
+                "node_id": row.get("node_id") or "",
+                "title": row.get("title") or "",
                 "description": row["description"],
+                "case_type": row.get("case_type") or "other",
                 "region": row.get("region") or "",
                 "group": row.get("grp") or "",
                 "practices": row.get("practices") or "",
@@ -252,6 +280,7 @@ def list_cases(
                 "model": row.get("model") or "",
                 "quality_status": quality_status,
                 "confidence": row.get("confidence"),
+                "normalization_version": row.get("normalization_version") or "v1_legacy",
                 "updated_at": row.get("updated_at"),
                 "evidence_count": int(row.get("evidence_count") or 0),
                 "report_status": report_status,

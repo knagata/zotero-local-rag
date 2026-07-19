@@ -45,6 +45,7 @@ class MaintenanceCommandTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(calls, [
             "run src/index_from_zotero.py --progress",
+            "run python scripts/rebuild_document_structure.py --all",
             "run python -m src.build_summaries",
             "run python scripts/build_deepseek_summaries.py --output data/quality/maintenance-summary-report.json",
             "run python scripts/build_deepseek_cases.py --output data/quality/maintenance-case-report.json",
@@ -60,6 +61,7 @@ class MaintenanceCommandTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertEqual(calls, [
             "run src/index_from_zotero.py --progress",
+            "run python scripts/rebuild_document_structure.py --all",
             "run src/update_citations.py --all",
             "run python scripts/triage_quality_reports.py",
             "run python scripts/review_relation_reports.py",

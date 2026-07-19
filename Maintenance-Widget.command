@@ -79,9 +79,13 @@ run_step() {
 
 if [[ "$run_library" == "1" ]]; then
     run_step "ライブラリ差分更新" uv run src/index_from_zotero.py --progress
+    run_step "文書構造v2の差分更新" uv run python scripts/rebuild_document_structure.py --all
 fi
 
 if [[ "$run_summaries" == "1" ]]; then
+    if [[ "$run_library" == "0" ]]; then
+        run_step "文書構造v2の差分確認" uv run python scripts/rebuild_document_structure.py --all
+    fi
     run_step "ローカル抽出型要約更新" uv run python -m src.build_summaries
     run_step "DeepSeek AI要約更新" uv run python scripts/build_deepseek_summaries.py \
         --output data/quality/maintenance-summary-report.json

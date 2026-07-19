@@ -33,7 +33,7 @@ from query_expansion import expand_queries
 from search_fusion import language_balanced_order
 from db_relations import (
     get_case_annotations, get_disabled_case_ids, get_disabled_summary_keys,
-    get_item_summary as load_item_summary,
+    get_item_summary as load_item_summary, get_node_descendant_chunks,
 )
 
 
@@ -1045,6 +1045,110 @@ def get_item_summary(item_key: str) -> Dict[str, Any]:
     return {"item_key": item_key, "summary": summary}
 
 
+def _hierarchical_search_v2(
+    queries: List[str], *, k: int, k_items: int, where: Any, include_direct: bool,
+    return_summaries: bool, paragraph_collection: Any,
+) -> Dict[str, Any]:
+    """Route summary-node hits to their source descendants, then fuse direct recall."""
+    warnings: List[str] = []
+    candidate_nodes: List[Dict[str, Any]] = []
+    candidate_scores: Dict[str, float] = {}
+    candidate_items: Dict[str, Dict[str, Any]] = {}
+    try:
+        client = getattr(paragraph_collection, "_chroma_client", None)
+        collection = client.get_collection(f"{_EMB_COLLECTION_NAME or COLLECTION_NAME_DEFAULT}__sum_node")
+        embeddings = paragraph_collection._embedding_function(queries)
+        response = collection.query(
+            query_embeddings=embeddings, n_results=max(k_items * 3, 30),
+            where={"summary_kind": "llm"}, include=["metadatas", "documents", "distances"],
+        )
+        for q_index, metadata_rows in enumerate(response.get("metadatas") or []):
+            documents = (response.get("documents") or [])[q_index] if q_index < len(response.get("documents") or []) else []
+            for rank, metadata in enumerate(metadata_rows or [], start=1):
+                if not isinstance(metadata, dict) or not metadata.get("itemKey") or not metadata.get("node_id"):
+                    continue
+                node_id = str(metadata["node_id"])
+                item_key = str(metadata["itemKey"])
+                score = 1.0 / (RRF_K + rank)
+                candidate_scores[node_id] = candidate_scores.get(node_id, 0.0) + score
+                candidate_items.setdefault(item_key, metadata)
+                if not any(row["node_id"] == node_id for row in candidate_nodes):
+                    document = documents[rank - 1] if rank - 1 < len(documents) else ""
+                    candidate_nodes.append({
+                        "node_id": node_id, "item_key": item_key, "title": metadata.get("title"),
+                        "node_type": metadata.get("node_type"), "depth": metadata.get("depth"),
+                        "score": score, "summary_snippet": str(document or "")[:180],
+                    })
+    except Exception as exc:
+        warnings.append(f"sum_node collection unavailable: {exc}")
+
+    candidate_nodes.sort(key=lambda row: (-candidate_scores[row["node_id"]], row["node_id"]))
+    candidate_nodes = candidate_nodes[: max(k_items * 2, k_items)]
+    descendant_by_node: Dict[str, set[str]] = {}
+    for node in candidate_nodes:
+        try:
+            descendant_by_node[node["node_id"]] = set(get_node_descendant_chunks([node["node_id"]]))
+        except Exception as exc:
+            warnings.append(f"descendant lookup failed for {node['node_id']}: {exc}")
+            descendant_by_node[node["node_id"]] = set()
+    routed_ids = set().union(*descendant_by_node.values()) if descendant_by_node else set()
+    candidate_item_keys = list(candidate_items)[:k_items]
+    item_response = rag_search(
+        queries, k=max(k * 12, 60), where=where, include_item_keys=candidate_item_keys or None,
+        auto_expand=False, hybrid=True,
+    ) if candidate_item_keys else {"results": []}
+    direct_response = rag_search(
+        queries, k=max(k * 20, 100), where=where, auto_expand=False, hybrid=True,
+    ) if include_direct else {"results": []}
+
+    fused: Dict[str, Dict[str, Any]] = {}
+    scores: Dict[str, float] = {}
+    paths: Dict[str, List[str]] = {}
+    for path_name, weight, response_rows in (
+        ("same_item", 1.2, item_response.get("results") or []),
+        ("direct", 1.0, direct_response.get("results") or []),
+    ):
+        for rank, hit in enumerate(response_rows, start=1):
+            chunk_id = str(hit.get("id") or "")
+            if not chunk_id:
+                continue
+            fused[chunk_id] = hit
+            scores[chunk_id] = scores.get(chunk_id, 0.0) + weight / (RRF_K + rank)
+            paths.setdefault(chunk_id, []).append(path_name)
+            matched_nodes = [node_id for node_id, ids in descendant_by_node.items() if chunk_id in ids]
+            if matched_nodes:
+                scores[chunk_id] += 1.7 / (RRF_K + rank)
+                paths[chunk_id].append("summary_descendant")
+                hit = dict(hit)
+                hit["routed_by_node_ids"] = matched_nodes
+                fused[chunk_id] = hit
+    ordered_ids = sorted(scores, key=lambda chunk_id: (-scores[chunk_id], chunk_id))[:k]
+    results = []
+    for chunk_id in ordered_ids:
+        hit = dict(fused[chunk_id])
+        hit["hierarchical_rrf_score"] = scores[chunk_id]
+        hit["retrieval_paths"] = paths.get(chunk_id, [])
+        if return_summaries:
+            item_key = (hit.get("meta") or {}).get("itemKey")
+            summary = load_item_summary(item_key) if item_key else None
+            hit["item_summary_snippet"] = (summary.get("summary") or "")[:120] if summary else ""
+        results.append(hit)
+    response: Dict[str, Any] = {
+        "results": results, "candidate_nodes": candidate_nodes,
+        "candidate_items": [
+            {"item_key": key, "title": metadata.get("title"), "year": metadata.get("year")}
+            for key, metadata in candidate_items.items()
+        ],
+        "reporting_obligation": (
+            "Verify claims against result chunks. If a summary concretely contradicts them, "
+            "call report_summary_quality before completing the answer."
+        ),
+    }
+    if warnings:
+        response["warnings"] = warnings
+    return response
+
+
 @mcp.tool()
 def hierarchical_search(
     query: str | List[str],
@@ -1074,6 +1178,11 @@ def hierarchical_search(
         queries = expand_queries(queries, mode="default", timeout=5.0, logger=_log)
 
     paragraph_collection = _col()
+    if os.environ.get("HIERARCHICAL_SEARCH_V2_ENABLE", "0") == "1":
+        return _hierarchical_search_v2(
+            queries, k=k, k_items=k_items, where=where, include_direct=include_direct,
+            return_summaries=return_summaries, paragraph_collection=paragraph_collection,
+        )
     embeddings = paragraph_collection._embedding_function(queries)
     candidate_scores: dict[str, float] = {}
     candidate_meta: dict[str, dict[str, Any]] = {}
@@ -1216,7 +1325,8 @@ def search_cases(
         warning = f"case annotation index unavailable: {exc}"
 
     structured = [
-        {"kind": "case", **structured_by_id[case_id], "rrf_score": score}
+        {"kind": "case", **structured_by_id[case_id], "rrf_score": score,
+         "title": structured_by_id[case_id].get("title") or ""}
         for case_id, score in structured_scores.items()
     ]
     direct = rag_search(

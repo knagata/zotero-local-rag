@@ -40,9 +40,9 @@ except Exception:  # pragma: no cover
     ITEM_DOCUMENT = None
 
 try:
-    from chapter_detect import get_epub_chapter_index_to_title as _get_epub_toc_map
+    from chapter_detect import get_epub_chapter_index_to_path as _get_epub_toc_path_map
 except Exception:  # pragma: no cover
-    _get_epub_toc_map = None  # type: ignore
+    _get_epub_toc_path_map = None  # type: ignore
 
 
 HTML_SCRIPT_STYLE_RE = re.compile(r"(?is)<(script|style).*?>.*?(</\1>)")
@@ -331,10 +331,10 @@ def extract_chunks_from_epub_snapshot(
         return [], default_quality
 
     # 章タイトルマップ（失敗しても処理続行）
-    _epub_toc_map: Dict[int, str] = {}
-    if _get_epub_toc_map is not None:
+    _epub_toc_path_map: Dict[int, List[str]] = {}
+    if _get_epub_toc_path_map is not None:
         try:
-            _epub_toc_map = _get_epub_toc_map(str(epub_path))
+            _epub_toc_path_map = _get_epub_toc_path_map(str(epub_path))
         except Exception:
             pass
 
@@ -386,7 +386,8 @@ def extract_chunks_from_epub_snapshot(
 
             chunk_id = f"{attachment_key}:epub:para{global_para}:part{part_index}"
             md = dict(meta_base)
-            chapter_title = _epub_toc_map.get(int(chapter_index), "")
+            structure_path = _epub_toc_path_map.get(int(chapter_index), [])
+            chapter_title = structure_path[-1] if structure_path else ""
             md.update(
                 {
                     "source_type": "epub",
@@ -396,6 +397,7 @@ def extract_chunks_from_epub_snapshot(
                     "chapter_index": int(chapter_index),
                     "para_index": int(global_para),
                     "part_index": int(part_index),
+                    **(({"structure_path": structure_path}) if structure_path else {}),
                     **(({"chapter": chapter_title}) if chapter_title else {}),
                 }
             )

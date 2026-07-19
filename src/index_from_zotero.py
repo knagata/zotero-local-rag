@@ -32,7 +32,7 @@ from lexical_index import delete_by_note_key as delete_lexical_note
 from lexical_index import upsert_chunks as upsert_lexical_chunks
 
 from manifest import load_manifest, save_manifest
-from db_relations import invalidate_item_summaries, purge_removed_items
+from db_relations import invalidate_item_summaries, mark_artifact_status, purge_removed_items
 
 
 
@@ -687,7 +687,19 @@ async def main_async(args: argparse.Namespace) -> None:
                 f"attachment={a.attachmentKey} type={stype} file={file_path}",
                 file=sys.__stderr__,
             )
+            mark_artifact_status(
+                a.parentItemKey or a.attachmentKey, "extraction", "failed",
+                attachment_key=a.attachmentKey, reason_code="no_chunks",
+                message=f"No chunks extracted from {stype} attachment.", retryable=True,
+            )
             continue
+
+        mark_artifact_status(
+            a.parentItemKey or a.attachmentKey, "extraction", "success",
+            attachment_key=a.attachmentKey,
+            processor_version=str(quality_info.get("parser") or stype),
+            counts={"chunks": len(chunks), "source_type": stype},
+        )
 
         if reocr_route and a.parentItemKey:
             counts = invalidate_item_summaries(a.parentItemKey)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import os
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -65,6 +66,37 @@ class HierarchicalSearchTests(unittest.TestCase):
         ):
             response = rag_mcp_server.hierarchical_search("query", auto_expand=False)
         self.assertEqual(response["candidate_items"], [])
+
+    def test_v2_routes_node_hit_to_descendant_chunks_and_keeps_direct_search(self):
+        summary_collection = Mock()
+        summary_collection.query.return_value = {
+            "metadatas": [[{
+                "itemKey": "ITEM", "node_id": "dn:chapter", "title": "Chapter",
+                "node_type": "chapter", "depth": 2,
+            }]],
+            "documents": [["Chapter summary"]],
+        }
+        client = Mock()
+        client.get_collection.return_value = summary_collection
+        paragraphs = Mock()
+        paragraphs._embedding_function.return_value = [[0.1, 0.2]]
+        paragraphs._chroma_client = client
+        item_hit = {"id": "chunk-child", "text": "child", "meta": {"itemKey": "ITEM"}}
+        direct_hit = {"id": "chunk-other", "text": "other", "meta": {"itemKey": "OTHER"}}
+        with patch.dict(os.environ, {"HIERARCHICAL_SEARCH_V2_ENABLE": "1"}), patch.object(
+            rag_mcp_server, "_col", return_value=paragraphs
+        ), patch.object(
+            rag_mcp_server, "get_node_descendant_chunks", return_value=["chunk-child"]
+        ), patch.object(
+            rag_mcp_server, "rag_search", side_effect=[{"results": [item_hit]}, {"results": [direct_hit]}]
+        ) as mock_search, patch.object(
+            rag_mcp_server, "load_item_summary", return_value=None
+        ):
+            response = rag_mcp_server.hierarchical_search("query", auto_expand=False)
+        self.assertEqual(response["candidate_nodes"][0]["node_id"], "dn:chapter")
+        self.assertEqual(response["results"][0]["id"], "chunk-child")
+        self.assertIn("summary_descendant", response["results"][0]["retrieval_paths"])
+        self.assertEqual(mock_search.call_count, 2)
 
 
 if __name__ == "__main__":

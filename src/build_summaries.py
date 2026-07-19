@@ -1163,7 +1163,7 @@ def embed_summaries(
         if item_keys is not None and case["item_key"] not in item_keys:
             continue
         document = "\n".join(filter(None, [
-            case.get("description"), case.get("region"), case.get("grp"),
+            case.get("title"), case.get("description"), case.get("region"), case.get("grp"),
             case.get("practices"), case.get("phenomena"),
         ]))
         if not case.get("chunk_id") and document:
@@ -1180,6 +1180,7 @@ def embed_summaries(
         case_rows.append((f"case:{case['case_id']}", document, {
             "case_id": int(case["case_id"]), "itemKey": str(case["item_key"]),
             "section_id": str(case.get("section_id") or ""),
+            "node_id": str(case.get("node_id") or ""),
             "chunk_id": str(case.get("chunk_id") or ""),
             "region": str(case.get("region") or ""),
         }))
