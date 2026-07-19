@@ -262,13 +262,16 @@ class CanonicalWorksTests(unittest.TestCase):
         replaced = db_relations.replace_extractive_summary_bundle(
             "ITEM", "LLM item", [{
                 "section_id": "w1", "chapter": "Chapter", "summary": "LLM section",
-                "chunk_count": 2,
+                "chunk_count": 2, "model": "deepseek:flash",
             }], model="deepseek:test", chunk_count=2, source_mtime=3.0,
         )
         self.assertTrue(replaced)
         self.assertEqual(db_relations.get_item_summary("ITEM")["model"], "deepseek:test")
         self.assertEqual(
             [row["section_id"] for row in db_relations.get_section_summaries("ITEM")], ["w1"],
+        )
+        self.assertEqual(
+            db_relations.get_section_summaries("ITEM")[0]["model"], "deepseek:flash",
         )
         refused = db_relations.replace_extractive_summary_bundle(
             "ITEM", "other", [], model="deepseek:other",

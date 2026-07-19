@@ -1336,7 +1336,8 @@ def replace_extractive_summary_bundle(
                 VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, CURRENT_TIMESTAMP)
             ''', (
                 item_key, section["section_id"], section.get("chapter"),
-                section["summary"], model, section.get("chunk_count"),
+                section["summary"], section.get("model") or model,
+                section.get("chunk_count"),
             ))
         conn.execute('''
             UPDATE item_summaries SET summary = ?, summary_en = NULL, keywords = NULL,

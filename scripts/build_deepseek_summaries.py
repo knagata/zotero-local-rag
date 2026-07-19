@@ -26,7 +26,7 @@ from src.llm_client import InvalidLLMResponse, LLMError, RateLimitReached
 from src.manifest import load_manifest
 
 
-VERSION = 1
+VERSION = 2
 
 
 def _write_json_atomic(path: Path, value: dict) -> None:
@@ -91,7 +91,7 @@ def _section_hash(section: dict) -> str:
 
 def _retry_summary(call) -> dict:
     last_error: Exception | None = None
-    for _ in range(3):
+    for attempt in range(1, 4):
         try:
             generated, model = call()
             verification = generated.get("_verification") or {}
@@ -99,6 +99,7 @@ def _retry_summary(call) -> dict:
                 return {
                     "status": "accepted", "model": model,
                     "summary": generated["summary"], "verification": verification,
+                    "attempt_count": attempt,
                 }
             last_error = InvalidLLMResponse(
                 f"grounding gate rejected output: {verification}"
@@ -108,19 +109,41 @@ def _retry_summary(call) -> dict:
         except (InvalidLLMResponse, LLMError) as exc:
             last_error = exc
     kind = "quality_failure" if isinstance(last_error, InvalidLLMResponse) else "provider_failure"
-    return {"status": kind, "error": str(last_error or "invalid output")}
+    return {
+        "status": kind, "attempt_count": 3,
+        "error": str(last_error or "invalid output"),
+    }
 
 
-def _generate_section(section: dict, model: str) -> dict:
+def _retry_with_quality_fallback(call_for_model, model: str, fallback_model: str | None) -> dict:
+    primary = _retry_summary(lambda: call_for_model(model))
+    if (
+        primary["status"] != "quality_failure" or not fallback_model
+        or fallback_model == model
+    ):
+        return primary
+    fallback = _retry_summary(lambda: call_for_model(fallback_model))
+    fallback["fallback_from"] = model
+    fallback["primary_failure"] = primary
+    return fallback
+
+
+def _generate_section(
+    section: dict, model: str, fallback_model: str | None = None,
+) -> dict:
     if build_summaries.classify_section_content(section) == "non_content":
         return {"status": "non_content"}
-    return _retry_summary(lambda: build_summaries._llm_summary_only_section(
-        section, model=model, reasoning="disabled",
-    ))
+    return _retry_with_quality_fallback(
+        lambda selected: build_summaries._llm_summary_only_section(
+            section, model=selected, reasoning="disabled",
+        ),
+        model, fallback_model,
+    )
 
 
 def _process_item(
     item_key: str, *, model: str, workers: int, checkpoint_dir: Path,
+    fallback_model: str | None = None,
 ) -> dict:
     excluded, reason = build_summaries._excluded_from_llm(item_key)
     if excluded:
@@ -130,7 +153,10 @@ def _process_item(
         return {"item_key": item_key, "status": "no_chunks"}
     sections = build_summaries.split_sections(chunks)
     checkpoint_path = checkpoint_dir / f"{item_key}.json"
-    spec = f"v={VERSION}|model={model}|reasoning=disabled"
+    spec = (
+        f"v={VERSION}|model={model}|fallback={fallback_model or ''}"
+        "|reasoning=disabled"
+    )
     checkpoint = {"item_key": item_key, "spec": spec, "sections": {}}
     if checkpoint_path.exists():
         try:
@@ -153,7 +179,10 @@ def _process_item(
             pending.append(section)
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {pool.submit(_generate_section, section, model): section for section in pending}
+        futures = {
+            pool.submit(_generate_section, section, model, fallback_model): section
+            for section in pending
+        }
         for future in as_completed(futures):
             section = futures[future]
             section_id = section["section_id"]
@@ -182,15 +211,19 @@ def _process_item(
             "section_id": section["section_id"], "chapter": section.get("chapter"),
             "summary": results[section["section_id"]]["summary"],
             "chunk_count": len(section["chunks"]),
+            "model": results[section["section_id"]]["model"],
         }
         for section in sections if results[section["section_id"]]["status"] == "accepted"
     ]
     if not section_rows:
         return {"item_key": item_key, "status": "no_content"}
     title = str(chunks[0].get("metadata", {}).get("title") or item_key)
-    item_result = _retry_summary(lambda: build_summaries._llm_summary_only_item(
-        title, section_rows, model=model, reasoning="disabled",
-    ))
+    item_result = _retry_with_quality_fallback(
+        lambda selected: build_summaries._llm_summary_only_item(
+            title, section_rows, model=selected, reasoning="disabled",
+        ),
+        model, fallback_model,
+    )
     if item_result["status"] != "accepted":
         status = (
             "provider_failure"
@@ -212,6 +245,11 @@ def _process_item(
     return {
         "item_key": item_key, "status": "updated", "model": model_name,
         "sections": len(section_rows), "previous_model": existing.get("model"),
+        "fallback_sections": sum(
+            "fallback_from" in results[section["section_id"]]
+            for section in sections
+        ),
+        "item_fallback": "fallback_from" in item_result,
         "item_verification": item_result["verification"],
     }
 
@@ -222,7 +260,8 @@ def main() -> None:
     parser.add_argument("--max-items", type=int, default=10)
     parser.add_argument("--max-hours", type=float)
     parser.add_argument("--workers", type=int, default=3)
-    parser.add_argument("--model", default="deepseek-v4-pro")
+    parser.add_argument("--model", default="deepseek-v4-flash")
+    parser.add_argument("--fallback-model", default="deepseek-v4-pro")
     parser.add_argument("--stop-file", type=Path)
     parser.add_argument("--no-embed", action="store_true")
     parser.add_argument("--output", type=Path, required=True)
@@ -256,7 +295,8 @@ def main() -> None:
     backup_path = args.backup or ROOT / "data" / "backups" / f"relations-before-deepseek-{stamp}.db"
     report = {
         "created_at": datetime.now().astimezone().isoformat(), "version": VERSION,
-        "model": args.model, "items": [], "backup": None, "stop_reason": "completed",
+        "model": args.model, "fallback_model": args.fallback_model or None,
+        "items": [], "backup": None, "stop_reason": "completed",
         "skipped_quarantined": 0 if args.retry_quarantined else len(quarantined),
     }
     stop = {"requested": False}
@@ -282,6 +322,7 @@ def main() -> None:
                 result = _process_item(
                     key, model=args.model, workers=args.workers,
                     checkpoint_dir=args.checkpoint_dir,
+                    fallback_model=args.fallback_model or None,
                 )
             except RateLimitReached as exc:
                 report["stop_reason"] = "rate_limit"

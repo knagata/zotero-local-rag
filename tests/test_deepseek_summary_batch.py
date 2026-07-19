@@ -54,6 +54,29 @@ class DeepSeekSummaryBatchTests(unittest.TestCase):
                 )
         self.assertEqual(result["status"], "provider_failure")
 
+    def test_quality_failure_falls_back_but_provider_failure_does_not(self):
+        accepted = {"status": "accepted", "model": "deepseek:pro", "summary": "ok"}
+        with patch.object(
+            build_deepseek_summaries, "_retry_summary",
+            side_effect=[{"status": "quality_failure"}, accepted],
+        ) as retry:
+            result = build_deepseek_summaries._retry_with_quality_fallback(
+                lambda model: model, "flash", "pro",
+            )
+        self.assertEqual(result["model"], "deepseek:pro")
+        self.assertEqual(result["fallback_from"], "flash")
+        self.assertEqual(retry.call_count, 2)
+
+        with patch.object(
+            build_deepseek_summaries, "_retry_summary",
+            return_value={"status": "provider_failure"},
+        ) as retry:
+            result = build_deepseek_summaries._retry_with_quality_fallback(
+                lambda model: model, "flash", "pro",
+            )
+        self.assertEqual(result["status"], "provider_failure")
+        self.assertEqual(retry.call_count, 1)
+
 
 if __name__ == "__main__":
     unittest.main()
