@@ -50,7 +50,7 @@ def main() -> None:
     if not args.write_database:
         parser.error("--write-database is required for this gate runner")
     load_dotenv_native(ROOT)
-    os.environ["LLM_SUMMARY"] = args.llm
+    os.environ["LLM_CHEAP"] = args.llm
     report = {
         "created_at": datetime.now().astimezone().isoformat(), "llm": args.llm,
         "writes_database": True, "items": [], "stop_reason": "completed",

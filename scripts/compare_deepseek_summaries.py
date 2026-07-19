@@ -193,7 +193,7 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument(
         "--checkpoint-dir", type=Path,
-        default=ROOT / "data" / "nightly_checkpoint" / "deepseek-summary-only",
+        default=ROOT / "data" / "summary_checkpoints" / "deepseek-summary-only",
     )
     parser.add_argument("--stop-file", type=Path)
     args = parser.parse_args()

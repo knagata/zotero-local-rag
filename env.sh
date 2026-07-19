@@ -69,13 +69,12 @@ export TRANSFORMERS_OFFLINE="${TRANSFORMERS_OFFLINE:-1}"
 # - bge : higher quality (bge-m3) but heavier
 export EMB_PROFILE="${EMB_PROFILE:-fast}"
 
-# LLM providers used by query expansion, summaries, and reference extraction.
+# Three model roles used across query expansion, summaries, extraction, and review.
 # Format: provider:model. Comma-separated providers form a fallback chain.
 # Supported: gemini, anthropic, deepseek, openai_compat, codex_cli, claude_cli.
-export LLM_DEFAULT="${LLM_DEFAULT:-deepseek:deepseek-v4-pro}"
-# export LLM_EXPAND="${LLM_EXPAND:-deepseek:deepseek-v4-pro}"
-export LLM_SUMMARY="${LLM_SUMMARY:-deepseek:deepseek-v4-flash}"
-# export LLM_EXTRACT="${LLM_EXTRACT:-deepseek:deepseek-v4-pro}"
+export LLM_CHEAP="${LLM_CHEAP:-deepseek:deepseek-v4-flash}"
+export LLM_STANDARD="${LLM_STANDARD:-deepseek:deepseek-v4-pro}"
+export LLM_REVIEW="${LLM_REVIEW:-deepseek:deepseek-v4-pro}"
 # export LLM_OPENAI_BASE_URL="${LLM_OPENAI_BASE_URL:-http://localhost:11434/v1}"
 # export LLM_OPENAI_API_KEY="${LLM_OPENAI_API_KEY:-}"
 

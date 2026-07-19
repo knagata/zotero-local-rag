@@ -35,7 +35,7 @@ def main() -> None:
         help="Store dry-run candidates in the review queue without changing the works graph.",
     )
     parser.add_argument("--heuristic", action="store_true", help="Do not send reference text to an LLM.")
-    parser.add_argument("--llm", help="Override LLM_EXTRACT, e.g. codex_cli:auto.")
+    parser.add_argument("--llm", help="Override LLM_STANDARD for this run, e.g. deepseek:model.")
     parser.add_argument(
         "--strict-llm", action="store_true",
         help="Fail instead of silently falling back to heuristic extraction.",
@@ -43,7 +43,7 @@ def main() -> None:
     parser.add_argument("--output", type=Path, help="Write one complete result JSON object per line.")
     args = parser.parse_args()
     if args.llm:
-        os.environ["LLM_EXTRACT"] = args.llm
+        os.environ["LLM_STANDARD"] = args.llm
     keys = list(args.item) if args.item else list_item_keys()
     if args.limit is not None:
         keys = keys[: max(args.limit, 0)]

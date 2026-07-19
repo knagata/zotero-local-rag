@@ -1233,7 +1233,7 @@ def main() -> None:
     parser.add_argument("--no-embed", action="store_true")
     parser.add_argument("--embed-only", action="store_true")
     parser.add_argument("--resume-embed", action="store_true", help="Embed only IDs not already present.")
-    parser.add_argument("--llm", help="Override LLM_SUMMARY, e.g. codex_cli:auto.")
+    parser.add_argument("--llm", help="Override LLM_CHEAP for this run, e.g. deepseek:model.")
     parser.add_argument(
         "--audit-output", type=Path,
         help="Write per-item grounding verification statistics as JSON.",
@@ -1263,7 +1263,7 @@ def main() -> None:
     ):
         parser.error("--min-weekly-remaining-percent must be between 0 and 100")
     if args.llm:
-        os.environ["LLM_SUMMARY"] = args.llm
+        os.environ["LLM_CHEAP"] = args.llm
     counts = Counter()
     updated_keys: set[str] = set()
     started = time.monotonic()

@@ -20,14 +20,15 @@
 | OpenAI互換 | `LLM_OPENAI_BASE_URL`と必要に応じてAPIキー |
 | Anthropic API | `ANTHROPIC_API_KEY`と追加依存 |
 
-タスク別にモデルを変えられます。
+モデルは用途別の3段階で指定します。
 
 ```dotenv
-LLM_DEFAULT=deepseek:deepseek-v4-pro
-LLM_EXPAND=deepseek:deepseek-v4-pro
-LLM_SUMMARY=deepseek:deepseek-v4-flash
-LLM_EXTRACT=deepseek:deepseek-v4-pro
+LLM_CHEAP=deepseek:deepseek-v4-flash
+LLM_STANDARD=deepseek:deepseek-v4-pro
+LLM_REVIEW=deepseek:deepseek-v4-pro
 ```
+
+`LLM_CHEAP` は要約やクエリ拡張などの大量処理、`LLM_STANDARD` は通常作業と一次フォールバック、`LLM_REVIEW` は品質確認と最終フォールバックに使います。
 
 ## クラウド送信ポリシー
 

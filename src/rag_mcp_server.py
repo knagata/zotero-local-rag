@@ -1236,7 +1236,7 @@ def extract_references_for_item(
     """Extract and resolve one item's bibliography; preview by default.
 
     When ``use_llm`` is true, candidate bibliography text is sent to the configured
-    ``LLM_EXTRACT`` provider. ``EXTRACT_EXCLUDE_TAGS`` is enforced fail-closed.
+    ``LLM_STANDARD`` provider. ``EXTRACT_EXCLUDE_TAGS`` is enforced fail-closed.
     Set ``dry_run=False`` only after reviewing the preview.
     """
     from reference_agent import extract_references_for_item as run_extraction

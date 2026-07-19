@@ -467,7 +467,7 @@ class SummaryPipelineTests(unittest.TestCase):
         self.assertTrue(excluded)
         self.assertIn("not configured", reason)
 
-    def test_rate_limit_propagates_for_resumable_nightly_stop(self):
+    def test_rate_limit_propagates_for_resumable_batch_stop(self):
         chunks = [{"id": "a", "text": "substantive body " * 40, "metadata": {}}]
         with patch.object(build_summaries, "get_item_chunks", return_value=chunks), patch.object(
             build_summaries, "load_manifest", return_value={}
@@ -499,7 +499,7 @@ class SummaryPipelineTests(unittest.TestCase):
     def test_stop_file_prevents_starting_the_next_item(self):
         output = io.StringIO()
         with tempfile.TemporaryDirectory() as tmp:
-            stop_file = Path(tmp) / "nightly.stop"
+            stop_file = Path(tmp) / "batch.stop"
             stop_file.touch()
             with patch.object(build_summaries, "list_item_keys", return_value=["A", "B"]), patch.object(
                 build_summaries, "build_item"

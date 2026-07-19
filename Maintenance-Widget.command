@@ -30,7 +30,7 @@ review_relations=0
 if ask_enabled "1. ライブラリを差分更新する"; then
     run_library=1
 fi
-if ask_enabled "2. ローカル抽出型要約を差分更新する"; then
+if ask_enabled "2. 要約を差分更新する（ローカル抽出後、DeepSeek APIでAI要約）"; then
     run_summaries=1
 fi
 if ask_enabled "3. Citation Networkの未処理・エラー分を更新する"; then
@@ -43,7 +43,7 @@ fi
 echo ""
 echo "実行予定:"
 if [[ "$run_library" == "1" ]]; then echo "  ✓ ライブラリ更新"; fi
-if [[ "$run_summaries" == "1" ]]; then echo "  ✓ 抽出型要約更新"; fi
+if [[ "$run_summaries" == "1" ]]; then echo "  ✓ 抽出型要約・DeepSeek AI要約更新"; fi
 if [[ "$run_citations" == "1" ]]; then echo "  ✓ Citation Network更新"; fi
 if [[ "$review_relations" == "1" ]]; then echo "  ✓ 品質報告の自動判定・例外確認"; fi
 
@@ -83,6 +83,8 @@ fi
 
 if [[ "$run_summaries" == "1" ]]; then
     run_step "ローカル抽出型要約更新" uv run python -m src.build_summaries
+    run_step "DeepSeek AI要約更新" uv run python scripts/build_deepseek_summaries.py \
+        --output data/quality/maintenance-summary-report.json
 fi
 
 if [[ "$run_citations" == "1" ]]; then

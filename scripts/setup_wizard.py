@@ -19,17 +19,12 @@ ENV_GROUPS = (
         "CROSSREF_MAILTO",
     )),
     ("LLM-assisted features", (
-        "LLM_DEFAULT", "LLM_EXPAND", "LLM_SUMMARY", "LLM_EXTRACT",
+        "LLM_CHEAP", "LLM_STANDARD", "LLM_REVIEW",
         "DEEPSEEK_API_KEY", "DEEPSEEK_THINKING", "DEEPSEEK_REASONING_EFFORT",
         "ANTHROPIC_API_KEY", "LLM_OPENAI_BASE_URL", "LLM_OPENAI_API_KEY",
         "SUMMARY_EXCLUDE_TAGS", "EXTRACT_EXCLUDE_TAGS",
         "SUMMARY_ALLOW_CLOUD_ALL", "EXTRACT_ALLOW_CLOUD_ALL",
-    )),
-    ("Optional nightly automation", (
-        "NIGHTLY_ENABLE", "NIGHTLY_START_TIME", "NIGHTLY_LAUNCH_MODE",
-        "NIGHTLY_MAX_HOURS", "NIGHTLY_MAX_ITEMS",
-        "NIGHTLY_MIN_WEEKLY_REMAINING_PERCENT", "NIGHTLY_STOP_FILE",
-        "NIGHTLY_REOCR_ENABLE", "NIGHTLY_REOCR_CANDIDATES", "NIGHTLY_REOCR_MAX_ITEMS",
+        "SUMMARY_BATCH_MAX_ITEMS", "SUMMARY_BATCH_WORKERS",
     )),
 )
 
@@ -109,35 +104,36 @@ def configure_feature_level(config: dict[str, str]) -> None:
     if level != "llm":
         return
     print("\nChoose the default LLM provider:")
-    print("   [1] DeepSeek V4 Pro API (recommended for batch processing)")
+    print("   [1] DeepSeek API: Flash / Pro / Pro (recommended)")
     print("   [2] Codex CLI (uses your local Codex login and quota)")
     print("   [3] Claude CLI (uses your local Claude login and quota)")
     print("   [4] OpenAI-compatible server (Ollama, LM Studio, vLLM, etc.)")
     provider = input("Select [1-4, default is 1]: ").strip() or "1"
+    for legacy_key in ("LLM_DEFAULT", "LLM_EXPAND", "LLM_SUMMARY", "LLM_EXTRACT"):
+        config.pop(legacy_key, None)
     if provider == "2":
         config.update({
-            "LLM_DEFAULT": "codex_cli:auto", "LLM_EXPAND": "codex_cli:auto",
-            "LLM_SUMMARY": "codex_cli:auto", "LLM_EXTRACT": "codex_cli:auto",
+            "LLM_CHEAP": "codex_cli:auto", "LLM_STANDARD": "codex_cli:auto",
+            "LLM_REVIEW": "codex_cli:auto",
         })
     elif provider == "3":
         config.update({
-            "LLM_DEFAULT": "claude_cli:auto", "LLM_EXPAND": "claude_cli:auto",
-            "LLM_SUMMARY": "claude_cli:auto", "LLM_EXTRACT": "claude_cli:auto",
+            "LLM_CHEAP": "claude_cli:auto", "LLM_STANDARD": "claude_cli:auto",
+            "LLM_REVIEW": "claude_cli:auto",
         })
     elif provider == "4":
         config.update({
-            "LLM_DEFAULT": "openai_compat:local", "LLM_EXPAND": "openai_compat:local",
-            "LLM_SUMMARY": "openai_compat:local", "LLM_EXTRACT": "openai_compat:local",
+            "LLM_CHEAP": "openai_compat:local", "LLM_STANDARD": "openai_compat:local",
+            "LLM_REVIEW": "openai_compat:local",
         })
         base = input("OpenAI-compatible base URL [http://localhost:11434/v1]: ").strip()
         config["LLM_OPENAI_BASE_URL"] = base or "http://localhost:11434/v1"
         _set_optional_secret(config, "LLM_OPENAI_API_KEY", "API key if required")
     else:
         config.update({
-            "LLM_DEFAULT": "deepseek:deepseek-v4-pro",
-            "LLM_EXPAND": "deepseek:deepseek-v4-pro",
-            "LLM_SUMMARY": "deepseek:deepseek-v4-flash",
-            "LLM_EXTRACT": "deepseek:deepseek-v4-pro",
+            "LLM_CHEAP": "deepseek:deepseek-v4-flash",
+            "LLM_STANDARD": "deepseek:deepseek-v4-pro",
+            "LLM_REVIEW": "deepseek:deepseek-v4-pro",
         })
         _set_optional_secret(config, "DEEPSEEK_API_KEY", "DeepSeek API key")
 
@@ -173,7 +169,9 @@ def print_configuration_status(config: dict[str, str]) -> None:
     print(f"  Zotero data    : {config.get('ZOTERO_DATA_DIR', '~/Zotero')}")
     print(f"  embedding      : {config.get('EMB_PROFILE', 'fast')}")
     print(f"  S2 API key     : {'configured' if config.get('S2_API_KEY') else 'missing'}")
-    print(f"  default LLM    : {config.get('LLM_DEFAULT', 'not configured')}")
+    print(f"  cheap LLM      : {config.get('LLM_CHEAP', 'not configured')}")
+    print(f"  standard LLM   : {config.get('LLM_STANDARD', 'not configured')}")
+    print(f"  review LLM     : {config.get('LLM_REVIEW', 'not configured')}")
     if config.get("SUMMARY_EXCLUDE_TAGS") or config.get("EXTRACT_EXCLUDE_TAGS"):
         policy = "tag blacklist"
     elif config.get("SUMMARY_ALLOW_CLOUD_ALL") == "1" or config.get("EXTRACT_ALLOW_CLOUD_ALL") == "1":
@@ -285,7 +283,7 @@ def main(argv: list[str] | None = None):
         print(f"  EMB_PROFILE     : {prev_emb_profile}")
         print(f"  FEATURE_LEVEL   : {existing_config.get('FEATURE_LEVEL', 'legacy/custom')}")
         print(f"  S2_API_KEY      : {'configured' if existing_config.get('S2_API_KEY') else 'not configured'}")
-        print(f"  LLM             : {existing_config.get('LLM_DEFAULT', 'not configured')}")
+        print(f"  LLM_STANDARD    : {existing_config.get('LLM_STANDARD', 'not configured')}")
         ans = input("\nExisting settings found. Do you want to change them? [y/N]: ").strip().lower()
         if ans != "y":
             modify = False

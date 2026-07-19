@@ -14,7 +14,7 @@ uv run scripts/setup_wizard.py --status
 
 - MCPツール: `get_debug_logs`
 - ファイル: `data/zotero-rag.log`
-- 夜間処理: `data/nightly_summaries.log`
+- 要約バッチ報告: `data/quality/maintenance-summary-report.json`
 
 ## よくある問題
 

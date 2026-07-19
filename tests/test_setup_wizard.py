@@ -33,7 +33,7 @@ class SetupWizardTests(unittest.TestCase):
             setup_wizard.configure_feature_level(config)
         self.assertEqual(config["FEATURE_LEVEL"], "core")
         self.assertNotIn("S2_API_KEY", config)
-        self.assertNotIn("LLM_DEFAULT", config)
+        self.assertNotIn("LLM_STANDARD", config)
         self.assertEqual(config["UNRELATED"], "preserved")
 
     def test_llm_level_configures_deepseek_and_blacklist_policy(self):
@@ -44,7 +44,9 @@ class SetupWizardTests(unittest.TestCase):
             setup_wizard.configure_feature_level(config)
         self.assertEqual(config["FEATURE_LEVEL"], "llm")
         self.assertEqual(config["S2_API_KEY"], "s2-secret")
-        self.assertEqual(config["LLM_DEFAULT"], "deepseek:deepseek-v4-pro")
+        self.assertEqual(config["LLM_CHEAP"], "deepseek:deepseek-v4-flash")
+        self.assertEqual(config["LLM_STANDARD"], "deepseek:deepseek-v4-pro")
+        self.assertEqual(config["LLM_REVIEW"], "deepseek:deepseek-v4-pro")
         self.assertEqual(config["DEEPSEEK_API_KEY"], "deepseek-secret")
         self.assertEqual(config["SUMMARY_EXCLUDE_TAGS"], "private,no-cloud")
         self.assertEqual(config["EXTRACT_EXCLUDE_TAGS"], "private,no-cloud")
@@ -62,7 +64,7 @@ class SetupWizardTests(unittest.TestCase):
     def test_status_never_prints_secret_values(self):
         config = {
             "FEATURE_LEVEL": "llm", "S2_API_KEY": "do-not-print",
-            "DEEPSEEK_API_KEY": "also-secret", "LLM_DEFAULT": "deepseek:model",
+            "DEEPSEEK_API_KEY": "also-secret", "LLM_STANDARD": "deepseek:model",
             "EXTRACT_EXCLUDE_TAGS": "private",
         }
         output = StringIO()

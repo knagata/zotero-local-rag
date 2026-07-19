@@ -183,7 +183,7 @@ def main() -> None:
     parser.add_argument("--output", type=Path)
     parser.add_argument(
         "--checkpoint-dir", type=Path,
-        default=ROOT / "data" / "nightly_checkpoint" / "deepseek-pilot",
+        default=ROOT / "data" / "summary_checkpoints" / "deepseek-pilot",
     )
     parser.add_argument(
         "--stop-file", type=Path,
@@ -201,7 +201,7 @@ def main() -> None:
     if args.judge_min_votes < 1 or args.judge_min_votes > args.judge_samples:
         parser.error("--judge-min-votes must be between 1 and --judge-samples")
     load_dotenv_native(ROOT)
-    os.environ["LLM_SUMMARY"] = args.llm
+    os.environ["LLM_CHEAP"] = args.llm
     keys = (args.item or list_item_keys())[:max(args.max_items, 0)]
     checkpoint_spec = (
         f"{args.llm}|strategy={args.strategy}|version={SELECTOR_STRATEGY_VERSION}"

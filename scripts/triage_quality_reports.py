@@ -27,7 +27,7 @@ from db_relations import (  # noqa: E402
     review_relation_report,
 )
 from env_utils import load_dotenv_native  # noqa: E402
-from llm_client import DeepSeekClient, InvalidLLMResponse, LLMError, RateLimitReached  # noqa: E402
+from llm_client import InvalidLLMResponse, LLMError, RateLimitReached, get_llm  # noqa: E402
 
 
 TRIAGE_SCHEMA = {
@@ -64,25 +64,25 @@ def _validated_judgment(value: dict, source: str) -> dict:
     return {"decision": decision, "explanation": explanation, "evidence_quote": quote}
 
 
-def _judge(prompt: str, source: str, model: str) -> dict:
-    client = DeepSeekClient(model, thinking="disabled")
+def _judge(prompt: str, source: str, role: str) -> dict:
+    client = get_llm(role)
     raw = client.generate_json(prompt, schema=TRIAGE_SCHEMA, timeout=300)
     result = _validated_judgment(raw, source)
-    result["model"] = f"deepseek:{model}:quality-triage"
-    result["usage"] = client.last_usage
+    result["model"] = f"{client.provider}:{client.model}:quality-triage"
+    result["usage"] = getattr(client, "last_usage", None)
     return result
 
 
 def _judge_with_fallback(prompt: str, source: str) -> dict:
     attempts = []
-    for model in ("deepseek-v4-flash", "deepseek-v4-pro"):
+    for role in ("standard", "review"):
         try:
-            result = _judge(prompt, source, model)
+            result = _judge(prompt, source, role)
         except RateLimitReached:
             raise
         except (InvalidLLMResponse, LLMError) as exc:
             result = {
-                "decision": "uncertain", "model": f"deepseek:{model}:quality-triage",
+                "decision": "uncertain", "model": f"{role}:quality-triage",
                 "explanation": str(exc), "evidence_quote": "",
             }
         attempts.append(result)

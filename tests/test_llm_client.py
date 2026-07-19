@@ -35,6 +35,20 @@ class LLMClientTests(unittest.TestCase):
         self.assertIsInstance(client, DeepSeekClient)
         self.assertEqual(client.model, "deepseek-v4-pro")
 
+    def test_tasks_use_three_model_roles(self):
+        configured = {
+            "LLM_CHEAP": "deepseek:cheap-model",
+            "LLM_STANDARD": "deepseek:standard-model",
+            "LLM_REVIEW": "deepseek:review-model",
+        }
+        with patch.dict(os.environ, configured, clear=True), patch.object(
+            llm_client, "load_dotenv_native"
+        ):
+            self.assertEqual(get_llm("summary").model, "cheap-model")
+            self.assertEqual(get_llm("expand").model, "cheap-model")
+            self.assertEqual(get_llm("extract").model, "standard-model")
+            self.assertEqual(get_llm("review").model, "review-model")
+
     def test_extract_json_from_fence_and_cli_envelope(self):
         self.assertEqual(_extract_json("```json\n{\"ok\": true}\n```"), {"ok": True})
         self.assertEqual(_extract_json({"structured_output": {"ok": True}}), {"ok": True})
@@ -44,12 +58,12 @@ class LLMClientTests(unittest.TestCase):
             _extract_json("[1, 2]")
 
     def test_task_setting_preserves_colon_in_model(self):
-        with patch.dict(os.environ, {"LLM_EXPAND": "openai_compat:qwen3:14b"}, clear=True):
+        with patch.dict(os.environ, {"LLM_CHEAP": "openai_compat:qwen3:14b"}, clear=True):
             client = get_llm("expand")
         self.assertEqual((client.provider, client.model), ("openai_compat", "qwen3:14b"))
 
     def test_fallback_chain_preserves_order(self):
-        with patch.dict(os.environ, {"LLM_SUMMARY": "codex_cli:gpt-5,claude_cli:sonnet"}, clear=True):
+        with patch.dict(os.environ, {"LLM_CHEAP": "codex_cli:gpt-5,claude_cli:sonnet"}, clear=True):
             client = get_llm("summary")
         self.assertIsInstance(client, FallbackLLMClient)
         self.assertEqual([item.provider for item in client.clients], ["codex_cli", "claude_cli"])
@@ -143,7 +157,7 @@ class LLMClientTests(unittest.TestCase):
         self.assertEqual(request["headers"]["Authorization"], "Bearer test-key")
 
     def test_deepseek_is_available_as_provider_spec(self):
-        with patch.dict(os.environ, {"LLM_SUMMARY": "deepseek:deepseek-v4-pro"}, clear=True):
+        with patch.dict(os.environ, {"LLM_CHEAP": "deepseek:deepseek-v4-pro"}, clear=True):
             client = get_llm("summary")
         self.assertIsInstance(client, DeepSeekClient)
         self.assertEqual(client.model, "deepseek-v4-pro")
@@ -178,6 +192,14 @@ class LLMClientTests(unittest.TestCase):
         ):
             with self.assertRaises(InvalidLLMResponse):
                 DeepSeekClient("deepseek-v4-pro").generate_json("Return JSON", schema=schema)
+
+    def test_deepseek_400_is_an_item_failure_not_provider_outage(self):
+        response = SimpleNamespace(status_code=400, text="invalid request")
+        with patch.dict(os.environ, {"DEEPSEEK_API_KEY": "test-key"}, clear=True), patch(
+            "src.llm_client.httpx.post", return_value=response
+        ):
+            with self.assertRaises(InvalidLLMResponse):
+                DeepSeekClient("deepseek-v4-pro").generate_text("prompt")
 
     def test_claude_cli_disables_tools(self):
         completed = SimpleNamespace(

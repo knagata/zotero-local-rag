@@ -87,7 +87,7 @@ def _back_up() -> list[str]:
         source = ROOT / "data" / name
         if not source.exists():
             continue
-        target = backup_dir / f"{source.stem}-before-nightly-reocr-{stamp}{source.suffix}"
+        target = backup_dir / f"{source.stem}-before-reocr-{stamp}{source.suffix}"
         shutil.copy2(source, target)
         paths.append(str(target.relative_to(ROOT)))
     return paths
@@ -120,7 +120,7 @@ def main() -> None:
     ])
 
     audits = []
-    audit_dir = ROOT / "data" / "quality" / "nightly-reocr-audits"
+    audit_dir = ROOT / "data" / "quality" / "reocr-audits"
     for item_key in dict.fromkeys(str(row.get("item_key") or "") for row in rows):
         if not item_key:
             continue

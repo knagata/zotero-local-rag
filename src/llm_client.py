@@ -24,7 +24,17 @@ except ImportError:  # pragma: no cover - exercised by direct script execution
     from env_utils import load_dotenv_native
 
 
-DEFAULT_LLM = "deepseek:deepseek-v4-pro"
+ROLE_DEFAULTS = {
+    "cheap": "deepseek:deepseek-v4-flash",
+    "standard": "deepseek:deepseek-v4-pro",
+    "review": "deepseek:deepseek-v4-pro",
+}
+TASK_ROLES = {
+    "summary": "cheap",
+    "expand": "cheap",
+    "extract": "standard",
+    "review": "review",
+}
 DEFAULT_MODELS = {
     "gemini": "gemini-3.1-flash-lite",
     "anthropic": "claude-haiku-4-5",
@@ -407,6 +417,14 @@ class DeepSeekClient:
             )
             if response.status_code == 429:
                 raise RateLimitReached(response.text)
+            if response.status_code == 400:
+                raise InvalidLLMResponse(
+                    f"DeepSeek rejected this request: {response.text[:500]}"
+                )
+            if response.status_code in {401, 402, 403}:
+                raise ProviderUnavailable(
+                    f"DeepSeek API is unavailable ({response.status_code}): {response.text[:500]}"
+                )
             response.raise_for_status()
             try:
                 body = response.json()
@@ -565,16 +583,21 @@ def _create_client(provider: str, model: str) -> LLMClient:
     return CLIAgentClient(model=model, provider=provider)
 
 
-def get_llm(task: str) -> LLMClient:
-    """Resolve an LLM from ``LLM_<TASK>``, then ``LLM_DEFAULT``."""
+def get_llm_spec(role: str) -> str:
+    """Return the provider specification for one of the three operational roles."""
     load_dotenv_native(Path(__file__).resolve().parents[1])
-    task_key = "".join(char if char.isalnum() else "_" for char in task.upper())
-    configured = (
-        os.environ.get(f"LLM_{task_key}")
-        or os.environ.get("LLM_DEFAULT")
-        or DEFAULT_LLM
-    )
-    specs = [part.strip() for part in configured.split(",") if part.strip()] or [DEFAULT_LLM]
+    normalized = role.strip().lower()
+    if normalized not in ROLE_DEFAULTS:
+        raise ValueError(f"Unknown LLM role: {role}. Expected cheap, standard, or review.")
+    return os.environ.get(f"LLM_{normalized.upper()}") or ROLE_DEFAULTS[normalized]
+
+
+def get_llm(task: str) -> LLMClient:
+    """Resolve a task to the cheap, standard, or review model role."""
+    normalized = task.strip().lower()
+    role = normalized if normalized in ROLE_DEFAULTS else TASK_ROLES.get(normalized, "standard")
+    configured = get_llm_spec(role)
+    specs = [part.strip() for part in configured.split(",") if part.strip()] or [ROLE_DEFAULTS[role]]
     clients = [_create_client(*_parse_spec(spec)) for spec in specs]
     if len(clients) == 1:
         return clients[0]
@@ -584,5 +607,5 @@ def get_llm(task: str) -> LLMClient:
 
 __all__ = [
     "LLMClient", "LLMError", "ProviderUnavailable", "RateLimitReached",
-    "InvalidLLMResponse", "DeepSeekClient", "FallbackLLMClient", "get_llm",
+    "InvalidLLMResponse", "DeepSeekClient", "FallbackLLMClient", "get_llm", "get_llm_spec",
 ]

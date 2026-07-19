@@ -38,36 +38,19 @@ uv run scripts/setup_wizard.py --status
 
 | 変数 | 用途 |
 |---|---|
-| `LLM_DEFAULT` | 共通モデル |
-| `LLM_EXPAND` | クエリ拡張モデル |
-| `LLM_SUMMARY` | 要約モデル |
-| `LLM_EXTRACT` | 参考文献抽出モデル |
+| `LLM_CHEAP` | 大量処理（要約、クエリ拡張） |
+| `LLM_STANDARD` | 通常処理と一次フォールバック |
+| `LLM_REVIEW` | 品質確認と最終フォールバック |
 | `DEEPSEEK_API_KEY` | DeepSeek API |
 | `LLM_OPENAI_BASE_URL` | OpenAI互換サーバー |
 
 送信制御は [LLMとプライバシー](llm-and-privacy.md) を参照してください。
 
-## 夜間実行
+## メンテナンス時のAI要約
 
 ```dotenv
-NIGHTLY_ENABLE=1
-NIGHTLY_START_TIME=03:30
-NIGHTLY_LAUNCH_MODE=terminal
-NIGHTLY_MAX_HOURS=5
-NIGHTLY_MAX_ITEMS=20
-NIGHTLY_SUMMARY_MODEL=deepseek-v4-flash
-NIGHTLY_SUMMARY_FALLBACK_MODEL=deepseek-v4-pro
-NIGHTLY_SUMMARY_WORKERS=10
-NIGHTLY_MIN_WEEKLY_REMAINING_PERCENT=20
+SUMMARY_BATCH_MAX_ITEMS=20
+SUMMARY_BATCH_WORKERS=10
 ```
 
-夜間の要約更新は、メンテナンスで作成された抽出型要約を DeepSeek V4 Flash で段階的に置換し、品質ゲートを通らない場合だけ V4 Pro にフォールバックします。週次利用枠の下限は `NIGHTLY_REOCR_LLM` が Codex の場合の re-OCR にだけ適用され、DeepSeek要約を不要に停止しません。
-
-macOSへ登録・確認:
-
-```bash
-scripts/install_nightly_launchd.sh
-scripts/install_nightly_launchd.sh --check
-```
-
-Documents配下などmacOSの保護対象にある場合は `NIGHTLY_LAUNCH_MODE=terminal` を使います。
+`Maintenance-Widget.command` の要約更新は、最初にローカル抽出型要約を差分生成し、その対象をDeepSeek V4 FlashでAI要約へ更新します。品質ゲートを通らない場合だけV4 Proへフォールバックします。1回の処理件数と並列数は上記の環境変数で変更できます。定時スケジューラやCodex利用枠の確認は行いません。

@@ -22,11 +22,21 @@ if str(ROOT) not in sys.path:
 from src import build_summaries, db_relations
 from src.chunk_store import get_item_chunks
 from src.env_utils import load_dotenv_native
-from src.llm_client import InvalidLLMResponse, LLMError, RateLimitReached
+from src.llm_client import InvalidLLMResponse, LLMError, RateLimitReached, get_llm_spec
 from src.manifest import load_manifest
 
 
 VERSION = 2
+
+
+def _deepseek_model_for_role(role: str) -> str:
+    spec = get_llm_spec(role)
+    if "," in spec:
+        raise ValueError(f"LLM_{role.upper()} must be one DeepSeek model for summary batching")
+    provider, separator, model = spec.partition(":")
+    if provider.strip().lower() != "deepseek":
+        raise ValueError(f"LLM_{role.upper()} must use the deepseek provider")
+    return model.strip() if separator and model.strip() else "deepseek-v4-pro"
 
 
 def _write_json_atomic(path: Path, value: dict) -> None:
@@ -255,19 +265,31 @@ def _process_item(
 
 
 def main() -> None:
+    load_dotenv_native(ROOT)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--item", action="append")
-    parser.add_argument("--max-items", type=int, default=10)
+    parser.add_argument(
+        "--max-items", type=int,
+        default=int(os.environ.get("SUMMARY_BATCH_MAX_ITEMS", "20")),
+    )
     parser.add_argument("--max-hours", type=float)
-    parser.add_argument("--workers", type=int, default=3)
-    parser.add_argument("--model", default="deepseek-v4-flash")
-    parser.add_argument("--fallback-model", default="deepseek-v4-pro")
+    parser.add_argument(
+        "--workers", type=int,
+        default=int(os.environ.get("SUMMARY_BATCH_WORKERS", "10")),
+    )
+    parser.add_argument(
+        "--model", default=_deepseek_model_for_role("cheap"),
+    )
+    parser.add_argument(
+        "--fallback-model",
+        default=_deepseek_model_for_role("standard"),
+    )
     parser.add_argument("--stop-file", type=Path)
     parser.add_argument("--no-embed", action="store_true")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument(
         "--checkpoint-dir", type=Path,
-        default=ROOT / "data" / "nightly_checkpoint" / "deepseek-summary-only-batch",
+        default=ROOT / "data" / "summary_checkpoints" / "deepseek-summary-only-batch",
     )
     parser.add_argument("--backup", type=Path)
     parser.add_argument("--failure-ledger", type=Path)
@@ -278,7 +300,6 @@ def main() -> None:
     args = parser.parse_args()
     if args.max_items < 0 or args.workers < 1 or (args.max_hours is not None and args.max_hours <= 0):
         parser.error("invalid item, worker, or time limit")
-    load_dotenv_native(ROOT)
     db_path = Path(os.environ.get("RELATIONS_DB_PATH", ROOT / "data" / "relations.db"))
     eligible = _eligible_keys(db_path)
     failure_ledger_path = args.failure_ledger or args.checkpoint_dir / "failure-ledger.json"

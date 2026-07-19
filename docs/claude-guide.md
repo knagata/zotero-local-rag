@@ -166,7 +166,7 @@ Semantic Scholarの関係は原則として信頼します。分野の違いや�
 PDF・HTML・EPUBの参考文献候補を構造化し、正準worksグラフへ解決します。
 
 - `extract_references_for_item` は既定で `dry_run=true` のためDBを書き換えません。
-- `use_llm=true` では候補テキストを `LLM_EXTRACT` へ送信します。`EXTRACT_EXCLUDE_TAGS` に該当するアイテム、またはタグ確認不能時はfail-closedで停止します。
+- `use_llm=true` では候補テキストを `LLM_STANDARD` へ送信します。`EXTRACT_EXCLUDE_TAGS` に該当するアイテム、またはタグ確認不能時はfail-closedで停止します。
 - 保存時は DOI/ISBN、CiNii Research (`CINII_APP_ID` 設定時)、NDL Searchの順に候補を照合し、低信頼結果も根拠とともに保持します。
 - `confirm_reference_match(edge_id, work_id)` で低信頼エッジを正しいworkへ付け替え、`work_id` を省略すると棄却します。
 
