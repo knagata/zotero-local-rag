@@ -1191,7 +1191,14 @@ def _build_sigma_html(
     font-family: 'Inter', system-ui, sans-serif;
     background: var(--surface);
   }
-  :root { --sb-width: 340px; }
+  :root {
+    --sb-width: 340px;
+    --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px;
+    --radius-sm: 4px; --radius-md: 6px; --control-height: 32px;
+    --focus-ring: var(--node-zotero);
+    --status-confirmed: #76d19a; --status-partial: #e6b35a;
+    --status-candidate: #b8b2c0; --status-reported: #8eb1f0;
+  }
   #sigma-container {
     position: fixed; top: 0; left: 0; bottom: 0; right: var(--sb-width);
     background: var(--surface); transition: right 0.25s ease;
@@ -1673,6 +1680,174 @@ def _build_sigma_html(
     font-size: 11px; color: var(--text-dis); margin-top: 4px; display: none;
   }
   .summary-status.show { display: block; }
+
+  /* ── Hierarchical summary / structured-case insights ── */
+  .insights-shell { min-width: 0; }
+  .insights-header {
+    position: sticky; top: -10px; z-index: 8;
+    margin: -10px -14px 0; padding: 10px 14px 0;
+    background: var(--surface); border-bottom: 1px solid var(--outline-variant);
+  }
+  .insights-title-row { display: flex; align-items: flex-start; gap: var(--space-2); }
+  .insights-title-wrap { flex: 1; min-width: 0; }
+  .insights-title {
+    color: var(--on-surface); font-size: 13px; line-height: 1.35; font-weight: 600;
+    display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+    overflow: hidden;
+  }
+  .insights-byline {
+    margin-top: 2px; color: var(--text-dis); font-size: 11px; line-height: 1.4;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .insights-width-btn {
+    width: var(--control-height); height: var(--control-height); flex: 0 0 auto;
+    border: 1px solid var(--outline-variant); border-radius: var(--radius-sm);
+    color: var(--on-surface-variant); background: none; cursor: pointer;
+  }
+  .insights-tabs { display: flex; margin-top: var(--space-2); }
+  .insights-tab {
+    min-height: var(--control-height); flex: 1; min-width: 0; padding: 0 5px;
+    border: 0; border-bottom: 2px solid transparent; background: none;
+    color: var(--on-surface-variant); font-size: 12px; font-weight: 600;
+    cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .insights-tab[aria-selected="true"] {
+    color: var(--node-zotero); border-bottom-color: var(--node-zotero);
+  }
+  .insights-content { padding-top: var(--space-3); }
+  .insights-panel[hidden] { display: none; }
+  .insights-section { margin-bottom: var(--space-4); }
+  .insights-label {
+    margin-bottom: var(--space-2); color: var(--on-surface-variant);
+    font-size: 11px; line-height: 1.4; font-weight: 600; letter-spacing: .04em;
+  }
+  .insights-help { color: var(--text-dis); font-size: 11px; line-height: 1.55; }
+  .insights-empty, .insights-error {
+    padding: 16px 8px; color: var(--text-dis); font-size: 12px;
+    line-height: 1.6; text-align: center;
+  }
+  .insights-error { color: #f5a5a5; }
+  .insights-skeleton {
+    height: 12px; margin: 0 0 10px; border-radius: var(--radius-sm);
+    background: linear-gradient(90deg, var(--surface-container-high), var(--outline-variant), var(--surface-container-high));
+    background-size: 220% 100%; animation: insights-pulse 1.2s ease-in-out infinite;
+  }
+  .insights-skeleton:nth-child(2) { width: 86%; }
+  .insights-skeleton:nth-child(3) { width: 68%; }
+  @keyframes insights-pulse { to { background-position: -220% 0; } }
+  .insights-input, .insights-select, .quality-details {
+    width: 100%; min-height: var(--control-height); padding: 6px 8px;
+    border: 1px solid var(--outline-variant); border-radius: var(--radius-sm);
+    color: var(--on-surface); background: var(--surface-container-high);
+    font: inherit; font-size: 12px; outline: none;
+  }
+  .insights-input:focus, .insights-select:focus, .quality-details:focus {
+    border-color: var(--focus-ring); outline: 2px solid var(--focus-ring); outline-offset: 1px;
+  }
+  .insights-toolbar { display: grid; grid-template-columns: 1fr; gap: var(--space-2); margin-bottom: var(--space-3); }
+  .insights-countline { color: var(--text-dis); font-size: 11px; }
+  .insight-card {
+    margin-bottom: var(--space-2); border: 1px solid var(--outline-variant);
+    border-radius: var(--radius-md); background: var(--surface-container-low); overflow: hidden;
+  }
+  .insight-card-toggle {
+    width: 100%; padding: var(--space-3); border: 0; background: none;
+    color: inherit; text-align: left; cursor: pointer;
+  }
+  .insight-card-toggle:hover { background: var(--surface-container-high); }
+  .insight-card-title { color: var(--on-surface); font-size: 13px; line-height: 1.35; font-weight: 600; }
+  .insight-card-preview {
+    margin-top: var(--space-1); color: var(--on-surface-variant); font-size: 12px;
+    line-height: 1.5; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .insight-card-body { padding: 0 var(--space-3) var(--space-3); }
+  .insight-card-body[hidden] { display: none; }
+  .insight-card-text { color: var(--on-surface-variant); font-size: 13px; line-height: 1.55; white-space: pre-wrap; }
+  .insight-meta { margin-top: var(--space-2); color: var(--text-dis); font-size: 11px; line-height: 1.4; }
+  .insight-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-top: var(--space-3); }
+  .insight-btn {
+    min-height: var(--control-height); padding: 0 10px; border-radius: var(--radius-sm);
+    border: 1px solid var(--outline-variant); background: none;
+    color: var(--on-surface-variant); font-size: 11.5px; cursor: pointer;
+  }
+  .insight-btn:hover { color: var(--on-surface); border-color: var(--on-surface-variant); }
+  .insight-btn.primary { background: var(--node-zotero); border-color: var(--node-zotero); color: #fff; }
+  .insight-btn:disabled { opacity: .5; cursor: default; }
+  .insight-source { margin-top: var(--space-3); border-top: 1px dashed var(--outline-variant); padding-top: var(--space-2); }
+  .insight-source[hidden] { display: none; }
+  .source-chunk { margin-bottom: var(--space-3); }
+  .source-chunk-head { color: var(--text-dis); font-size: 10.5px; margin-bottom: var(--space-1); overflow-wrap: anywhere; }
+  .source-quote {
+    margin: 0; padding-left: var(--space-3); border-left: 2px solid var(--outline-variant);
+    color: var(--on-surface-variant); font-size: 12px; line-height: 1.6; white-space: pre-wrap;
+  }
+  .case-statuses { display: flex; flex-wrap: wrap; gap: var(--space-1); }
+  .case-status {
+    min-height: var(--control-height); padding: 0 9px; border-radius: 999px;
+    border: 1px solid var(--outline-variant); background: none;
+    color: var(--on-surface-variant); font-size: 11.5px; cursor: pointer;
+  }
+  .case-status.confirmed[aria-pressed="true"] { color: var(--status-confirmed); border-color: color-mix(in srgb, var(--status-confirmed) 45%, var(--surface)); background: color-mix(in srgb, var(--status-confirmed) 16%, var(--surface)); }
+  .case-status.partial[aria-pressed="true"] { color: var(--status-partial); border-color: color-mix(in srgb, var(--status-partial) 45%, var(--surface)); background: color-mix(in srgb, var(--status-partial) 16%, var(--surface)); }
+  .case-status.candidate[aria-pressed="true"] { color: var(--status-candidate); border-color: color-mix(in srgb, var(--status-candidate) 45%, var(--surface)); background: color-mix(in srgb, var(--status-candidate) 16%, var(--surface)); }
+  .case-card { padding: var(--space-3); }
+  .case-card-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); }
+  .case-badge, .reported-badge {
+    display: inline-flex; align-items: center; min-height: 22px; padding: 0 7px;
+    border-radius: 999px; font-size: 10.5px; font-weight: 600;
+  }
+  .case-badge.confirmed { color: var(--status-confirmed); background: color-mix(in srgb, var(--status-confirmed) 16%, var(--surface)); }
+  .case-badge.partial { color: var(--status-partial); background: color-mix(in srgb, var(--status-partial) 16%, var(--surface)); }
+  .case-badge.candidate { color: var(--status-candidate); background: color-mix(in srgb, var(--status-candidate) 16%, var(--surface)); }
+  .reported-badge { color: var(--status-reported); background: color-mix(in srgb, var(--status-reported) 16%, var(--surface)); }
+  .case-description {
+    margin-top: var(--space-2); color: var(--on-surface); font-size: 13px; line-height: 1.55;
+    display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden;
+  }
+  .case-description.expanded { display: block; }
+  .case-chips { display: flex; flex-wrap: wrap; gap: var(--space-1); margin-top: var(--space-2); }
+  .case-chip { padding: 2px 6px; border-radius: 999px; background: var(--surface-container-high); color: var(--on-surface-variant); font-size: 10.5px; }
+  .case-technical { margin-top: var(--space-2); color: var(--text-dis); font-size: 10.5px; overflow-wrap: anywhere; }
+  .case-technical summary { cursor: pointer; }
+  .insights-more { width: 100%; margin-top: var(--space-2); }
+  .quality-overlay {
+    display: none; position: fixed; inset: 0; z-index: 4000; align-items: center; justify-content: center;
+    padding: 20px; background: rgba(0,0,0,.58);
+  }
+  .quality-overlay.show { display: flex; }
+  .quality-dialog {
+    width: min(460px, 100%); max-height: min(680px, 92vh); overflow-y: auto;
+    padding: var(--space-4); border: 1px solid var(--outline-variant);
+    border-radius: 8px; background: var(--surface-container-high); color: var(--on-surface);
+    box-shadow: 0 8px 30px rgba(0,0,0,.55);
+  }
+  .quality-title { margin: 0 0 var(--space-2); font-size: 15px; }
+  .quality-field { display: block; margin-top: var(--space-3); color: var(--on-surface-variant); font-size: 12px; }
+  .quality-field > span { display: block; margin-bottom: var(--space-1); }
+  .quality-details { min-height: 110px; resize: vertical; }
+  .quality-evidence { margin-top: var(--space-3); }
+  .quality-evidence label { display: flex; gap: var(--space-2); margin: 6px 0; color: var(--on-surface-variant); font-size: 11.5px; }
+  .quality-error { min-height: 18px; margin-top: var(--space-2); color: #f5a5a5; font-size: 11px; }
+  .quality-actions { display: flex; justify-content: flex-end; gap: var(--space-2); margin-top: var(--space-3); }
+  .insights-toast {
+    position: fixed; z-index: 5000; left: 50%; bottom: 24px; transform: translateX(-50%);
+    max-width: min(420px, 90vw); padding: 9px 14px; border-radius: var(--radius-md);
+    background: var(--surface-container-high); border: 1px solid var(--outline-variant);
+    color: var(--on-surface); font-size: 12px; box-shadow: 0 4px 18px rgba(0,0,0,.45);
+  }
+  button:focus-visible, [role="tab"]:focus-visible, summary:focus-visible {
+    outline: 2px solid var(--focus-ring); outline-offset: 2px;
+  }
+  @media (max-width: 760px) {
+    .insight-actions .insight-btn { flex: 1 1 auto; }
+  }
+  @media (pointer: coarse) {
+    .insights-tab, .insights-width-btn, .insight-btn, .case-status { min-height: 44px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .insights-skeleton { animation: none; }
+    .sect-arrow, #sidebar, #sigma-container { transition: none; }
+  }
 
   /* ── Loading overlay ── */
   #loading {
@@ -4161,99 +4336,7 @@ function _showNodeAbstract(nodeId) {
   var n = GRAPH_DATA.nodes.find(function(nd) { return nd.id === nodeId; });
   if (!n || !n.itemKey) return;
   var myReq = ++_ctxPaneReq;
-
-  _showContextPane(
-    '<div class="ctx-pane-header">' +
-      '<div class="ctx-pane-title">' + esc(n.fullTitle || n.label) + '</div>' +
-      '<div class="ctx-translate-wrap" id="abs-trans-wrap" style="display:none">' +
-        '<span class="ctx-translate-label">翻訳</span>' +
-        '<button class="ctx-toggle-btn' + (_abstrTranslateOn ? ' on' : '') + '" id="abs-toggle"></button>' +
-      '</div>' +
-    '</div>' +
-    '<div id="abs-loading" style="font-size:12px;color:var(--text-dis)">読み込み中…</div>' +
-    '<div class="summary-section" id="abs-summary-section" style="display:none">' +
-      '<div class="summary-section-label">AI 要約</div>' +
-      '<div id="abs-summary-body"></div>' +
-    '</div>'
-  );
-
-  // 取得済みアブストラクトを描画（翻訳トグル込み）
-  function _renderAbstractInto(targetEl, abstract) {
-    var isEnglish = abstract.length > 20 && abstract.charCodeAt(0) < 0x100;
-    var transWrap = document.getElementById('abs-trans-wrap');
-    if (transWrap && isEnglish) transWrap.style.display = '';
-    targetEl.outerHTML =
-      '<div class="abstract-text" id="abs-text">' + esc(abstract) + '</div>' +
-      '<div class="abstract-translation" id="abs-translation"></div>';
-    var toggleBtn = document.getElementById('abs-toggle');
-    if (toggleBtn) {
-      toggleBtn.addEventListener('click', function() {
-        _abstrTranslateOn = !_abstrTranslateOn;
-        toggleBtn.className = 'ctx-toggle-btn' + (_abstrTranslateOn ? ' on' : '');
-        _applyAbstractToggle(abstract);
-      });
-    }
-    if (_abstrTranslateOn) _applyAbstractToggle(abstract);
-  }
-
-  // Zotero local API から abstractNote を取得してキャッシュ→描画（ノードを開くと自動実行）。
-  // 失敗時（Zotero 未起動・概要なし）はメッセージと再取得ボタンを出す。
-  function _fetchAbstractFromZotero(targetEl) {
-    targetEl.outerHTML =
-      '<div id="abs-fetch-wrap">' +
-        '<div class="summary-status show" id="abs-fetch-status" style="color:var(--text-dis)">Zotero から概要を取得中…</div>' +
-      '</div>';
-    fetch('/api/node/fetch-abstract', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ item_key: n.itemKey })
-    })
-      .then(function(r) { return r.json().then(function(d){ return { ok: r.ok, d: d }; }); })
-      .then(function(res) {
-        if (myReq !== _ctxPaneReq) return;  // 別のノード/エッジに切り替え済み
-        var d = res.d || {};
-        if (d.abstract) {
-          var wrap = document.getElementById('abs-fetch-wrap');
-          if (wrap) _renderAbstractInto(wrap, d.abstract);
-        } else {
-          _renderFetchFailure(d.error || 'この資料には概要情報がありませんでした');
-        }
-      })
-      .catch(function(e) {
-        if (myReq !== _ctxPaneReq) return;
-        _renderFetchFailure('エラー: ' + e.message);
-      });
-  }
-
-  // 取得失敗時のメッセージ＋再取得ボタン（Zotero を起動してから再試行できるように）
-  function _renderFetchFailure(msg) {
-    var wrap = document.getElementById('abs-fetch-wrap');
-    if (!wrap) return;
-    wrap.innerHTML =
-      '<div class="summary-status show" style="color:#f87171">' + esc(msg) + '</div>' +
-      '<button class="summary-btn" id="abs-retry-btn" style="margin-top:6px">再取得</button>';
-    var rb = document.getElementById('abs-retry-btn');
-    if (rb) rb.addEventListener('click', function() { _fetchAbstractFromZotero(wrap); });
-  }
-
-  fetch('/api/node/abstract?key=' + encodeURIComponent(n.itemKey))
-    .then(function(r) { return r.json(); })
-    .then(function(d) {
-      if (myReq !== _ctxPaneReq) return;  // 別のノード/エッジに切り替え済み
-      var absEl = document.getElementById('abs-loading');
-      if (!absEl) return;
-      var abstract = d.abstract || '';
-      // キャッシュ済みなら描画、無ければ Zotero から自動取得
-      if (abstract) { _renderAbstractInto(absEl, abstract); }
-      else          { _fetchAbstractFromZotero(absEl); }
-      // Summary section
-      _renderSummarySection(n.itemKey, n.fullTitle || n.label || '', d.summary);
-    })
-    .catch(function(e) {
-      if (myReq !== _ctxPaneReq) return;
-      var absEl = document.getElementById('abs-loading');
-      if (absEl) absEl.textContent = 'エラー: ' + e.message;
-    });
+  InsightsPane.open(n, myReq);
 }
 
 function _applyAbstractToggle(abstract) {
@@ -4491,22 +4574,32 @@ function _renderSummarySection(itemKey, title, summaryData) {
     } else {
       var modelLabel = sd.model && sd.model !== 'manual' ? ' (' + esc(_modelLabel(sd.model)) + ')' : '';
       var dateStr = _fmtSummaryDate(sd.updated_at);
+      var reportBadge = sd.report_status === 'pending'
+        ? '<span class="reported-badge">報告済み・判定待ち</span>'
+        : (sd.report_status === 'disabled' ? '<span class="reported-badge">品質判定により検索対象外</span>' : '');
       bodyEl.innerHTML =
         '<div class="summary-text" id="sum-text">' + esc(sd.summary) + '</div>' +
         '<div style="font-size:10.5px;color:var(--text-dis);margin-top:4px">' +
           esc(dateStr) + modelLabel +
         '</div>' +
+        reportBadge +
         '<div class="summary-actions" id="sum-actions">' +
           '<button class="summary-btn" id="sum-regen-btn">再生成</button>' +
           '<button class="summary-btn" id="sum-edit-btn">編集</button>' +
+          '<button class="summary-btn" id="sum-report-btn"' +
+            (sd.report_status === 'pending' || sd.report_status === 'disabled' ? ' disabled' : '') + '>問題を報告</button>' +
           _modelSelectHtml() +
         '</div>' +
         '<div class="summary-status" id="sum-status"></div>';
+    }
+    if (typeof InsightsPane !== 'undefined' && InsightsPane.updateSummary) {
+      InsightsPane.updateSummary(itemKey, sd || null);
     }
     // Wire buttons
     var genBtn   = document.getElementById('sum-gen-btn');
     var regenBtn = document.getElementById('sum-regen-btn');
     var editBtn  = document.getElementById('sum-edit-btn');
+    var reportBtn = document.getElementById('sum-report-btn');
     var modelSel = document.getElementById('sum-model-select');
 
     if (modelSel) {
@@ -4553,6 +4646,18 @@ function _renderSummarySection(itemKey, title, summaryData) {
 
     if (genBtn)   genBtn.addEventListener('click', function() { _startGenerate(false); });
     if (regenBtn) regenBtn.addEventListener('click', function() { _startGenerate(true); });
+    if (reportBtn) {
+      reportBtn.addEventListener('click', function() {
+        _openQualityReport({
+          targetType: 'item_summary', itemKey: itemKey, evidence: [],
+          returnFocusSelector: '#ins-tab-overview',
+          onSaved: function() {
+            sd.report_status = 'pending';
+            _renderSummaryBody(sd);
+          }
+        });
+      });
+    }
     if (editBtn) {
       editBtn.addEventListener('click', function() {
         var curText = document.getElementById('sum-text');
@@ -4598,6 +4703,732 @@ function _renderSummarySection(itemKey, title, summaryData) {
 
   _renderSummaryBody(summaryData);
 }
+
+function _insightsApi(url, options) {
+  return fetch(url, options).then(function(response) {
+    return response.json().then(function(data) {
+      if (!response.ok || data.error) throw new Error(data.error || ('HTTP ' + response.status));
+      return data;
+    });
+  });
+}
+
+var _qualityContext = null;
+var _qualityReturnFocus = null;
+
+function _showInsightsToast(message) {
+  var old = document.querySelector('.insights-toast');
+  if (old) old.remove();
+  var toast = document.createElement('div');
+  toast.className = 'insights-toast';
+  toast.setAttribute('role', 'status');
+  toast.textContent = message;
+  document.body.appendChild(toast);
+  setTimeout(function() { if (toast.parentNode) toast.remove(); }, 3500);
+}
+
+function _qualityReasons(targetType) {
+  if (targetType === 'case') return [
+    ['not_a_case', '事例ではない'],
+    ['misleading_description', '原文にない内容を含む'],
+    ['unsupported_field', 'フィールドの根拠が不十分'],
+    ['wrong_context', '文脈または対象の取り違え'],
+    ['duplicate_case', '重複事例'],
+    ['other', 'その他']
+  ];
+  return [
+    ['unsupported_claim', '原文にない内容を含む'],
+    ['missing_context', '重要な限定条件が失われている'],
+    ['wrong_work', '対象または因果関係の取り違え'],
+    ['misleading_summary', '意味が通らない・誤解を招く'],
+    ['other', 'その他']
+  ];
+}
+
+function _ensureQualityDialog() {
+  var overlay = document.getElementById('quality-report-overlay');
+  if (overlay) return overlay;
+  overlay = document.createElement('div');
+  overlay.id = 'quality-report-overlay';
+  overlay.className = 'quality-overlay';
+  overlay.innerHTML =
+    '<div class="quality-dialog" role="dialog" aria-modal="true" aria-labelledby="quality-title">' +
+      '<h2 class="quality-title" id="quality-title">品質上の問題を報告</h2>' +
+      '<div class="insights-help">報告しても内容はすぐには削除されません。メンテナンス時の確認対象になります。</div>' +
+      '<label class="quality-field"><span>問題の種類</span><select class="insights-select" id="quality-reason"></select></label>' +
+      '<label class="quality-field"><span>具体的な根拠（10文字以上）</span><textarea class="quality-details" id="quality-details"></textarea></label>' +
+      '<div class="quality-evidence" id="quality-evidence"></div>' +
+      '<div class="quality-error" id="quality-error" role="alert"></div>' +
+      '<div class="quality-actions">' +
+        '<button class="insight-btn" id="quality-cancel">キャンセル</button>' +
+        '<button class="insight-btn primary" id="quality-submit">報告する</button>' +
+      '</div>' +
+    '</div>';
+  document.body.appendChild(overlay);
+
+  function closeDialog() {
+    var fallbackSelector = _qualityContext && _qualityContext.returnFocusSelector;
+    overlay.classList.remove('show');
+    _qualityContext = null;
+    var focusTarget = _qualityReturnFocus;
+    if (!focusTarget || !document.contains(focusTarget) || focusTarget.disabled) {
+      focusTarget = fallbackSelector ? document.querySelector(fallbackSelector) : null;
+    }
+    if (focusTarget) focusTarget.focus();
+    _qualityReturnFocus = null;
+  }
+  document.getElementById('quality-cancel').addEventListener('click', closeDialog);
+  overlay.addEventListener('mousedown', function(event) {
+    if (event.target === overlay) closeDialog();
+  });
+  overlay.addEventListener('keydown', function(event) {
+    if (event.key === 'Escape') { event.preventDefault(); closeDialog(); return; }
+    if (event.key !== 'Tab') return;
+    var focusable = Array.prototype.slice.call(overlay.querySelectorAll(
+      'button:not([disabled]), select:not([disabled]), textarea:not([disabled]), input:not([disabled])'
+    ));
+    if (!focusable.length) return;
+    var first = focusable[0], last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault(); last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault(); first.focus();
+    }
+  });
+  document.getElementById('quality-submit').addEventListener('click', function() {
+    if (!_qualityContext) return;
+    var details = document.getElementById('quality-details').value.trim();
+    var error = document.getElementById('quality-error');
+    if (details.length < 10) {
+      error.textContent = '具体的な根拠を10文字以上で入力してください。';
+      return;
+    }
+    var submit = document.getElementById('quality-submit');
+    submit.disabled = true;
+    error.textContent = '';
+    var selectedChunks = Array.prototype.slice.call(
+      document.querySelectorAll('#quality-evidence input:checked')
+    ).map(function(input) { return input.value; });
+    var body = {
+      target_type: _qualityContext.targetType,
+      item_key: _qualityContext.itemKey || '',
+      section_id: _qualityContext.sectionId || '',
+      case_id: _qualityContext.caseId == null ? null : _qualityContext.caseId,
+      reason: document.getElementById('quality-reason').value,
+      details: details,
+      evidence_chunk_ids: selectedChunks
+    };
+    _insightsApi('/api/quality-report', {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
+    }).then(function() {
+      var onSaved = _qualityContext && _qualityContext.onSaved;
+      if (onSaved) onSaved();
+      closeDialog();
+      _showInsightsToast('報告を保存しました。メンテナンス時の確認待ちです。');
+    }).catch(function(err) {
+      error.textContent = '報告できませんでした: ' + err.message;
+    }).finally(function() { submit.disabled = false; });
+  });
+  return overlay;
+}
+
+function _openQualityReport(context, trigger) {
+  var overlay = _ensureQualityDialog();
+  _qualityContext = context;
+  _qualityReturnFocus = trigger || document.activeElement;
+  var reason = document.getElementById('quality-reason');
+  reason.innerHTML = '';
+  _qualityReasons(context.targetType).forEach(function(row) {
+    var option = document.createElement('option');
+    option.value = row[0]; option.textContent = row[1]; reason.appendChild(option);
+  });
+  document.getElementById('quality-details').value = '';
+  document.getElementById('quality-error').textContent = '';
+  var evidenceWrap = document.getElementById('quality-evidence');
+  evidenceWrap.innerHTML = '';
+  var evidence = context.evidence || [];
+  if (evidence.length) {
+    var heading = document.createElement('div');
+    heading.className = 'insights-help'; heading.textContent = '関連する原文チャンク';
+    evidenceWrap.appendChild(heading);
+    var seen = {};
+    evidence.forEach(function(row) {
+      var chunkId = String(row.chunk_id || '');
+      if (!chunkId || seen[chunkId]) return;
+      seen[chunkId] = true;
+      var label = document.createElement('label');
+      var input = document.createElement('input');
+      input.type = 'checkbox'; input.value = chunkId; input.checked = true;
+      var text = document.createElement('span'); text.textContent = chunkId;
+      label.appendChild(input); label.appendChild(text); evidenceWrap.appendChild(label);
+    });
+  }
+  overlay.classList.add('show');
+  setTimeout(function() { reason.focus(); }, 0);
+}
+
+var InsightsPane = (function() {
+  var cache = {};
+  var current = null;
+
+  function skeleton() {
+    return '<div aria-label="読み込み中"><div class="insights-skeleton"></div>' +
+      '<div class="insights-skeleton"></div><div class="insights-skeleton"></div></div>';
+  }
+
+  function statusText(status, kind) {
+    if (status === 'processed_empty') {
+      return kind === 'cases'
+        ? 'この資料から該当する事例は抽出されませんでした。'
+        : 'この資料には表示できる節要約がありません。';
+    }
+    return kind === 'cases'
+      ? '構造化事例はまだ生成されていません。Maintenance Widgetで要約・事例更新を実行してください。'
+      : '節要約はまだ生成されていません。Maintenance Widgetで要約更新を実行してください。';
+  }
+
+  function shell(node, requestId) {
+    var byline = [node.authors || '', node.year || ''].filter(Boolean).join(' · ');
+    _showContextPane(
+      '<div class="insights-shell">' +
+        '<div class="insights-header">' +
+          '<div class="insights-title-row">' +
+            '<div class="insights-title-wrap"><div class="insights-title" id="insights-title">' +
+              esc(node.fullTitle || node.label || '') + '</div>' +
+              (byline ? '<div class="insights-byline">' + esc(byline) + '</div>' : '') +
+            '</div>' +
+            '<button class="insights-width-btn" id="insights-width" aria-label="サイドバー幅を切り替える" title="表示幅を切り替える">↔</button>' +
+          '</div>' +
+          '<div class="insights-tabs" role="tablist" aria-label="資料の詳細">' +
+            '<button class="insights-tab" role="tab" id="ins-tab-overview" data-insight-tab="overview" aria-controls="ins-panel-overview" aria-selected="true">概要</button>' +
+            '<button class="insights-tab" role="tab" id="ins-tab-sections" data-insight-tab="sections" aria-controls="ins-panel-sections" aria-selected="false">節要約 …</button>' +
+            '<button class="insights-tab" role="tab" id="ins-tab-cases" data-insight-tab="cases" aria-controls="ins-panel-cases" aria-selected="false">事例 …</button>' +
+          '</div>' +
+        '</div>' +
+        '<div class="insights-content" aria-live="polite">' +
+          '<section class="insights-panel" role="tabpanel" id="ins-panel-overview" aria-labelledby="ins-tab-overview">' + skeleton() + '</section>' +
+          '<section class="insights-panel" role="tabpanel" id="ins-panel-sections" aria-labelledby="ins-tab-sections" hidden></section>' +
+          '<section class="insights-panel" role="tabpanel" id="ins-panel-cases" aria-labelledby="ins-tab-cases" hidden></section>' +
+        '</div>' +
+      '</div>'
+    );
+    var titleEl = document.getElementById('insights-title');
+    if (titleEl) titleEl.title = node.fullTitle || node.label || '';
+    var widthBtn = document.getElementById('insights-width');
+    if (widthBtn) widthBtn.addEventListener('click', function() {
+      var sidebar = document.getElementById('sidebar');
+      var width = sidebar.offsetWidth;
+      if (width < 460) {
+        window._insightsPreviousWidth = width;
+        document.documentElement.style.setProperty('--sb-width', '480px');
+      } else {
+        document.documentElement.style.setProperty(
+          '--sb-width', Math.max(280, window._insightsPreviousWidth || 340) + 'px'
+        );
+      }
+      if (window.__r) { window.__r.resize(); window.__r.refresh(); }
+    });
+
+    var tabs = Array.prototype.slice.call(document.querySelectorAll('.insights-tab'));
+    tabs.forEach(function(tab, index) {
+      tab.tabIndex = index === 0 ? 0 : -1;
+      tab.addEventListener('click', function() { activate(tab.dataset.insightTab); });
+      tab.addEventListener('keydown', function(event) {
+        var next = null;
+        if (event.key === 'ArrowRight') next = (index + 1) % tabs.length;
+        if (event.key === 'ArrowLeft') next = (index + tabs.length - 1) % tabs.length;
+        if (event.key === 'Home') next = 0;
+        if (event.key === 'End') next = tabs.length - 1;
+        if (next !== null) {
+          event.preventDefault(); tabs[next].focus(); activate(tabs[next].dataset.insightTab);
+        }
+      });
+    });
+  }
+
+  function activate(name) {
+    if (!current) return;
+    current.activeTab = name;
+    document.querySelectorAll('.insights-tab').forEach(function(tab) {
+      var selected = tab.dataset.insightTab === name;
+      tab.setAttribute('aria-selected', selected ? 'true' : 'false');
+      tab.tabIndex = selected ? 0 : -1;
+    });
+    document.querySelectorAll('.insights-panel').forEach(function(panel) {
+      panel.hidden = panel.id !== 'ins-panel-' + name;
+    });
+    if (name === 'sections' && !current.sectionsReady) setupSections(current);
+    if (name === 'cases' && !current.casesReady) setupCases(current);
+  }
+
+  function updateCounts(state) {
+    var sectionTab = document.getElementById('ins-tab-sections');
+    var caseTab = document.getElementById('ins-tab-cases');
+    if (sectionTab) sectionTab.textContent = '節要約 ' + Number(state.data.sections.count || 0);
+    if (caseTab) {
+      var counts = state.data.cases.counts || {};
+      caseTab.textContent = '事例 ' + (
+        Number(counts.confirmed || 0) + Number(counts.partial || 0) + Number(counts.candidate || 0)
+      );
+    }
+  }
+
+  function renderAbstract(state, abstract) {
+    var body = document.getElementById('insight-abstract-body');
+    if (!body) return;
+    var isEnglish = abstract.length > 20 && abstract.charCodeAt(0) < 0x100;
+    body.innerHTML =
+      (isEnglish ? '<div class="ctx-translate-wrap" style="justify-content:flex-end;margin-bottom:6px">' +
+        '<span class="ctx-translate-label">翻訳</span><button class="ctx-toggle-btn' +
+        (_abstrTranslateOn ? ' on' : '') + '" id="abs-toggle" aria-label="概要の翻訳を切り替える"></button></div>' : '') +
+      '<div class="abstract-text" id="abs-text">' + esc(abstract) + '</div>' +
+      '<div class="abstract-translation" id="abs-translation"></div>';
+    var toggle = document.getElementById('abs-toggle');
+    if (toggle) toggle.addEventListener('click', function() {
+      _abstrTranslateOn = !_abstrTranslateOn;
+      toggle.className = 'ctx-toggle-btn' + (_abstrTranslateOn ? ' on' : '');
+      _applyAbstractToggle(abstract);
+    });
+    if (_abstrTranslateOn && isEnglish) _applyAbstractToggle(abstract);
+  }
+
+  function fetchAbstract(state) {
+    var body = document.getElementById('insight-abstract-body');
+    if (!body) return;
+    body.innerHTML = '<div class="insights-help">Zoteroから概要を取得中…</div>';
+    _insightsApi('/api/node/fetch-abstract', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({item_key: state.itemKey})
+    }).then(function(data) {
+      if (current !== state || state.requestId !== _ctxPaneReq) return;
+      if (data.abstract) {
+        state.data.abstract = data.abstract; renderAbstract(state, data.abstract);
+      } else {
+        throw new Error(data.error || 'この資料には概要情報がありませんでした');
+      }
+    }).catch(function(error) {
+      if (current !== state) return;
+      body.innerHTML = '<div class="insights-error">' + esc(error.message) + '</div>' +
+        '<button class="insight-btn" id="insight-abstract-retry">再取得</button>';
+      var retry = document.getElementById('insight-abstract-retry');
+      if (retry) retry.addEventListener('click', function() { fetchAbstract(state); });
+    });
+  }
+
+  function renderOverview(state) {
+    var panel = document.getElementById('ins-panel-overview');
+    if (!panel || current !== state) return;
+    panel.innerHTML =
+      '<div class="insights-section"><div class="insights-label">ZOTERO 概要</div>' +
+        '<div id="insight-abstract-body"></div></div>' +
+      '<div class="summary-section" id="abs-summary-section"><div class="summary-section-label">AI 要約</div>' +
+        '<div id="abs-summary-body"></div></div>' +
+      '<div class="insights-help" style="margin-top:16px">検索と読解を補助する自動生成情報です。重要な判断では原文を確認してください。</div>';
+    if (state.data.abstract) renderAbstract(state, state.data.abstract);
+    else fetchAbstract(state);
+    _renderSummarySection(
+      state.itemKey, state.node.fullTitle || state.node.label || '', state.data.summary
+    );
+    if (state.data.summary && state.data.summary.kind === 'extractive') {
+      var label = document.querySelector('#abs-summary-section .summary-section-label');
+      if (label) label.textContent = '抽出的要約';
+    }
+  }
+
+  function setupSections(state) {
+    state.sectionsReady = true;
+    state.sectionRows = [];
+    state.sectionCursor = null;
+    state.sectionQuery = '';
+    var panel = document.getElementById('ins-panel-sections');
+    if (!panel) return;
+    if (state.data.sections.status !== 'available') {
+      panel.innerHTML = '<div class="insights-empty">' +
+        esc(statusText(state.data.sections.status, 'sections')) + '</div>';
+      return;
+    }
+    panel.innerHTML =
+      '<div class="insights-toolbar"><input class="insights-input" id="section-search" type="search" placeholder="節を検索…" aria-label="節要約を検索">' +
+        '<div class="insights-countline" id="section-countline"></div></div>' +
+      '<div id="section-list">' + skeleton() + '</div>' +
+      '<button class="insight-btn insights-more" id="section-more" hidden>さらに表示</button>';
+    var search = document.getElementById('section-search');
+    var timer = null;
+    search.addEventListener('input', function() {
+      clearTimeout(timer);
+      timer = setTimeout(function() {
+        state.sectionQuery = search.value.trim(); loadSections(state, true);
+      }, 200);
+    });
+    document.getElementById('section-more').addEventListener('click', function() {
+      loadSections(state, false);
+    });
+    loadSections(state, true);
+  }
+
+  function loadSections(state, reset) {
+    if (reset) { state.sectionRows = []; state.sectionCursor = null; }
+    var list = document.getElementById('section-list');
+    if (!list || current !== state) return;
+    if (reset) list.innerHTML = skeleton();
+    var fetchSeq = ++state.sectionFetchSeq;
+    var url = '/api/node/sections?key=' + encodeURIComponent(state.itemKey) +
+      '&q=' + encodeURIComponent(state.sectionQuery) + '&limit=50' +
+      (state.sectionCursor ? '&cursor=' + encodeURIComponent(state.sectionCursor) : '');
+    _insightsApi(url).then(function(data) {
+      if (current !== state || state.requestId !== _ctxPaneReq || fetchSeq !== state.sectionFetchSeq) return;
+      state.sectionRows = state.sectionRows.concat(data.items || []);
+      state.sectionCursor = data.next_cursor;
+      renderSections(state, data.total || 0);
+    }).catch(function(error) {
+      if (current !== state) return;
+      list.innerHTML = '<div class="insights-error">読み込めませんでした: ' + esc(error.message) + '</div>' +
+        '<button class="insight-btn insights-more" id="section-retry">再試行</button>';
+      var retry = document.getElementById('section-retry');
+      if (retry) retry.addEventListener('click', function() { loadSections(state, reset); });
+    });
+  }
+
+  function renderSections(state, total) {
+    var list = document.getElementById('section-list');
+    var countline = document.getElementById('section-countline');
+    if (!list) return;
+    if (countline) countline.textContent = total + '節 · 文書順';
+    if (!state.sectionRows.length) {
+      list.innerHTML = '<div class="insights-empty">該当する節要約はありません。' +
+        (state.sectionQuery ? '<br><button class="insight-btn" id="section-clear">条件を解除</button>' : '') + '</div>';
+      var clear = document.getElementById('section-clear');
+      if (clear) clear.addEventListener('click', function() {
+        document.getElementById('section-search').value = ''; state.sectionQuery = ''; loadSections(state, true);
+      });
+    } else {
+      list.innerHTML = state.sectionRows.map(function(row, index) {
+        var title = row.chapter || ('節 ' + row.section_id);
+        var reported = row.report_status === 'pending'
+          ? '<span class="reported-badge">報告済み・判定待ち</span>'
+          : (row.report_status === 'disabled' ? '<span class="reported-badge">品質判定により検索対象外</span>' : '');
+        return '<article class="insight-card">' +
+          '<button class="insight-card-toggle" data-section-index="' + index + '" aria-expanded="false" aria-controls="section-body-' + index + '">' +
+            '<div class="insight-card-title">▸ ' + esc(title) + '</div>' +
+            '<div class="insight-card-preview">' + esc(row.summary) + '</div>' +
+          '</button>' +
+          '<div class="insight-card-body" id="section-body-' + index + '" hidden>' +
+            '<div class="insight-card-text">' + esc(row.summary) + '</div>' +
+            '<div class="insight-meta">' + esc([row.model, _fmtSummaryDate(row.updated_at)].filter(Boolean).join(' · ')) + '</div>' +
+            reported +
+            '<div class="insight-actions">' +
+              '<button class="insight-btn section-source-btn" data-section-index="' + index + '">原文を表示</button>' +
+              '<button class="insight-btn section-report-btn" data-section-index="' + index + '"' +
+                (row.report_status === 'pending' || row.report_status === 'disabled' ? ' disabled' : '') + '>問題を報告</button>' +
+            '</div><div class="insight-source" id="section-source-' + index + '" hidden></div>' +
+          '</div></article>';
+      }).join('');
+    }
+    list.querySelectorAll('.insight-card-toggle').forEach(function(button) {
+      button.addEventListener('click', function() {
+        var body = document.getElementById(button.getAttribute('aria-controls'));
+        var open = button.getAttribute('aria-expanded') === 'true';
+        button.setAttribute('aria-expanded', open ? 'false' : 'true');
+        body.hidden = open;
+        var title = button.querySelector('.insight-card-title');
+        if (title) title.textContent = (open ? '▸ ' : '▾ ') +
+          (state.sectionRows[Number(button.dataset.sectionIndex)].chapter ||
+           ('節 ' + state.sectionRows[Number(button.dataset.sectionIndex)].section_id));
+      });
+    });
+    list.querySelectorAll('.section-source-btn').forEach(function(button) {
+      button.addEventListener('click', function() {
+        showSectionSource(state, Number(button.dataset.sectionIndex), button);
+      });
+    });
+    list.querySelectorAll('.section-report-btn').forEach(function(button) {
+      button.addEventListener('click', function() {
+        var row = state.sectionRows[Number(button.dataset.sectionIndex)];
+        var source = state.sectionSourceCache[row.section_id];
+        _openQualityReport({
+          targetType: 'section_summary', itemKey: state.itemKey, sectionId: row.section_id,
+          evidence: source ? source.chunks : [],
+          returnFocusSelector: '.insight-card-toggle[data-section-index="' + button.dataset.sectionIndex + '"]',
+          onSaved: function() { row.report_status = 'pending'; renderSections(state, total); }
+        }, button);
+      });
+    });
+    var more = document.getElementById('section-more');
+    if (more) { more.hidden = !state.sectionCursor; more.textContent = 'さらに表示'; }
+  }
+
+  function showSectionSource(state, index, button) {
+    var row = state.sectionRows[index];
+    var wrap = document.getElementById('section-source-' + index);
+    if (!row || !wrap) return;
+    if (!wrap.hidden) { wrap.hidden = true; button.textContent = '原文を表示'; return; }
+    wrap.hidden = false; button.textContent = '原文を隠す';
+    function draw(data) {
+      wrap.innerHTML = (data.chunks || []).map(function(chunk, i) {
+        var locator = chunk.chunk_id + (chunk.page ? ' · p.' + chunk.page : '');
+        return '<div class="source-chunk"><div class="source-chunk-head">原文 ' + (i + 1) + ' / ' +
+          data.chunks.length + ' · ' + esc(locator) + '</div><blockquote class="source-quote">' +
+          esc(chunk.text) + '</blockquote></div>';
+      }).join('') || '<div class="insights-error">原文データを読み込めません。</div>';
+    }
+    if (state.sectionSourceCache[row.section_id]) {
+      draw(state.sectionSourceCache[row.section_id]); return;
+    }
+    wrap.innerHTML = skeleton();
+    _insightsApi('/api/node/section-source?key=' + encodeURIComponent(state.itemKey) +
+      '&section_id=' + encodeURIComponent(row.section_id)).then(function(data) {
+      if (current !== state) return;
+      state.sectionSourceCache[row.section_id] = data; draw(data);
+    }).catch(function(error) {
+      wrap.innerHTML = '<div class="insights-error">原文を読み込めませんでした: ' + esc(error.message) + '</div>';
+    });
+  }
+
+  function setupCases(state) {
+    state.casesReady = true;
+    state.caseRows = [];
+    state.caseCursor = null;
+    state.caseQuery = '';
+    state.caseSection = '';
+    state.caseStatuses = {confirmed: true, partial: true, candidate: false};
+    var panel = document.getElementById('ins-panel-cases');
+    if (!panel) return;
+    if (state.data.cases.status !== 'available') {
+      panel.innerHTML = '<div class="insights-empty">' + esc(statusText(state.data.cases.status, 'cases')) + '</div>';
+      return;
+    }
+    var counts = state.data.cases.counts || {};
+    panel.innerHTML =
+      '<div class="insights-toolbar">' +
+        '<input class="insights-input" id="case-search" type="search" placeholder="事例を検索…" aria-label="構造化事例を検索">' +
+        '<div class="case-statuses" aria-label="品質状態で絞り込む">' +
+          '<button class="case-status confirmed" data-case-status="confirmed" aria-pressed="true">✓ 確定 ' + Number(counts.confirmed || 0) + '</button>' +
+          '<button class="case-status partial" data-case-status="partial" aria-pressed="true">◐ 部分 ' + Number(counts.partial || 0) + '</button>' +
+          '<button class="case-status candidate" data-case-status="candidate" aria-pressed="false">○ 候補 ' + Number(counts.candidate || 0) + '</button>' +
+        '</div>' +
+        '<select class="insights-select" id="case-section" aria-label="節で絞り込む"><option value="">節: すべて</option></select>' +
+        '<div class="insights-countline" id="case-countline"></div>' +
+      '</div><div id="case-list">' + skeleton() + '</div>' +
+      '<button class="insight-btn insights-more" id="case-more" hidden>さらに20件を表示</button>';
+    var timer = null;
+    document.getElementById('case-search').addEventListener('input', function(event) {
+      clearTimeout(timer);
+      timer = setTimeout(function() {
+        state.caseQuery = event.target.value.trim(); loadCases(state, true);
+      }, 200);
+    });
+    document.querySelectorAll('.case-status').forEach(function(button) {
+      button.addEventListener('click', function() {
+        var key = button.dataset.caseStatus;
+        var selectedCount = Object.keys(state.caseStatuses).filter(function(name) {
+          return state.caseStatuses[name];
+        }).length;
+        if (state.caseStatuses[key] && selectedCount === 1) return;
+        state.caseStatuses[key] = !state.caseStatuses[key];
+        button.setAttribute('aria-pressed', state.caseStatuses[key] ? 'true' : 'false');
+        loadCases(state, true);
+      });
+    });
+    document.getElementById('case-section').addEventListener('change', function(event) {
+      state.caseSection = event.target.value; loadCases(state, true);
+    });
+    document.getElementById('case-more').addEventListener('click', function() { loadCases(state, false); });
+    loadCaseSectionOptions(state);
+    loadCases(state, true);
+  }
+
+  function loadCaseSectionOptions(state) {
+    _insightsApi('/api/node/sections?key=' + encodeURIComponent(state.itemKey) + '&limit=100')
+      .then(function(data) {
+        if (current !== state) return;
+        var select = document.getElementById('case-section');
+        if (!select) return;
+        (data.items || []).forEach(function(row) {
+          var option = document.createElement('option');
+          option.value = row.section_id;
+          option.textContent = row.chapter || ('節 ' + row.section_id);
+          select.appendChild(option);
+        });
+      }).catch(function() {});
+  }
+
+  function loadCases(state, reset) {
+    if (reset) { state.caseRows = []; state.caseCursor = null; }
+    var list = document.getElementById('case-list');
+    if (!list || current !== state) return;
+    if (reset) list.innerHTML = skeleton();
+    var fetchSeq = ++state.caseFetchSeq;
+    var selected = Object.keys(state.caseStatuses).filter(function(name) {
+      return state.caseStatuses[name];
+    });
+    var url = '/api/node/cases?key=' + encodeURIComponent(state.itemKey) +
+      '&statuses=' + encodeURIComponent(selected.join(',')) +
+      '&section_id=' + encodeURIComponent(state.caseSection) +
+      '&q=' + encodeURIComponent(state.caseQuery) + '&limit=20' +
+      (state.caseCursor ? '&cursor=' + encodeURIComponent(state.caseCursor) : '');
+    _insightsApi(url).then(function(data) {
+      if (current !== state || state.requestId !== _ctxPaneReq || fetchSeq !== state.caseFetchSeq) return;
+      state.caseRows = state.caseRows.concat(data.items || []);
+      state.caseCursor = data.next_cursor;
+      renderCases(state, data.total || 0);
+    }).catch(function(error) {
+      if (current !== state) return;
+      list.innerHTML = '<div class="insights-error">読み込めませんでした: ' + esc(error.message) + '</div>' +
+        '<button class="insight-btn insights-more" id="case-retry">再試行</button>';
+      var retry = document.getElementById('case-retry');
+      if (retry) retry.addEventListener('click', function() { loadCases(state, reset); });
+    });
+  }
+
+  function chipHtml(label, value) {
+    if (!value) return '';
+    return String(value).split(';').map(function(part) {
+      var text = part.trim(); return text ? '<span class="case-chip">' + esc(label + ': ' + text) + '</span>' : '';
+    }).join('');
+  }
+
+  function renderCases(state, total) {
+    var list = document.getElementById('case-list');
+    var countline = document.getElementById('case-countline');
+    if (!list) return;
+    if (countline) countline.textContent = total + '件を表示対象にしています';
+    if (!state.caseRows.length) {
+      list.innerHTML = '<div class="insights-empty">選択中の条件に該当する事例はありません。<br>' +
+        '<button class="insight-btn" id="case-clear">条件を解除</button></div>';
+      var clear = document.getElementById('case-clear');
+      if (clear) clear.addEventListener('click', function() {
+        state.caseQuery = ''; state.caseSection = '';
+        state.caseStatuses = {confirmed: true, partial: true, candidate: false};
+        setupCases(state);
+      });
+    } else {
+      var labels = {
+        confirmed: ['✓ 確定', 'confirmed'], partial: ['◐ 部分', 'partial'], candidate: ['○ 候補', 'candidate']
+      };
+      list.innerHTML = state.caseRows.map(function(row, index) {
+        var status = labels[row.quality_status] || labels.candidate;
+        var reported = row.report_status === 'pending'
+          ? '<span class="reported-badge">報告済み・判定待ち</span>' : '';
+        var expanded = state.expandedCases[row.case_id];
+        var evidenceOpen = state.evidenceOpen[row.case_id];
+        return '<article class="insight-card case-card">' +
+          '<div class="case-card-head"><span class="case-badge ' + status[1] + '">' + status[0] + '</span>' + reported + '</div>' +
+          '<div class="case-description' + (expanded ? ' expanded' : '') + '">' + esc(row.description) + '</div>' +
+          '<div class="case-chips">' + chipHtml('地域', row.region) + chipHtml('集団', row.group) +
+            chipHtml('時期', row.period) + chipHtml('実践', row.practices) + chipHtml('現象', row.phenomena) + '</div>' +
+          '<div class="insight-meta">' + esc(row.section_id ? ('節 ' + row.section_id) : '') + '</div>' +
+          '<div class="insight-actions">' +
+            '<button class="insight-btn case-expand-btn" data-case-index="' + index + '">' + (expanded ? '説明を折りたたむ' : '説明を全文表示') + '</button>' +
+            '<button class="insight-btn case-evidence-btn" data-case-index="' + index + '">' + (evidenceOpen ? '根拠を隠す' : '根拠を見る') + '</button>' +
+            '<button class="insight-btn case-report-btn" data-case-index="' + index + '"' +
+              (row.report_status === 'pending' ? ' disabled' : '') + '>問題を報告</button>' +
+          '</div>' +
+          '<div class="insight-source" id="case-evidence-' + row.case_id + '"' + (evidenceOpen ? '' : ' hidden') + '></div>' +
+          '<details class="case-technical"><summary>技術詳細</summary><div>case ' + row.case_id +
+            ' · confidence ' + esc(row.confidence == null ? '—' : row.confidence) + '<br>' + esc(row.model || '') +
+            (row.updated_at ? ' · ' + esc(_fmtSummaryDate(row.updated_at)) : '') + '</div></details>' +
+        '</article>';
+      }).join('');
+    }
+    list.querySelectorAll('.case-expand-btn').forEach(function(button) {
+      button.addEventListener('click', function() {
+        var row = state.caseRows[Number(button.dataset.caseIndex)];
+        state.expandedCases[row.case_id] = !state.expandedCases[row.case_id];
+        renderCases(state, total);
+      });
+    });
+    list.querySelectorAll('.case-evidence-btn').forEach(function(button) {
+      button.addEventListener('click', function() {
+        var row = state.caseRows[Number(button.dataset.caseIndex)];
+        state.evidenceOpen[row.case_id] = !state.evidenceOpen[row.case_id];
+        renderCases(state, total);
+        if (state.evidenceOpen[row.case_id]) drawCaseEvidence(state, row);
+      });
+    });
+    list.querySelectorAll('.case-report-btn').forEach(function(button) {
+      button.addEventListener('click', function() {
+        var row = state.caseRows[Number(button.dataset.caseIndex)];
+        ensureCaseEvidence(state, row).then(function(data) {
+          if (current !== state) return;
+          _openQualityReport({
+            targetType: 'case', itemKey: state.itemKey, caseId: row.case_id,
+            evidence: data.evidence || [],
+            returnFocusSelector: '.case-expand-btn[data-case-index="' + button.dataset.caseIndex + '"]',
+            onSaved: function() { row.report_status = 'pending'; renderCases(state, total); }
+          }, button);
+        }).catch(function(error) { _showInsightsToast('根拠を読み込めませんでした: ' + error.message); });
+      });
+    });
+    state.caseRows.forEach(function(row) {
+      if (state.evidenceOpen[row.case_id]) drawCaseEvidence(state, row);
+    });
+    var more = document.getElementById('case-more');
+    if (more) { more.hidden = !state.caseCursor; more.textContent = 'さらに20件を表示'; }
+  }
+
+  function ensureCaseEvidence(state, row) {
+    if (state.evidenceCache[row.case_id]) return Promise.resolve(state.evidenceCache[row.case_id]);
+    return _insightsApi('/api/case/evidence?case_id=' + encodeURIComponent(row.case_id)).then(function(data) {
+      state.evidenceCache[row.case_id] = data; return data;
+    });
+  }
+
+  function drawCaseEvidence(state, row) {
+    var wrap = document.getElementById('case-evidence-' + row.case_id);
+    if (!wrap) return;
+    wrap.hidden = false;
+    if (!state.evidenceCache[row.case_id]) wrap.innerHTML = skeleton();
+    ensureCaseEvidence(state, row).then(function(data) {
+      if (current !== state || !wrap.parentNode) return;
+      var evidence = data.evidence || [];
+      if (!evidence.length) {
+        wrap.innerHTML = '<div class="insights-error">根拠データを読み込めません。問題を報告してください。</div>';
+        return;
+      }
+      wrap.innerHTML = evidence.map(function(item, index) {
+        return '<div class="source-chunk"><div class="source-chunk-head">根拠 ' + (index + 1) + ' / ' +
+          evidence.length + ' · ' + esc(item.field_name || 'description') + ' · ' + esc(item.chunk_id) +
+          '</div><blockquote class="source-quote">' + esc(item.evidence_quote) + '</blockquote></div>';
+      }).join('');
+    }).catch(function(error) {
+      if (wrap.parentNode) wrap.innerHTML = '<div class="insights-error">根拠を読み込めませんでした: ' + esc(error.message) + '</div>';
+    });
+  }
+
+  function open(node, requestId) {
+    var state = {
+      node: node, itemKey: node.itemKey, requestId: requestId, activeTab: 'overview',
+      data: null, sectionsReady: false, casesReady: false,
+      sectionSourceCache: {}, evidenceCache: {}, expandedCases: {}, evidenceOpen: {},
+      sectionFetchSeq: 0, caseFetchSeq: 0
+    };
+    current = state;
+    shell(node, requestId);
+    var cached = cache[node.itemKey];
+    var promise = cached ? Promise.resolve(cached) : _insightsApi(
+      '/api/node/insights?key=' + encodeURIComponent(node.itemKey)
+    );
+    promise.then(function(data) {
+      if (current !== state || requestId !== _ctxPaneReq) return;
+      cache[node.itemKey] = data;
+      state.data = data; updateCounts(state); renderOverview(state);
+    }).catch(function(error) {
+      if (current !== state) return;
+      var panel = document.getElementById('ins-panel-overview');
+      if (panel) panel.innerHTML = '<div class="insights-error">読み込めませんでした: ' + esc(error.message) + '</div>' +
+        '<button class="insight-btn insights-more" id="insights-retry">再試行</button>';
+      var retry = document.getElementById('insights-retry');
+      if (retry) retry.addEventListener('click', function() { cache[node.itemKey] = null; open(node, ++_ctxPaneReq); });
+    });
+  }
+
+  function updateSummary(itemKey, summary) {
+    if (cache[itemKey]) cache[itemKey].summary = summary;
+    if (current && current.itemKey === itemKey && current.data) current.data.summary = summary;
+  }
+
+  return {open: open, updateSummary: updateSummary};
+})();
 
 /* ── 8. Sidebar: 資料一覧 ────────────────────────────────── */
 (function() {
@@ -4862,7 +5693,7 @@ function _renderSummarySection(itemKey, title, summaryData) {
   (function() {
     var hnd = document.getElementById('sb-resize-x');
     var sb  = document.getElementById('sidebar');
-    var MIN_W = 200, MAX_W = 700;
+    var MIN_W = 280, MAX_W = 700;
     hnd.addEventListener('mousedown', function(e) {
       e.preventDefault();
       hnd.classList.add('dragging');

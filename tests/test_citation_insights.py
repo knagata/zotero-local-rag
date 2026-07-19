@@ -99,8 +99,13 @@ class CitationInsightsTests(unittest.TestCase):
 
     def test_processed_empty_is_distinct_from_not_processed(self):
         db_relations.replace_item_case_annotations("EMPTY", [], model="deepseek:test")
+        db_relations.mark_insight_generation_status("EMPTY", "sections", 0)
         self.assertEqual(
             citation_insights.get_item_insights("EMPTY")["cases"]["status"],
+            "processed_empty",
+        )
+        self.assertEqual(
+            citation_insights.get_item_insights("EMPTY")["sections"]["status"],
             "processed_empty",
         )
         self.assertEqual(

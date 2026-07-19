@@ -1446,6 +1446,16 @@ def replace_extractive_summary_bundle(
                 section["summary"], section.get("model") or model,
                 section.get("chunk_count"),
             ))
+        section_count = len(section_summaries)
+        conn.execute('''
+            INSERT INTO insight_generation_status (item_key, kind, status, row_count, updated_at)
+            VALUES (?, 'sections', ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(item_key, kind) DO UPDATE SET
+                status=excluded.status, row_count=excluded.row_count,
+                updated_at=CURRENT_TIMESTAMP
+        ''', (
+            item_key, "available" if section_count else "processed_empty", section_count,
+        ))
         conn.execute('''
             UPDATE item_summaries SET summary = ?, summary_en = NULL, keywords = NULL,
                 model = ?, chunk_count = ?, source_mtime = ?, updated_at = CURRENT_TIMESTAMP
@@ -1638,6 +1648,24 @@ def get_insight_generation_status(item_key: str, kind: str) -> Optional[Dict[str
             (item_key, kind),
         ).fetchone()
         return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def mark_insight_generation_status(item_key: str, kind: str, row_count: int) -> None:
+    if kind not in {"sections", "cases"}:
+        raise ValueError("kind must be sections or cases.")
+    count = max(0, int(row_count))
+    conn = get_db_connection()
+    try:
+        conn.execute('''
+            INSERT INTO insight_generation_status (item_key, kind, status, row_count, updated_at)
+            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(item_key, kind) DO UPDATE SET
+                status=excluded.status, row_count=excluded.row_count,
+                updated_at=CURRENT_TIMESTAMP
+        ''', (item_key, kind, "available" if count else "processed_empty", count))
+        conn.commit()
     finally:
         conn.close()
 

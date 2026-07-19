@@ -45,8 +45,8 @@ def _generation_status(
         "WHERE item_key = ? AND kind = ?",
         (item_key, kind),
     ).fetchone()
-    if row and row["status"] == "processed_empty":
-        return {"status": "processed_empty", "count": 0, "updated_at": row["updated_at"]}
+    if row:
+        return {"status": row["status"], "count": 0, "updated_at": row["updated_at"]}
     return {"status": "not_processed", "count": 0}
 
 
@@ -62,13 +62,25 @@ def _current_summary_report_status(
     return str(row["status"]) if row else None
 
 
-def _case_report_status(conn: Any, row: dict[str, Any]) -> str | None:
-    case_hash = db_relations._case_fingerprint(row)
-    report = conn.execute(
-        "SELECT status FROM case_quality_reports WHERE case_id = ? AND case_hash = ?",
-        (row["case_id"], case_hash),
-    ).fetchone()
-    return str(report["status"]) if report else None
+def _case_report_statuses(
+    conn: Any, rows: list[dict[str, Any]],
+) -> dict[int, str]:
+    if not rows:
+        return {}
+    current_hashes = {
+        int(row["case_id"]): db_relations._case_fingerprint(row) for row in rows
+    }
+    placeholders = ",".join("?" for _ in rows)
+    reports = conn.execute(
+        f"SELECT case_id, case_hash, status FROM case_quality_reports "
+        f"WHERE case_id IN ({placeholders})",
+        tuple(current_hashes),
+    ).fetchall()
+    return {
+        int(report["case_id"]): str(report["status"])
+        for report in reports
+        if current_hashes.get(int(report["case_id"])) == report["case_hash"]
+    }
 
 
 def get_item_insights(item_key: str) -> dict[str, Any]:
@@ -88,9 +100,10 @@ def get_item_insights(item_key: str) -> dict[str, Any]:
         case_rows = [dict(row) for row in conn.execute(
             "SELECT * FROM case_annotations WHERE item_key = ? ORDER BY case_id", (key,),
         ).fetchall()]
+        report_statuses = _case_report_statuses(conn, case_rows)
         counts = {status: 0 for status in CASE_STATUSES}
         for row in case_rows:
-            if _case_report_status(conn, row) == "disabled":
+            if report_statuses.get(int(row["case_id"])) == "disabled":
                 continue
             status = str(row.get("quality_status") or "confirmed")
             if status in counts:
@@ -210,9 +223,10 @@ def list_cases(
             WHERE c.item_key = ?
             GROUP BY c.case_id ORDER BY c.case_id
         ''', (key,)).fetchall()]
+        report_statuses = _case_report_statuses(conn, rows)
         result = []
         for row in rows:
-            report_status = _case_report_status(conn, row)
+            report_status = report_statuses.get(int(row["case_id"]))
             if report_status == "disabled":
                 continue
             quality_status = str(row.get("quality_status") or "confirmed")
@@ -260,7 +274,7 @@ def get_case_evidence(case_id: int) -> dict[str, Any]:
         if case_row is None:
             raise KeyError("case was not found.")
         current = dict(case_row)
-        if _case_report_status(conn, current) == "disabled":
+        if _case_report_statuses(conn, [current]).get(normalized_id) == "disabled":
             raise KeyError("case was not found.")
         rows = conn.execute(
             "SELECT field_name, chunk_id, evidence_quote FROM case_evidence "

@@ -18,7 +18,8 @@ try:
     from .chunk_store import active_collection_name, get_item_chunks, list_item_keys
     from .db_relations import (
         delete_section_summary, get_case_annotations, get_item_summary, get_section_summaries,
-        replace_case_annotations, save_item_summary, save_section_summary, update_case_chunk,
+        mark_insight_generation_status, replace_case_annotations, save_item_summary,
+        save_section_summary, update_case_chunk,
     )
     from .embedder import create_embedding_function, open_chroma_collection, resolve_embedder_settings
     from .llm_client import DeepSeekClient, InvalidLLMResponse, LLMError, RateLimitReached, get_llm
@@ -29,7 +30,8 @@ except ImportError:  # pragma: no cover
     from chunk_store import active_collection_name, get_item_chunks, list_item_keys
     from db_relations import (
         delete_section_summary, get_case_annotations, get_item_summary, get_section_summaries,
-        replace_case_annotations, save_item_summary, save_section_summary, update_case_chunk,
+        mark_insight_generation_status, replace_case_annotations, save_item_summary,
+        save_section_summary, update_case_chunk,
     )
     from embedder import create_embedding_function, open_chroma_collection, resolve_embedder_settings
     from llm_client import DeepSeekClient, InvalidLLMResponse, LLMError, RateLimitReached, get_llm
@@ -1093,6 +1095,7 @@ def build_item(
         item_key, summary, model, summary_en=str(item_result.get("summary_en") or ""),
         keywords="; ".join(keywords), chunk_count=len(chunks), source_mtime=source_mtime,
     )
+    mark_insight_generation_status(item_key, "sections", len(section_rows))
     total_generated = sum(row["total_generated"] for row in verification_by_section)
     total_discarded = sum(row["total_discarded"] for row in verification_by_section)
     return {
