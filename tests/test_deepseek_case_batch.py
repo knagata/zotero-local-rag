@@ -18,6 +18,17 @@ class FakeClient:
 
 
 class DeepSeekCaseBatchTests(unittest.TestCase):
+    def test_obvious_lowercase_boundary_continuation_keeps_both_evidence_pieces(self):
+        units = [
+            {"unit_id": "u1", "chunk_id": "c1", "text": "The first resistant"},
+            {"unit_id": "u2", "chunk_id": "c2", "text": "weeds appeared in 1996. More text."},
+        ]
+        text, evidence = build_deepseek_cases._extend_boundary_evidence(
+            "u1", units, "The first resistant",
+        )
+        self.assertEqual(text, "The first resistant weeds appeared in 1996.")
+        self.assertEqual([row["chunk_id"] for row in evidence], ["c1", "c2"])
+
     def test_union_candidates_are_tiered_instead_of_hard_rejected(self):
         units = [
             {"unit_id": "u1", "chunk_id": "c1", "text": "Concrete grounded event."},

@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import sys
 import time
 
@@ -43,6 +44,28 @@ def _source_hash(chunks: list[dict]) -> str:
     return hashlib.sha256("\n".join(
         f"{row.get('id')}\0{row.get('text')}" for row in chunks
     ).encode("utf-8")).hexdigest()
+
+
+def _extend_boundary_evidence(unit_id: str, units: list[dict], quote: str) -> tuple[str, list[dict]]:
+    """Join only an obvious lower-case continuation and retain both exact source pieces."""
+    lookup = {row["unit_id"]: index for index, row in enumerate(units)}
+    index = lookup[unit_id]
+    current = units[index]
+    evidence = [{"field_name": "description", "chunk_id": current["chunk_id"],
+                 "evidence_quote": quote}]
+    if quote.rstrip()[-1:] in ".!?。！？』」”’)]" or index + 1 >= len(units):
+        return quote, evidence
+    following = str(units[index + 1]["text"] or "").strip()
+    first = re.search(r"[A-Za-z]", following[:80])
+    if not first or not first.group(0).islower():
+        return quote, evidence
+    end = re.search(r"[.!?。！？]", following)
+    continuation = following[: end.end() if end else min(len(following), 500)].strip()
+    if not continuation:
+        return quote, evidence
+    evidence.append({"field_name": "description", "chunk_id": units[index + 1]["chunk_id"],
+                     "evidence_quote": continuation})
+    return f"{quote.rstrip()} {continuation}", evidence
 
 
 def _extract_section(section: dict, *, samples: int, max_cases: int = 5) -> tuple[list[dict], dict]:
@@ -107,10 +130,11 @@ def _extract_section(section: dict, *, samples: int, max_cases: int = 5) -> tupl
         row["quality_status"] = "confirmed" if is_accepted and optional >= 2 else "partial" if is_accepted else "candidate"
         row["confidence"] = round((0.7 + 0.1 * min(votes[unit_id], 3)) if is_accepted else 0.35, 2)
         row["chunk_id"] = lookup[unit_id]["chunk_id"]
-        row["evidence"] = [{
-            "field_name": "description", "chunk_id": lookup[unit_id]["chunk_id"],
-            "evidence_quote": row["evidence_quote"],
-        }]
+        row["description"], row["evidence"] = _extend_boundary_evidence(
+            unit_id, units, row["evidence_quote"],
+        )
+        if len(row["evidence"]) > 1:
+            row["evidence_quote"] = row["description"]
         cases.append(row)
     return cases, {"candidates": len(candidate_ids), "accepted": len(accepted),
                    "saved": len(cases), "votes": dict(votes), "judge": judge,
