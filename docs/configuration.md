@@ -51,6 +51,10 @@ uv run scripts/setup_wizard.py --status
 ```dotenv
 SUMMARY_BATCH_MAX_ITEMS=20
 SUMMARY_BATCH_WORKERS=10
+CASE_BATCH_MAX_ITEMS=10
+CASE_SELECTOR_SAMPLES=2
+CASE_BATCH_WORKERS=10
+CASE_MAX_PER_SECTION=5
 ```
 
-`Maintenance-Widget.command` の要約更新は、最初にローカル抽出型要約を差分生成し、その対象をDeepSeek V4 FlashでAI要約へ更新します。品質ゲートを通らない場合だけV4 Proへフォールバックします。1回の処理件数と並列数は上記の環境変数で変更できます。定時スケジューラやCodex利用枠の確認は行いません。
+`Maintenance-Widget.command` の要約更新は、ローカル抽出型要約、DeepSeek AI要約、構造化事例の順に差分実行します。事例候補はFlashによる複数回の和集合から集め、Proで順位・状態を判定します。根拠のある候補は `confirmed`、`partial`、`candidate` として段階保存されます。定時スケジューラやCodex利用枠の確認は行いません。

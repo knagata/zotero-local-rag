@@ -85,6 +85,8 @@ if [[ "$run_summaries" == "1" ]]; then
     run_step "ローカル抽出型要約更新" uv run python -m src.build_summaries
     run_step "DeepSeek AI要約更新" uv run python scripts/build_deepseek_summaries.py \
         --output data/quality/maintenance-summary-report.json
+    run_step "DeepSeek 構造化事例更新" uv run python scripts/build_deepseek_cases.py \
+        --output data/quality/maintenance-case-report.json
 fi
 
 if [[ "$run_citations" == "1" ]]; then
@@ -95,6 +97,7 @@ if [[ "$review_relations" == "1" ]]; then
     run_step "品質報告のAI自動判定" uv run python scripts/triage_quality_reports.py
     run_step "曖昧な引用関係レポート確認" uv run python scripts/review_relation_reports.py
     run_step "曖昧な要約品質レポート確認" uv run python scripts/review_summary_quality_reports.py
+    run_step "曖昧な事例品質レポート確認" uv run python scripts/review_case_quality_reports.py
 fi
 
 echo ""

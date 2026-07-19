@@ -32,6 +32,10 @@ class McpRelationReportingTests(unittest.TestCase):
         db_relations.save_section_summary(
             "ITEM", "w0", "A current section summary.", model="deepseek:flash",
         )
+        db_relations.replace_case_annotations("ITEM", "w0", [{
+            "description": "A structured empirical case.", "chunk_id": "chunk-1",
+            "evidence_quote": "empirical source evidence",
+        }], model="deepseek:test")
 
     def tearDown(self):
         self.db_patch.stop()
@@ -73,6 +77,18 @@ class McpRelationReportingTests(unittest.TestCase):
         listed = rag_mcp_server.list_summary_quality_reports("pending")
         self.assertEqual(listed["report_count"], 1)
         self.assertEqual(listed["reports"][0]["section_id"], "w0")
+
+    def test_claude_can_report_structured_case_problem(self):
+        case_id = db_relations.get_case_annotations("ITEM")[0]["case_id"]
+        result = rag_mcp_server.report_case_quality(
+            case_id, "not_a_case",
+            "The cited chunk is an abstract theoretical statement, not an empirical case.",
+            evidence_chunk_ids=["chunk-1"],
+        )
+        self.assertEqual(result["status"], "reported")
+        listed = rag_mcp_server.list_case_quality_reports("pending")
+        self.assertEqual(listed["report_count"], 1)
+        self.assertEqual(listed["reports"][0]["case_id"], case_id)
 
 
 if __name__ == "__main__":

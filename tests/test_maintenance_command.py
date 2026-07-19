@@ -47,10 +47,12 @@ class MaintenanceCommandTests(unittest.TestCase):
             "run src/index_from_zotero.py --progress",
             "run python -m src.build_summaries",
             "run python scripts/build_deepseek_summaries.py --output data/quality/maintenance-summary-report.json",
+            "run python scripts/build_deepseek_cases.py --output data/quality/maintenance-case-report.json",
             "run src/update_citations.py --all",
             "run python scripts/triage_quality_reports.py",
             "run python scripts/review_relation_reports.py",
             "run python scripts/review_summary_quality_reports.py",
+            "run python scripts/review_case_quality_reports.py",
         ])
 
     def test_user_can_skip_one_update(self):
@@ -62,6 +64,7 @@ class MaintenanceCommandTests(unittest.TestCase):
             "run python scripts/triage_quality_reports.py",
             "run python scripts/review_relation_reports.py",
             "run python scripts/review_summary_quality_reports.py",
+            "run python scripts/review_case_quality_reports.py",
         ])
 
     def test_failure_stops_later_updates(self):

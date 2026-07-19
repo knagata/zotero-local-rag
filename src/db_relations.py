@@ -159,14 +159,38 @@ def _init_db(conn: sqlite3.Connection) -> None:
             source_kind TEXT,
             evidence_quote TEXT,
             model TEXT,
+            quality_status TEXT NOT NULL DEFAULT 'confirmed',
+            confidence REAL,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
-    try:
-        cursor.execute("ALTER TABLE case_annotations ADD COLUMN evidence_quote TEXT")
-    except sqlite3.OperationalError:
-        pass
+    for sql in (
+        "ALTER TABLE case_annotations ADD COLUMN evidence_quote TEXT",
+        "ALTER TABLE case_annotations ADD COLUMN quality_status TEXT NOT NULL DEFAULT 'confirmed'",
+        "ALTER TABLE case_annotations ADD COLUMN confidence REAL",
+    ):
+        try:
+            cursor.execute(sql)
+        except sqlite3.OperationalError:
+            pass
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_case_item ON case_annotations(item_key)")
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS case_evidence (
+            evidence_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            case_id INTEGER NOT NULL REFERENCES case_annotations(case_id) ON DELETE CASCADE,
+            field_name TEXT NOT NULL DEFAULT 'description',
+            chunk_id TEXT NOT NULL,
+            evidence_quote TEXT NOT NULL,
+            UNIQUE(case_id, field_name, chunk_id, evidence_quote)
+        )
+    ''')
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_case_evidence_case ON case_evidence(case_id)")
+    cursor.execute('''
+        INSERT OR IGNORE INTO case_evidence (case_id, field_name, chunk_id, evidence_quote)
+        SELECT case_id, 'description', chunk_id, evidence_quote FROM case_annotations
+        WHERE chunk_id IS NOT NULL AND chunk_id <> ''
+          AND evidence_quote IS NOT NULL AND evidence_quote <> ''
+    ''')
 
     # 外部論文（S2 paperId）の概要キャッシュ。
     # status='found' は abstract か tldr のいずれかが取得できた状態、
@@ -388,6 +412,35 @@ def _init_db(conn: sqlite3.Connection) -> None:
     cursor.execute(
         "CREATE INDEX IF NOT EXISTS idx_summary_quality_reports_status "
         "ON summary_quality_reports(status, triage_status, item_key)"
+    )
+
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS case_quality_reports (
+            report_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            case_id INTEGER NOT NULL,
+            case_hash TEXT NOT NULL,
+            item_key TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            details TEXT,
+            evidence_chunk_ids_json TEXT,
+            reporter TEXT NOT NULL DEFAULT 'mcp:claude',
+            status TEXT NOT NULL DEFAULT 'pending'
+                CHECK(status IN ('pending', 'disabled', 'kept')),
+            triage_status TEXT NOT NULL DEFAULT 'unreviewed'
+                CHECK(triage_status IN ('unreviewed', 'confirmed', 'dismissed', 'uncertain')),
+            triage_model TEXT,
+            triage_evidence_json TEXT,
+            report_count INTEGER NOT NULL DEFAULT 1,
+            reviewer_note TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            reviewed_at TIMESTAMP,
+            UNIQUE(case_id, case_hash)
+        )
+    ''')
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_case_quality_reports_status "
+        "ON case_quality_reports(status, triage_status, item_key)"
     )
     
     conn.commit()
@@ -1437,23 +1490,47 @@ def replace_case_annotations(
 ) -> None:
     conn = get_db_connection()
     try:
+        old_ids = [row[0] for row in conn.execute(
+            "SELECT case_id FROM case_annotations WHERE item_key = ? AND section_id = ?",
+            (item_key, section_id),
+        )]
+        if old_ids:
+            conn.executemany("DELETE FROM case_evidence WHERE case_id = ?", [(value,) for value in old_ids])
         conn.execute(
             "DELETE FROM case_annotations WHERE item_key = ? AND section_id = ?",
             (item_key, section_id),
         )
-        conn.executemany('''
+        for case in cases:
+            if not case.get("description"):
+                continue
+            cursor = conn.execute('''
             INSERT INTO case_annotations
                 (item_key, section_id, description, region, grp, practices, phenomena,
-                 period, chunk_id, source_kind, evidence_quote, model, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-        ''', [(
-            item_key, section_id, case.get("description") or "", case.get("region"),
-            case.get("group") or case.get("grp"),
-            "; ".join(case.get("practices") or []) if isinstance(case.get("practices"), list) else case.get("practices"),
-            "; ".join(case.get("phenomena") or []) if isinstance(case.get("phenomena"), list) else case.get("phenomena"),
-            case.get("period"), case.get("chunk_id"), case.get("source_kind"),
-            case.get("evidence_quote"), model,
-        ) for case in cases if case.get("description")])
+                 period, chunk_id, source_kind, evidence_quote, model,
+                 quality_status, confidence, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ''', (
+                item_key, section_id, case.get("description") or "", case.get("region"),
+                case.get("group") or case.get("grp"),
+                "; ".join(case.get("practices") or []) if isinstance(case.get("practices"), list) else case.get("practices"),
+                "; ".join(case.get("phenomena") or []) if isinstance(case.get("phenomena"), list) else case.get("phenomena"),
+                case.get("period"), case.get("chunk_id"), case.get("source_kind"),
+                case.get("evidence_quote"), model, case.get("quality_status") or "confirmed",
+                case.get("confidence"),
+            ))
+            case_id = int(cursor.lastrowid)
+            evidence_rows = case.get("evidence") or [{
+                "field_name": "description", "chunk_id": case.get("chunk_id"),
+                "evidence_quote": case.get("evidence_quote"),
+            }]
+            conn.executemany('''
+                INSERT OR IGNORE INTO case_evidence
+                    (case_id, field_name, chunk_id, evidence_quote)
+                VALUES (?, ?, ?, ?)
+            ''', [(
+                case_id, str(row.get("field_name") or "description"),
+                str(row.get("chunk_id") or ""), str(row.get("evidence_quote") or ""),
+            ) for row in evidence_rows if row.get("chunk_id") and row.get("evidence_quote")])
         conn.commit()
     finally:
         conn.close()
@@ -1468,7 +1545,63 @@ def get_case_annotations(item_key: Optional[str] = None) -> List[Dict[str, Any]]
             ).fetchall()
         else:
             rows = conn.execute("SELECT * FROM case_annotations ORDER BY case_id").fetchall()
-        return [dict(row) for row in rows]
+        output = [dict(row) for row in rows]
+        for item in output:
+            evidence = conn.execute(
+                "SELECT field_name, chunk_id, evidence_quote FROM case_evidence "
+                "WHERE case_id = ? ORDER BY evidence_id", (item["case_id"],),
+            ).fetchall()
+            item["evidence"] = [dict(row) for row in evidence]
+        return output
+    finally:
+        conn.close()
+
+
+def replace_item_case_annotations(
+    item_key: str, sections: List[Dict[str, Any]], *, model: str,
+) -> None:
+    """Replace one item's structured cases atomically after every section succeeds."""
+    conn = get_db_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        old_ids = [row[0] for row in conn.execute(
+            "SELECT case_id FROM case_annotations WHERE item_key=?", (item_key,),
+        )]
+        if old_ids:
+            conn.executemany("DELETE FROM case_evidence WHERE case_id=?", [(value,) for value in old_ids])
+        conn.execute("DELETE FROM case_annotations WHERE item_key=?", (item_key,))
+        for section in sections:
+            section_id = str(section.get("section_id") or "")
+            for case in section.get("cases") or []:
+                if not case.get("description"):
+                    continue
+                cursor = conn.execute('''
+                    INSERT INTO case_annotations
+                        (item_key, section_id, description, region, grp, practices, phenomena,
+                         period, chunk_id, source_kind, evidence_quote, model,
+                         quality_status, confidence, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ''', (
+                    item_key, section_id, case.get("description"), case.get("region"),
+                    case.get("group") or case.get("grp"),
+                    "; ".join(case.get("practices") or []) if isinstance(case.get("practices"), list) else case.get("practices"),
+                    "; ".join(case.get("phenomena") or []) if isinstance(case.get("phenomena"), list) else case.get("phenomena"),
+                    case.get("period"), case.get("chunk_id"), case.get("source_kind"),
+                    case.get("evidence_quote"), model, case.get("quality_status") or "confirmed",
+                    case.get("confidence"),
+                ))
+                case_id = int(cursor.lastrowid)
+                conn.executemany('''
+                    INSERT OR IGNORE INTO case_evidence
+                        (case_id, field_name, chunk_id, evidence_quote) VALUES (?, ?, ?, ?)
+                ''', [(
+                    case_id, str(row.get("field_name") or "description"),
+                    str(row.get("chunk_id") or ""), str(row.get("evidence_quote") or ""),
+                ) for row in case.get("evidence") or [] if row.get("chunk_id") and row.get("evidence_quote")])
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 
@@ -1688,6 +1821,127 @@ SUMMARY_REPORT_REASONS = {
     "unsupported_claim", "wrong_number", "wrong_work", "missing_context",
     "misleading_summary", "other",
 }
+CASE_REPORT_REASONS = {
+    "not_a_case", "unsupported_field", "wrong_context", "duplicate_case",
+    "misleading_description", "other",
+}
+
+
+def _case_fingerprint(case: Dict[str, Any]) -> str:
+    fields = [
+        case.get("description"), case.get("region"), case.get("grp"),
+        case.get("practices"), case.get("phenomena"), case.get("period"),
+        case.get("chunk_id"), case.get("source_kind"), case.get("evidence_quote"),
+        case.get("model"), case.get("quality_status"),
+    ]
+    return hashlib.sha256("\n".join(str(value or "") for value in fields).encode("utf-8")).hexdigest()
+
+
+def submit_case_quality_report(
+    *, case_id: int, reason: str, details: str,
+    evidence_chunk_ids: Optional[List[str]] = None, reporter: str = "mcp:claude",
+) -> Dict[str, Any]:
+    reason = (reason or "").strip().lower()
+    details = (details or "").strip()
+    if reason not in CASE_REPORT_REASONS:
+        raise ValueError("reason must be one of: " + ", ".join(sorted(CASE_REPORT_REASONS)))
+    if len(details) < 10:
+        raise ValueError("details must contain concrete evidence (at least 10 characters).")
+    chunk_ids = list(dict.fromkeys(
+        str(value or "").strip() for value in (evidence_chunk_ids or [])
+        if str(value or "").strip()
+    ))
+    conn = get_db_connection()
+    try:
+        row = conn.execute("SELECT * FROM case_annotations WHERE case_id = ?", (case_id,)).fetchone()
+        if row is None:
+            raise ValueError("The specified case does not exist.")
+        current = dict(row)
+        case_hash = _case_fingerprint(current)
+        conn.execute('''
+            INSERT INTO case_quality_reports
+                (case_id, case_hash, item_key, reason, details,
+                 evidence_chunk_ids_json, reporter, status, triage_status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 'unreviewed')
+            ON CONFLICT(case_id, case_hash) DO UPDATE SET
+                reason=excluded.reason, details=excluded.details,
+                evidence_chunk_ids_json=excluded.evidence_chunk_ids_json,
+                reporter=excluded.reporter,
+                status=CASE WHEN case_quality_reports.status='disabled' THEN 'disabled' ELSE 'pending' END,
+                triage_status=CASE WHEN case_quality_reports.status='disabled'
+                    THEN case_quality_reports.triage_status ELSE 'unreviewed' END,
+                report_count=case_quality_reports.report_count+1, updated_at=CURRENT_TIMESTAMP
+        ''', (case_id, case_hash, current["item_key"], reason, details,
+              json.dumps(chunk_ids, ensure_ascii=False), reporter or "mcp:claude"))
+        conn.commit()
+        saved = conn.execute(
+            "SELECT * FROM case_quality_reports WHERE case_id=? AND case_hash=?",
+            (case_id, case_hash),
+        ).fetchone()
+        result = dict(saved)
+        result["evidence_chunk_ids"] = json.loads(result.pop("evidence_chunk_ids_json") or "[]")
+        return result
+    finally:
+        conn.close()
+
+
+def get_case_quality_reports(status: Optional[str] = "pending") -> List[Dict[str, Any]]:
+    if status is not None and status not in {"pending", "disabled", "kept"}:
+        raise ValueError("status must be pending, disabled, kept, or None.")
+    conn = get_db_connection()
+    try:
+        where = "WHERE status=?" if status is not None else ""
+        rows = conn.execute(
+            f"SELECT * FROM case_quality_reports {where} ORDER BY updated_at, report_id",
+            (status,) if status is not None else (),
+        ).fetchall()
+        output = []
+        for row in rows:
+            item = dict(row)
+            item["evidence_chunk_ids"] = json.loads(item.pop("evidence_chunk_ids_json") or "[]")
+            item["triage_evidence"] = json.loads(item.pop("triage_evidence_json", None) or "null")
+            output.append(item)
+        return output
+    finally:
+        conn.close()
+
+
+def resolve_case_quality_report(
+    report_id: int, decision: str, *, triage_model: Optional[str] = None,
+    triage_evidence: Optional[Dict[str, Any]] = None, reviewer_note: Optional[str] = None,
+) -> bool:
+    mapping = {"disable": ("disabled", "confirmed"), "keep": ("kept", "dismissed"),
+               "uncertain": ("pending", "uncertain")}
+    normalized = (decision or "").strip().lower()
+    if normalized not in mapping:
+        raise ValueError("decision must be disable, keep, or uncertain.")
+    status, triage_status = mapping[normalized]
+    conn = get_db_connection()
+    try:
+        cursor = conn.execute('''
+            UPDATE case_quality_reports SET status=?, triage_status=?, triage_model=?,
+                triage_evidence_json=?, reviewer_note=?,
+                reviewed_at=CASE WHEN ?='pending' THEN NULL ELSE CURRENT_TIMESTAMP END,
+                updated_at=CURRENT_TIMESTAMP WHERE report_id=?
+        ''', (status, triage_status, triage_model,
+              json.dumps(triage_evidence, ensure_ascii=False) if triage_evidence is not None else None,
+              reviewer_note, status, report_id))
+        conn.commit()
+        return cursor.rowcount > 0
+    finally:
+        conn.close()
+
+
+def get_disabled_case_ids() -> set[int]:
+    conn = get_db_connection()
+    try:
+        rows = conn.execute('''
+            SELECT r.case_id, r.case_hash, c.* FROM case_quality_reports r
+            JOIN case_annotations c ON c.case_id=r.case_id WHERE r.status='disabled'
+        ''').fetchall()
+        return {int(row["case_id"]) for row in rows if _case_fingerprint(dict(row)) == row["case_hash"]}
+    finally:
+        conn.close()
 
 
 def _summary_fingerprint(summary: str, model: Optional[str]) -> str:

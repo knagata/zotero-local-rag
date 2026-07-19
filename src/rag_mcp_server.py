@@ -32,7 +32,7 @@ from chapter_detect import get_pdf_toc, get_epub_chapter_index_to_title
 from query_expansion import expand_queries
 from search_fusion import language_balanced_order
 from db_relations import (
-    get_case_annotations, get_disabled_summary_keys,
+    get_case_annotations, get_disabled_case_ids, get_disabled_summary_keys,
     get_item_summary as load_item_summary,
 )
 
@@ -138,11 +138,13 @@ from embedder import (
 
 
 MCP_INSTRUCTIONS = """
-Treat LLM summaries and Semantic Scholar citation relations as discovery aids, not
-final evidence. Base research answers on returned source chunks. When you find a
-concrete contradiction or wrong-work mapping while comparing a discovery aid with
+Treat LLM summaries, structured cases, and Semantic Scholar citation relations as
+discovery aids, not final evidence. Base research answers on returned source chunks.
+When you find a concrete contradiction, unsupported case field, or wrong-work mapping
+while comparing a discovery aid with
 source evidence, you MUST submit a report before finishing the answer:
 - call report_summary_quality for an item/section summary problem;
+- call report_case_quality for a structured-case problem;
 - call report_citation_relation for an S2 citation/reference problem.
 Do not report merely because a relation is surprising, topically distant, or weakly
 relevant. Include concrete source evidence. Reporting is advisory and reversible;
@@ -1179,7 +1181,11 @@ def search_cases(
         queries = expand_queries(queries, mode="case", timeout=5.0, logger=_log)
 
     paragraph_collection = _col()
-    case_rows = {int(row["case_id"]): row for row in get_case_annotations()}
+    disabled_case_ids = get_disabled_case_ids()
+    case_rows = {
+        int(row["case_id"]): row for row in get_case_annotations()
+        if int(row["case_id"]) not in disabled_case_ids
+    }
     structured_by_id: dict[int, dict[str, Any]] = {}
     structured_scores: dict[int, float] = {}
     warning = None
@@ -1200,8 +1206,11 @@ def search_cases(
                 if region and region.casefold() not in str(row.get("region") or "").casefold():
                     continue
                 structured_by_id[case_id] = row
-                structured_scores[case_id] = (
-                    structured_scores.get(case_id, 0.0) + 1.0 / (RRF_K + rank)
+                quality_weight = {
+                    "confirmed": 1.0, "partial": 0.85, "candidate": 0.6,
+                }.get(str(row.get("quality_status") or "confirmed"), 0.6)
+                structured_scores[case_id] = structured_scores.get(case_id, 0.0) + (
+                    quality_weight / (RRF_K + rank)
                 )
     except Exception as exc:
         warning = f"case annotation index unavailable: {exc}"
@@ -1223,7 +1232,13 @@ def search_cases(
         for rank, hit in enumerate(direct, start=1)
     ]
     combined.sort(key=lambda row: (-float(row.get("rrf_score") or 0), str(row.get("chunk_id") or row.get("case_id"))))
-    result: Dict[str, Any] = {"results": combined[:k]}
+    result: Dict[str, Any] = {
+        "results": combined[:k],
+        "reporting_obligation": (
+            "If a structured case materially conflicts with its source chunks, "
+            "call report_case_quality before completing the answer."
+        ),
+    }
     if warning:
         result["warning"] = warning
     return result
@@ -1943,6 +1958,56 @@ def list_summary_quality_reports(status: str = "pending") -> Dict[str, Any]:
     try:
         from db_relations import get_summary_quality_reports
         reports = get_summary_quality_reports(None if normalized == "all" else normalized)
+        return {"status": "ok", "report_count": len(reports), "reports": reports}
+    except Exception as exc:
+        return {"status": "error", "message": str(exc)}
+
+
+@mcp.tool()
+def report_case_quality(
+    case_id: int, reason: str, details: str,
+    evidence_chunk_ids: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """Report a concrete structured-case problem found against source chunks.
+
+    You MUST call this before finishing an answer when a structured case is not an
+    empirical/historical case, contains an unsupported field, uses the wrong context,
+    duplicates another case misleadingly, or otherwise conflicts with its source.
+    Do not report merely because optional region, group, or period fields are absent.
+
+    Args:
+        case_id: The structured case ID returned by search_cases.
+        reason: not_a_case, unsupported_field, wrong_context, duplicate_case,
+            misleading_description, or other.
+        details: Concrete discrepancy and what the source actually supports.
+        evidence_chunk_ids: Source chunk IDs demonstrating the problem.
+    """
+    try:
+        from db_relations import submit_case_quality_report
+        report = submit_case_quality_report(
+            case_id=case_id, reason=reason, details=details,
+            evidence_chunk_ids=evidence_chunk_ids, reporter="mcp:claude",
+        )
+        return {
+            "status": "reported",
+            "message": "The case report is queued for automated triage; use source chunks now.",
+            "report": report,
+        }
+    except ValueError as exc:
+        return {"status": "error", "message": str(exc)}
+    except Exception as exc:
+        return {"status": "error", "message": f"Could not save report: {exc}"}
+
+
+@mcp.tool()
+def list_case_quality_reports(status: str = "pending") -> Dict[str, Any]:
+    """List structured-case quality reports and automated-triage state."""
+    normalized = (status or "pending").strip().lower()
+    if normalized not in {"pending", "disabled", "kept", "all"}:
+        return {"status": "error", "message": "status must be pending, disabled, kept, or all."}
+    try:
+        from db_relations import get_case_quality_reports
+        reports = get_case_quality_reports(None if normalized == "all" else normalized)
         return {"status": "ok", "report_count": len(reports), "reports": reports}
     except Exception as exc:
         return {"status": "error", "message": str(exc)}
