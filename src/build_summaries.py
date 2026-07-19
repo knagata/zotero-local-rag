@@ -549,6 +549,7 @@ def _llm_summary_only_section(
     generated = client.generate_json(prompt, schema=SUMMARY_ONLY_SCHEMA, timeout=300)
     verified, stats = _verify_summary_only_result(generated, units)
     verified["_verification"] = stats
+    verified["_usage"] = client.last_usage
     return verified, f"deepseek:{model}:summary-only:{reasoning}"
 
 
@@ -580,6 +581,7 @@ def _llm_summary_only_item(
     generated = client.generate_json(prompt, schema=SUMMARY_ONLY_SCHEMA, timeout=300)
     verified, stats = _verify_summary_only_result(generated, units)
     verified["_verification"] = stats
+    verified["_usage"] = client.last_usage
     return verified, f"deepseek:{model}:summary-only:{reasoning}"
 
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare DeepSeek summary-only output with and without reasoning; never write the DB."""
+"""Compare DeepSeek summary-only models/reasoning modes without writing the DB."""
 from __future__ import annotations
 
 import argparse
@@ -24,7 +24,7 @@ from src.env_utils import load_dotenv_native
 from src.llm_client import InvalidLLMResponse, LLMError, RateLimitReached
 
 
-VERSION = 2
+VERSION = 3
 
 
 def _write_json_atomic(path: Path, value: dict) -> None:
@@ -52,28 +52,63 @@ def _extractive_keys(db_path: Path) -> list[str]:
         connection.close()
 
 
-def _generate_mode(section: dict, model: str, reasoning: str) -> dict:
+def _merge_usage(rows: list[dict]) -> dict:
+    keys = (
+        "prompt_tokens", "completion_tokens", "total_tokens",
+        "prompt_cache_hit_tokens", "prompt_cache_miss_tokens",
+    )
+    return {key: sum(int(row.get(key) or 0) for row in rows) for key in keys}
+
+
+def _generate_mode(
+    section: dict, model: str, reasoning: str, attempts: int = 1,
+) -> dict:
     last_error: Exception | None = None
-    for _ in range(3):
+    attempt_rows: list[dict] = []
+    for attempt in range(1, attempts + 1):
         try:
             generated, model_name = build_summaries._llm_summary_only_section(
                 section, model=model, reasoning=reasoning,
             )
             verification = generated.get("_verification") or {}
-            return {
+            row = {
                 "status": "accepted" if verification.get("accepted") else "quality_failure",
                 "model": model_name, "summary": generated.get("summary"),
                 "sentences": generated.get("sentences") or [],
-                "verification": verification,
+                "verification": verification, "usage": generated.get("_usage"),
             }
+            attempt_rows.append(row)
+            if row["status"] == "accepted":
+                row["attempt_count"] = attempt
+                row["usage"] = _merge_usage([
+                    value.get("usage") or {} for value in attempt_rows
+                ])
+                return row
         except RateLimitReached:
             raise
         except (InvalidLLMResponse, LLMError) as exc:
             last_error = exc
-    return {"status": "provider_failure", "error": str(last_error or "invalid output")}
+            attempt_rows.append({"status": "provider_failure", "error": str(exc)})
+    if attempt_rows and any(row["status"] == "quality_failure" for row in attempt_rows):
+        result = next(
+            row for row in reversed(attempt_rows) if row["status"] == "quality_failure"
+        )
+        result["attempt_count"] = len(attempt_rows)
+        result["usage"] = _merge_usage([
+            value.get("usage") or {} for value in attempt_rows
+        ])
+        return result
+    return {
+        "status": "provider_failure", "attempt_count": len(attempt_rows),
+        "error": str(last_error or "invalid output"),
+    }
 
 
-def _compare_section(section: dict, model: str) -> dict:
+def _compare_section(
+    section: dict, model: str,
+    reasoning_modes: tuple[str, ...] = ("disabled", "enabled"),
+    attempts: int = 1,
+) -> dict:
     if build_summaries.classify_section_content(section) == "non_content":
         return {
             "section_id": section["section_id"], "chapter": section["chapter"],
@@ -81,8 +116,8 @@ def _compare_section(section: dict, model: str) -> dict:
         }
     extractive = build_summaries._extractive_section(section)["summary"]
     modes = {
-        reasoning: _generate_mode(section, model, reasoning)
-        for reasoning in ("disabled", "enabled")
+        reasoning: _generate_mode(section, model, reasoning, attempts)
+        for reasoning in reasoning_modes
     }
     return {
         "section_id": section["section_id"], "chapter": section["chapter"],
@@ -92,14 +127,18 @@ def _compare_section(section: dict, model: str) -> dict:
 
 def _compare_item(
     item_key: str, *, model: str, max_sections: int, workers: int,
-    checkpoint_dir: Path,
+    checkpoint_dir: Path, reasoning_modes: tuple[str, ...] = ("disabled", "enabled"),
+    attempts: int = 1,
 ) -> dict:
     excluded, reason = build_summaries._excluded_from_llm(item_key)
     if excluded:
         return {"item_key": item_key, "status": "excluded", "reason": reason, "sections": []}
     sections = build_summaries.split_sections(get_item_chunks(item_key))[:max_sections]
     checkpoint_path = checkpoint_dir / f"{item_key}.json"
-    spec = f"v={VERSION}|model={model}|modes=disabled,enabled"
+    spec = (
+        f"v={VERSION}|model={model}|modes={','.join(reasoning_modes)}"
+        f"|attempts={attempts}"
+    )
     checkpoint = {"item_key": item_key, "spec": spec, "sections": {}}
     if checkpoint_path.exists():
         try:
@@ -127,7 +166,10 @@ def _compare_item(
         _write_json_atomic(checkpoint_path, checkpoint)
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {pool.submit(_compare_section, section, model): section for section in pending}
+        futures = {
+            pool.submit(_compare_section, section, model, reasoning_modes, attempts): section
+            for section in pending
+        }
         for future in as_completed(futures):
             save(futures[future], future.result())
     return {
@@ -143,6 +185,11 @@ def main() -> None:
     parser.add_argument("--max-sections", type=int, default=2)
     parser.add_argument("--workers", type=int, default=2)
     parser.add_argument("--model", default="deepseek-v4-pro")
+    parser.add_argument(
+        "--reasoning", action="append", choices=["disabled", "enabled"],
+        help="Reasoning mode to test; repeat to test both (default: both).",
+    )
+    parser.add_argument("--attempts", type=int, default=1)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument(
         "--checkpoint-dir", type=Path,
@@ -150,17 +197,20 @@ def main() -> None:
     )
     parser.add_argument("--stop-file", type=Path)
     args = parser.parse_args()
-    if args.max_items < 0 or args.max_sections < 1 or args.workers < 1:
-        parser.error("require non-negative --max-items and positive --max-sections/--workers")
+    if args.max_items < 0 or args.max_sections < 1 or args.workers < 1 or args.attempts < 1:
+        parser.error("require non-negative --max-items and positive section/worker/attempt limits")
     load_dotenv_native(ROOT)
     db_path = Path(os.environ.get("RELATIONS_DB_PATH", ROOT / "data" / "relations.db"))
     extractive = set(_extractive_keys(db_path))
     requested = args.item or sorted(extractive)
     keys = [key for key in requested if key in extractive][:args.max_items]
     skipped_non_extractives = [key for key in requested if key not in extractive]
+    reasoning_modes = tuple(dict.fromkeys(args.reasoning or ("disabled", "enabled")))
     report = {
         "created_at": datetime.now().astimezone().isoformat(), "version": VERSION,
-        "model": args.model, "writes_database": False,
+        "model": args.model, "reasoning_modes": list(reasoning_modes),
+        "attempts": args.attempts,
+        "writes_database": False,
         "items": [], "skipped_non_extractive_items": skipped_non_extractives,
         "stop_reason": "completed",
     }
@@ -179,6 +229,8 @@ def main() -> None:
                 report["items"].append(_compare_item(
                     key, model=args.model, max_sections=args.max_sections,
                     workers=args.workers, checkpoint_dir=args.checkpoint_dir,
+                    reasoning_modes=reasoning_modes,
+                    attempts=args.attempts,
                 ))
             except RateLimitReached as exc:
                 report["stop_reason"] = "rate_limit"

@@ -121,15 +121,20 @@ class LLMClientTests(unittest.TestCase):
         response = SimpleNamespace(
             status_code=200,
             raise_for_status=lambda: None,
-            json=lambda: {"choices": [{"message": {"content": '{"ok": true}'}}]},
+            json=lambda: {
+                "choices": [{"message": {"content": '{"ok": true}'}}],
+                "usage": {"prompt_tokens": 12, "completion_tokens": 3},
+            },
         )
+        client = DeepSeekClient("deepseek-v4-pro")
         with patch.dict(os.environ, {"DEEPSEEK_API_KEY": "test-key"}, clear=True), patch(
             "src.llm_client.httpx.post", return_value=response
         ) as post:
-            result = DeepSeekClient("deepseek-v4-pro").generate_json(
+            result = client.generate_json(
                 "Return JSON", schema={"type": "object"}
             )
         self.assertEqual(result, {"ok": True})
+        self.assertEqual(client.last_usage, {"prompt_tokens": 12, "completion_tokens": 3})
         request = post.call_args.kwargs
         self.assertEqual(request["json"]["model"], "deepseek-v4-pro")
         self.assertEqual(request["json"]["thinking"], {"type": "disabled"})

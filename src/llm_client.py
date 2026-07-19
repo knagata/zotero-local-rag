@@ -12,7 +12,7 @@ import re
 import subprocess
 import tempfile
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Protocol, TypeVar
 
@@ -362,6 +362,7 @@ class DeepSeekClient:
     provider: str = "deepseek"
     thinking: str | None = None
     reasoning_effort: str | None = None
+    last_usage: dict[str, Any] | None = field(default=None, init=False, repr=False)
 
     def _request(
         self, prompt: str, *, max_tokens: int, timeout: float,
@@ -408,7 +409,10 @@ class DeepSeekClient:
                 raise RateLimitReached(response.text)
             response.raise_for_status()
             try:
-                content = response.json()["choices"][0]["message"]["content"]
+                body = response.json()
+                usage = body.get("usage")
+                self.last_usage = usage if isinstance(usage, dict) else None
+                content = body["choices"][0]["message"]["content"]
             except (KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
                 raise InvalidLLMResponse("Invalid DeepSeek response envelope.") from exc
             if not isinstance(content, str) or not content.strip():
