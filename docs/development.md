@@ -30,6 +30,8 @@ Disableは元のS2データを削除せず、`relation_reports` の安定キー�
 
 内部構造は [アーキテクチャ](architecture.md) を参照してください。
 
+Citation Graphへ階層要約・構造化事例を統合する画面仕様は、[階層要約・事例ビュー設計](citation-insights-ui-design.md) を参照してください。
+
 ## 参考文献の審査キュー
 
 ```bash
