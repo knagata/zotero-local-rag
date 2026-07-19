@@ -20,7 +20,7 @@ from src.env_utils import load_dotenv_native
 from src.reference_agent import _item_excluded
 from src.reference_text import strip_unicode_format_characters
 
-DEFAULT_OUTPUT = ROOT / "dev-notes" / "reference_review_batches"
+DEFAULT_OUTPUT = ROOT / "dev-notes" / "evaluations" / "reference-review" / "batches"
 DOI_RE = re.compile(r"\b10\.\d{4,9}/[-._;()/:a-z0-9]+", re.IGNORECASE)
 ISBN_RE = re.compile(
     r"\bISBN(?:-1[03])?\s*:?\s*((?:97[89][\s-]?)?(?:\d[\s-]?){9}[\dXx])",

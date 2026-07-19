@@ -20,7 +20,7 @@ from src.env_utils import load_dotenv_native
 from src.reference_agent import _item_excluded
 
 DEFAULT_DB = ROOT / "data" / "relations.db"
-DEFAULT_OUTPUT = ROOT / "dev-notes" / "gold_qa_review_package.json"
+DEFAULT_OUTPUT = ROOT / "dev-notes" / "evaluations" / "gold-qa" / "gold_qa_review_package.json"
 
 
 def choose_cases(rows: list[dict[str, Any]], *, count: int, seed: int, per_item: int = 2) -> list[dict[str, Any]]:
