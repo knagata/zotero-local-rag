@@ -171,7 +171,12 @@ def _process_item(
         if results[section["section_id"]].get("status") not in {"accepted", "non_content"}
     ]
     if failures:
-        return {"item_key": item_key, "status": "section_failure", "failures": failures}
+        status = (
+            "provider_failure"
+            if any(failure.get("status") == "provider_failure" for failure in failures)
+            else "section_failure"
+        )
+        return {"item_key": item_key, "status": status, "failures": failures}
     section_rows = [
         {
             "section_id": section["section_id"], "chapter": section.get("chapter"),
@@ -187,7 +192,12 @@ def _process_item(
         title, section_rows, model=model, reasoning="disabled",
     ))
     if item_result["status"] != "accepted":
-        return {"item_key": item_key, "status": "item_failure", "failure": item_result}
+        status = (
+            "provider_failure"
+            if item_result["status"] == "provider_failure"
+            else "item_failure"
+        )
+        return {"item_key": item_key, "status": status, "failure": item_result}
     existing = db_relations.get_item_summary(item_key) or {}
     model_name = item_result["model"]
     replaced = db_relations.replace_extractive_summary_bundle(
@@ -280,6 +290,11 @@ def main() -> None:
             report["items"].append(result)
             _record_failure_attempt(failure_ledger, result)
             _write_json_atomic(failure_ledger_path, failure_ledger)
+            if result["status"] == "provider_failure":
+                report["stop_reason"] = "provider_unavailable"
+                _write_json_atomic(args.output, report)
+                print(json.dumps(result, ensure_ascii=False), flush=True)
+                break
             if result["status"] == "updated":
                 updated.add(key)
             _write_json_atomic(args.output, report)
