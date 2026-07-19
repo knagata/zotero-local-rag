@@ -47,7 +47,9 @@ class MaintenanceCommandTests(unittest.TestCase):
             "run src/index_from_zotero.py --progress",
             "run python -m src.build_summaries",
             "run src/update_citations.py --all",
+            "run python scripts/triage_quality_reports.py",
             "run python scripts/review_relation_reports.py",
+            "run python scripts/review_summary_quality_reports.py",
         ])
 
     def test_user_can_skip_one_update(self):
@@ -56,7 +58,9 @@ class MaintenanceCommandTests(unittest.TestCase):
         self.assertEqual(calls, [
             "run src/index_from_zotero.py --progress",
             "run src/update_citations.py --all",
+            "run python scripts/triage_quality_reports.py",
             "run python scripts/review_relation_reports.py",
+            "run python scripts/review_summary_quality_reports.py",
         ])
 
     def test_failure_stops_later_updates(self):

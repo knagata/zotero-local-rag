@@ -31,7 +31,10 @@ from manifest import load_manifest
 from chapter_detect import get_pdf_toc, get_epub_chapter_index_to_title
 from query_expansion import expand_queries
 from search_fusion import language_balanced_order
-from db_relations import get_case_annotations, get_item_summary as load_item_summary
+from db_relations import (
+    get_case_annotations, get_disabled_summary_keys,
+    get_item_summary as load_item_summary,
+)
 
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -134,7 +137,20 @@ from embedder import (
 )
 
 
-mcp = FastMCP("zotero-paragraph-rag")
+MCP_INSTRUCTIONS = """
+Treat LLM summaries and Semantic Scholar citation relations as discovery aids, not
+final evidence. Base research answers on returned source chunks. When you find a
+concrete contradiction or wrong-work mapping while comparing a discovery aid with
+source evidence, you MUST submit a report before finishing the answer:
+- call report_summary_quality for an item/section summary problem;
+- call report_citation_relation for an S2 citation/reference problem.
+Do not report merely because a relation is surprising, topically distant, or weakly
+relevant. Include concrete source evidence. Reporting is advisory and reversible;
+do not claim that the underlying record has been deleted or finally adjudicated.
+""".strip()
+
+
+mcp = FastMCP("zotero-paragraph-rag", instructions=MCP_INSTRUCTIONS)
 
 # ----------------------------
 # Tool I/O shapes (for Claude)
@@ -1060,6 +1076,7 @@ def hierarchical_search(
     candidate_scores: dict[str, float] = {}
     candidate_meta: dict[str, dict[str, Any]] = {}
     warnings: list[str] = []
+    disabled_summaries = get_disabled_summary_keys()
     client = getattr(paragraph_collection, "_chroma_client", None)
     base_name = _EMB_COLLECTION_NAME or COLLECTION_NAME_DEFAULT
     for suffix, result_count in (("sum_item", k_items), ("sum_section", max(k_items * 2, 20))):
@@ -1078,6 +1095,10 @@ def hierarchical_search(
                 if not isinstance(metadata, dict) or not metadata.get("itemKey"):
                     continue
                 item_key = str(metadata["itemKey"])
+                section_id = str(metadata.get("section_id") or "")
+                disabled_key = (item_key, section_id if suffix == "sum_section" else "")
+                if disabled_key in disabled_summaries:
+                    continue
                 candidate_scores[item_key] = candidate_scores.get(item_key, 0.0) + 1.0 / (RRF_K + rank)
                 candidate_meta[item_key] = metadata
 
@@ -1106,20 +1127,32 @@ def hierarchical_search(
         hit["hierarchical_rrf_score"] = scores[chunk_id]
         if return_summaries:
             item_key = (hit.get("meta") or {}).get("itemKey")
-            summary = load_item_summary(item_key) if item_key else None
+            summary = (
+                load_item_summary(item_key)
+                if item_key and (str(item_key), "") not in disabled_summaries else None
+            )
             hit["item_summary_snippet"] = (summary.get("summary") or "")[:120] if summary else ""
         results.append(hit)
 
     candidate_items = []
     for item_key in candidate_keys:
         metadata = candidate_meta.get(item_key, {})
-        summary = load_item_summary(item_key) if return_summaries else None
+        summary = (
+            load_item_summary(item_key)
+            if return_summaries and (item_key, "") not in disabled_summaries else None
+        )
         candidate_items.append({
             "item_key": item_key, "title": metadata.get("title"), "year": metadata.get("year"),
             "score": candidate_scores[item_key],
             "summary_snippet": (summary.get("summary") or "")[:120] if summary else "",
         })
-    response: Dict[str, Any] = {"results": results, "candidate_items": candidate_items}
+    response: Dict[str, Any] = {
+        "results": results, "candidate_items": candidate_items,
+        "reporting_obligation": (
+            "Verify claims against result chunks. If a summary concretely contradicts "
+            "them, call report_summary_quality before completing the answer."
+        ),
+    }
     if warnings:
         response["warnings"] = warnings
     return response
@@ -1814,8 +1847,9 @@ def get_references_for_item(item_key: str, include_disabled: bool = False) -> Di
 def report_citation_relation(relation_key: str, reason: str, details: str) -> Dict[str, Any]:
     """Report a demonstrably incorrect citation/reference relation for human review.
 
-    Reporting does not immediately hide the relation. A person decides whether to disable
-    or keep it during maintenance. Use a relation_key returned by get_references_for_item,
+    You MUST call this when source evidence demonstrates a wrong relation. Reporting does
+    not immediately hide the relation. Automated triage or exception review decides whether
+    to disable or keep it. Use a relation_key returned by get_references_for_item,
     get_chunk_references, get_cited_chunks_for_item, or get_chunk_citations.
 
     Do not report a relation merely because its subject area looks surprising. Report only
@@ -1855,6 +1889,63 @@ def report_citation_relation(relation_key: str, reason: str, details: str) -> Di
         return {"status": "error", "message": str(exc)}
     except Exception as exc:
         return {"status": "error", "message": f"Could not save report: {exc}"}
+
+
+@mcp.tool()
+def report_summary_quality(
+    item_key: str, reason: str, details: str,
+    section_id: str = "", evidence_chunk_ids: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """Report a concrete LLM-summary problem found against source chunks.
+
+    You MUST call this before finishing an answer when an item or section summary
+    contradicts source evidence, states an unsupported number/claim, identifies the
+    wrong work, omits context so materially that it misleads, or otherwise misroutes
+    retrieval. Do not report stylistic preferences or mere incompleteness that does
+    not alter meaning. The current summary remains stored until automated triage or
+    exception review; the report is fingerprint-scoped and fully reversible.
+
+    Args:
+        item_key: Zotero item key whose current summary has the problem.
+        reason: unsupported_claim, wrong_number, wrong_work, missing_context,
+            misleading_summary, or other.
+        details: Concrete discrepancy, including what the source actually says.
+        section_id: Section ID for a section summary; empty for the item summary.
+        evidence_chunk_ids: Source chunk IDs that demonstrate the discrepancy.
+    """
+    try:
+        from db_relations import submit_summary_quality_report
+        report = submit_summary_quality_report(
+            item_key=item_key, section_id=section_id, reason=reason,
+            details=details, evidence_chunk_ids=evidence_chunk_ids,
+            reporter="mcp:claude",
+        )
+        return {
+            "status": "reported",
+            "message": (
+                "The report is queued for automated triage. Use source chunks, not the "
+                "suspect summary, for the current answer."
+            ),
+            "report": report,
+        }
+    except ValueError as exc:
+        return {"status": "error", "message": str(exc)}
+    except Exception as exc:
+        return {"status": "error", "message": f"Could not save report: {exc}"}
+
+
+@mcp.tool()
+def list_summary_quality_reports(status: str = "pending") -> Dict[str, Any]:
+    """List summary-quality reports and their automated-triage state."""
+    normalized = (status or "pending").strip().lower()
+    if normalized not in {"pending", "disabled", "kept", "all"}:
+        return {"status": "error", "message": "status must be pending, disabled, kept, or all."}
+    try:
+        from db_relations import get_summary_quality_reports
+        reports = get_summary_quality_reports(None if normalized == "all" else normalized)
+        return {"status": "ok", "report_count": len(reports), "reports": reports}
+    except Exception as exc:
+        return {"status": "error", "message": str(exc)}
 
 
 @mcp.tool()

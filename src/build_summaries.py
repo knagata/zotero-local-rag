@@ -128,6 +128,11 @@ SPECIFIC_VALUE_RE = re.compile(
     r"(?:18|19|20)\d{2}|\d+(?:\.\d+)?",
     re.I,
 )
+DEFINITIVE_IDENTIFIER_RE = re.compile(
+    r"https?://\S+|10\.\d{4,9}/\S+|"
+    r"(?:ISBN(?:-1[03])?[:\s]*)?[0-9Xx][0-9Xx\- ]{8,}",
+    re.I,
+)
 QUOTED_VALUE_RE = re.compile(r"[『「“\"]([^』」”\"]{2,})[』」”\"]")
 
 ITEM_SCHEMA: dict[str, Any] = {
@@ -482,6 +487,7 @@ def _verify_summary_only_result(
     lookup = {unit["unit_id"]: unit for unit in units}
     verified_sentences: list[dict[str, Any]] = []
     reasons: Counter[str] = Counter()
+    warnings: Counter[str] = Counter()
     generated = 0
     for sentence in result.get("sentences") or []:
         generated += 1
@@ -502,9 +508,22 @@ def _verify_summary_only_result(
             reasons["invalid_evidence_id"] += 1
             continue
         evidence = " ".join(lookup[unit_id]["text"] for unit_id in ids)
-        if not _note_values_supported(text, evidence):
-            reasons["value_not_in_evidence"] += 1
+        normalized_evidence = _normalize_evidence(evidence).casefold()
+        identifiers = [
+            match.group(0).rstrip(".,;:。、）)")
+            for match in DEFINITIVE_IDENTIFIER_RE.finditer(text)
+        ]
+        if any(
+            _normalize_evidence(value).casefold() not in normalized_evidence
+            for value in identifiers
+        ):
+            reasons["identifier_not_in_evidence"] += 1
             continue
+        if not _note_values_supported(text, evidence):
+            # Ordinary numbers, years, and translated quoted phrases are soft
+            # signals in summary prose. Runtime RAG verifies claims against source
+            # chunks and reports concrete discrepancies for reversible triage.
+            warnings["value_not_in_evidence"] += 1
         verified_sentences.append({
             "text": text, "evidence_unit_ids": ids,
             "evidence": [lookup[unit_id]["text"] for unit_id in ids],
@@ -521,8 +540,8 @@ def _verify_summary_only_result(
         "generated_sentences": generated, "kept_sentences": kept,
         "discarded_sentences": discarded,
         "discard_rate": discard_rate,
-        "reasons": dict(reasons),
-        "accepted": bool(kept >= 3 and discard_rate <= 0.5),
+        "reasons": dict(reasons), "warnings": dict(warnings),
+        "accepted": bool(kept >= 2 and discard_rate <= 0.5),
     }
     return {"summary": summary, "sentences": verified_sentences}, stats
 

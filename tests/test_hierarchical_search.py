@@ -30,6 +30,8 @@ class HierarchicalSearchTests(unittest.TestCase):
             rag_mcp_server, "rag_search", return_value={"results": []}
         ), patch.object(
             rag_mcp_server, "load_item_summary", return_value=None
+        ), patch.object(
+            rag_mcp_server, "get_disabled_summary_keys", return_value=set()
         ):
             response = rag_mcp_server.hierarchical_search("gift exchange", auto_expand=False)
 
@@ -37,6 +39,32 @@ class HierarchicalSearchTests(unittest.TestCase):
         self.assertEqual(summary_collection.query.call_count, 2)
         for call in summary_collection.query.call_args_list:
             self.assertEqual(call.kwargs["where"], {"summary_kind": "llm"})
+        self.assertIn("report_summary_quality", response["reporting_obligation"])
+
+    def test_disabled_summary_is_not_used_for_routing(self):
+        item_collection = Mock()
+        item_collection.query.return_value = {
+            "metadatas": [[{"itemKey": "ITEM", "title": "item"}]],
+        }
+        section_collection = Mock()
+        section_collection.query.return_value = {
+            "metadatas": [[{
+                "itemKey": "ITEM", "section_id": "w0", "title": "section",
+            }]],
+        }
+        client = Mock()
+        client.get_collection.side_effect = [item_collection, section_collection]
+        paragraphs = Mock()
+        paragraphs._embedding_function.return_value = [[0.1, 0.2]]
+        paragraphs._chroma_client = client
+        with patch.object(rag_mcp_server, "_col", return_value=paragraphs), patch.object(
+            rag_mcp_server, "rag_search", return_value={"results": []}
+        ), patch.object(
+            rag_mcp_server, "get_disabled_summary_keys",
+            return_value={("ITEM", ""), ("ITEM", "w0")},
+        ):
+            response = rag_mcp_server.hierarchical_search("query", auto_expand=False)
+        self.assertEqual(response["candidate_items"], [])
 
 
 if __name__ == "__main__":

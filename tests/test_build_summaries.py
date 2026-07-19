@@ -61,7 +61,7 @@ class SummaryPipelineTests(unittest.TestCase):
         self.assertTrue(all(unit["text"] in source for unit in units))
         self.assertEqual(sum(len(unit["text"]) for unit in units), 29998)
 
-    def test_summary_only_requires_valid_ids_and_supported_values(self):
+    def test_summary_only_requires_valid_ids_but_soft_flags_ordinary_values(self):
         units = [{
             "unit_id": "u0001", "chunk_id": "a",
             "text": "Alice conducted fieldwork in Fiji in 2020.",
@@ -75,11 +75,25 @@ class SummaryPipelineTests(unittest.TestCase):
             "text": "存在しない根拠。", "evidence_unit_ids": ["u9999"],
         }]}
         verified, stats = build_summaries._verify_summary_only_result(result, units)
-        self.assertEqual(len(verified["sentences"]), 1)
+        self.assertEqual(len(verified["sentences"]), 2)
         self.assertEqual(verified["sentences"][0]["evidence_unit_ids"], ["u0001"])
-        self.assertEqual(stats["reasons"], {
-            "value_not_in_evidence": 1, "invalid_evidence_id": 1,
-        })
+        self.assertEqual(stats["reasons"], {"invalid_evidence_id": 1})
+        self.assertEqual(stats["warnings"], {"value_not_in_evidence": 1})
+        self.assertTrue(stats["accepted"])
+
+    def test_summary_only_rejects_unsupported_definitive_identifier(self):
+        units = [{
+            "unit_id": "u0001", "chunk_id": "a",
+            "text": "The registered DOI is 10.1234/source.",
+        }]
+        result = {"sentences": [{
+            "text": "DOIは10.9999/inventedである。", "evidence_unit_ids": ["u0001"],
+        }, {
+            "text": "資料にはDOIが登録されている。", "evidence_unit_ids": ["u0001"],
+        }]}
+        verified, stats = build_summaries._verify_summary_only_result(result, units)
+        self.assertEqual(len(verified["sentences"]), 1)
+        self.assertEqual(stats["reasons"], {"identifier_not_in_evidence": 1})
         self.assertFalse(stats["accepted"])
 
     def test_summary_only_accepts_three_fully_grounded_sentences(self):

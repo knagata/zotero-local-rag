@@ -28,6 +28,10 @@ class McpRelationReportingTests(unittest.TestCase):
             context_snippet=None, citing_item_key="ITEM", citing_chunk_id=None,
             similarity_distance=None, source="s2", s2_status="no_context",
         )
+        db_relations.save_item_summary("ITEM", "A current summary.", "deepseek:flash")
+        db_relations.save_section_summary(
+            "ITEM", "w0", "A current section summary.", model="deepseek:flash",
+        )
 
     def tearDown(self):
         self.db_patch.stop()
@@ -57,6 +61,18 @@ class McpRelationReportingTests(unittest.TestCase):
             "references:ITEM:S2-WRONG", "other", "odd",
         )
         self.assertEqual(vague["status"], "error")
+
+    def test_claude_can_report_summary_problem_for_automated_triage(self):
+        result = rag_mcp_server.report_summary_quality(
+            "ITEM", "unsupported_claim",
+            "The source chunk directly contradicts the summary claim.",
+            section_id="w0", evidence_chunk_ids=["chunk-1"],
+        )
+        self.assertEqual(result["status"], "reported")
+        self.assertEqual(result["report"]["status"], "pending")
+        listed = rag_mcp_server.list_summary_quality_reports("pending")
+        self.assertEqual(listed["report_count"], 1)
+        self.assertEqual(listed["reports"][0]["section_id"], "w0")
 
 
 if __name__ == "__main__":

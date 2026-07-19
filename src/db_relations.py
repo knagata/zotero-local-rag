@@ -334,6 +334,9 @@ def _init_db(conn: sqlite3.Connection) -> None:
             status TEXT NOT NULL DEFAULT 'pending'
                 CHECK(status IN ('pending', 'disabled', 'kept')),
             report_count INTEGER NOT NULL DEFAULT 1,
+            triage_status TEXT NOT NULL DEFAULT 'unreviewed',
+            triage_model TEXT,
+            triage_evidence_json TEXT,
             reviewer_note TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -344,6 +347,47 @@ def _init_db(conn: sqlite3.Connection) -> None:
     cursor.execute(
         "CREATE INDEX IF NOT EXISTS idx_relation_reports_status "
         "ON relation_reports(status, direction, item_key)"
+    )
+    for sql in (
+        "ALTER TABLE relation_reports ADD COLUMN triage_status TEXT NOT NULL DEFAULT 'unreviewed'",
+        "ALTER TABLE relation_reports ADD COLUMN triage_model TEXT",
+        "ALTER TABLE relation_reports ADD COLUMN triage_evidence_json TEXT",
+    ):
+        try:
+            cursor.execute(sql)
+        except sqlite3.OperationalError:
+            pass
+
+    # Runtime quality reports for LLM summary routing. Reports are tied to a
+    # summary fingerprint so regeneration automatically retires stale decisions.
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS summary_quality_reports (
+            report_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            item_key TEXT NOT NULL,
+            section_id TEXT NOT NULL DEFAULT '',
+            summary_hash TEXT NOT NULL,
+            summary_model TEXT,
+            reason TEXT NOT NULL,
+            details TEXT,
+            evidence_chunk_ids_json TEXT,
+            reporter TEXT NOT NULL DEFAULT 'mcp:claude',
+            status TEXT NOT NULL DEFAULT 'pending'
+                CHECK(status IN ('pending', 'disabled', 'kept')),
+            triage_status TEXT NOT NULL DEFAULT 'unreviewed'
+                CHECK(triage_status IN ('unreviewed', 'confirmed', 'dismissed', 'uncertain')),
+            triage_model TEXT,
+            triage_evidence_json TEXT,
+            report_count INTEGER NOT NULL DEFAULT 1,
+            reviewer_note TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            reviewed_at TIMESTAMP,
+            UNIQUE(item_key, section_id, summary_hash)
+        )
+    ''')
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_summary_quality_reports_status "
+        "ON summary_quality_reports(status, triage_status, item_key)"
     )
     
     conn.commit()
@@ -1640,6 +1684,186 @@ RELATION_REPORT_REASONS = {
     "not_in_source", "wrong_work", "wrong_direction", "metadata_error", "other",
 }
 
+SUMMARY_REPORT_REASONS = {
+    "unsupported_claim", "wrong_number", "wrong_work", "missing_context",
+    "misleading_summary", "other",
+}
+
+
+def _summary_fingerprint(summary: str, model: Optional[str]) -> str:
+    return hashlib.sha256(
+        f"{model or ''}\n{summary or ''}".encode("utf-8")
+    ).hexdigest()
+
+
+def _current_summary(
+    conn: sqlite3.Connection, item_key: str, section_id: str,
+) -> Optional[Dict[str, Any]]:
+    if section_id:
+        row = conn.execute(
+            "SELECT summary, model, updated_at FROM section_summaries "
+            "WHERE item_key = ? AND section_id = ?",
+            (item_key, section_id),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            "SELECT summary, model, updated_at FROM item_summaries WHERE item_key = ?",
+            (item_key,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def submit_summary_quality_report(
+    *, item_key: str, section_id: Optional[str], reason: str, details: str,
+    evidence_chunk_ids: Optional[List[str]] = None, reporter: str = "mcp:claude",
+) -> Dict[str, Any]:
+    """Report a concrete problem in the current summary without deleting it."""
+    item_key = (item_key or "").strip()
+    section_id = (section_id or "").strip()
+    reason = (reason or "").strip().lower()
+    details = (details or "").strip()
+    if not item_key:
+        raise ValueError("item_key is required.")
+    if reason not in SUMMARY_REPORT_REASONS:
+        raise ValueError(
+            "reason must be one of: " + ", ".join(sorted(SUMMARY_REPORT_REASONS))
+        )
+    if len(details) < 10:
+        raise ValueError("details must contain concrete evidence (at least 10 characters).")
+    chunk_ids = list(dict.fromkeys(
+        str(value or "").strip() for value in (evidence_chunk_ids or [])
+        if str(value or "").strip()
+    ))
+    conn = get_db_connection()
+    try:
+        current = _current_summary(conn, item_key, section_id)
+        if current is None:
+            raise ValueError("The specified current item/section summary does not exist.")
+        summary_hash = _summary_fingerprint(current["summary"], current.get("model"))
+        conn.execute('''
+            INSERT INTO summary_quality_reports
+                (item_key, section_id, summary_hash, summary_model, reason, details,
+                 evidence_chunk_ids_json, reporter, status, triage_status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'unreviewed')
+            ON CONFLICT(item_key, section_id, summary_hash) DO UPDATE SET
+                reason = excluded.reason,
+                details = excluded.details,
+                evidence_chunk_ids_json = excluded.evidence_chunk_ids_json,
+                reporter = excluded.reporter,
+                status = CASE WHEN summary_quality_reports.status = 'disabled'
+                              THEN 'disabled' ELSE 'pending' END,
+                triage_status = CASE WHEN summary_quality_reports.status = 'disabled'
+                                     THEN summary_quality_reports.triage_status ELSE 'unreviewed' END,
+                report_count = summary_quality_reports.report_count + 1,
+                updated_at = CURRENT_TIMESTAMP
+        ''', (
+            item_key, section_id, summary_hash, current.get("model"), reason, details,
+            json.dumps(chunk_ids, ensure_ascii=False), (reporter or "mcp:claude").strip(),
+        ))
+        conn.commit()
+        row = conn.execute(
+            "SELECT * FROM summary_quality_reports "
+            "WHERE item_key = ? AND section_id = ? AND summary_hash = ?",
+            (item_key, section_id, summary_hash),
+        ).fetchone()
+        result = dict(row)
+        result["evidence_chunk_ids"] = json.loads(
+            result.pop("evidence_chunk_ids_json") or "[]"
+        )
+        result["summary_key"] = (
+            f"section:{item_key}:{section_id}:{summary_hash[:12]}"
+            if section_id else f"item:{item_key}:{summary_hash[:12]}"
+        )
+        return result
+    finally:
+        conn.close()
+
+
+def get_summary_quality_reports(status: Optional[str] = "pending") -> List[Dict[str, Any]]:
+    if status is not None and status not in {"pending", "disabled", "kept"}:
+        raise ValueError("status must be pending, disabled, kept, or None.")
+    conn = get_db_connection()
+    try:
+        where = "WHERE status = ?" if status is not None else ""
+        params = (status,) if status is not None else ()
+        rows = conn.execute(
+            f"SELECT * FROM summary_quality_reports {where} "
+            "ORDER BY updated_at, report_id", params,
+        ).fetchall()
+        output = []
+        for row in rows:
+            item = dict(row)
+            item["triage_evidence"] = json.loads(
+                item.pop("triage_evidence_json", None) or "null"
+            )
+            item["evidence_chunk_ids"] = json.loads(
+                item.pop("evidence_chunk_ids_json") or "[]"
+            )
+            item["summary_key"] = (
+                f"section:{item['item_key']}:{item['section_id']}:{item['summary_hash'][:12]}"
+                if item["section_id"]
+                else f"item:{item['item_key']}:{item['summary_hash'][:12]}"
+            )
+            output.append(item)
+        return output
+    finally:
+        conn.close()
+
+
+def resolve_summary_quality_report(
+    report_id: int, decision: str, *, triage_model: Optional[str] = None,
+    triage_evidence: Optional[Dict[str, Any]] = None,
+    reviewer_note: Optional[str] = None,
+) -> bool:
+    """Apply a reversible keep/disable decision or mark a report uncertain."""
+    normalized = (decision or "").strip().lower()
+    mapping = {
+        "disable": ("disabled", "confirmed"),
+        "keep": ("kept", "dismissed"),
+        "uncertain": ("pending", "uncertain"),
+    }
+    if normalized not in mapping:
+        raise ValueError("decision must be disable, keep, or uncertain.")
+    status, triage_status = mapping[normalized]
+    conn = get_db_connection()
+    try:
+        cursor = conn.execute('''
+            UPDATE summary_quality_reports
+            SET status = ?, triage_status = ?, triage_model = ?,
+                triage_evidence_json = ?, reviewer_note = ?,
+                reviewed_at = CASE WHEN ? = 'pending' THEN NULL ELSE CURRENT_TIMESTAMP END,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE report_id = ?
+        ''', (
+            status, triage_status, (triage_model or "").strip() or None,
+            json.dumps(triage_evidence, ensure_ascii=False) if triage_evidence else None,
+            (reviewer_note or "").strip() or None, status, int(report_id),
+        ))
+        conn.commit()
+        return cursor.rowcount > 0
+    finally:
+        conn.close()
+
+
+def get_disabled_summary_keys() -> set[tuple[str, str]]:
+    """Return disabled current summaries as ``(item_key, section_id)`` pairs."""
+    conn = get_db_connection()
+    try:
+        rows = conn.execute(
+            "SELECT item_key, section_id, summary_hash FROM summary_quality_reports "
+            "WHERE status = 'disabled'"
+        ).fetchall()
+        disabled: set[tuple[str, str]] = set()
+        for row in rows:
+            current = _current_summary(conn, row["item_key"], row["section_id"])
+            if current and _summary_fingerprint(
+                current["summary"], current.get("model")
+            ) == row["summary_hash"]:
+                disabled.add((row["item_key"], row["section_id"]))
+        return disabled
+    finally:
+        conn.close()
+
 
 def relation_key(direction: str, item_key: str, external_paper_id: str) -> str:
     """Return the stable public identifier used by the UI and MCP tools."""
@@ -1794,6 +2018,9 @@ def get_relation_reports(status: Optional[str] = "pending") -> List[Dict[str, An
         output = []
         for row in rows:
             item = dict(row)
+            item["triage_evidence"] = json.loads(
+                item.pop("triage_evidence_json", None) or "null"
+            )
             item["relation_key"] = relation_key(
                 item["direction"], item["item_key"], item["external_paper_id"],
             )
@@ -1804,7 +2031,9 @@ def get_relation_reports(status: Optional[str] = "pending") -> List[Dict[str, An
 
 
 def review_relation_report(report_id: int, decision: str,
-                           reviewer_note: Optional[str] = None) -> bool:
+                           reviewer_note: Optional[str] = None, *,
+                           triage_model: Optional[str] = None,
+                           triage_evidence: Optional[Dict[str, Any]] = None) -> bool:
     """Resolve a pending report. ``disable`` hides it; ``keep`` retains it."""
     status = {"disable": "disabled", "keep": "kept"}.get((decision or "").lower())
     if status is None:
@@ -1813,10 +2042,44 @@ def review_relation_report(report_id: int, decision: str,
     try:
         cursor = conn.execute('''
             UPDATE relation_reports
-            SET status = ?, reviewer_note = ?, reviewed_at = CURRENT_TIMESTAMP,
+            SET status = ?, reviewer_note = ?,
+                triage_status = CASE WHEN ? IS NULL THEN triage_status
+                                     WHEN ? = 'disabled' THEN 'confirmed' ELSE 'dismissed' END,
+                triage_model = COALESCE(?, triage_model),
+                triage_evidence_json = COALESCE(?, triage_evidence_json),
+                reviewed_at = CURRENT_TIMESTAMP,
                 updated_at = CURRENT_TIMESTAMP
             WHERE report_id = ?
-        ''', (status, (reviewer_note or "").strip() or None, int(report_id)))
+        ''', (
+            status, (reviewer_note or "").strip() or None,
+            (triage_model or "").strip() or None, status,
+            (triage_model or "").strip() or None,
+            json.dumps(triage_evidence, ensure_ascii=False) if triage_evidence else None,
+            int(report_id),
+        ))
+        conn.commit()
+        return cursor.rowcount > 0
+    finally:
+        conn.close()
+
+
+def mark_relation_report_uncertain(
+    report_id: int, *, triage_model: Optional[str] = None,
+    triage_evidence: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """Leave a relation pending while recording why automation could not decide."""
+    conn = get_db_connection()
+    try:
+        cursor = conn.execute('''
+            UPDATE relation_reports
+            SET status = 'pending', triage_status = 'uncertain', triage_model = ?,
+                triage_evidence_json = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE report_id = ?
+        ''', (
+            (triage_model or "").strip() or None,
+            json.dumps(triage_evidence, ensure_ascii=False) if triage_evidence else None,
+            int(report_id),
+        ))
         conn.commit()
         return cursor.rowcount > 0
     finally:
