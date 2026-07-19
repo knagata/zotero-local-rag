@@ -74,7 +74,7 @@ export EMB_PROFILE="${EMB_PROFILE:-fast}"
 # Supported: gemini, anthropic, deepseek, openai_compat, codex_cli, claude_cli.
 export LLM_DEFAULT="${LLM_DEFAULT:-deepseek:deepseek-v4-pro}"
 # export LLM_EXPAND="${LLM_EXPAND:-deepseek:deepseek-v4-pro}"
-export LLM_SUMMARY="${LLM_SUMMARY:-codex_cli:gpt-5.6-luna}"
+export LLM_SUMMARY="${LLM_SUMMARY:-deepseek:deepseek-v4-flash}"
 # export LLM_EXTRACT="${LLM_EXTRACT:-deepseek:deepseek-v4-pro}"
 # export LLM_OPENAI_BASE_URL="${LLM_OPENAI_BASE_URL:-http://localhost:11434/v1}"
 # export LLM_OPENAI_API_KEY="${LLM_OPENAI_API_KEY:-}"

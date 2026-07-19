@@ -136,7 +136,7 @@ def configure_feature_level(config: dict[str, str]) -> None:
         config.update({
             "LLM_DEFAULT": "deepseek:deepseek-v4-pro",
             "LLM_EXPAND": "deepseek:deepseek-v4-pro",
-            "LLM_SUMMARY": "deepseek:deepseek-v4-pro",
+            "LLM_SUMMARY": "deepseek:deepseek-v4-flash",
             "LLM_EXTRACT": "deepseek:deepseek-v4-pro",
         })
         _set_optional_secret(config, "DEEPSEEK_API_KEY", "DeepSeek API key")

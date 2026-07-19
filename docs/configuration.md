@@ -55,8 +55,13 @@ NIGHTLY_START_TIME=03:30
 NIGHTLY_LAUNCH_MODE=terminal
 NIGHTLY_MAX_HOURS=5
 NIGHTLY_MAX_ITEMS=20
+NIGHTLY_SUMMARY_MODEL=deepseek-v4-flash
+NIGHTLY_SUMMARY_FALLBACK_MODEL=deepseek-v4-pro
+NIGHTLY_SUMMARY_WORKERS=10
 NIGHTLY_MIN_WEEKLY_REMAINING_PERCENT=20
 ```
+
+夜間の要約更新は、メンテナンスで作成された抽出型要約を DeepSeek V4 Flash で段階的に置換し、品質ゲートを通らない場合だけ V4 Pro にフォールバックします。週次利用枠の下限は `NIGHTLY_REOCR_LLM` が Codex の場合の re-OCR にだけ適用され、DeepSeek要約を不要に停止しません。
 
 macOSへ登録・確認:
 

@@ -25,7 +25,7 @@
 ```dotenv
 LLM_DEFAULT=deepseek:deepseek-v4-pro
 LLM_EXPAND=deepseek:deepseek-v4-pro
-LLM_SUMMARY=codex_cli:gpt-5.6-luna
+LLM_SUMMARY=deepseek:deepseek-v4-flash
 LLM_EXTRACT=deepseek:deepseek-v4-pro
 ```
 
