@@ -110,6 +110,12 @@ CHROMA_COLLECTION_DEFAULT = "zotero_paragraphs"
 if STRUCTURED_V3_ENABLE:
     os.environ.setdefault("LEXICAL_DB_PATH", str(DATA_DIR / "lexical_v3.sqlite3"))
 
+#: Guards the stale-attachment deletion below. A sync that would retire more
+#: than this is reporting on a failed enumeration, not on the library.
+STALE_DELETE_MAX_RATIO = 0.05
+STALE_DELETE_MIN_KEYS = 10
+
+
 RUN_CODE_PATHS = tuple(
     PROJECT_ROOT / "src" / name for name in (
         "index_from_zotero.py", "embedder.py", "text_utils.py", "html_extract.py",
@@ -1448,6 +1454,29 @@ async def main_async(args: argparse.Namespace) -> None:
         current_keys = {a.attachmentKey for a in attachments}
         stale_keys = set(files_manifest.keys()) - current_keys
 
+        # A routine sync retires the few attachments actually removed from
+        # Zotero. A wholesale disappearance means the *enumeration* came back
+        # short, not that the library emptied -- and the enumeration has no
+        # completeness check of its own: it pages until a batch looks final,
+        # with no Total-Results comparison and no floor. Everything absent from
+        # a truncated listing would be deleted here, unconditionally and with
+        # no confirmation against Zotero. Fail closed: a deletion this large is
+        # evidence about the listing, not about the library. Deliberate bulk
+        # removal has its own command (scripts/purge_orphans.py), which
+        # confirms every candidate against Zotero individually.
+        deletion_limit = max(STALE_DELETE_MIN_KEYS, int(len(files_manifest) * STALE_DELETE_MAX_RATIO))
+        if len(stale_keys) > deletion_limit:
+            print(
+                f"[ERROR] Refusing to delete {len(stale_keys)} attachments: that is more than "
+                f"{deletion_limit} of {len(files_manifest)} tracked, which indicates the Zotero "
+                f"listing returned short ({len(current_keys)} attachments), not that the library "
+                f"shrank. Nothing was deleted. Re-run once Zotero responds fully, or use "
+                f"scripts/purge_orphans.py, which confirms each item against Zotero before "
+                f"removing it.",
+                file=sys.stderr,
+            )
+            stale_keys = set()
+
         for stale_key in stale_keys:
             try:
                 col.delete(where={"attachmentKey": stale_key})
@@ -1672,7 +1701,15 @@ async def main_async(args: argparse.Namespace) -> None:
         # (stype/ctype computed above)
 
         meta_base = {
-            "itemKey": a.parentItemKey,
+            # Same identity the ledger, structure and status rows use
+            # (scope_item_key above). Without the fallback a top-level
+            # attachment -- one filed with no parent -- carries itemKey=None,
+            # Chroma stores no key at all, and the chunk belongs to no item:
+            # invisible to citation, to item filters, to hierarchical routing,
+            # and to every audit, since those iterate over item keys. 17 such
+            # attachments held 1,774 chunks that way (2026-07-28). Two
+            # definitions of identity in one function is the whole defect.
+            "itemKey": scope_item_key,
             "attachmentKey": a.attachmentKey,
             "title": a.title,
             "year": a.year,
