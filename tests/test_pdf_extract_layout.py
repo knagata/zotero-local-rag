@@ -119,3 +119,33 @@ class PdfLayoutTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_a_page_whose_lines_are_all_too_short_is_rescued_not_erased():
+    """A filter that removes a page's entire content has misfired.
+
+    Merge boundaries are keyed per record, so nothing on a page combines. When
+    _merge_layout_blocks falls back to one line per block (~34 characters),
+    every line is under HARD_MIN_CHARS and the merge drops the lot -- 13 pages
+    of one document went missing (4CY8EIIB, 2026-07-28). Ordinary pages keep
+    their existing granularity; only the all-or-nothing case is retried.
+    """
+    from src.text_utils import merge_short_chunk_records
+
+    rows = [
+        (f"A:p1:para{i}:part0", "the line of body text here again"[:34],
+         {"page": 1, "reading_order": i, "chapter": "Chapter One"})
+        for i in range(12)
+    ]
+    per_record = merge_short_chunk_records(
+        rows, min_chars=200, max_chars=1200,
+        boundary_key=lambda _cid, _text, md: (md.get("page"), md.get("reading_order")),
+    )
+    assert per_record == [], "precondition: the per-record key erases the page"
+
+    rescued = merge_short_chunk_records(
+        rows, min_chars=200, max_chars=1200,
+        boundary_key=lambda _cid, _text, md: (md.get("page"), md.get("chapter")),
+    )
+    assert rescued
+    assert sum(len(row[1]) for row in rescued) >= sum(len(row[1]) for row in rows)

@@ -281,3 +281,42 @@ def test_fast_path_residual_ratio_gate_shares_fast_path_tolerance():
             Path("sample.pdf"), "ITEM", [], {**base_quality, "corrupted_ratio": 0.03},
         )
         assert above.reason == "corrupted_ratio_above_tolerance"
+
+
+def test_splice_is_abandoned_when_the_replacement_would_lose_the_section():
+    """A shrunken re-parse must not authorise deleting what it replaces.
+
+    Docling re-reads the reference pages to get one entry per chunk -- a
+    boundary improvement, so the character count should survive. The only
+    guard was that the replacement be non-empty, so a single surviving chunk
+    licensed removing the whole section: four documents lost their entire
+    endnotes, up to 40 pages each (2026-07-28).
+    """
+    structured = [
+        ("a", "body text on an earlier page", {"page": 5, "reading_order": 1, "zone": "body"}),
+        ("b", "x" * 4000, {"page": 220, "reading_order": 1, "zone": "endnote"}),
+        ("c", "y" * 4000, {"page": 221, "reading_order": 1, "zone": "endnote"}),
+    ]
+    starved = [("d", "1. Adorno", {"page": 220, "reading_order": 1, "zone": "endnote"})]
+
+    spliced = _splice_reference_chunks(structured, starved, [220, 221])
+
+    assert spliced == list(structured), "the original chunks must be kept intact"
+    assert sum(len(row[1]) for row in spliced) >= 8000
+
+
+def test_splice_still_applies_when_the_replacement_carries_the_text():
+    # The economy must not block the case the feature exists for: same text,
+    # split into one chunk per entry.
+    structured = [
+        ("b", "1. Adorno 2. Benjamin 3. Cavell", {"page": 220, "reading_order": 1, "zone": "endnote"}),
+    ]
+    entries = [
+        ("d1", "1. Adorno", {"page": 220, "reading_order": 1, "zone": "endnote"}),
+        ("d2", "2. Benjamin", {"page": 220, "reading_order": 2, "zone": "endnote"}),
+        ("d3", "3. Cavell", {"page": 220, "reading_order": 3, "zone": "endnote"}),
+    ]
+
+    spliced = _splice_reference_chunks(structured, entries, [220])
+
+    assert [row[0] for row in spliced] == ["d1", "d2", "d3"]

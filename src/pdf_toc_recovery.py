@@ -399,6 +399,16 @@ def _reference_section_pages(
     })
 
 
+#: The splice must not lose text. Docling re-parses the reference pages to get
+#: one entry per chunk -- a *boundary* improvement -- so the replacement should
+#: carry substantially the same characters. When it carries far fewer, the
+#: re-parse failed rather than improved, and swapping it in deletes the
+#: section. Four documents lost their entire endnotes this way, up to 40 pages
+#: each, because the only guard was that the replacement be non-empty: a single
+#: surviving chunk authorised the removal of everything (2026-07-28).
+MIN_REFERENCE_SPLICE_RATIO = 0.5
+
+
 def _splice_reference_chunks(
     structured: Sequence[tuple[str, str, dict[str, Any]]],
     reference_chunks: Sequence[tuple[str, str, dict[str, Any]]],
@@ -409,12 +419,22 @@ def _splice_reference_chunks(
     Body chunks on the same pages are kept; only the reference/endnote-zoned
     AI-TOC chunks are removed, then the Docling reference chunks are inserted and
     everything is re-sorted into reading order.
+
+    The swap is abandoned when the replacement holds materially less text than
+    what it would remove: better boundaries are worth having, a missing section
+    is not, and the original chunks are already searchable.
     """
     pages = set(int(page) for page in reference_pages)
-    kept = [
-        row for row in structured
-        if not (int(row[2].get("page") or 0) in pages and row[2].get("zone") in _REFERENCE_ZONES)
-    ]
+    kept, removed = [], []
+    for row in structured:
+        if int(row[2].get("page") or 0) in pages and row[2].get("zone") in _REFERENCE_ZONES:
+            removed.append(row)
+        else:
+            kept.append(row)
+    removed_chars = sum(len(str(row[1] or "")) for row in removed)
+    incoming_chars = sum(len(str(row[1] or "")) for row in reference_chunks)
+    if removed_chars and incoming_chars < removed_chars * MIN_REFERENCE_SPLICE_RATIO:
+        return list(structured)
     combined = list(kept) + list(reference_chunks)
     combined.sort(key=lambda row: (int(row[2].get("page") or 0), int(row[2].get("reading_order") or 0)))
     return combined

@@ -1070,7 +1070,7 @@ def extract_chunks_from_pdf(
                         parts = split_long_paragraph(para_text, max_chars=local_max_chars, target_chars=local_target_chars)
                         for part_index, part in enumerate(parts):
                             part = part.strip()
-                            if len(part) < HARD_MIN_CHARS:
+                            if not part:
                                 continue
 
                             chunk_id = f"{attachment_key}:p{pi+1}:para{para_index}:part{part_index}"
@@ -1117,12 +1117,30 @@ def extract_chunks_from_pdf(
                             )
                             page_chunks.append((chunk_id, part, md))
 
+                    before_merge = list(page_chunks)
                     page_chunks = merge_short_chunk_records(
                         page_chunks, min_chars=local_min_chunk, max_chars=local_max_chars,
                         boundary_key=lambda _cid, _text, metadata: (
                             metadata.get("page"), metadata.get("reading_order"),
                         ),
                     )
+                    # A page that had text and now has none was not filtered,
+                    # it was erased. The boundary above is unique per record, so
+                    # nothing on a page can merge; when _merge_layout_blocks
+                    # falls back to one line per block (~34 characters) every
+                    # line sits under HARD_MIN_CHARS and the merge drops them
+                    # all. One document lost 13 pages of body text this way
+                    # (4CY8EIIB, 2026-07-28). Retry those pages as a single
+                    # boundary so the lines can combine into real chunks --
+                    # only for the degenerate case, leaving ordinary pages, and
+                    # therefore existing chunk granularity, untouched.
+                    if before_merge and not page_chunks:
+                        page_chunks = merge_short_chunk_records(
+                            before_merge, min_chars=local_min_chunk, max_chars=local_max_chars,
+                            boundary_key=lambda _cid, _text, metadata: (
+                                metadata.get("page"), metadata.get("chapter"),
+                            ),
+                        )
                     chunks.extend(page_chunks)
 
             finally:
