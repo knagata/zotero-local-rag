@@ -87,24 +87,6 @@ class RecommendationAggregationTests(unittest.TestCase):
         self.assertGreaterEqual(coupling[0]["shared_reference_count"], 2)
         self.assertEqual(cocitation, [{"item_key": "OWN2", "shared_citer_count": 1}])
 
-    def test_case_overlap_pairs(self):
-        connection = db_relations.get_db_connection()
-        connection.executemany('''
-            INSERT INTO case_annotations
-                (item_key, description, region, practices, phenomena)
-            VALUES (?, ?, ?, ?, ?)
-        ''', [
-            ("OWN1", "a", "Melanesia", "kula; gift", "reciprocity"),
-            ("OWN2", "b", "Melanesia", "kula", "prestige"),
-            ("OWN3", "c", "Europe", "market", "price"),
-        ])
-        connection.commit()
-        connection.close()
-        rows = db_relations.get_case_overlap_pairs("OWN1")
-        self.assertEqual(rows[0]["item_key"], "OWN2")
-        self.assertEqual(set(rows[0]["shared_case_terms"]), {"melanesia", "kula"})
-
-
 class RelatedItemsTests(unittest.TestCase):
     def test_hybrid_rrf_combines_three_methods_and_evidence(self):
         with patch.object(
@@ -138,20 +120,6 @@ class RelatedItemsTests(unittest.TestCase):
     def test_invalid_method_is_rejected(self):
         with self.assertRaises(ValueError):
             recommendations.related_items("A", method="unknown")
-
-    def test_case_overlap_evidence(self):
-        with patch.object(
-            recommendations, "get_network_item_keys", return_value=["A", "B"]
-        ), patch.object(
-            recommendations, "get_case_overlap_pairs", return_value=[{
-                "item_key": "B", "shared_case_terms": ["kula"], "case_overlap_score": 0.5,
-            }]
-        ), patch.object(
-            recommendations, "get_item_meta", return_value={"B": {"title": "Book B"}}
-        ):
-            rows = recommendations.related_items("A", method="case_overlap", k=1)
-        self.assertEqual(rows[0]["evidence"][0]["method"], "case_overlap")
-
 
 if __name__ == "__main__":
     unittest.main()

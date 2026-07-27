@@ -1,4 +1,4 @@
-"""Grounded case extraction over canonical document-structure v2 leaves.
+"""Archived grounded case extraction over canonical document-structure v2 leaves.
 
 The legacy case worker first inferred its own sections.  This worker instead
 uses the persisted source-order tree, so each saved case can name the exact

@@ -26,6 +26,8 @@ tmp/
 data/chroma/
 data/models/
 data/manifest.json
+# V3版も同じ理由で追跡しない（取込のたびに全面的に書き換わる派生データ）
+data/manifest_v3.json
 data/*.db
 data/*.sqlite
 data/*.sqlite3
@@ -58,3 +60,18 @@ data.backup.*/
 # ── キャッシュ・生成物（既存・新規とも追跡除外） ────────
 data/item_vectors_cache.json
 data/semantic_layout_*.json
+
+# .env のバックアップ（APIキーを含む）。.env 自体は12行目で無視しているが、
+# 手動バックアップは別名になるので拾えていなかった。
+.env.bak*
+.env.*.bak
+.env.backup*
+
+# 大きな派生データと作業用スナップショット（再生成可能）
+data/chroma.bak_*/
+data/epub_ocr_cache/
+data/manifest_v3.json.bak_*
+data/manifest_v3.json.prebulk_*
+data/mistral_ocr_batches/
+data/mistral_ocr_pilots/
+data/mistral_ocr_batch_state*.json

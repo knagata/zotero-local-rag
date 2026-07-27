@@ -2,13 +2,14 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import chromadb
 from chromadb.utils import embedding_functions
@@ -195,11 +196,57 @@ def probe_embedding_dim(ef) -> Optional[int]:
     """
     try:
         probe_vecs = ef(["collection probe"])
-        if isinstance(probe_vecs, list) and probe_vecs and isinstance(probe_vecs[0], (list, tuple)):
-            return len(probe_vecs[0])
+        if probe_vecs is None or len(probe_vecs) == 0:
+            return None
+        first = probe_vecs[0]
+        dimension = len(first)
+        return int(dimension) if int(dimension) > 0 else None
     except Exception:
         return None
-    return None
+
+
+def model_state_fingerprint(model_name: str) -> str:
+    """Return a stable identity for a remote model ID or local model state.
+
+    Local weight files can be multiple gigabytes, so startup must not hash their
+    full contents.  Relative path, size, and nanosecond mtime still detect a
+    replaced or modified local snapshot without adding minutes to every run.
+    """
+    path = Path(model_name).expanduser()
+    digest = hashlib.sha256()
+    if not path.exists():
+        digest.update(f"model-id:{model_name}".encode("utf-8"))
+        return f"sha256:{digest.hexdigest()}"
+    root = path.resolve()
+    digest.update(f"local-model:{root.name}\n".encode("utf-8"))
+    for candidate in sorted((value for value in root.rglob("*") if value.is_file()), key=lambda value: str(value.relative_to(root))):
+        stat = candidate.stat()
+        digest.update(
+            f"{candidate.relative_to(root)}\0{stat.st_size}\0{stat.st_mtime_ns}\n".encode("utf-8")
+        )
+    return f"sha256:{digest.hexdigest()}"
+
+
+def embedder_config_payload(
+    cfg: EmbedderConfig, dim: int | None, collection_name: str,
+) -> dict[str, Any]:
+    identity = {
+        "provider": cfg.provider,
+        "emb_model": cfg.model_name,
+        "model_state_fingerprint": model_state_fingerprint(cfg.model_name),
+        "embedding_dim": dim,
+        "normalize_embeddings": True,
+    }
+    fingerprint = hashlib.sha256(
+        json.dumps(identity, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return {
+        "python": sys.executable,
+        **identity,
+        "emb_device": cfg.device,
+        "collection": collection_name,
+        "embedding_fingerprint": f"sha256:{fingerprint}",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -263,8 +310,14 @@ def open_chroma_collection(
     chroma_dir.mkdir(parents=True, exist_ok=True)
     client = chromadb.PersistentClient(path=str(chroma_dir))
 
+    # HNSW sync_threshold controls how often the whole index is persisted to
+    # disk.  A low value flushes frequently (crash-safe) but on a large index
+    # (hundreds of thousands of vectors) each persist dominates insert time, so
+    # it is env-tunable.  Default stays 100 for durability; raise it (e.g. 10000)
+    # for bulk re-ingestion where per-item manifest recovery covers a crash.
+    sync_threshold = max(1, int(os.environ.get("CHROMA_HNSW_SYNC_THRESHOLD", "100")))
     if metadata is None:
-        metadata = {"hnsw:space": "cosine", "hnsw:sync_threshold": 100}
+        metadata = {"hnsw:space": "cosine", "hnsw:sync_threshold": sync_threshold}
 
     col = client.get_or_create_collection(
         name=collection_name,
@@ -277,10 +330,10 @@ def open_chroma_collection(
     # re-creating a PersistentClient silently reuses the stale one.
     col._chroma_client = client
 
-    # For existing collections, get_or_create_collection does NOT update metadata.
-    # Explicitly apply sync_threshold=100 so the indexer flushes more frequently.
+    # For existing collections, get_or_create_collection does NOT update metadata,
+    # so apply the configured sync_threshold explicitly.
     try:
-        col.modify(configuration={"hnsw": {"sync_threshold": 100}})
+        col.modify(configuration={"hnsw": {"sync_threshold": sync_threshold}})
     except Exception:
         pass  # Non-fatal: older ChromaDB versions may not support this
 
@@ -300,14 +353,7 @@ def save_embedder_config(
     try:
         cfg_path = Path(chroma_dir) / "embedder_config.json"
         tmp_path = Path(chroma_dir) / "embedder_config.json.tmp"
-        cfg_out = {
-            "python": sys.executable,
-            "provider": cfg.provider,
-            "emb_model": cfg.model_name,
-            "emb_device": cfg.device,
-            "embedding_dim": dim,
-            "collection": collection_name,
-        }
+        cfg_out = embedder_config_payload(cfg, dim, collection_name)
         tmp_path.write_text(json.dumps(cfg_out, ensure_ascii=False, indent=2), encoding="utf-8")
         tmp_path.replace(cfg_path)
     except Exception:
@@ -325,6 +371,7 @@ def get_collection(
     chroma_collection_env: Optional[str],
     chroma_collection_default: str,
     suffix: str | None = None,
+    persist_active_config: bool = True,
 ):
     """
     Create / open Chroma collection with an embedding function.
@@ -344,7 +391,8 @@ def get_collection(
         suffix=suffix,
     )
 
-    save_embedder_config(chroma_dir, cfg, dim, collection_name)
+    if persist_active_config:
+        save_embedder_config(chroma_dir, cfg, dim, collection_name)
 
     if os.environ.get("DEBUG_EMBEDDER") == "1":
         try:
@@ -366,6 +414,7 @@ def get_collection(
             print(f"[DEBUG] Embedder probe failed: {e}", file=sys.__stderr__)
 
     col = open_chroma_collection(chroma_dir, collection_name, ef)
+    col._zotero_embedder_config = embedder_config_payload(cfg, dim, collection_name)
     return col
 
 

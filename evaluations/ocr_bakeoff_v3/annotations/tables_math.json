@@ -1,0 +1,4 @@
+{"sample_id":"tables_math","regions":[
+  {"id":"r001","text_anchor":"Existing theories, focus and limitations of the study","expected_text":"Existing theories, focus and limitations of the study","order":0,"heading_path":[],"zone":"body","kind":"table","locator_required":true,"bbox_required":true},
+  {"id":"r002","text_anchor":"Electricity mix in Germany and Japan","expected_text":"Electricity mix in Germany and Japan","order":1,"heading_path":[],"zone":"body","kind":"caption","locator_required":true,"bbox_required":true}
+]}

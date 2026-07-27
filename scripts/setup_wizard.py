@@ -4,6 +4,7 @@ import json
 import getpass
 import os
 import platform
+from contextlib import contextmanager
 import shutil
 import subprocess
 from pathlib import Path
@@ -86,23 +87,116 @@ def _set_required_secret(config: dict[str, str], key: str, prompt: str) -> None:
         print(f"{key} is required for Citation Network. Please enter a key.")
 
 
-def configure_feature_level(config: dict[str, str]) -> None:
-    current_level = config.get("FEATURE_LEVEL", "core")
-    default_choice = {"citation": "2", "llm": "3"}.get(current_level, "1")
-    print("\n3. How far do you want to configure this installation?")
-    print("   [1] Core local RAG — local embeddings, search, context, outlines")
-    print("   [2] + Citation Network — Semantic Scholar/OpenAlex (internet + S2 key required)")
-    print("   [3] + LLM automation — summaries, query expansion, reference extraction")
-    choice = input(f"Select [1-3, default is {default_choice}]: ").strip() or default_choice
-    level = {"2": "citation", "3": "llm"}.get(choice, "core")
-    config["FEATURE_LEVEL"] = level
+#: The three axes of note 80 are independent, so a preset is only a set of
+#: defaults for them -- not a mode the rest of the system knows about.
+PRESETS: dict[str, dict[str, str]] = {
+    "minimal": {
+        "FEATURE_LEVEL": "core",
+        "PDF_STRUCTURE_RECOVERY_ENABLE": "0",
+        "PDF_AI_TOC_FAST_PATH_ENABLE": "0",
+        "OCR_LAYER_AUDIT_ENABLE": "0",
+        "QUERY_EXPANSION_ENABLE": "0",
+        "LLM_SUMMARIES_ENABLE": "0",
+        "LLM_REFERENCE_EXTRACTION_ENABLE": "0",
+        "PDF_MISTRAL_TOC_QUEUE_ENABLE": "0",
+        "CITATION_NETWORK_ENABLE": "0",
+    },
+    "local": {
+        "FEATURE_LEVEL": "citation",
+        "PDF_STRUCTURE_RECOVERY_ENABLE": "1",
+        "PDF_STRUCTURE_ENGINE_SHORT": "docling",
+        "PDF_STRUCTURE_ENGINE_LONG": "docling",
+        "PDF_AI_TOC_FAST_PATH_ENABLE": "0",
+        "OCR_LAYER_AUDIT_ENABLE": "0",
+        "QUERY_EXPANSION_ENABLE": "0",
+        "LLM_SUMMARIES_ENABLE": "0",
+        "LLM_REFERENCE_EXTRACTION_ENABLE": "0",
+        "PDF_MISTRAL_TOC_QUEUE_ENABLE": "0",
+        "CITATION_NETWORK_ENABLE": "1",
+    },
+    "full": {
+        "FEATURE_LEVEL": "llm",
+        "PDF_STRUCTURE_RECOVERY_ENABLE": "1",
+        "PDF_STRUCTURE_ENGINE_SHORT": "docling",
+        "PDF_STRUCTURE_ENGINE_LONG": "mistral",
+        "PDF_AI_TOC_FAST_PATH_ENABLE": "1",
+        "OCR_LAYER_AUDIT_ENABLE": "1",
+        "QUERY_EXPANSION_ENABLE": "1",
+        "LLM_SUMMARIES_ENABLE": "1",
+        "LLM_REFERENCE_EXTRACTION_ENABLE": "1",
+        "PDF_MISTRAL_TOC_QUEUE_ENABLE": "1",
+        "CITATION_NETWORK_ENABLE": "1",
+    },
+}
 
-    if level in {"citation", "llm"}:
-        print("\nA Semantic Scholar API key is required for practical Citation Network use.")
-        _set_required_secret(config, "S2_API_KEY", "Semantic Scholar API key")
+LLM_FLAGS = (
+    "PDF_AI_TOC_FAST_PATH_ENABLE", "OCR_LAYER_AUDIT_ENABLE", "QUERY_EXPANSION_ENABLE",
+    "LLM_SUMMARIES_ENABLE", "LLM_REFERENCE_EXTRACTION_ENABLE",
+)
 
-    if level != "llm":
-        return
+
+def describe_preset(config: dict[str, str]) -> str:
+    """Name the preset the current configuration matches, if any."""
+    for name, values in PRESETS.items():
+        if all(config.get(key) == value for key, value in values.items()):
+            return name
+    return "custom"
+
+
+def apply_preset(config: dict[str, str], name: str) -> None:
+    config.update(PRESETS[name])
+
+
+def _granite_selectable() -> bool:
+    try:
+        from src.feature_gates import granite_configured
+    except ImportError:  # pragma: no cover - src not importable in odd layouts
+        return False
+    return granite_configured()
+
+
+def _choose_engine(label: str, current: str) -> str:
+    """Choice (C) for one size bucket.
+
+    The three options are presented with their trade-offs rather than a
+    recommendation, because which one is right depends on what the library
+    holds and whether the owner will pay per page.
+    """
+    options = ["docling", "mistral"]
+    print(f"\n  {label}")
+    print("     [1] Docling — free, fast, best on tables and formulas")
+    print("     [2] Mistral OCR — paid per page, fast, strongest on long scans")
+    if _granite_selectable():
+        options.insert(1, "granite")
+        print("     [3] Granite — free, ~2.3x slower, more accurate overall")
+    else:
+        print("     (Granite needs its own virtualenv; see dev-notes 68 to enable it)")
+    default = str(options.index(current) + 1) if current in options else "1"
+    choice = input(f"  Select [1-{len(options)}, default is {default}]: ").strip() or default
+    try:
+        return options[int(choice) - 1]
+    except (ValueError, IndexError):
+        return options[0]
+
+
+def configure_pdf_engines(config: dict[str, str]) -> None:
+    boundary = config.get("PDF_STRUCTURE_ENGINE_PAGE_BOUNDARY", "30")
+    print(f"\nWhich engine should structure PDFs? (split at {boundary} pages)")
+    config["PDF_STRUCTURE_ENGINE_SHORT"] = _choose_engine(
+        f"Shorter than {boundary} pages:", config.get("PDF_STRUCTURE_ENGINE_SHORT", "docling"),
+    )
+    config["PDF_STRUCTURE_ENGINE_LONG"] = _choose_engine(
+        f"{boundary} pages or more:", config.get("PDF_STRUCTURE_ENGINE_LONG", "docling"),
+    )
+    entered = input(f"\n  Page boundary [{boundary}]: ").strip()
+    if entered.isdigit() and int(entered) > 0:
+        config["PDF_STRUCTURE_ENGINE_PAGE_BOUNDARY"] = entered
+    if "mistral" in {config["PDF_STRUCTURE_ENGINE_SHORT"], config["PDF_STRUCTURE_ENGINE_LONG"]}:
+        config["PDF_MISTRAL_TOC_QUEUE_ENABLE"] = "1"
+        _set_optional_secret(config, "MISTRAL_OCR_API_KEY", "Mistral OCR API key")
+
+
+def configure_llm_provider(config: dict[str, str]) -> None:
     print("\nChoose the default LLM provider:")
     print("   [1] DeepSeek API: Flash / Pro / Pro (recommended)")
     print("   [2] Codex CLI (uses your local Codex login and quota)")
@@ -112,20 +206,14 @@ def configure_feature_level(config: dict[str, str]) -> None:
     for legacy_key in ("LLM_DEFAULT", "LLM_EXPAND", "LLM_SUMMARY", "LLM_EXTRACT"):
         config.pop(legacy_key, None)
     if provider == "2":
-        config.update({
-            "LLM_CHEAP": "codex_cli:auto", "LLM_STANDARD": "codex_cli:auto",
-            "LLM_REVIEW": "codex_cli:auto",
-        })
+        config.update(dict.fromkeys(
+            ("LLM_CHEAP", "LLM_STANDARD", "LLM_REVIEW"), "codex_cli:auto"))
     elif provider == "3":
-        config.update({
-            "LLM_CHEAP": "claude_cli:auto", "LLM_STANDARD": "claude_cli:auto",
-            "LLM_REVIEW": "claude_cli:auto",
-        })
+        config.update(dict.fromkeys(
+            ("LLM_CHEAP", "LLM_STANDARD", "LLM_REVIEW"), "claude_cli:auto"))
     elif provider == "4":
-        config.update({
-            "LLM_CHEAP": "openai_compat:local", "LLM_STANDARD": "openai_compat:local",
-            "LLM_REVIEW": "openai_compat:local",
-        })
+        config.update(dict.fromkeys(
+            ("LLM_CHEAP", "LLM_STANDARD", "LLM_REVIEW"), "openai_compat:local"))
         base = input("OpenAI-compatible base URL [http://localhost:11434/v1]: ").strip()
         config["LLM_OPENAI_BASE_URL"] = base or "http://localhost:11434/v1"
         _set_optional_secret(config, "LLM_OPENAI_API_KEY", "API key if required")
@@ -137,29 +225,52 @@ def configure_feature_level(config: dict[str, str]) -> None:
         })
         _set_optional_secret(config, "DEEPSEEK_API_KEY", "DeepSeek API key")
 
-    print("\nChoose what may be sent to a cloud LLM:")
-    print("   [1] Exclude tagged items (recommended)")
-    print("   [2] Allow all Zotero items")
-    print("   [3] Keep cloud processing disabled until configured manually")
-    policy = input("Select [1-3, default is 1]: ").strip() or "1"
-    if policy == "2":
-        config["SUMMARY_ALLOW_CLOUD_ALL"] = "1"
-        config["EXTRACT_ALLOW_CLOUD_ALL"] = "1"
-        config.pop("SUMMARY_EXCLUDE_TAGS", None)
-        config.pop("EXTRACT_EXCLUDE_TAGS", None)
-    elif policy == "3":
-        for key in (
-            "SUMMARY_ALLOW_CLOUD_ALL", "EXTRACT_ALLOW_CLOUD_ALL",
-            "SUMMARY_EXCLUDE_TAGS", "EXTRACT_EXCLUDE_TAGS",
-        ):
-            config.pop(key, None)
-    else:
-        default_tags = config.get("EXTRACT_EXCLUDE_TAGS", "private,confidential")
-        tags = input(f"Excluded Zotero tags [{default_tags}]: ").strip() or default_tags
-        config["SUMMARY_EXCLUDE_TAGS"] = tags
-        config["EXTRACT_EXCLUDE_TAGS"] = tags
-        config.pop("SUMMARY_ALLOW_CLOUD_ALL", None)
-        config.pop("EXTRACT_ALLOW_CLOUD_ALL", None)
+
+def configure_feature_level(config: dict[str, str]) -> None:
+    """Pick a preset, then optionally adjust the three axes individually."""
+    # Settings removed on 2026-07-27: an item-level cloud veto could not hold,
+    # since anything indexed reaches the assistant through search.
+    for key in (
+        "SUMMARY_ALLOW_CLOUD_ALL", "EXTRACT_ALLOW_CLOUD_ALL",
+        "SUMMARY_EXCLUDE_TAGS", "EXTRACT_EXCLUDE_TAGS",
+        "OCR_FALLBACK_ALLOW_CLOUD_ALL", "OCR_FALLBACK_EXCLUDE_TAGS",
+        "MISTRAL_OCR_FALLBACK_ENABLE",
+    ):
+        config.pop(key, None)
+
+    existing = describe_preset(config)
+    print("\n3. How should this installation be set up?")
+    print("   [1] Minimal — nothing to obtain, no charges. PDFs indexed as plain text")
+    print("   [2] Local — no charges. PDF structuring with Docling; free S2 key recommended")
+    print("   [3] Full — charged. Adds AI TOC, hierarchical summaries, Mistral OCR for long scans")
+    if existing != "custom" or any(config.get(flag) for flag in LLM_FLAGS):
+        print(f"   [0] Keep the current settings (currently: {existing})")
+    default = {"minimal": "1", "local": "2", "full": "3"}.get(existing, "1")
+    choice = input(f"Select [0-3, default is {default}]: ").strip() or default
+    if choice == "0":
+        return
+    name = {"2": "local", "3": "full"}.get(choice, "minimal")
+    apply_preset(config, name)
+
+    if name != "minimal":
+        print("\nA Semantic Scholar API key is free, but the unkeyed public rate")
+        print("limit is too low for the Citation Network to make progress.")
+        _set_optional_secret(config, "S2_API_KEY", "Semantic Scholar API key")
+        if not config.get("S2_API_KEY"):
+            config["CITATION_NETWORK_ENABLE"] = "0"
+            config["FEATURE_LEVEL"] = "core" if name == "local" else "llm"
+    if name == "full":
+        configure_llm_provider(config)
+        _set_optional_secret(config, "MISTRAL_OCR_API_KEY", "Mistral OCR API key")
+        if not config.get("MISTRAL_OCR_API_KEY"):
+            # Rather than leaving a setting that would stop the next run.
+            config["PDF_STRUCTURE_ENGINE_LONG"] = "docling"
+            config["PDF_MISTRAL_TOC_QUEUE_ENABLE"] = "0"
+
+    if config.get("PDF_STRUCTURE_RECOVERY_ENABLE") == "1":
+        answer = input("\nAdjust which engine structures PDFs? [y/N]: ").strip().lower()
+        if answer in {"y", "yes"}:
+            configure_pdf_engines(config)
 
 
 def print_configuration_status(config: dict[str, str]) -> None:
@@ -172,13 +283,56 @@ def print_configuration_status(config: dict[str, str]) -> None:
     print(f"  cheap LLM      : {config.get('LLM_CHEAP', 'not configured')}")
     print(f"  standard LLM   : {config.get('LLM_STANDARD', 'not configured')}")
     print(f"  review LLM     : {config.get('LLM_REVIEW', 'not configured')}")
-    if config.get("SUMMARY_EXCLUDE_TAGS") or config.get("EXTRACT_EXCLUDE_TAGS"):
-        policy = "tag blacklist"
-    elif config.get("SUMMARY_ALLOW_CLOUD_ALL") == "1" or config.get("EXTRACT_ALLOW_CLOUD_ALL") == "1":
-        policy = "allow all"
+    print(f"  preset         : {describe_preset(config)}")
+    if config.get("PDF_STRUCTURE_RECOVERY_ENABLE") == "1":
+        boundary = config.get("PDF_STRUCTURE_ENGINE_PAGE_BOUNDARY", "30")
+        print(
+            f"  PDF structure  : <{boundary}p "
+            f"{config.get('PDF_STRUCTURE_ENGINE_SHORT', 'docling')} / "
+            f">={boundary}p {config.get('PDF_STRUCTURE_ENGINE_LONG', 'docling')}"
+        )
     else:
-        policy = "fail-closed"
-    print(f"  cloud policy   : {policy}")
+        print("  PDF structure  : off (indexed as plain text)")
+    enabled = [flag for flag in LLM_FLAGS if config.get(flag) == "1"]
+    print(f"  LLM features   : {len(enabled)}/{len(LLM_FLAGS)} enabled")
+    # Report a feature switched on without its resource here too, so the
+    # mismatch is visible at setup rather than only when a run refuses to start.
+    for problem in _configuration_problems(config):
+        print(f"  [!] {problem}")
+
+
+def _configuration_problems(config: dict[str, str]) -> list[str]:
+    """Same check the pipeline runs at startup, evaluated against ``config``.
+
+    The .env loader is suspended for the duration: the wizard is reporting on
+    the configuration being *edited*, and letting the file on disk leak in
+    would show a key the user has not saved yet -- or hide one they just
+    removed.
+    """
+    try:
+        from src import feature_gates
+    except ImportError:  # pragma: no cover - src not importable in odd layouts
+        return []
+    original_loader = feature_gates.load_dotenv_native
+    feature_gates.load_dotenv_native = lambda *_a, **_k: None
+    try:
+        with mock_environment(config):
+            return feature_gates.verify_enabled_features()
+    finally:
+        feature_gates.load_dotenv_native = original_loader
+
+
+@contextmanager
+def mock_environment(config: dict[str, str]):
+    """Evaluate feature gates against a config dict rather than the live env."""
+    saved = dict(os.environ)
+    try:
+        os.environ.clear()
+        os.environ.update({key: str(value) for key, value in config.items()})
+        yield
+    finally:
+        os.environ.clear()
+        os.environ.update(saved)
 
 
 def get_claude_config_path() -> Path | None:

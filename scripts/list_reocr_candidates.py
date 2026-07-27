@@ -1,198 +1,167 @@
 #!/usr/bin/env python3
-"""Rank re-OCR candidates without modifying the chunk store or relations DB."""
+"""Rank V3 re-OCR candidates without modifying canonical data."""
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
-from collections import Counter, defaultdict
+from collections import defaultdict
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.chunk_store import get_item_chunks
+from src.chunk_store import get_item_chunks, list_item_keys
+from src.db_relations import (
+    get_document_nodes, get_document_structure, get_item_processing_status,
+    get_chunk_quality_reports,
+    get_summary_quality_reports,
+)
+from src.extraction_engine import EngineRegistry
 from src.manifest import load_manifest
+from src.reocr_quality import candidate_assessment
 
 
-def _normalize(value: Any) -> str:
-    return " ".join(str(value or "").split())
-
-
-def _majority_language(chunks: list[dict[str, Any]]) -> str:
-    languages = [
-        str(chunk.get("metadata", {}).get("lang") or "").strip().casefold()
-        for chunk in chunks
-    ]
-    languages = [language for language in languages if language]
-    return Counter(languages).most_common(1)[0][0] if languages else "unknown"
-
-
-def _quote_location(quote: str, chunks: list[dict[str, Any]]) -> str:
-    needle = _normalize(quote)
-    if not needle:
-        return "missing"
-    texts = [_normalize(chunk.get("text")) for chunk in chunks]
-    if any(needle in text for text in texts):
-        return "single"
-    if any(needle in f"{first} {second}" for first, second in zip(texts, texts[1:])):
-        return "adjacent_pair"
-    return "missing"
-
-
-def _grounding_stats(report: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    stats: dict[str, dict[str, Any]] = defaultdict(lambda: {
-        "total_generated": 0, "total_discarded": 0, "suspicious_sections": 0,
-        "evidence_not_in_chunk": 0, "cross_chunk_evidence": 0,
-    })
-    for item in report.get("items", []):
-        item_key = str(item.get("item_key") or "")
-        for section in item.get("sections", []):
-            verification = section.get("verification") or {}
-            current = stats[item_key]
-            current["total_generated"] += int(verification.get("total_generated") or 0)
-            current["total_discarded"] += int(verification.get("total_discarded") or 0)
-            current["suspicious_sections"] += int(bool(verification.get("suspicious_section")))
-            for bucket_name in ("cases", "chapter_authors", "first_publication_note"):
-                reasons = (verification.get(bucket_name) or {}).get("reasons") or {}
-                current["evidence_not_in_chunk"] += int(reasons.get("evidence_not_in_chunk") or 0)
-    return stats
+def _engine_identity(
+    attachment_key: str, chunks: list[dict[str, Any]], quality: dict[str, Any],
+    nodes: list[dict[str, Any]], statuses: list[dict[str, Any]],
+) -> tuple[str | None, str | None]:
+    for chunk in chunks:
+        md = chunk.get("metadata") or {}
+        if md.get("extraction_engine"):
+            return str(md["extraction_engine"]), str(md.get("extraction_version") or "") or None
+    for node in nodes:
+        if str(node.get("attachment_key") or "") == attachment_key and node.get("extraction_engine"):
+            return str(node["extraction_engine"]), str(node.get("extraction_version") or "") or None
+    engine = quality.get("extraction_engine") or quality.get("parser")
+    version = quality.get("extraction_version") or quality.get("parser_version") or quality.get("version")
+    if engine:
+        return str(engine), str(version or "") or None
+    extraction = next((
+        row for row in statuses
+        if row.get("artifact_type") == "extraction"
+        and str(row.get("attachment_key") or "") == attachment_key
+    ), None)
+    return (
+        (str(extraction.get("processor_version")) if extraction and extraction.get("processor_version") else None),
+        None,
+    )
 
 
 def build_candidates(
-    manifest: dict[str, Any], report: dict[str, Any],
-    *, chunk_loader: Callable[[str], list[dict[str, Any]]] = get_item_chunks,
+    manifest: dict[str, Any], _legacy_report: dict[str, Any] | None = None, *,
+    item_keys: Iterable[str] | None = None,
+    chunk_loader: Callable[[str], list[dict[str, Any]]] = get_item_chunks,
+    structure_loader: Callable[[str], dict[str, Any] | None] = get_document_structure,
+    node_loader: Callable[[str], list[dict[str, Any]]] = get_document_nodes,
+    status_loader: Callable[[str], list[dict[str, Any]]] = get_item_processing_status,
+    summary_reports: list[dict[str, Any]] | None = None,
+    chunk_reports: list[dict[str, Any]] | None = None,
+    target_engine: str = "docling", target_version: str = "v3-adapter-1",
 ) -> list[dict[str, Any]]:
-    """Combine manifest quality, grounding failures, and chunk language."""
-    grounding = _grounding_stats(report)
-    rows: list[dict[str, Any]] = []
-    item_keys = sorted({
-        str(item.get("item_key") or "") for item in report.get("items", []) if item.get("item_key")
-    })
-    for item_key in item_keys:
-        chunks = chunk_loader(item_key)
-        by_attachment: dict[str, list[dict[str, Any]]] = defaultdict(list)
-        for chunk in chunks:
-            attachment_key = str(chunk.get("metadata", {}).get("attachmentKey") or "unknown")
-            by_attachment[attachment_key].append(chunk)
+    """Build case-independent candidates from V3 extraction and structure data.
 
-        # Quotes crossing a boundary are useful OCR/layout signals even when the
-        # relaxed grounding verifier can retain them safely.
-        item_report = next(
-            (item for item in report.get("items", []) if item.get("item_key") == item_key), {},
-        )
-        cases = [
-            case for section in item_report.get("sections", []) for case in section.get("cases", [])
-        ]
-        primary_attachment = max(
-            by_attachment, key=lambda key: len(by_attachment[key]), default="unknown",
-        )
-        crossed_by_attachment = Counter()
-        missing_from_all = 0
-        for case in cases:
-            locations = {
-                attachment_key: _quote_location(
-                    str(case.get("evidence_quote") or ""), attachment_chunks,
-                )
-                for attachment_key, attachment_chunks in by_attachment.items()
-            }
-            for attachment_key, location in locations.items():
-                if location == "adjacent_pair":
-                    crossed_by_attachment[attachment_key] += 1
-            if locations and all(location == "missing" for location in locations.values()):
-                missing_from_all += 1
-        for attachment_key, attachment_chunks in by_attachment.items():
-            crossed = crossed_by_attachment[attachment_key]
-            quality = (manifest.get("files", {}).get(attachment_key, {}).get("quality") or {})
-            current = dict(grounding.get(item_key, {}))
-            current["cross_chunk_evidence"] = crossed
-            if attachment_key == primary_attachment:
-                current["evidence_not_in_chunk"] = int(
-                    current.get("evidence_not_in_chunk") or 0
-                ) + missing_from_all
-                generated = int(current.get("total_generated") or 0)
-                discarded = int(current.get("total_discarded") or 0)
-            else:
-                current["evidence_not_in_chunk"] = 0
-                current["suspicious_sections"] = 0
-                generated = discarded = 0
-            lang = _majority_language(attachment_chunks)
-            is_scanned = bool(quality.get("is_scanned"))
-            is_corrupted = bool(quality.get("is_corrupted"))
-            signals = (
-                is_scanned or is_corrupted or current.get("suspicious_sections")
-                or current.get("evidence_not_in_chunk") or crossed
+    ``_legacy_report`` is accepted but ignored so callers get a safe migration
+    path; no grounding, case, quote, or legacy summary fields are consulted.
+    """
+    reports_by_item: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for report in summary_reports or []:
+        reports_by_item[str(report.get("item_key") or "")].append(report)
+    # Reader-reported source-text damage, keyed by attachment so a report about
+    # one PDF does not raise the score of its item's other attachments.
+    chunk_reports_by_attachment: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for report in chunk_reports or []:
+        chunk_reports_by_attachment[str(report.get("attachment_key") or "")].append(report)
+    keys = list(item_keys) if item_keys is not None else list_item_keys()
+    rows: list[dict[str, Any]] = []
+    files = manifest.get("files") if isinstance(manifest.get("files"), dict) else {}
+    for item_key in sorted({str(key) for key in keys if key}):
+        all_chunks = chunk_loader(item_key)
+        by_attachment: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for chunk in all_chunks:
+            attachment_key = str((chunk.get("metadata") or {}).get("attachmentKey") or "")
+            if attachment_key:
+                by_attachment[attachment_key].append(chunk)
+        structure = structure_loader(item_key) or {}
+        nodes = node_loader(item_key)
+        statuses = status_loader(item_key)
+        for attachment_key, chunks in sorted(by_attachment.items()):
+            quality = dict((files.get(attachment_key) or {}).get("quality") or {})
+            current_engine, current_version = _engine_identity(
+                attachment_key, chunks, quality, nodes, statuses,
             )
-            if not signals:
+            assessment = candidate_assessment(
+                quality=quality, chunks=chunks,
+                structure_status=str(structure.get("status") or "unavailable"),
+                summary_reports=reports_by_item[item_key],
+                chunk_reports=chunk_reports_by_attachment[attachment_key],
+                current_engine=current_engine, current_version=current_version,
+                target_engine=target_engine, target_version=target_version,
+            )
+            if not assessment["candidate"]:
                 continue
-            if lang == "ja":
-                recommendation = "benchmark_ja_ocr"
-            elif is_scanned or is_corrupted or current.get("evidence_not_in_chunk"):
-                recommendation = "docling_reparse"
-            else:
-                recommendation = "inspect_grounding"
-            score = (
-                6 * int(is_corrupted) + 5 * int(is_scanned)
-                + 4 * int(current.get("suspicious_sections") or 0)
-                + 2 * int(current.get("evidence_not_in_chunk") or 0) + crossed
-            )
             rows.append({
-                "item_key": item_key, "attachment_key": attachment_key, "lang": lang,
-                "parser": str(quality.get("parser") or "unknown"),
-                "is_scanned": is_scanned, "is_corrupted": is_corrupted,
-                "discard_rate": round(discarded / generated, 4) if generated else 0.0,
-                "suspicious_sections": int(current.get("suspicious_sections") or 0),
-                "evidence_not_in_chunk": int(current.get("evidence_not_in_chunk") or 0),
-                "cross_chunk_evidence": crossed, "score": score,
-                "recommendation": recommendation,
+                "item_key": item_key, "attachment_key": attachment_key,
+                **assessment,
+                "recommendation": f"reocr_with_{target_engine}",
             })
-    return sorted(rows, key=lambda row: (-row["score"], row["item_key"], row["attachment_key"]))
+    return sorted(rows, key=lambda row: (-int(row["score"]), row["item_key"], row["attachment_key"]))
 
 
 def render_markdown(rows: list[dict[str, Any]]) -> str:
     lines = [
-        "# 再OCR候補", "",
-        "この一覧は品質フラグ、grounding破棄統計、言語、chunk跨ぎquoteを統合した読み取り専用の候補表。",
-        "", "| rank | itemKey | attachmentKey | lang | parser | scanned | corrupted | discard | suspicious | missing chunk | cross chunk | score | 推奨処理 |",
-        "|---:|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---|",
+        "# 再OCR候補（V3）", "",
+        "extraction品質・構造・要約品質報告・engine/version差だけで生成した非破壊の候補表。",
+        "", "| rank | itemKey | attachmentKey | lang | current → target | reasons | score |",
+        "|---:|---|---|---|---|---|---:|",
     ]
     for rank, row in enumerate(rows, 1):
+        current = f"{row['current_engine']}@{row['current_version']}"
+        target = f"{row['target_engine']}@{row['target_version']}"
         lines.append(
-            f"| {rank} | {row['item_key']} | {row['attachment_key']} | {row['lang']} | "
-            f"{row['parser']} | {int(row['is_scanned'])} | {int(row['is_corrupted'])} | "
-            f"{row['discard_rate']:.1%} | {row['suspicious_sections']} | "
-            f"{row['evidence_not_in_chunk']} | {row['cross_chunk_evidence']} | "
-            f"{row['score']} | {row['recommendation']} |"
+            f"| {rank} | {row['item_key']} | {row['attachment_key']} | {row['language']} | "
+            f"{current} → {target} | {', '.join(row['reasons'])} | {row['score']} |"
         )
     return "\n".join(lines).rstrip() + "\n"
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", type=Path, default=ROOT / "data" / "manifest.json")
-    parser.add_argument("--comparison", type=Path, required=True)
+    parser.add_argument("--engine", default=os.environ.get("PDF_EXTRACTION_ENGINE", "docling"))
+    parser.add_argument("--engine-version")
+    parser.add_argument("--item", action="append", help="Limit to itemKey; repeatable")
     parser.add_argument("--json-output", type=Path)
     parser.add_argument("--markdown-output", type=Path)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     if not args.json_output and not args.markdown_output:
         parser.error("at least one of --json-output or --markdown-output is required")
-    manifest = load_manifest(args.manifest)
-    report = json.loads(args.comparison.read_text(encoding="utf-8"))
-    rows = build_candidates(manifest, report)
+    engine = EngineRegistry().get(args.engine)
+    target_version = args.engine_version or engine.version
+    rows = build_candidates(
+        load_manifest(args.manifest), item_keys=args.item or list_item_keys(),
+        summary_reports=get_summary_quality_reports(None),
+        chunk_reports=get_chunk_quality_reports("pending"),
+        target_engine=engine.name, target_version=target_version,
+    )
+    payload = {
+        "schema_version": "reocr-candidates-v3", "dry_run": True,
+        "target_engine": engine.name, "target_version": target_version,
+        "candidates": rows,
+    }
     if args.json_output:
         args.json_output.parent.mkdir(parents=True, exist_ok=True)
-        args.json_output.write_text(
-            json.dumps({"source": str(args.comparison), "candidates": rows}, ensure_ascii=False, indent=2)
-            + "\n", encoding="utf-8",
-        )
+        args.json_output.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     if args.markdown_output:
         args.markdown_output.parent.mkdir(parents=True, exist_ok=True)
         args.markdown_output.write_text(render_markdown(rows), encoding="utf-8")
-    print(json.dumps({"candidates": len(rows)}, ensure_ascii=False))
+    print(json.dumps({"candidates": len(rows), "dry_run": True}, ensure_ascii=False))
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

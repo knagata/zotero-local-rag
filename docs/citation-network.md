@@ -1,6 +1,6 @@
 # Citation Network 更新ガイド
 
-Citation Network更新は、Zotero資料の被引用情報とEPUBの参照文献を取得・照合してローカルDBへ保存します。
+Citation Network更新は、Zotero資料の被引用情報と、資料本文から抽出した参照文献を取得・照合してローカルDBへ保存します。参照文献は取り込み時に境界保持したV3チャンク（参考文献・脚注・巻末注のzone）から復元します。
 
 ## 通常の更新
 
@@ -24,9 +24,9 @@ uv run src/update_citations.py --all --force
 
 `--all`は既に完了したアイテムをスキップします。途中終了やAPI障害で `error` になったアイテムは、次回の通常更新で再試行されます。
 
-## EPUB参照の追加回収
+## 参照の追加回収
 
-一冊のEPUBに大量の参照がある場合、S2問い合わせ上限を超えた候補は `skipped` として保留されます。通常更新後も保留が残る場合だけ、上限を増やして再解決します。
+一冊に大量の参照がある場合、S2問い合わせ上限を超えた候補は `skipped` として保留されます。通常更新後も保留が残る場合だけ、上限を増やして再解決します。
 
 ```bash
 uv run src/update_citations.py --resume-skipped
@@ -40,7 +40,7 @@ uv run src/update_citations.py --resume-skipped --epub-budget 300
 1. Zotero Local APIから書誌と添付情報を取得
 2. DOI/ISBNがない場合、OpenAlexでDOI候補を検索
 3. Semantic Scholarから被引用論文を取得
-4. EPUBの脚注・巻末注・参考文献を構造優先で抽出
+4. V3チャンク（参考文献・脚注・巻末注のzone）から参照文献候補を復元
 5. 参照文献をSemantic Scholar等で照合
 6. 埋め込み類似度で引用・参照箇所をチャンクへ対応付け
 7. `data/relations.db`へ保存
@@ -66,12 +66,12 @@ DisableはDB行の削除ではなく、所蔵アイテムキーとS2 paper IDの
 | 値 | 意味 | 次回の通常更新 |
 |---|---|---|
 | `pending` | 未完了または処理中 | 再処理 |
-| `s2_done` | S2完了、EPUB処理が未完了 | EPUBから再開 |
+| `s2_done` | S2完了、参照処理が未完了 | 参照抽出から再開 |
 | `mapped` | 正常完了 | スキップ |
 | `not_found` | S2に該当論文なし | スキップ |
 | `error` | 429や通信障害等 | 再処理 |
 
-### EPUB参照単位
+### 参照単位
 
 | 値 | 意味 | 対応 |
 |---|---|---|

@@ -290,7 +290,7 @@ class ReferenceAgentTests(unittest.TestCase):
                 "publisher": None, "doi": None, "isbn": None, "type": None,
             },
         ]
-        with patch.object(reference_agent, "_item_excluded", return_value=(False, None)), patch.object(
+        with patch.object(
             reference_agent, "get_llm", return_value=_FakeStructureLLM(decisions)
         ):
             report = reference_agent.restructure_unparsed_epub_references(limit=10)
@@ -374,7 +374,7 @@ class ReferenceAgentTests(unittest.TestCase):
                 },
             ],
         }
-        with patch.object(reference_agent, "_item_excluded", return_value=(False, None)), patch.object(
+        with patch.object(
             reference_agent, "get_llm", return_value=_FakeCompoundLLM([decision])
         ):
             report = reference_agent.split_compound_reference_candidates(limit=10)
@@ -410,7 +410,7 @@ class ReferenceAgentTests(unittest.TestCase):
             "review_id": parent["review_id"], "classification": "commentary_or_body",
             "references": [],
         }
-        with patch.object(reference_agent, "_item_excluded", return_value=(False, None)), patch.object(
+        with patch.object(
             reference_agent, "get_llm", return_value=_FakeCompoundLLM([decision])
         ):
             report = reference_agent.split_compound_reference_candidates(limit=10)
@@ -475,25 +475,3 @@ class ReferenceAgentTests(unittest.TestCase):
         rejected = db_relations.get_reference_review_candidates("rejected")
         self.assertEqual(len(rejected), 2)
         self.assertTrue(all(row["structure_classification"] is None for row in rejected))
-
-    def test_reference_exclusion_fails_closed_when_tags_cannot_be_checked(self):
-        with patch.dict(os.environ, {"EXTRACT_EXCLUDE_TAGS": "private"}, clear=False), patch.object(
-            reference_agent.httpx, "get", side_effect=RuntimeError("offline")
-        ):
-            excluded, reason = reference_agent._item_excluded("ITEM")
-        self.assertTrue(excluded)
-        self.assertIn("could not verify", reason)
-
-    def test_reference_exclusion_requires_an_explicit_cloud_policy(self):
-        with patch.dict(os.environ, {}, clear=True):
-            excluded, reason = reference_agent._item_excluded("ITEM")
-        self.assertTrue(excluded)
-        self.assertIn("not configured", reason)
-
-    def test_reference_exclusion_allows_explicit_cloud_opt_in(self):
-        with patch.dict(os.environ, {"EXTRACT_ALLOW_CLOUD_ALL": "1"}, clear=True):
-            self.assertEqual(reference_agent._item_excluded("ITEM"), (False, None))
-
-
-if __name__ == "__main__":
-    unittest.main()

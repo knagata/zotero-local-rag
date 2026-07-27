@@ -14,7 +14,6 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SELECTOR_STRATEGY_VERSION = 5
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
@@ -61,32 +60,25 @@ def _compare_section(
         result = {
             "section_id": section["section_id"], "chapter": section["chapter"],
             "status": "skipped_non_content", "extractive_summary": extractive["summary"],
-            "llm_summary": None, "cases": [], "chapter_authors": [],
+            "llm_summary": None, "chapter_authors": [],
             "first_publication_note": None, "verification": None,
         }
         result["classification"] = _classify(result)
         return result
     try:
-        if strategy == "selector":
-            generated, model = build_summaries._llm_selector_section(
-                section, samples=samples, min_votes=min_votes,
-                judge_samples=judge_samples, judge_min_votes=judge_min_votes,
-                judge_reasoning=judge_reasoning,
-            )
-        else:
-            generated, model = build_summaries._llm_section(section)
+        generated, model = build_summaries._llm_section(section)
     except InvalidLLMResponse as exc:
         return {
             "section_id": section["section_id"], "chapter": section["chapter"],
             "status": "model_quality_failure", "classification": "model_quality_failure",
             "error": str(exc), "extractive_summary": extractive["summary"],
-            "llm_summary": None, "cases": [], "chapter_authors": [],
+            "llm_summary": None, "chapter_authors": [],
             "first_publication_note": None, "verification": None,
         }
     result = {
         "section_id": section["section_id"], "chapter": section["chapter"],
         "status": "generated", "model": model, "extractive_summary": extractive["summary"],
-        "llm_summary": generated.get("summary"), "cases": generated.get("cases") or [],
+        "llm_summary": generated.get("summary"),
         "chapter_authors": generated.get("chapter_authors") or [],
         "first_publication_note": generated.get("first_publication_note"),
         "verification": generated.get("_verification"),
@@ -101,9 +93,6 @@ def compare_item(
     samples: int = 3, min_votes: int = 2,
     judge_samples: int = 3, judge_min_votes: int = 2, judge_reasoning: str = "disabled",
 ) -> dict:
-    excluded, reason = build_summaries._excluded_from_llm(item_key)
-    if excluded:
-        return {"item_key": item_key, "status": "excluded", "reason": reason, "sections": []}
     chunks = get_item_chunks(item_key)
     sections = build_summaries.split_sections(chunks)[:max(max_sections, 0)]
     checkpoint_path = checkpoint_dir / f"{item_key}.json" if checkpoint_dir else None
@@ -172,7 +161,7 @@ def main() -> None:
     parser.add_argument("--max-sections", type=int, default=3)
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--llm", default="deepseek:deepseek-v4-pro")
-    parser.add_argument("--strategy", choices=["quote", "selector"], default="quote")
+    parser.add_argument("--strategy", choices=["summary-only"], default="summary-only")
     parser.add_argument("--samples", type=int, default=3)
     parser.add_argument("--min-votes", type=int, default=2)
     parser.add_argument("--judge-samples", type=int, default=3)
@@ -204,7 +193,7 @@ def main() -> None:
     os.environ["LLM_CHEAP"] = args.llm
     keys = (args.item or list_item_keys())[:max(args.max_items, 0)]
     checkpoint_spec = (
-        f"{args.llm}|strategy={args.strategy}|version={SELECTOR_STRATEGY_VERSION}"
+        f"{args.llm}|strategy={args.strategy}"
         f"|samples={args.samples}|votes={args.min_votes}"
         f"|judge_samples={args.judge_samples}|judge_votes={args.judge_min_votes}"
         f"|judge_reasoning={args.judge_reasoning}"
@@ -214,7 +203,7 @@ def main() -> None:
         "strategy": args.strategy, "samples": args.samples, "min_votes": args.min_votes,
         "judge_samples": args.judge_samples, "judge_min_votes": args.judge_min_votes,
         "judge_reasoning": args.judge_reasoning,
-        "strategy_version": SELECTOR_STRATEGY_VERSION if args.strategy == "selector" else None,
+        "strategy_version": None,
         "writes_database": False, "items": [], "stop_reason": "completed",
     }
     output = args.output or ROOT / "data" / "quality" / "summary-comparison.json"

@@ -98,6 +98,54 @@ def delete_by_note_key(note_key: str, *, path: Path | None = None) -> None:
         connection.close()
 
 
+def delete_by_chunk_ids(ids: Iterable[str], *, path: Path | None = None) -> None:
+    """Delete exact chunk IDs (used by deterministic index repair)."""
+    values = [(str(chunk_id),) for chunk_id in set(ids) if chunk_id]
+    if not values:
+        return
+    connection = _connect(path)
+    try:
+        connection.executemany("DELETE FROM chunks_fts WHERE chunk_id = ?", values)
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def list_chunk_ids(*, path: Path | None = None) -> list[str]:
+    """Return all lexical chunk IDs through a strictly read-only connection."""
+    db_path = _path(path)
+    if not db_path.exists():
+        return []
+    connection = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=30)
+    try:
+        rows = connection.execute("SELECT chunk_id FROM chunks_fts ORDER BY chunk_id").fetchall()
+        return [str(row[0]) for row in rows]
+    finally:
+        connection.close()
+
+
+def chunk_ids_by_attachment_keys(
+    keys: Iterable[str], *, path: Path | None = None,
+) -> dict[str, set[str]]:
+    """Read the exact lexical ID set for selected attachments."""
+    selected = sorted({str(key) for key in keys if key})
+    result = {key: set() for key in selected}
+    if not selected or not _path(path).exists():
+        return result
+    placeholders = ",".join("?" for _ in selected)
+    connection = sqlite3.connect(f"file:{_path(path)}?mode=ro", uri=True, timeout=30)
+    try:
+        rows = connection.execute(
+            f"SELECT attachment_key, chunk_id FROM chunks_fts WHERE attachment_key IN ({placeholders})",
+            selected,
+        ).fetchall()
+        for attachment_key, chunk_id in rows:
+            result[str(attachment_key)].add(str(chunk_id))
+        return result
+    finally:
+        connection.close()
+
+
 def search_chunks(
     query: str,
     *,

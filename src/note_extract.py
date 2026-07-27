@@ -2,24 +2,22 @@ from __future__ import annotations
 
 from typing import Any, Callable, Optional
 
-from html_extract import extract_main_text_from_html
-from text_utils import (
-    HARD_MIN_CHARS,
-    MAX_CHARS,
-    TARGET_CHARS,
-    MAX_CHARS_CJK,
-    TARGET_CHARS_CJK,
-    MIN_CHUNK_CHARS,
-    MIN_CHUNK_CHARS_NO_SPACE,
-    clean_extracted_text,
-    detect_lang,
-    is_no_space_language_document,
-    joiner_for_text,
-    looks_like_gibberish,
-    merge_short_chunk_records,
-    normalize_paragraphs,
-    split_long_paragraph,
-)
+try:
+    from .html_extract import extract_main_text_from_html
+    from .text_utils import (
+        HARD_MIN_CHARS, MAX_CHARS, TARGET_CHARS, MAX_CHARS_CJK, TARGET_CHARS_CJK,
+        MIN_CHUNK_CHARS, MIN_CHUNK_CHARS_NO_SPACE, clean_extracted_text, detect_lang,
+        is_no_space_language_document, joiner_for_text, looks_like_gibberish,
+        merge_short_chunk_records, normalize_paragraphs, split_long_paragraph,
+    )
+except ImportError:  # pragma: no cover - direct src entrypoint
+    from html_extract import extract_main_text_from_html
+    from text_utils import (
+        HARD_MIN_CHARS, MAX_CHARS, TARGET_CHARS, MAX_CHARS_CJK, TARGET_CHARS_CJK,
+        MIN_CHUNK_CHARS, MIN_CHUNK_CHARS_NO_SPACE, clean_extracted_text, detect_lang,
+        is_no_space_language_document, joiner_for_text, looks_like_gibberish,
+        merge_short_chunk_records, normalize_paragraphs, split_long_paragraph,
+    )
 
 
 DedupeFn = Callable[
@@ -39,6 +37,8 @@ def index_notes(
     dedupe_fn: DedupeFn,
     upsert_fn: UpsertFn,
     lexical_delete_fn: Callable[[str], None] | None = None,
+    delete_stale: bool = True,
+    strict_lexical: bool = False,
 ) -> tuple[dict[str, dict[str, Any]], dict[str, int]]:
     """
     Index Zotero notes into Chroma.
@@ -51,7 +51,9 @@ def index_notes(
 
     # --- stale note delete ---
     current_note_keys = {n.get("noteKey") for n in notes if isinstance(n, dict) and n.get("noteKey")}
-    stale_note_keys = set(notes_manifest.keys()) - set(current_note_keys)
+    stale_note_keys = (
+        set(notes_manifest.keys()) - set(current_note_keys) if delete_stale else set()
+    )
 
     deleted_stale_notes = 0
     for nk in stale_note_keys:
@@ -59,12 +61,14 @@ def index_notes(
             col.delete(where={"noteKey": nk})
             deleted_stale_notes += 1
         except Exception:
-            pass
+            if strict_lexical:
+                raise
         if lexical_delete_fn:
             try:
                 lexical_delete_fn(nk)
             except Exception:
-                pass
+                if strict_lexical:
+                    raise
         notes_manifest.pop(nk, None)
 
     updated_notes = 0
@@ -79,15 +83,14 @@ def index_notes(
         if not pending_ids:
             return
         ids, docs, metas = dedupe_fn(pending_ids, pending_docs, pending_metas)
-        upsert_fn(
-            col,
-            ids,
-            docs,
-            metas,
-            subbatch_size=batch_size,
-            show_progress=show_progress,
-            label=label,
-        )
+        kwargs = {
+            "subbatch_size": batch_size,
+            "show_progress": show_progress,
+            "label": label,
+        }
+        if strict_lexical:
+            kwargs["strict_lexical"] = True
+        upsert_fn(col, ids, docs, metas, **kwargs)
         pending_ids = []
         pending_docs = []
         pending_metas = []
@@ -111,12 +114,14 @@ def index_notes(
         try:
             col.delete(where={"noteKey": note_key})
         except Exception:
-            pass
+            if strict_lexical:
+                raise
         if lexical_delete_fn:
             try:
                 lexical_delete_fn(note_key)
             except Exception:
-                pass
+                if strict_lexical:
+                    raise
 
         creators_str: Optional[str] = None
         creators = n.get("creators")

@@ -12,28 +12,38 @@ import signal
 
 import fitz  # PyMuPDF
 
-from text_utils import (
-    HARD_MIN_CHARS,
-    MAX_CHARS,
-    TARGET_CHARS,
-    MAX_CHARS_CJK,
-    TARGET_CHARS_CJK,
-    MIN_CHUNK_CHARS,
-    MIN_CHUNK_CHARS_NO_SPACE,
-    clean_extracted_text,
-    is_no_space_language_document,
-    joiner_for_text,
-    looks_like_gibberish,
-    merge_short_chunk_records,
-    normalize_paragraphs,
-    split_long_paragraph,
-    analyze_text_quality,
-)
-from chapter_detect import (
-    get_pdf_toc, build_pdf_page_chapter_lookup, build_pdf_page_structure_path_lookup,
-)
+try:
+    from .text_utils import (
+        HARD_MIN_CHARS, MAX_CHARS, TARGET_CHARS, MAX_CHARS_CJK,
+        TARGET_CHARS_CJK, MIN_CHUNK_CHARS, MIN_CHUNK_CHARS_NO_SPACE,
+        clean_extracted_text, is_no_space_language_document, joiner_for_text,
+        looks_like_gibberish, merge_short_chunk_records, normalize_paragraphs,
+        split_long_paragraph, analyze_text_quality,
+    )
+    from .chapter_detect import (
+        get_pdf_toc, build_pdf_page_chapter_lookup, build_pdf_page_structure_path_lookup,
+    )
+    from .pdf_provenance import classify_pdf_source, detect_text_defects
+except ImportError:  # direct execution with src/ on sys.path
+    from text_utils import (
+        HARD_MIN_CHARS, MAX_CHARS, TARGET_CHARS, MAX_CHARS_CJK,
+        TARGET_CHARS_CJK, MIN_CHUNK_CHARS, MIN_CHUNK_CHARS_NO_SPACE,
+        clean_extracted_text, is_no_space_language_document, joiner_for_text,
+        looks_like_gibberish, merge_short_chunk_records, normalize_paragraphs,
+        split_long_paragraph, analyze_text_quality,
+    )
+    from chapter_detect import (
+        get_pdf_toc, build_pdf_page_chapter_lookup, build_pdf_page_structure_path_lookup,
+    )
+    from pdf_provenance import classify_pdf_source, detect_text_defects
 
 PDF_DROP_REPEATED_LINES = (os.environ.get("PDF_DROP_REPEATED_LINES") or "1") == "1"
+# Retain unusable page text as zone="corrupted" instead of dropping it silently
+# (note 79, U3). Excluded from ordinary retrieval and from summary input by
+# ZONE_POLICIES; reachable via rag_search(include_corrupted=True). Applies to
+# newly ingested material only -- previously discarded text is not recoverable
+# without a reingest, and no retroactive pass is planned.
+PDF_RETAIN_CORRUPTED_TEXT = (os.environ.get("PDF_RETAIN_CORRUPTED_TEXT") or "1") == "1"
 PDF_STRIP_REPEATED_PREFIX = (os.environ.get("PDF_STRIP_REPEATED_PREFIX") or "1") == "1"
 
 # Per-page timeout (seconds). Set PAGE_TIMEOUT_SEC=0 to disable.
@@ -43,6 +53,12 @@ PAGE_TIMEOUT_SEC = int((os.environ.get("PAGE_TIMEOUT_SEC") or "30").strip())
 # Requires tesseract binary on PATH. Set PDF_OCR_FALLBACK=0 to disable.
 PDF_OCR_FALLBACK = (os.environ.get("PDF_OCR_FALLBACK") or "1") == "1"
 PDF_OCR_DPI = int((os.environ.get("PDF_OCR_DPI") or "300").strip())
+# Poppler can recover text from some custom-encoded Type 1 fonts for which
+# PyMuPDF cannot synthesize a Unicode mapping. It is local, deterministic, and
+# much cheaper than OCR, so it precedes the Tesseract/Docling fallbacks.
+PDF_POPPLER_TEXT_FALLBACK = (
+    os.environ.get("PDF_POPPLER_TEXT_FALLBACK") or "1"
+) == "1"
 
 
 def _find_tesseract() -> Optional[str]:
@@ -58,6 +74,37 @@ def _find_tesseract() -> Optional[str]:
         if Path(candidate).exists():
             return candidate
     return None
+
+
+def _find_pdftotext() -> Optional[str]:
+    path = shutil.which("pdftotext")
+    if path:
+        return path
+    for candidate in ["/opt/homebrew/bin/pdftotext", "/usr/local/bin/pdftotext"]:
+        if Path(candidate).exists():
+            return candidate
+    return None
+
+
+def _extract_pages_with_poppler(pdf_path: Path) -> list[str]:
+    """Extract every PDF page with Poppler, preserving form-feed boundaries."""
+    binary = _find_pdftotext()
+    if not binary:
+        return []
+    try:
+        import subprocess
+        result = subprocess.run(
+            [binary, "-layout", str(pdf_path), "-"],
+            capture_output=True, text=True, timeout=120,
+        )
+        if result.returncode != 0 or not result.stdout:
+            return []
+        pages = result.stdout.split("\f")
+        if pages and not pages[-1].strip():
+            pages.pop()
+        return pages
+    except (OSError, subprocess.SubprocessError):
+        return []
 
 
 def _resolve_ocr_lang() -> str:
@@ -116,6 +163,103 @@ def _resolve_ocr_lang() -> str:
 PDF_OCR_LANG = _resolve_ocr_lang()
 
 
+def scanned_ratio_threshold() -> float:
+    """Document-level scanned-ratio threshold for ``is_scanned`` (P3, note 78).
+
+    ``TEXT_QUALITY_SCAN_THRESHOLD`` used to serve two different roles with one
+    variable: (a) the *page*-level ``scan_score`` cutoff in
+    ``text_utils.analyze_text_quality`` and (b) the *document*-level
+    ``scanned_ratio`` cutoff here. Those are different-dimensional quantities
+    -- tuning one silently moved the other (e.g. lowering the document cutoff
+    to 0.6 would also reclassify every 40-79-character page as scanned and
+    balloon the E2c patch workload). This dedicated variable now owns role (b);
+    the page-level variable keeps its name and role (a). For backward
+    compatibility, an unset ``TEXT_QUALITY_SCANNED_RATIO_THRESHOLD`` inherits
+    the legacy variable's value (existing .env files keep behaving
+    identically), and the default stays 0.8 (audit note 78 P3, user approval
+    2026-07-26; the 0.8-vs-0.6 asymmetry with corruption is deliberate --
+    scanned pages are individually patchable figure plates, so the whole-
+    document escalation bar is high, while text-layer corruption at 60%
+    already makes the document untrustworthy).
+    """
+    inherited = os.environ.get("TEXT_QUALITY_SCAN_THRESHOLD", "0.8")
+    return float(os.environ.get("TEXT_QUALITY_SCANNED_RATIO_THRESHOLD", inherited))
+
+
+def corrupted_ratio_threshold() -> float:
+    """Document-level corrupted-ratio threshold for ``is_corrupted`` (P3, note 78).
+
+    Same one-variable-two-roles split as ``scanned_ratio_threshold``:
+    ``TEXT_QUALITY_CORRUPTION_THRESHOLD`` keeps the page-level
+    ``corruption_score`` role, this variable owns the document-level
+    ``corrupted_ratio`` role, inheriting the legacy value when unset.
+    Default stays 0.6.
+    """
+    inherited = os.environ.get("TEXT_QUALITY_CORRUPTION_THRESHOLD", "0.6")
+    return float(os.environ.get("TEXT_QUALITY_CORRUPTED_RATIO_THRESHOLD", inherited))
+
+
+def recompute_scanned_quality_after_patch(
+    quality_info: Dict[str, Any], patched_pages: set[int], total_pages: int,
+) -> Dict[str, Any]:
+    """Return ``quality_info`` updated after Docling-patching some scanned pages.
+
+    Removes ``patched_pages`` from ``scanned_pages``/recomputes ``scanned_ratio``
+    and ``is_scanned`` so the PyMuPDF fast-path and AI-TOC gates
+    (``pymupdf_fast_path_passes`` / ``try_ai_toc_fast_path``) see the reduced
+    scan footprint instead of the pre-patch counts (E2c, dev-notes/current/77).
+    """
+    remaining = [p for p in (quality_info.get("scanned_pages") or []) if p not in patched_pages]
+    updated = dict(quality_info)
+    updated["scanned_pages"] = remaining
+    updated["scanned_ratio"] = round(len(remaining) / max(1, total_pages), 3)
+    updated["is_scanned"] = updated["scanned_ratio"] >= scanned_ratio_threshold()
+    return updated
+
+
+def recompute_corrupted_quality_after_patch(
+    quality_info: Dict[str, Any], patched_pages: set[int], total_pages: int,
+) -> Dict[str, Any]:
+    """Return ``quality_info`` updated after Docling-patching some corrupted pages.
+
+    Sister function to ``recompute_scanned_quality_after_patch`` (E2d, note
+    77): removes ``patched_pages`` from ``corrupted_pages``/recomputes
+    ``corrupted_ratio`` and ``is_corrupted`` so
+    ``extraction_engine.pymupdf_fast_path_rejection_reason`` sees the residual
+    unresolved-corruption footprint instead of the pre-patch counts. As with
+    the scanned-page patch, every page ``patch_corrupted_pages_with_docling``
+    attempted (whether or not it recovered clean text) is removed here --
+    a page Docling also couldn't clean up is conclusive evidence about that
+    page, not an unresolved gap, and the caller has already spliced in a
+    ``corrupted_unresolved`` marker chunk for it so it stays visible rather
+    than silently vanishing.
+    """
+    remaining = [p for p in (quality_info.get("corrupted_pages") or []) if p not in patched_pages]
+    updated = dict(quality_info)
+    updated["corrupted_pages"] = remaining
+    updated["corrupted_ratio"] = round(len(remaining) / max(1, total_pages), 3)
+    updated["is_corrupted"] = updated["corrupted_ratio"] >= corrupted_ratio_threshold()
+    # corrupted_pages is the union of its per-cause breakdowns
+    # (extraction_failure_pages + content_corruption_pages, see
+    # extract_chunks_from_pdf), so patching a page out of the union must also
+    # patch it out of the breakdowns. extraction_failure_ratio in particular
+    # feeds pymupdf_fast_path_rejection_reason's unconditional early-reject
+    # check -- leaving the stale pre-patch value there would veto the fast
+    # path even after a successful repair (review finding, fixed 2026-07-26).
+    remaining_extraction_failure = [
+        p for p in (quality_info.get("extraction_failure_pages") or []) if p not in patched_pages
+    ]
+    remaining_content_corruption = [
+        p for p in (quality_info.get("content_corruption_pages") or []) if p not in patched_pages
+    ]
+    updated["extraction_failure_pages"] = remaining_extraction_failure
+    updated["extraction_failure_ratio"] = round(
+        len(remaining_extraction_failure) / max(1, total_pages), 3,
+    )
+    updated["content_corruption_pages"] = remaining_content_corruption
+    return updated
+
+
 def normalize_block_text_to_paragraph(text: str) -> str:
     lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
     if not lines:
@@ -134,132 +278,155 @@ def normalize_block_text_to_paragraph(text: str) -> str:
     return merged
 
 
-def _detect_column_boundaries(
-    blocks: List[Tuple[float, float, float, str]], page_width: float
-) -> Optional[float]:
-    """Detect a column boundary x-coordinate, or None if single-column.
+def _bbox_union(values: List[List[float]]) -> List[float]:
+    return [
+        round(min(value[0] for value in values), 3),
+        round(min(value[1] for value in values), 3),
+        round(max(value[2] for value in values), 3),
+        round(max(value[3] for value in values), 3),
+    ]
 
-    Uses block x0 positions. If blocks cluster into two distinct horizontal
-    regions with a clear gap between the rightmost left block and the leftmost
-    right block, returns the midpoint of the gap.
-    """
-    if len(blocks) < 3:
+
+def _column_boundary(blocks: List[Dict[str, Any]], page_width: float) -> Optional[float]:
+    """Return a stable gutter midpoint when two populated columns are present."""
+    if page_width <= 0:
         return None
-
-    # Collect x0 positions of blocks that are not spanning most of the page.
-    # Wide blocks (title, full-width paragraphs) are excluded — they span
-    # both columns and should not participate in column detection.
-    x0s: List[float] = []
-    for y0, y1, x0, txt in blocks:
-        # Exclude blocks starting very close to the left margin or spanning
-        # most of the page — these are full-width elements.
-        if x0 > page_width * 0.15:
-            x0s.append(x0)
-
-    if len(x0s) < 3:
-        return None
-
-    x0s.sort()
-    mid = page_width / 2
-
-    left_x0s = [x for x in x0s if x < mid]
-    right_x0s = [x for x in x0s if x >= mid]
-
-    # Need at least one block on each side to detect columns
-    if not left_x0s or not right_x0s:
-        return None
-
-    left_max = max(left_x0s)
-    right_min = min(right_x0s)
-    gap = right_min - left_max
-
-    # Split if there's a meaningful gap (> 12% of page width)
-    if gap > page_width * 0.12:
-        return (left_max + right_min) / 2
-
-    return None
+    candidates = [
+        block for block in blocks
+        if (block["bbox"][2] - block["bbox"][0]) <= page_width * 0.58
+    ]
+    best: Optional[Tuple[float, float, float]] = None
+    # Candidate gutters come from non-overlapping block edges. Score by the
+    # smaller side population, then gap width, and use x as deterministic tie-break.
+    for left in candidates:
+        for right in candidates:
+            gap = right["bbox"][0] - left["bbox"][2]
+            if gap < max(12.0, page_width * 0.025):
+                continue
+            boundary = (left["bbox"][2] + right["bbox"][0]) / 2
+            if not page_width * 0.28 <= boundary <= page_width * 0.72:
+                continue
+            left_count = sum(block["bbox"][2] <= boundary for block in candidates)
+            right_count = sum(block["bbox"][0] >= boundary for block in candidates)
+            if min(left_count, right_count) < 2:
+                continue
+            score = (float(min(left_count, right_count)), gap, -boundary)
+            if best is None or score > best:
+                best = score
+    return -best[2] if best is not None else None
 
 
-def _merge_blocks_vertically(
-    blocks: List[Tuple[float, float, float, str]],
-) -> List[str]:
-    """Merge vertically adjacent blocks into paragraphs (single-column)."""
-    if not blocks:
-        return []
+def _order_layout_blocks(
+    blocks: List[Dict[str, Any]], page_width: float,
+) -> List[Dict[str, Any]]:
+    """Order text blocks top-to-bottom, or column-by-column within vertical bands."""
+    boundary = _column_boundary(blocks, page_width)
+    if boundary is None:
+        ordered = sorted(blocks, key=lambda block: (
+            block["bbox"][1], block["bbox"][0], block["source_block_index"],
+        ))
+        for reading_order, block in enumerate(ordered):
+            block["reading_order"] = reading_order
+            block["column"] = "single"
+        return ordered
 
-    merged: List[str] = []
-    cur_text = ""
-    cur_y1: Optional[float] = None
+    # Full-width titles and section heads divide a page into bands. Within each
+    # band the left column is read completely before the right column.
+    spanning = [
+        block for block in blocks
+        if block["bbox"][0] < boundary < block["bbox"][2]
+        or (block["bbox"][2] - block["bbox"][0]) >= page_width * 0.68
+    ]
+    spanning.sort(key=lambda block: (
+        block["bbox"][1], block["bbox"][0], block["source_block_index"],
+    ))
+    remaining = [block for block in blocks if block not in spanning]
+    ordered: List[Dict[str, Any]] = []
+    lower = float("-inf")
+    for separator in spanning:
+        upper = (separator["bbox"][1] + separator["bbox"][3]) / 2
+        band = [
+            block for block in remaining
+            if lower <= (block["bbox"][1] + block["bbox"][3]) / 2 < upper
+        ]
+        ordered.extend(sorted(
+            (block for block in band if (block["bbox"][0] + block["bbox"][2]) / 2 < boundary),
+            key=lambda block: (block["bbox"][1], block["bbox"][0], block["source_block_index"]),
+        ))
+        ordered.extend(sorted(
+            (block for block in band if (block["bbox"][0] + block["bbox"][2]) / 2 >= boundary),
+            key=lambda block: (block["bbox"][1], block["bbox"][0], block["source_block_index"]),
+        ))
+        remaining = [block for block in remaining if block not in band]
+        ordered.append(separator)
+        lower = upper
+    ordered.extend(sorted(
+        (block for block in remaining if (block["bbox"][0] + block["bbox"][2]) / 2 < boundary),
+        key=lambda block: (block["bbox"][1], block["bbox"][0], block["source_block_index"]),
+    ))
+    ordered.extend(sorted(
+        (block for block in remaining if (block["bbox"][0] + block["bbox"][2]) / 2 >= boundary),
+        key=lambda block: (block["bbox"][1], block["bbox"][0], block["source_block_index"]),
+    ))
+    for reading_order, block in enumerate(ordered):
+        block["reading_order"] = reading_order
+        center = (block["bbox"][0] + block["bbox"][2]) / 2
+        block["column"] = "full" if block in spanning else "left" if center < boundary else "right"
+    return ordered
 
-    for y0, y1, _x0, txt in blocks:
-        if not cur_text:
-            cur_text = txt
-            cur_y1 = y1
+
+def _merge_layout_blocks(blocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Merge only adjacent blocks in the same detected column and vertical flow."""
+    merged: List[Dict[str, Any]] = []
+    for block in blocks:
+        if merged:
+            previous = merged[-1]
+            gap = block["bbox"][1] - previous["bbox"][3]
+            if (
+                block.get("column") == previous.get("column")
+                and block.get("column") != "full"
+                and 0 <= gap <= 12.0
+            ):
+                joiner = joiner_for_text(previous["text"] + block["text"])
+                previous["text"] = previous["text"] + joiner + block["text"]
+                previous["bbox"] = _bbox_union([previous["bbox"], block["bbox"]])
+                previous["source_block_indices"].extend(block["source_block_indices"])
+                continue
+        merged.append({**block, "source_block_indices": list(block["source_block_indices"])})
+    for reading_order, block in enumerate(merged):
+        block["reading_order"] = reading_order
+    return merged
+
+
+def extract_layout_blocks_from_pdf_page(page: Any) -> List[Dict[str, Any]]:
+    """Extract text blocks with real PyMuPDF geometry and deterministic reading order."""
+    raw_blocks = page.get_text("blocks", sort=False) or []
+    blocks: List[Dict[str, Any]] = []
+    for source_index, raw in enumerate(raw_blocks):
+        if not raw or len(raw) < 5:
             continue
-
-        gap = 0.0 if cur_y1 is None else (y0 - cur_y1)
-
-        if gap >= 0 and gap <= 12.0:
-            joiner = joiner_for_text(cur_text + txt)
-            cur_text = (cur_text + joiner + txt) if joiner else (cur_text + txt)
-            cur_y1 = max(cur_y1 or y1, y1)
-        else:
-            merged.append(cur_text.strip())
-            cur_text = txt
-            cur_y1 = y1
-
-    if cur_text:
-        merged.append(cur_text.strip())
-
-    return [m for m in merged if m]
+        block_type = int(raw[6]) if len(raw) >= 7 else 0
+        if block_type != 0 or not isinstance(raw[4], str):
+            continue
+        text = normalize_block_text_to_paragraph(clean_extracted_text(raw[4]))
+        if not text:
+            continue
+        bbox = [float(raw[0]), float(raw[1]), float(raw[2]), float(raw[3])]
+        if bbox[2] <= bbox[0] or bbox[3] <= bbox[1]:
+            continue
+        blocks.append({
+            "text": text, "bbox": [round(value, 3) for value in bbox],
+            "block_type": "text", "source_block_index": source_index,
+            "source_block_indices": [source_index],
+        })
+    return _merge_layout_blocks(_order_layout_blocks(blocks, float(page.rect.width)))
 
 
 def extract_paragraphs_from_pdf_page(page: Any) -> List[str]:
     try:
-        blocks = page.get_text("blocks") or []
-        norm_blocks: List[Tuple[float, float, float, str]] = []  # (y0, y1, x0, text)
-
-        for b in blocks:
-            if not b or len(b) < 5:
-                continue
-            x0 = float(b[0])
-            y0 = float(b[1])
-            y1 = float(b[3]) if len(b) >= 4 else y0
-            txt = b[4]
-            btype = b[6] if len(b) >= 7 else 0
-
-            if btype not in (0,):
-                continue
-            if not isinstance(txt, str):
-                continue
-
-            t = clean_extracted_text(txt)
-            t = normalize_block_text_to_paragraph(t)
-            if t:
-                norm_blocks.append((y0, y1, x0, t))
-
-        if norm_blocks:
-            page_width = page.rect.width
-            col_boundary = _detect_column_boundaries(norm_blocks, page_width)
-
-            if col_boundary is not None:
-                # Multi-column: split into left and right columns
-                left_blocks = [(y0, y1, x0, txt) for (y0, y1, x0, txt) in norm_blocks
-                               if x0 < col_boundary]
-                right_blocks = [(y0, y1, x0, txt) for (y0, y1, x0, txt) in norm_blocks
-                                if x0 >= col_boundary]
-
-                left_blocks.sort(key=lambda t: (t[0], t[2]))
-                right_blocks.sort(key=lambda t: (t[0], t[2]))
-
-                left_paras = _merge_blocks_vertically(left_blocks)
-                right_paras = _merge_blocks_vertically(right_blocks)
-
-                return left_paras + right_paras
-            else:
-                # Single column
-                norm_blocks.sort(key=lambda t: (t[0], t[2]))
-                return _merge_blocks_vertically(norm_blocks)
+        records = extract_layout_blocks_from_pdf_page(page)
+        if records:
+            return [record["text"] for record in records]
 
     except TimeoutError:
         raise
@@ -509,6 +676,7 @@ def extract_chunks_from_pdf(
         "corrupted_pages": [],
         "extraction_failure_pages": [],
         "content_corruption_pages": [],
+        "poppler_fallback_pages": [],
         "ocr_fallback_pages": [],
         "low_text_pages": [],
         "empty_pages": [],
@@ -529,8 +697,26 @@ def extract_chunks_from_pdf(
         _chapter_lookup = build_pdf_page_chapter_lookup(_toc) if _toc else None
         _structure_path_lookup = build_pdf_page_structure_path_lookup(_toc) if _toc else None
     except Exception:
+        _toc = None
         _chapter_lookup = None
         _structure_path_lookup = None
+    quality_info["has_outline"] = bool(_toc)
+
+    # Text-layer provenance.  A scan that has been OCRed also has a text layer,
+    # so this is not "does it have text?" but "can the text be trusted?" -- and
+    # it decides whether a page without text is a figure (born-digital) or an
+    # OCR failure (scan).  Both the E2c figure patch and the fast-path gate
+    # read it, so it has to be resolved before any page-level repair.
+    try:
+        _source_class = classify_pdf_source(pdf_path)
+    except Exception as exc:
+        _source_class = None
+        print(
+            f"[WARN] PDF source classification failed: attachment={attachment_key} err={exc}",
+            file=os.sys.__stderr__,
+        )
+    if _source_class is not None:
+        quality_info.update(_source_class.as_metadata())
 
     captured_text = ""
     r_fd: Optional[int] = None
@@ -540,20 +726,28 @@ def extract_chunks_from_pdf(
             doc = fitz.open(str(pdf_path))
             try:
                 paras_by_page: List[List[str]] = []
+                layout_by_page: List[List[Dict[str, Any]]] = []
                 page_labels: Dict[int, str] = {}
                 scanned_pages = []          # image-only pages (needs Docling)
                 corrupted_pages = []        # above corruption threshold
                 extraction_failure_pages = []  # font-encoding mismatch → Tesseract fallback
                 content_corruption_pages = []  # OCR / linguistic corruption
+                poppler_fallback_pages = []  # pages recovered through pdftotext
                 ocr_fallback_pages = []     # pages where Tesseract fallback was used
+                poppler_pages: Optional[list[str]] = None
+                poppler_attempted = False
                 ocr_notified = False        # one-time "OCR started" message
                 low_text_pages = []         # very little text but not image-only
                 empty_pages = []            # no text, no images
+                gibberish_pages = []        # unusable text, retained as zone=corrupted (U3)
                 page_scores: Dict[int, Dict[str, Any]] = {}  # per-page scores
                 total_pages = doc.page_count
 
-                SCAN_THRESHOLD = float(os.environ.get("TEXT_QUALITY_SCAN_THRESHOLD", "0.8"))
-                CORRUPTION_THRESHOLD = float(os.environ.get("TEXT_QUALITY_CORRUPTION_THRESHOLD", "0.6"))
+                # Document-level ratio thresholds (P3, note 78): distinct from
+                # the same-named page-level score thresholds analyze_text_quality
+                # reads inside the loop below.
+                SCAN_THRESHOLD = scanned_ratio_threshold()
+                CORRUPTION_THRESHOLD = corrupted_ratio_threshold()
 
                 for pi in range(doc.page_count):
                     try:
@@ -566,13 +760,32 @@ def extract_chunks_from_pdf(
                                     page_labels[pi] = lbl
                             except Exception:
                                 pass
-                            paras = extract_paragraphs_from_pdf_page(page)
+                            try:
+                                layout_records = extract_layout_blocks_from_pdf_page(page)
+                            except TimeoutError:
+                                raise
+                            except Exception:
+                                layout_records = []
+                            if layout_records:
+                                paras = [record["text"] for record in layout_records]
+                            else:
+                                paras = extract_paragraphs_from_pdf_page(page)
+                                page_bbox = [
+                                    round(float(page.rect.x0), 3), round(float(page.rect.y0), 3),
+                                    round(float(page.rect.x1), 3), round(float(page.rect.y1), 3),
+                                ]
+                                layout_records = [{
+                                    "text": text, "bbox": page_bbox,
+                                    "block_type": "text_fallback", "reading_order": index,
+                                    "column": "single", "source_block_indices": [],
+                                } for index, text in enumerate(paras)]
                     except Exception as e:
                         print(
                             f"[WARN] Failed to extract page paragraphs: attachment={attachment_key} file={pdf_path} page={pi+1} err={e}",
                             file=os.sys.__stderr__,
                         )
                         paras_by_page.append([])
+                        layout_by_page.append([])
                         try:
                             has_images = len(page.get_images()) > 0
                         except Exception:
@@ -585,6 +798,7 @@ def extract_chunks_from_pdf(
 
                     if not paras:
                         paras_by_page.append([])
+                        layout_by_page.append([])
                         try:
                             has_images = len(page.get_images()) > 0
                         except Exception:
@@ -599,6 +813,52 @@ def extract_chunks_from_pdf(
 
                     # Analyze text quality per page (score-based)
                     quality = analyze_text_quality(joined)
+
+                    # First try Poppler for font-encoding failures. Its glyph-name
+                    # fallback can recover custom Type 1 fonts without OCR.
+                    poppler_used = False
+                    if (
+                        PDF_POPPLER_TEXT_FALLBACK
+                        and quality["corruption_type"] == "extraction_failure"
+                        and quality["extraction_failure_score"] >= 0.5
+                    ):
+                        if not poppler_attempted:
+                            poppler_attempted = True
+                            poppler_pages = _extract_pages_with_poppler(pdf_path)
+                        if poppler_pages is not None and pi < len(poppler_pages):
+                            poppler_text = poppler_pages[pi].strip()
+                            if poppler_text:
+                                poppler_quality = analyze_text_quality(poppler_text)
+                                if (
+                                    poppler_quality["extraction_failure_score"]
+                                    < quality["extraction_failure_score"]
+                                    and not looks_like_gibberish(poppler_text)
+                                ):
+                                    joiner = joiner_for_text(poppler_text[:20000])
+                                    poppler_paras = [
+                                        value for value in normalize_paragraphs(
+                                            poppler_text, joiner=joiner,
+                                        ) if value.strip()
+                                    ]
+                                    if poppler_paras:
+                                        paras = poppler_paras
+                                        page_bbox = [
+                                            round(float(page.rect.x0), 3),
+                                            round(float(page.rect.y0), 3),
+                                            round(float(page.rect.x1), 3),
+                                            round(float(page.rect.y1), 3),
+                                        ]
+                                        layout_records = [{
+                                            "text": text, "bbox": page_bbox,
+                                            "block_type": "poppler_text",
+                                            "reading_order": index,
+                                            "column": "unknown",
+                                            "source_block_indices": [],
+                                        } for index, text in enumerate(paras)]
+                                        joined = "\n\n".join(paras)
+                                        quality = analyze_text_quality(joined)
+                                        poppler_used = True
+                                        poppler_fallback_pages.append(pi + 1)
 
                     # Tesseract OCR fallback for font-encoding mismatch.
                     # When PyMuPDF can't decode custom fonts, we render the
@@ -621,6 +881,15 @@ def extract_chunks_from_pdf(
                         ocr_paras = _ocr_page_with_tesseract(page)
                         if ocr_paras:
                             paras = ocr_paras
+                            page_bbox = [
+                                round(float(page.rect.x0), 3), round(float(page.rect.y0), 3),
+                                round(float(page.rect.x1), 3), round(float(page.rect.y1), 3),
+                            ]
+                            layout_records = [{
+                                "text": text, "bbox": page_bbox, "block_type": "ocr_text",
+                                "reading_order": index, "column": "unknown",
+                                "source_block_indices": [],
+                            } for index, text in enumerate(paras)]
                             joined = "\n\n".join(paras)
                             quality = analyze_text_quality(joined)
                             ocr_used = True
@@ -641,13 +910,18 @@ def extract_chunks_from_pdf(
                                 f"(page {pi+1}/{total_pages})",
                                 file=os.sys.__stderr__,
                             )
+                    if poppler_used:
+                        page_scores[pi + 1]["poppler_fallback"] = True
 
                     if quality["is_scanned"]:
                         try:
                             has_images = len(page.get_images()) > 0
                         except Exception:
                             has_images = False
-                        if has_images:
+                        # A readable title on an image-bearing cover is not an
+                        # image-only scan and must not reject the whole PDF.
+                        readable_cover = pi < 2 and len(joined.strip()) >= 40
+                        if has_images and not readable_cover:
                             scanned_pages.append(pi + 1)
                         else:
                             low_text_pages.append(pi + 1)
@@ -659,10 +933,29 @@ def extract_chunks_from_pdf(
                             content_corruption_pages.append(pi + 1)
 
                     if looks_like_gibberish(joined):
+                        # U3 (note 79): retain rather than discard. The text is
+                        # unusable as prose, but dropping it silently loses the
+                        # only record that this page had *something* on it, and
+                        # makes "why is page 88 missing?" unanswerable. Marking
+                        # it zone="corrupted" keeps it out of ordinary retrieval
+                        # and out of summary input (see document_structure's
+                        # ZONE_POLICIES) while leaving it reachable through
+                        # rag_search(include_corrupted=True).
+                        gibberish_pages.append(pi + 1)
                         paras_by_page.append([])
+                        layout_by_page.append([
+                            {
+                                "text": joined,
+                                "zone": "corrupted",
+                                "block_type": "corrupted_text",
+                                "reading_order": 0,
+                                "page": pi + 1,
+                            }
+                        ] if PDF_RETAIN_CORRUPTED_TEXT else [])
                         continue
 
                     paras_by_page.append(paras)
+                    layout_by_page.append(layout_records)
 
                 # Compute aggregate scores
                 scanned_ratio = len(scanned_pages) / max(1, total_pages)
@@ -692,19 +985,29 @@ def extract_chunks_from_pdf(
                     "corrupted_pages": corrupted_pages,
                     "extraction_failure_pages": extraction_failure_pages,
                     "content_corruption_pages": content_corruption_pages,
+                    "poppler_fallback_pages": poppler_fallback_pages,
                     "ocr_fallback_pages": ocr_fallback_pages,
                     "low_text_pages": low_text_pages,
                     "empty_pages": empty_pages,
+                    "gibberish_pages": gibberish_pages,
                     "total_pages": total_pages,
                     "scanned_ratio": round(scanned_ratio, 3),
                     "corrupted_ratio": round(corrupted_ratio, 3),
                     "extraction_failure_ratio": round(extraction_failure_ratio, 3),
                     "ocr_fallback_ratio": round(len(ocr_fallback_pages) / max(1, total_pages), 3),
+                    "poppler_fallback_ratio": round(
+                        len(poppler_fallback_pages) / max(1, total_pages), 3
+                    ),
                     "avg_corruption_score": round(avg_corruption_score, 3),
                     "max_corruption_score": round(max_corruption_score, 3),
                     "avg_extraction_failure_score": round(avg_extraction_failure_score, 3),
                     "page_scores": page_scores,
+                    "has_outline": bool(_toc),
                 }
+                # This dict replaces the safe-default one wholesale, so the
+                # source-class fields have to be re-applied here too.
+                if _source_class is not None:
+                    quality_info.update(_source_class.as_metadata())
 
                 repeated_lines: set[str] = set()
                 if PDF_DROP_REPEATED_LINES:
@@ -726,20 +1029,32 @@ def extract_chunks_from_pdf(
                             file=os.sys.__stderr__,
                         )
 
-                for pi, paras in enumerate(paras_by_page):
-                    if not paras:
+                for pi, layout_records in enumerate(layout_by_page):
+                    if not layout_records:
                         continue
 
                     if repeated_lines:
-                        paras = drop_repeated_lines_from_paras(paras, repeated_lines)
-                        if not paras:
+                        layout_records = [
+                            record for record in layout_records
+                            if record["text"].strip() not in repeated_lines
+                        ]
+                        if not layout_records:
                             continue
 
                     if repeated_prefixes:
-                        paras = strip_repeated_prefix_from_first_para(paras, repeated_prefixes)
-                        if not paras:
+                        first = dict(layout_records[0])
+                        stripped = strip_repeated_prefix_from_first_para(
+                            [first["text"]], repeated_prefixes,
+                        )
+                        if stripped:
+                            first["text"] = stripped[0]
+                            layout_records = [first, *layout_records[1:]]
+                        else:
+                            layout_records = layout_records[1:]
+                        if not layout_records:
                             continue
 
+                    paras = [record["text"] for record in layout_records]
                     joined = "\n\n".join(paras)
                     is_cjk = is_no_space_language_document(joined)
                     local_min_chunk = MIN_CHUNK_CHARS_NO_SPACE if is_cjk else MIN_CHUNK_CHARS
@@ -747,8 +1062,8 @@ def extract_chunks_from_pdf(
                     local_target_chars = TARGET_CHARS_CJK if is_cjk else TARGET_CHARS
 
                     page_chunks: List[Tuple[str, str, Dict[str, Any]]] = []
-                    for para_index, para_text in enumerate(paras):
-                        para_text = para_text.strip()
+                    for para_index, record in enumerate(layout_records):
+                        para_text = str(record["text"]).strip()
                         if not para_text:
                             continue
 
@@ -787,12 +1102,27 @@ def extract_chunks_from_pdf(
                                     "path": str(pdf_path),
                                     "para_index": int(para_index),
                                     "part_index": int(part_index),
+                                    "bbox": record.get("bbox"),
+                                    "block_type": record.get("block_type") or "text",
+                                    # Propagated so build_document_structure can
+                                    # put retained corrupted text (U3) in its own
+                                    # zone=corrupted leaf, which ZONE_POLICIES
+                                    # then excludes from retrieval and summaries.
+                                    **({"zone": record["zone"]} if record.get("zone") else {}),
+                                    "reading_order": int(record.get("reading_order", para_index)),
+                                    "column": record.get("column") or "unknown",
+                                    "source_block_indices": list(record.get("source_block_indices") or []),
                                     **chapter_info,
                                 }
                             )
                             page_chunks.append((chunk_id, part, md))
 
-                    page_chunks = merge_short_chunk_records(page_chunks, min_chars=local_min_chunk, max_chars=local_max_chars)
+                    page_chunks = merge_short_chunk_records(
+                        page_chunks, min_chars=local_min_chunk, max_chars=local_max_chars,
+                        boundary_key=lambda _cid, _text, metadata: (
+                            metadata.get("page"), metadata.get("reading_order"),
+                        ),
+                    )
                     chunks.extend(page_chunks)
 
             finally:
@@ -835,5 +1165,12 @@ def extract_chunks_from_pdf(
     if len(ids) != len(set(ids)):
         dup = len(ids) - len(set(ids))
         raise RuntimeError(f"Duplicate chunk ids generated ({dup}). This should not happen.")
+
+    # Deterministic extraction-defect detection on the text we are actually
+    # about to index.  Measured on the real chunk bodies rather than on raw
+    # page text, because clean_extracted_text's NFKC pass has already resolved
+    # preserved ligature codepoints by this point -- what survives here is what
+    # would reach the index.
+    quality_info.update(detect_text_defects("\n".join(text for (_, text, _) in chunks)))
 
     return chunks, quality_info

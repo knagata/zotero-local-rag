@@ -228,31 +228,6 @@ def extract_references(
     return parse_reference_lines(text), "heuristic"
 
 
-def _item_excluded(item_key: str) -> tuple[bool, str | None]:
-    configured = os.environ.get("EXTRACT_EXCLUDE_TAGS", "")
-    tags = {tag.strip().casefold() for tag in configured.split(",") if tag.strip()}
-    if not tags:
-        allow_all = os.environ.get("EXTRACT_ALLOW_CLOUD_ALL", "").strip().casefold() in {"1", "true", "yes"}
-        if allow_all:
-            return False, None
-        return True, "EXTRACT_EXCLUDE_TAGS is not configured; cloud extraction is disabled"
-    base = (os.environ.get("ZOTERO_LOCAL_API_BASE") or "http://127.0.0.1:23119/api").rstrip("/")
-    prefix = (os.environ.get("ZOTERO_LOCAL_API_PREFIX") or "users/0").strip("/")
-    headers = {"Zotero-API-Version": os.environ.get("ZOTERO_API_VERSION", "3")}
-    if os.environ.get("ZOTERO_API_KEY"):
-        headers["Zotero-API-Key"] = os.environ["ZOTERO_API_KEY"]
-    try:
-        response = httpx.get(f"{base}/{prefix}/items/{item_key}", headers=headers, timeout=5)
-        response.raise_for_status()
-        payload = response.json()
-        data = payload.get("data", payload)
-        item_tags = {str(tag.get("tag") or "").strip().casefold() for tag in data.get("tags", [])}
-        matched = sorted(tags & item_tags)
-        return bool(matched), ", ".join(matched) if matched else None
-    except Exception as exc:
-        return True, f"could not verify exclusion tags: {exc}"
-
-
 def _primary_title(value: Any) -> str:
     return normalize_reference_text(SUBTITLE_SEPARATOR_RE.split(str(value or ""), maxsplit=1)[0])
 
@@ -587,10 +562,6 @@ def extract_references_for_item(
     chunks = get_item_chunks(item_key)
     if not chunks:
         return {"item_key": item_key, "status": "empty", "references": []}
-    if use_llm:
-        excluded, reason = _item_excluded(item_key)
-        if excluded:
-            return {"item_key": item_key, "status": "excluded", "reason": reason, "references": []}
     candidates = detect_reference_sections(chunks)
     source_text = "\n".join(chunk["text"] for chunk in candidates if chunk.get("text"))[:30000]
     references, model = extract_references(
@@ -855,10 +826,6 @@ def split_compound_reference_candidates(
             or row.get("structure_classification") == "compound_parent"
         ):
             continue
-        is_excluded, _reason = _item_excluded(str(row["item_key"]))
-        if is_excluded:
-            excluded += 1
-            continue
         eligible.append(row)
     totals: dict[str, Any] = {
         "examined": len(eligible), "excluded": excluded, "valid": 0, "invalid": 0,
@@ -995,10 +962,6 @@ def restructure_unparsed_epub_references(
             and row.get("structure_classification") == "short_citation"
         )
         if not (is_initial_candidate or is_short_reconsideration):
-            continue
-        is_excluded, _reason = _item_excluded(str(row["item_key"]))
-        if is_excluded:
-            excluded += 1
             continue
         eligible.append(row)
     totals: dict[str, Any] = {

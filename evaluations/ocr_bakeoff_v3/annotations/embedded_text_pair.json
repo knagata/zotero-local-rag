@@ -1,0 +1,4 @@
+{"sample_id":"embedded_text_pair","regions":[
+  {"id":"r001","text_anchor":"Territorialization as a more-than-human political technology","expected_text":"Territorialization as a more-than-human political technology","order":0,"heading_path":["Territorialization as a more-than-human political technology"],"zone":"body","kind":"heading","locator_required":true,"bbox_required":true},
+  {"id":"r002","text_anchor":"Territory has been an important analytic concept","expected_text":"Territory has been an important analytic concept","order":1,"heading_path":["Territorialization as a more-than-human political technology"],"zone":"body","kind":"text","locator_required":true,"bbox_required":true}
+]}

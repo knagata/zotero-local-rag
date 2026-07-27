@@ -130,9 +130,6 @@ def _compare_item(
     checkpoint_dir: Path, reasoning_modes: tuple[str, ...] = ("disabled", "enabled"),
     attempts: int = 1,
 ) -> dict:
-    excluded, reason = build_summaries._excluded_from_llm(item_key)
-    if excluded:
-        return {"item_key": item_key, "status": "excluded", "reason": reason, "sections": []}
     sections = build_summaries.split_sections(get_item_chunks(item_key))[:max_sections]
     checkpoint_path = checkpoint_dir / f"{item_key}.json"
     spec = (

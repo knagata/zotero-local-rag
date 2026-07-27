@@ -52,10 +52,6 @@ def main() -> None:
                 continue
             population.append({
                 **dict(row), "source": _section_source_text(section),
-                "cases": [dict(case) for case in connection.execute(
-                    "SELECT * FROM case_annotations WHERE item_key = ? AND section_id = ? ORDER BY case_id",
-                    (item_key, row["section_id"]),
-                )],
             })
     chosen = choose_rows(population, count=args.count, seed=args.seed)
 
@@ -88,15 +84,6 @@ def main() -> None:
             "| 種別 | 値 | evidence_quote | chunk_id | containment | 人間判定 |",
             "|---|---|---|---|---|---|",
         ])
-        for case in row["cases"]:
-            quote = str(case.get("evidence_quote") or "")
-            contained = bool(quote and quote in row["source"])
-            lines.append(
-                f"| case | {_cell(case.get('description'))} | {_cell(quote)} | "
-                f"{_cell(case.get('chunk_id'))} | {'OK' if contained else 'NG'} | |"
-            )
-        if not row["cases"]:
-            lines.append("| case | （保存なし） | | | - | |")
         if row.get("chapter_authors"):
             lines.append(
                 f"| chapter_authors | {_cell(row['chapter_authors'])} | （DBにはquote非保存） | | - | |"

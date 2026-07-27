@@ -1,0 +1,16 @@
+{
+  "sample_id": "replace_with_sample_id",
+  "regions": [
+    {
+      "id": "r001",
+      "text_anchor": "目視で確認できる短い一意の文字列",
+      "expected_text": "文字精度も採点する場合の正解文字列",
+      "order": 0,
+      "heading_path": ["第1章", "1.1 節"],
+      "zone": "body",
+      "kind": "text",
+      "locator_required": true,
+      "bbox_required": true
+    }
+  ]
+}

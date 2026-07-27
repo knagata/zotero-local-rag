@@ -54,7 +54,6 @@ class DeepSeekSummaryBatchTests(unittest.TestCase):
         }]
         with tempfile.TemporaryDirectory() as directory:
             with (
-                patch.object(build_deepseek_summaries.build_summaries, "_excluded_from_llm", return_value=(False, None)),
                 patch.object(build_deepseek_summaries, "get_item_chunks", return_value=chunks),
                 patch.object(build_deepseek_summaries.build_summaries, "split_sections", return_value=sections),
                 patch.object(build_deepseek_summaries, "_generate_section", return_value={

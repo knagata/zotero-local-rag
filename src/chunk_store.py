@@ -72,6 +72,51 @@ def list_item_keys(
         connection.close()
 
 
+def list_chunk_ids(
+    *, chroma_dir: Path = DEFAULT_CHROMA_DIR, collection_name: str | None = None,
+) -> list[str]:
+    """Return every chunk ID for one collection without loading HNSW."""
+    db_path = _db_path(chroma_dir)
+    name = collection_name or active_collection_name(chroma_dir)
+    if not db_path.exists() or not name:
+        return []
+    connection = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=30)
+    try:
+        rows = connection.execute('''
+            SELECT e.embedding_id
+            FROM collections c JOIN segments s ON s.collection = c.id AND s.scope = 'METADATA'
+            JOIN embeddings e ON e.segment_id = s.id
+            WHERE c.name = ? ORDER BY e.embedding_id
+        ''', (name,)).fetchall()
+        return [str(row[0]) for row in rows]
+    finally:
+        connection.close()
+
+
+def list_attachment_keys(
+    *, chroma_dir: Path = DEFAULT_CHROMA_DIR, collection_name: str | None = None,
+) -> list[str]:
+    """Return non-empty attachment keys present in one collection."""
+    db_path = _db_path(chroma_dir)
+    name = collection_name or active_collection_name(chroma_dir)
+    if not db_path.exists() or not name:
+        return []
+    connection = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=30)
+    try:
+        rows = connection.execute('''
+            SELECT DISTINCT attachment.string_value
+            FROM collections c JOIN segments s ON s.collection = c.id AND s.scope = 'METADATA'
+            JOIN embeddings e ON e.segment_id = s.id
+            JOIN embedding_metadata attachment ON attachment.id = e.id
+                AND attachment.key = 'attachmentKey'
+            WHERE c.name = ? AND COALESCE(attachment.string_value, '') <> ''
+            ORDER BY attachment.string_value
+        ''', (name,)).fetchall()
+        return [str(row[0]) for row in rows]
+    finally:
+        connection.close()
+
+
 def get_item_chunks(
     item_key: str,
     *,
@@ -122,4 +167,7 @@ def get_item_text(item_key: str, *, max_chars: int | None = None, **kwargs: Any)
     return text[:max_chars] if max_chars is not None else text
 
 
-__all__ = ["active_collection_name", "get_item_chunks", "get_item_text", "list_item_keys", "natural_chunk_key"]
+__all__ = [
+    "active_collection_name", "get_item_chunks", "get_item_text", "list_attachment_keys",
+    "list_chunk_ids", "list_item_keys", "natural_chunk_key",
+]

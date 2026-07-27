@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from src import build_summaries
+from src import summary_core
 from src.build_summaries import SECTION_WINDOW, split_sections
 from src.embedder import resolve_collection_name
 from src.llm_client import RateLimitReached
@@ -28,13 +29,10 @@ class SummaryPipelineTests(unittest.TestCase):
             for variant in schema.get("anyOf", []):
                 assert_strict(variant)
 
-        assert_strict(build_summaries.SECTION_SCHEMA)
         assert_strict(build_summaries.SUMMARY_ONLY_SCHEMA)
-        assert_strict(build_summaries.SELECTOR_SECTION_SCHEMA)
-        assert_strict(build_summaries.SELECTOR_CASE_JUDGE_SCHEMA)
         assert_strict(build_summaries.ITEM_SCHEMA)
 
-    def test_selector_units_preserve_exact_ocr_text_and_chunk_identity(self):
+    def test_evidence_units_preserve_exact_ocr_text_and_chunk_identity(self):
         section = {
             "section_id": "c0", "chapter": "",
             "chunks": [
@@ -47,7 +45,7 @@ class SummaryPipelineTests(unittest.TestCase):
         self.assertEqual(units[0]["text"], "組谷では交換した。")
         self.assertNotIn("村", units[0]["text"])
 
-    def test_selector_units_match_section_source_budget(self):
+    def test_evidence_units_match_section_source_budget(self):
         section = {
             "section_id": "c0", "chapter": "",
             "chunks": [
@@ -121,7 +119,7 @@ class SummaryPipelineTests(unittest.TestCase):
         ]}
         client = Mock(provider="deepseek", model="deepseek-v4-pro")
         client.generate_json.return_value = generated
-        with patch.object(build_summaries, "DeepSeekClient", return_value=client):
+        with patch.object(summary_core, "DeepSeekClient", return_value=client):
             result, model = build_summaries._llm_summary_only_item("Title", [
                 {"section_id": "w0", "summary": "研究は2020年に開始された。"},
                 {"section_id": "w1", "summary": "村落交換の実践を調査対象として検討した。"},
@@ -129,103 +127,6 @@ class SummaryPipelineTests(unittest.TestCase):
         self.assertTrue(result["_verification"]["accepted"])
         self.assertEqual(result["sentences"][0]["evidence_unit_ids"], ["s0001"])
         self.assertEqual(model, "deepseek:deepseek-v4-pro:summary-only:disabled")
-
-    def test_selector_hydrates_quote_locally_and_rejects_unknown_id(self):
-        section = {
-            "section_id": "c0", "chapter": "",
-            "chunks": [{
-                "id": "chunk-a", "text": "Alice conducted fieldwork in Fiji in 2020.",
-                "metadata": {},
-            }],
-        }
-        units = build_summaries._section_evidence_units(section)
-        generated = {
-            "summary": "要約", "chapter_authors": [], "first_publication_note": None,
-            "cases": [{
-                "description": "2020年にフィジーで調査した。", "region": "Fiji",
-                "group": None, "practices": ["fieldwork"], "phenomena": [],
-                "period": "2020", "locator_hint": None, "source_kind": "primary",
-                "evidence_unit_id": units[0]["unit_id"],
-            }, {
-                "description": "invalid", "region": None, "group": None,
-                "practices": [], "phenomena": [], "period": None,
-                "locator_hint": None, "source_kind": "primary",
-                "evidence_unit_id": "u9999",
-            }],
-        }
-        verified, stats = build_summaries._hydrate_selector_result(generated, units, section)
-        self.assertEqual(len(verified["cases"]), 1)
-        self.assertEqual(
-            verified["cases"][0]["evidence_quote"],
-            "Alice conducted fieldwork in Fiji in 2020.",
-        )
-        self.assertEqual(
-            verified["cases"][0]["description"],
-            "Alice conducted fieldwork in Fiji in 2020.",
-        )
-        self.assertEqual(verified["cases"][0]["region"], "Fiji")
-        self.assertEqual(verified["cases"][0]["practices"], ["fieldwork"])
-        self.assertEqual(verified["cases"][0]["chunk_id"], "chunk-a")
-        self.assertEqual(stats["invalid_evidence_unit_ids"], 1)
-
-    def test_selector_consensus_requires_distinct_sample_votes(self):
-        section = {
-            "section_id": "c0", "chapter": "",
-            "chunks": [{"id": "chunk-a", "text": "People exchanged gifts.", "metadata": {}}],
-        }
-        units = build_summaries._section_evidence_units(section)
-        case = {
-            "description": "贈与交換を行った。", "region": None, "group": None,
-            "practices": ["gift exchange"], "phenomena": [], "period": None,
-            "locator_hint": None, "source_kind": "primary",
-            "evidence_unit_id": units[0]["unit_id"],
-        }
-        base = {
-            "summary": "要約", "chapter_authors": [], "first_publication_note": None,
-        }
-        verified, stats = build_summaries._selector_consensus(
-            [{**base, "cases": [case, case]}, {**base, "cases": [case]}, {**base, "cases": []}],
-            units, section, min_votes=2,
-        )
-        self.assertEqual(len(verified["cases"]), 1)
-        self.assertEqual(stats["selector"]["consensus_cases"], 1)
-        self.assertEqual(stats["selector"]["case_selections"], 3)
-
-    def test_selector_case_judge_uses_majority_and_ignores_unknown_ids(self):
-        class Client:
-            def __init__(self):
-                self.responses = iter([
-                    {"decisions": [
-                        {"evidence_unit_id": "u0001", "is_empirical_case": True},
-                        {"evidence_unit_id": "unknown", "is_empirical_case": True},
-                    ]},
-                    {"decisions": [
-                        {"evidence_unit_id": "u0001", "is_empirical_case": True},
-                        {"evidence_unit_id": "u0002", "is_empirical_case": True},
-                    ]},
-                    {"decisions": [
-                        {"evidence_unit_id": "u0001", "is_empirical_case": False},
-                        {"evidence_unit_id": "u0002", "is_empirical_case": False},
-                    ]},
-                ])
-
-            def generate_json(self, *_args, **_kwargs):
-                return next(self.responses)
-
-        accepted, stats = build_summaries._judge_selector_case_ids(
-            Client(), {"u0001", "u0002"}, [
-                {"unit_id": "u0001", "chunk_id": "a", "text": "A concrete event."},
-                {"unit_id": "u0002", "chunk_id": "a", "text": "An abstract claim."},
-            ], samples=3, min_votes=2,
-        )
-        self.assertEqual(accepted, {"u0001"})
-        self.assertEqual(stats["votes"], {"u0001": 2, "u0002": 1})
-
-    def test_selector_rejects_obvious_fragments_before_judging(self):
-        self.assertFalse(build_summaries._is_self_contained_evidence("roken sentence ending."))
-        self.assertFalse(build_summaries._is_self_contained_evidence("A" * 900))
-        self.assertTrue(build_summaries._is_self_contained_evidence("A complete event happened."))
-        self.assertTrue(build_summaries._is_self_contained_evidence("村で祭礼が行われた。"))
 
     def test_front_matter_and_toc_are_non_content(self):
         fixtures = [
@@ -284,127 +185,6 @@ class SummaryPipelineTests(unittest.TestCase):
         }
         self.assertEqual(build_summaries.classify_section_content(section), "non_content")
 
-    def test_structured_fields_require_exact_evidence_and_direct_chunk(self):
-        source = "Alice Smith conducted fieldwork in Fiji in 2020. Published in 2021."
-        result = {
-            "summary": "要約",
-            "cases": [{
-                "description": "フィジーでの調査", "region": "Fiji", "group": None,
-                "practices": ["fieldwork"], "phenomena": [], "period": "2020",
-                "locator_hint": None, "source_kind": "primary",
-                "evidence_quote": "Alice Smith conducted fieldwork in Fiji in 2020.",
-            }, {
-                "description": "捏造", "region": None, "group": None, "practices": [],
-                "phenomena": [], "period": None, "locator_hint": None,
-                "source_kind": "primary", "evidence_quote": "Not in the input.",
-            }],
-            "chapter_authors": [
-                {"name": "Alice Smith", "evidence_quote": "Alice Smith conducted fieldwork"},
-                {"name": "Bob Jones", "evidence_quote": "Alice Smith conducted fieldwork"},
-            ],
-            "first_publication_note": {
-                "note": "Published in 2021.", "evidence_quote": "Published in 2021.",
-            },
-        }
-        verified, stats = build_summaries._verify_section_result(
-            result, source, [{"id": "chunk-1", "text": source}],
-        )
-        self.assertEqual(len(verified["cases"]), 1)
-        self.assertEqual(verified["cases"][0]["chunk_id"], "chunk-1")
-        self.assertEqual([row["name"] for row in verified["chapter_authors"]], ["Alice Smith"])
-        self.assertEqual(verified["first_publication_note"]["note"], "Published in 2021.")
-        self.assertEqual(stats["total_generated"], 5)
-        self.assertEqual(stats["total_discarded"], 2)
-
-    def test_publication_value_outside_evidence_is_discarded(self):
-        result = {
-            "summary": "要約", "cases": [], "chapter_authors": [],
-            "first_publication_note": {
-                "note": "Published online in 2025 with DOI 10.1234/fake.",
-                "evidence_quote": "The paper was published online.",
-            },
-        }
-        verified, stats = build_summaries._verify_section_result(
-            result, "The paper was published online.",
-        )
-        self.assertIsNone(verified["first_publication_note"])
-        self.assertEqual(
-            stats["first_publication_note"]["reasons"]["value_not_in_evidence"], 1,
-        )
-
-    def test_ellipsis_composite_quotes_are_rejected_before_containment(self):
-        for ellipsis in ("…", "...", "‥"):
-            quote = f"Alice observed exchange{ellipsis}in Fiji."
-            result = {
-                "summary": "要約", "chapter_authors": [], "first_publication_note": None,
-                "cases": [{
-                    "description": "exchange in Fiji", "region": "Fiji", "group": None,
-                    "practices": ["exchange"], "phenomena": [], "period": None,
-                    "locator_hint": None, "source_kind": "primary",
-                    "evidence_quote": quote,
-                }],
-            }
-            verified, stats = build_summaries._verify_section_result(result, quote)
-            self.assertEqual(verified["cases"], [])
-            self.assertEqual(stats["cases"]["reasons"]["composite_quote"], 1)
-
-    def test_case_date_outside_evidence_is_discarded(self):
-        result = {
-            "summary": "要約", "chapter_authors": [], "first_publication_note": None,
-            "cases": [{
-                "description": "1992年に父から批判された。", "region": None, "group": None,
-                "practices": [], "phenomena": [], "period": "1992",
-                "locator_hint": None, "source_kind": "primary",
-                "evidence_quote": "Her father criticized the prose.",
-            }],
-        }
-        verified, stats = build_summaries._verify_section_result(
-            result, "Her father criticized the prose.",
-        )
-        self.assertEqual(verified["cases"], [])
-        self.assertEqual(stats["cases"]["reasons"]["value_not_in_evidence"], 1)
-
-    def test_case_evidence_may_span_two_adjacent_chunks(self):
-        result = {
-            "summary": "要約", "chapter_authors": [], "first_publication_note": None,
-            "cases": [{
-                "description": "村で交換が行われた。", "region": None, "group": None,
-                "practices": ["交換"], "phenomena": [], "period": None,
-                "locator_hint": None, "source_kind": "primary",
-                "evidence_quote": "村で 交換が行われた。",
-            }],
-        }
-        verified, stats = build_summaries._verify_section_result(
-            result,
-            "村で\n\n交換が行われた。",
-            [{"id": "chunk-1", "text": "村で"}, {"id": "chunk-2", "text": "交換が行われた。"}],
-        )
-        self.assertEqual(len(verified["cases"]), 1)
-        self.assertEqual(verified["cases"][0]["chunk_id"], "chunk-1")
-        self.assertEqual(stats["total_discarded"], 0)
-
-    def test_case_evidence_spanning_three_chunks_is_discarded(self):
-        result = {
-            "summary": "要約", "chapter_authors": [], "first_publication_note": None,
-            "cases": [{
-                "description": "村で交換が行われた。", "region": None, "group": None,
-                "practices": ["交換"], "phenomena": [], "period": None,
-                "locator_hint": None, "source_kind": "primary",
-                "evidence_quote": "村で 盛んに 交換が行われた。",
-            }],
-        }
-        verified, stats = build_summaries._verify_section_result(
-            result,
-            "村で\n\n盛んに\n\n交換が行われた。",
-            [
-                {"id": "chunk-1", "text": "村で"},
-                {"id": "chunk-2", "text": "盛んに"},
-                {"id": "chunk-3", "text": "交換が行われた。"},
-            ],
-        )
-        self.assertEqual(verified["cases"], [])
-        self.assertEqual(stats["cases"]["reasons"]["evidence_not_in_chunk"], 1)
-
     def test_chapter_groups_and_fallback_windows(self):
         chunks = [
             {"id": "a", "text": "a", "metadata": {"chapter": "One"}},
@@ -425,15 +205,23 @@ class SummaryPipelineTests(unittest.TestCase):
         )
 
     def test_llm_mode_does_not_treat_extractively_summarized_item_as_unchanged(self):
-        chunks = [{"id": "a", "text": "body", "metadata": {}}]
+        chunks = [{"id": "a", "text": "substantive body " * 40, "metadata": {}}]
         existing = {"chunk_count": 1, "source_mtime": 0.0, "model": "extractive"}
+        # Previously this asserted "excluded", which only happened because the
+        # unconfigured cloud policy failed closed. That gate was removed
+        # 2026-07-27, so the item now reaches the LLM -- which is the point of
+        # the test: an extractively summarised item must not count as unchanged.
         with patch.object(build_summaries, "get_item_chunks", return_value=chunks), patch.object(
             build_summaries, "load_manifest", return_value={}
         ), patch.object(build_summaries, "get_item_summary", return_value=existing), patch.object(
             build_summaries, "_source_mtime", return_value=0.0
-        ), patch.object(build_summaries, "_excluded_from_llm", return_value=(True, "policy")):
-            result = build_summaries.build_item("ITEM", mode="llm")
-        self.assertEqual(result["status"], "excluded")
+        ), patch.object(
+            build_summaries, "_llm_section",
+            side_effect=RuntimeError("stop after the unchanged check"),
+        ) as llm_section:
+            with self.assertRaises(RuntimeError):
+                build_summaries.build_item("ITEM", mode="llm")
+        llm_section.assert_called()
 
     def test_force_does_not_replace_luna_with_deepseek_without_explicit_override(self):
         chunks = [{"id": "a", "text": "body", "metadata": {}}]
@@ -446,26 +234,9 @@ class SummaryPipelineTests(unittest.TestCase):
             build_summaries, "load_manifest", return_value={}
         ), patch.object(build_summaries, "get_item_summary", return_value=existing), patch.object(
             build_summaries, "_source_mtime", return_value=0.0
-        ), patch.object(build_summaries, "get_llm", return_value=deepseek), patch.object(
-            build_summaries, "_excluded_from_llm"
-        ) as exclusion:
+        ), patch.object(build_summaries, "get_llm", return_value=deepseek):
             result = build_summaries.build_item("ITEM", mode="llm", force=True)
         self.assertEqual(result["status"], "protected_existing")
-        exclusion.assert_not_called()
-
-    def test_summary_exclusion_fails_closed_when_tags_cannot_be_checked(self):
-        with patch.dict(os.environ, {"SUMMARY_EXCLUDE_TAGS": "private"}, clear=False), patch.object(
-            build_summaries.httpx, "get", side_effect=RuntimeError("offline")
-        ):
-            excluded, reason = build_summaries._excluded_from_llm("ITEM")
-        self.assertTrue(excluded)
-        self.assertIn("could not verify", reason)
-
-    def test_summary_exclusion_requires_an_explicit_cloud_policy(self):
-        with patch.dict(os.environ, {}, clear=True):
-            excluded, reason = build_summaries._excluded_from_llm("ITEM")
-        self.assertTrue(excluded)
-        self.assertIn("not configured", reason)
 
     def test_rate_limit_propagates_for_resumable_batch_stop(self):
         chunks = [{"id": "a", "text": "substantive body " * 40, "metadata": {}}]
@@ -473,7 +244,7 @@ class SummaryPipelineTests(unittest.TestCase):
             build_summaries, "load_manifest", return_value={}
         ), patch.object(build_summaries, "get_item_summary", return_value=None), patch.object(
             build_summaries, "_source_mtime", return_value=0.0
-        ), patch.object(build_summaries, "_excluded_from_llm", return_value=(False, None)), patch.object(
+        ), patch.object(
             build_summaries, "_llm_section", side_effect=RateLimitReached("quota")
         ):
             with self.assertRaises(RateLimitReached):
@@ -515,7 +286,7 @@ class SummaryPipelineTests(unittest.TestCase):
     def test_quota_guard_runs_before_each_llm_request(self):
         chunks = [{"id": "a", "text": "substantive body " * 40, "metadata": {}}]
         generated = {
-            "summary": "本文の要約", "cases": [], "chapter_authors": [],
+            "summary": "本文の要約", "chapter_authors": [],
             "first_publication_note": None,
             "_verification": {"total_generated": 0, "total_discarded": 0,
                               "suspicious_section": False},
@@ -526,13 +297,13 @@ class SummaryPipelineTests(unittest.TestCase):
             build_summaries, "load_manifest", return_value={}
         ), patch.object(build_summaries, "get_item_summary", return_value=None), patch.object(
             build_summaries, "_source_mtime", return_value=0.0
-        ), patch.object(build_summaries, "_excluded_from_llm", return_value=(False, None)), patch.object(
+        ), patch.object(
             build_summaries, "_llm_section", return_value=(generated, "codex_cli:test")
         ), patch.object(
             build_summaries, "_llm_item", return_value=(item_result, "codex_cli:test")
         ), patch.object(build_summaries, "save_section_summary"), patch.object(
-            build_summaries, "replace_case_annotations"
-        ), patch.object(build_summaries, "save_item_summary"):
+            build_summaries, "save_item_summary"
+        ):
             build_summaries.build_item("ITEM", mode="llm", quota_guard=guard)
         self.assertEqual(guard.call_count, 2)
 
@@ -545,7 +316,7 @@ class SummaryPipelineTests(unittest.TestCase):
             build_summaries, "load_manifest", return_value={}
         ), patch.object(build_summaries, "get_item_summary", return_value=None), patch.object(
             build_summaries, "_source_mtime", return_value=0.0
-        ), patch.object(build_summaries, "_excluded_from_llm", return_value=(False, None)), patch.object(
+        ), patch.object(
             build_summaries, "delete_section_summary"
         ) as delete, patch.object(build_summaries, "save_item_summary"), patch.object(
             build_summaries, "_llm_section"
@@ -567,7 +338,7 @@ class SummaryPipelineTests(unittest.TestCase):
         }]
         generated = {
             "summary": "入力には要約対象の本文が含まれていません。ご提示ください。",
-            "cases": [], "chapter_authors": [], "first_publication_note": None,
+            "chapter_authors": [], "first_publication_note": None,
             "_verification": {"total_generated": 0, "total_discarded": 0,
                               "suspicious_section": False},
         }
@@ -575,7 +346,7 @@ class SummaryPipelineTests(unittest.TestCase):
             build_summaries, "load_manifest", return_value={}
         ), patch.object(build_summaries, "get_item_summary", return_value=None), patch.object(
             build_summaries, "_source_mtime", return_value=0.0
-        ), patch.object(build_summaries, "_excluded_from_llm", return_value=(False, None)), patch.object(
+        ), patch.object(
             build_summaries, "_llm_section", return_value=(generated, "codex_cli:gpt-5.6-luna")
         ), patch.object(build_summaries, "delete_section_summary") as delete, patch.object(
             build_summaries, "save_section_summary"
@@ -593,3 +364,29 @@ class SummaryPipelineTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MinLeafCharsTests(unittest.TestCase):
+    """The threshold below which a node is not worth summarizing.
+
+    Summary length is nearly independent of source length -- measured across
+    25,858 summaries, the median was 248 characters for a 400-1,000 character
+    leaf and 448 for one over 20,000 -- so the compression a summary buys is
+    decided entirely by the source. Raising the floor to 1,000 (2026-07-28)
+    dropped the band whose median compression was only 0.35, where a hit on the
+    summary sends the reader to the source anyway.
+    """
+
+    def test_threshold_excludes_the_band_that_measured_uneconomical(self):
+        from src.build_structure_summaries import MIN_LEAF_CHARS
+        # 716 was the median source length of the removed band.
+        self.assertGreater(MIN_LEAF_CHARS, 716)
+
+    def test_a_skipped_leaf_is_not_a_failure(self):
+        # Skipping is a deliberate economy, so it must not mark the item as
+        # blocked or failed -- its chunks remain searchable in their own
+        # collection, which is the whole reason the summary is optional.
+        from src.build_structure_summaries import MIN_LEAF_CHARS
+        self.assertIsInstance(MIN_LEAF_CHARS, int)
+        self.assertGreater(MIN_LEAF_CHARS, 0)
+

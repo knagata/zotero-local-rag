@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 import re
 import unicodedata
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, Hashable, Iterable, List, Optional, Tuple
 
 # -- Chunking limits: model-aware with env-var overrides --
 
@@ -348,6 +348,8 @@ def merge_short_chunk_records(
     *,
     min_chars: int,
     max_chars: int,
+    boundary_key: Optional[Callable[[str, str, Dict[str, Any]], Hashable]] = None,
+    union_keys: Optional[Iterable[str]] = None,
 ) -> List[Tuple[str, str, Dict[str, Any]]]:
     """Merge consecutive short chunks into balanced, evenly-sized chunks.
 
@@ -360,10 +362,38 @@ def merge_short_chunk_records(
        between long chunks.
 
     - Never grows a merged chunk beyond *max_chars*.
-    - Drops chunks below HARD_MIN_CHARS.
+    - Drops only *isolated* chunks below HARD_MIN_CHARS, after giving adjacent
+      records with the same structural boundary a chance to merge.
+    - ``union_keys`` names metadata keys whose list values are unioned
+      (preserving source order, de-duplicated) into the surviving chunk's
+      metadata whenever two chunks merge.  Used by the EPUB/HTML extractor to
+      keep per-block ``element_ids`` / ``noteref_targets`` evidence across a
+      merge so footnote/endnote body links (Part C, dev-notes/current/77) can
+      still be resolved afterwards.
     """
     if not chunks:
         return []
+
+    union_key_list = list(union_keys or [])
+
+    def _union_into(dst_md: Any, src_md: Any) -> None:
+        if not union_key_list or not isinstance(dst_md, dict) or not isinstance(src_md, dict):
+            return
+        for key in union_key_list:
+            src_val = src_md.get(key)
+            if not src_val:
+                continue
+            dst_val = dst_md.get(key)
+            merged = list(dst_val) if isinstance(dst_val, list) else ([] if not dst_val else list(dst_val))
+            seen = set(merged)
+            for item in src_val:
+                if item not in seen:
+                    merged.append(item)
+                    seen.add(item)
+            dst_md[key] = merged
+
+    def _key(cid: str, text: str, md: Dict[str, Any]) -> Hashable:
+        return boundary_key(cid, text, md) if boundary_key is not None else "__all__"
 
     # --- Forward pass ---
     out: List[Tuple[str, str, Dict[str, Any]]] = []
@@ -372,6 +402,7 @@ def merge_short_chunk_records(
     buf_md: Optional[Dict[str, Any]] = None
     merge_count: int = 0
     locator_end: Optional[str] = None
+    buf_key: Hashable = "__all__"
 
     def _emit(
         cid: str, text: str, md: Dict[str, Any],
@@ -390,21 +421,20 @@ def merge_short_chunk_records(
         t = (text or "").strip()
         if not t:
             continue
-        if len(t) < HARD_MIN_CHARS:
-            continue
-
         if buf_id is None:
             buf_id = cid
             buf_text = t
             buf_md = md
             merge_count = 1
             locator_end = md.get("locator") if isinstance(md, dict) else None
+            buf_key = _key(cid, t, md)
             continue
 
         # If the buffer is short, try to grow it by appending the next chunk.
-        if len(buf_text) < min_chars:
+        if buf_key == _key(cid, t, md) and len(buf_text) < min_chars:
             if len(buf_text) + len(sep) + len(t) <= max_chars:
                 buf_text = buf_text + sep + t
+                _union_into(buf_md, md)
                 merge_count += 1
                 loc = md.get("locator") if isinstance(md, dict) else None
                 if isinstance(loc, str) and loc:
@@ -418,18 +448,20 @@ def merge_short_chunk_records(
         buf_md = md
         merge_count = 1
         locator_end = md.get("locator") if isinstance(md, dict) else None
+        buf_key = _key(cid, t, md)
 
     # Final buffer
     if buf_id is not None and buf_md is not None:
         # Try backward merge first
         if len(buf_text) < min_chars and out:
             prev_id, prev_text, prev_md = out[-1]
-            if len(prev_text) + len(sep) + len(buf_text) <= max_chars:
+            if _key(prev_id, prev_text, prev_md) == buf_key and len(prev_text) + len(sep) + len(buf_text) <= max_chars:
                 merged_text = (prev_text + sep + buf_text).strip()
                 prev_md["merged"] = True
                 prev_md["merge_count"] = int(prev_md.get("merge_count", 1)) + 1
                 if locator_end:
                     prev_md["locator_end"] = locator_end
+                _union_into(prev_md, buf_md)
                 out[-1] = (prev_id, merged_text, prev_md)
             else:
                 _emit(buf_id, buf_text, buf_md, merge_count, locator_end)
@@ -450,12 +482,13 @@ def merge_short_chunk_records(
             # (which is already in merged_out, in reverse order)
             nxt_id, nxt_text, nxt_md = merged_out[-1]
             combined = text + sep + nxt_text
-            if len(combined) <= max_chars:
+            if _key(cid, text, md) == _key(nxt_id, nxt_text, nxt_md) and len(combined) <= max_chars:
                 # Merge: short chunk's id/metadata becomes the primary,
                 # right neighbour's locator becomes locator_end
                 md["merged"] = True
                 md["merge_count"] = int(md.get("merge_count", 1)) + int(nxt_md.get("merge_count", 1))
                 md["locator_end"] = nxt_md.get("locator_end") or nxt_md.get("locator")
+                _union_into(md, nxt_md)
                 merged_out[-1] = (cid, combined.strip(), md)
                 i -= 1
                 continue
@@ -463,7 +496,10 @@ def merge_short_chunk_records(
         i -= 1
 
     merged_out.reverse()
-    return merged_out
+    # An isolated label/caption remains noise, but short chronology rows and
+    # adjacent EPUB records are retained when the forward/backward pass joined
+    # them into a useful searchable unit.
+    return [row for row in merged_out if len(row[1]) >= HARD_MIN_CHARS]
 
 
 def _control_char_ratio(text: str) -> float:
@@ -482,6 +518,30 @@ def _control_char_ratio(text: str) -> float:
         elif o == 0x7F:
             count += 1
     return count / len(text)
+
+
+def _looks_like_structured_listing(text: str) -> bool:
+    """Return True for readable TOC/index/table-like text.
+
+    Such pages naturally contain few function words and many numbers or leader
+    dots. That is a layout signal, not evidence of broken character mapping.
+    """
+    compact = " ".join(str(text or "").split())
+    head = compact[:600].casefold()
+    explicit_region = bool(re.search(
+        r"\b(contents|index|appendix|appendices|list of (figures|tables))\b"
+        r"|\b(figure|fig\.)\s*\d+\b|\bcourtesy of\b"
+        r"|目次|図一覧|表一覧|索引",
+        head,
+    ))
+    leader_dots = len(re.findall(r"\.{4,}|…{2,}", text)) >= 2
+    table_signal = bool(re.search(
+        r"(?:^|\s)(?:table|表)\s*[0-9０-９一二三四五六七八九十]+",
+        head,
+        flags=re.IGNORECASE,
+    ))
+    digit_ratio = sum(ch.isdigit() for ch in compact) / max(1, len(compact))
+    return explicit_region or leader_dots or (table_signal and digit_ratio >= 0.08)
 
 
 def analyze_text_quality(text: str) -> Dict[str, Any]:
@@ -521,6 +581,7 @@ def analyze_text_quality(text: str) -> Dict[str, Any]:
     # Signals: high control-char ratio, very low alpha ratio
     ctrl_ratio = _control_char_ratio(t)
     letters_ratio = sum(ch.isalpha() for ch in t) / max(len(t), 1)
+    structured_listing = _looks_like_structured_listing(t)
 
     extraction_score = 0.0
     # Dominated by non-whitespace control characters → font ToUnicode CMap missing
@@ -528,13 +589,13 @@ def analyze_text_quality(text: str) -> Dict[str, Any]:
         extraction_score = min(1.0, ctrl_ratio * 2.0)
     # Very few letters but text isn't empty → likely encoding issue.
     # The extracted bytes map to symbols/punctuation rather than readable text.
-    elif letters_ratio < 0.15 and len(t) >= 80:
+    elif letters_ratio < 0.15 and len(t) >= 80 and not structured_listing:
         extraction_score = 0.7
 
     # --- Content corruption score: linguistically nonsensical ---
     # Only evaluate when we have enough text AND extraction doesn't look broken
     content_score = 0.0
-    if len(t) >= 200 and extraction_score < 0.5:
+    if len(t) >= 200 and extraction_score < 0.5 and not structured_listing:
         is_cjk = is_no_space_language_document(t)
 
         if is_cjk:
@@ -581,6 +642,7 @@ def analyze_text_quality(text: str) -> Dict[str, Any]:
         "extraction_failure_score": round(extraction_score, 3),
         "content_corruption_score": round(content_score, 3),
         "corruption_score": round(corruption_score, 3),
+        "structured_listing": structured_listing,
         "is_scanned": scan_score >= SCAN_THRESHOLD,
         "is_corrupted": corruption_score >= CORRUPTION_THRESHOLD,
         "corruption_type": corruption_type,

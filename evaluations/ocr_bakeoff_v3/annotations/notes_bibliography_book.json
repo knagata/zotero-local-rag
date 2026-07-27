@@ -1,0 +1,4 @@
+{"sample_id":"notes_bibliography_book","regions":[
+  {"id":"r001","text_anchor":"The Elementary Structures of Kinship","expected_text":"The Elementary Structures of Kinship","order":0,"heading_path":["Bibliography"],"zone":"bibliography","kind":"running_header","locator_required":true,"bbox_required":true},
+  {"id":"r002","text_anchor":"The Social Life of Monkeys and Apes","expected_text":"The Social Life of Monkeys and Apes","order":1,"heading_path":["Bibliography"],"zone":"bibliography","kind":"text","locator_required":true,"bbox_required":true}
+]}

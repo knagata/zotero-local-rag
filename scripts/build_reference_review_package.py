@@ -17,7 +17,6 @@ if str(ROOT) not in sys.path:
 
 from src.db_relations import get_reference_review_candidates
 from src.env_utils import load_dotenv_native
-from src.reference_agent import _item_excluded
 from src.reference_text import strip_unicode_format_characters
 
 DEFAULT_OUTPUT = ROOT / "dev-notes" / "evaluations" / "reference-review" / "batches"
@@ -137,7 +136,7 @@ def main() -> None:
         parser.error("--batch-size must be positive")
     load_dotenv_native(ROOT)
     rows = get_reference_review_candidates("pending")
-    entries, excluded = build_package(rows, policy=_item_excluded)
+    entries, excluded = build_package(rows, policy=lambda _key: (False, None))
     manifest = write_batches(entries, excluded, output_dir=args.output_dir, batch_size=args.batch_size)
     print(json.dumps(manifest, ensure_ascii=False, indent=2))
 

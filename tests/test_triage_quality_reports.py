@@ -56,9 +56,6 @@ class QualityReportTriageTests(unittest.TestCase):
             "sample_context": None,
         }
         with patch.object(
-            triage_quality_reports.build_summaries, "_excluded_from_llm",
-            return_value=(False, None),
-        ), patch.object(
             triage_quality_reports, "mark_relation_report_uncertain",
         ) as uncertain, patch.object(
             triage_quality_reports, "_judge_with_fallback",

@@ -7,15 +7,15 @@ from typing import Any
 import numpy as np
 
 try:
-    from .db_relations import get_case_overlap_pairs, get_cocitation_pairs, get_coupling_pairs, get_network_item_keys
+    from .db_relations import get_cocitation_pairs, get_coupling_pairs, get_network_item_keys
     from .item_vectors import get_item_meta, get_item_vectors
 except ImportError:  # pragma: no cover - direct script execution
-    from db_relations import get_case_overlap_pairs, get_cocitation_pairs, get_coupling_pairs, get_network_item_keys
+    from db_relations import get_cocitation_pairs, get_coupling_pairs, get_network_item_keys
     from item_vectors import get_item_meta, get_item_vectors
 
 
 RRF_K = 60
-VALID_METHODS = {"case_overlap", "coupling", "cocitation", "semantic", "hybrid"}
+VALID_METHODS = {"coupling", "cocitation", "semantic", "hybrid"}
 
 
 def _semantic_pairs(item_key: str, candidate_keys: list[str]) -> list[dict[str, Any]]:
@@ -51,8 +51,6 @@ def related_items(item_key: str, *, method: str = "hybrid", k: int = 10) -> list
         rankings["cocitation"] = get_cocitation_pairs(item_key, internal_k)
     if method in {"semantic", "hybrid"}:
         rankings["semantic"] = _semantic_pairs(item_key, candidates)[:internal_k]
-    if method == "case_overlap":
-        rankings["case_overlap"] = get_case_overlap_pairs(item_key, internal_k)
 
     scores: dict[str, float] = defaultdict(float)
     evidence: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -77,13 +75,6 @@ def related_items(item_key: str, *, method: str = "hybrid", k: int = 10) -> list
                     "method": source,
                     "cosine_similarity": round(row["cosine_similarity"], 6),
                     "description": f"内容類似度 {row['cosine_similarity']:.3f}",
-                }
-            else:
-                detail = {
-                    "method": source,
-                    "shared_case_terms": row["shared_case_terms"],
-                    "case_overlap_score": round(row["case_overlap_score"], 6),
-                    "description": "事例語彙の共有: " + ", ".join(row["shared_case_terms"][:5]),
                 }
             evidence[key].append(detail)
 

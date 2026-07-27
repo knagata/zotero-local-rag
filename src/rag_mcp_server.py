@@ -31,10 +31,10 @@ from manifest import load_manifest
 from chapter_detect import get_pdf_toc, get_epub_chapter_index_to_title
 from query_expansion import expand_queries
 from search_fusion import language_balanced_order
-from db_relations import (
-    get_case_annotations, get_disabled_case_ids, get_disabled_summary_keys,
-    get_item_summary as load_item_summary, get_node_descendant_chunks,
+from hierarchical_retrieval import (
+    explicit_note_intent, fuse_retrieval_paths, partition_leaf_ids, retrieval_policy_allowed,
 )
+from db_relations import get_disabled_summary_keys, get_item_summary as load_item_summary, get_node_descendant_chunks, get_node_descendant_leaf_ids
 
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -138,17 +138,24 @@ from embedder import (
 
 
 MCP_INSTRUCTIONS = """
-Treat LLM summaries, structured cases, and Semantic Scholar citation relations as
+Treat LLM summaries and Semantic Scholar citation relations as
 discovery aids, not final evidence. Base research answers on returned source chunks.
 When you find a concrete contradiction, unsupported case field, or wrong-work mapping
 while comparing a discovery aid with
 source evidence, you MUST submit a report before finishing the answer:
 - call report_summary_quality for an item/section summary problem;
-- call report_case_quality for a structured-case problem;
 - call report_citation_relation for an S2 citation/reference problem.
 Do not report merely because a relation is surprising, topically distant, or weakly
 relevant. Include concrete source evidence. Reporting is advisory and reversible;
 do not claim that the underlying record has been deleted or finally adjudicated.
+
+Source chunks themselves can also be damaged, which is a separate matter from a
+summary being wrong. Some documents were OCRed years ago and their text layer
+carries systematic misreadings ("srorage" for "storage"), mojibake, missing
+pages, or interleaved columns. Such text is invisible to lexical search, so a
+reader encountering it is often the only signal there is: when damage would stop
+a passage being quoted accurately or found at all, call report_chunk_quality for
+that chunk. A few characters you can read through do not need a report.
 """.strip()
 
 
@@ -684,6 +691,10 @@ def _build_effective_where(
     return effective
 
 
+def _and_where(base: Any, extra: Dict[str, Any]) -> Dict[str, Any]:
+    return extra if base is None else {"$and": [base, extra]}
+
+
 def _coerce_json(value: Any) -> Any:
     """If *value* is a JSON string, parse it; otherwise return as-is.
 
@@ -709,11 +720,13 @@ def rag_search(
     context_window: int = 0,
     include_notes: bool = False,
     include_item_keys: Any = None,
+    include_leaf_ids: Any = None,
     exclude_chunk_ids: Any = None,
     auto_expand: bool = True,
     search_mode: str = "default",
     hybrid: bool = True,
     language_balance: bool = False,
+    include_corrupted: bool = False,
 ) -> RagSearchResponse:
     """
     Paragraph-level semantic search over local Zotero PDFs/HTML snapshots (+ optionally Notes).
@@ -767,6 +780,9 @@ def rag_search(
             Notes are indexed but excluded by default.
         include_item_keys:
             Optional list of Zotero item keys (e.g. ['ABCDEF12', 'GHIJKL34']) to restrict the search to.
+        include_leaf_ids:
+            Optional canonical V3 leaf node IDs. IDs are queried in batches of 100
+            and fused; lexical search is disabled for this restricted route.
         exclude_chunk_ids:
             Optional list of chunk IDs to exclude from the results. Use this to avoid
             seeing the same paragraphs across multiple turns.
@@ -785,6 +801,13 @@ def rag_search(
             If True, reserve up to two final-result slots each for Japanese and English
             chunks when both are present in the candidate pool. Requires a reindex that
             includes the `lang` metadata. Default: False.
+        include_corrupted:
+            If True, also return chunks whose text is known to be unreliable --
+            OCR noise from a figure plate, a page that resisted repair. These are
+            retained at ingestion rather than discarded, but stay out of ordinary
+            results because their text cannot be quoted or trusted. Set this only
+            when the point is to inspect what a document's damaged pages contain;
+            never to widen recall for a normal question. Default: False.
     Returns:
         {"results": [ ... ]}
     """
@@ -795,6 +818,7 @@ def rag_search(
 
     where = _coerce_json(where)
     include_item_keys = _coerce_json(include_item_keys)
+    include_leaf_ids = _coerce_json(include_leaf_ids)
     exclude_chunk_ids = _coerce_json(exclude_chunk_ids)
 
     if search_mode not in {"default", "case"}:
@@ -816,6 +840,12 @@ def rag_search(
     effective_where = _build_effective_where(
         where, include_notes=include_notes, include_item_keys=include_item_keys
     )
+    leaf_batches = partition_leaf_ids(include_leaf_ids or [])
+    if include_leaf_ids is not None and not leaf_batches:
+        return {"results": []}
+    query_wheres = [
+        _and_where(effective_where, {"node_id": {"$in": batch}}) for batch in leaf_batches
+    ] or [effective_where]
 
     internal_k = max(k * 5, k)
     if exclude_chunk_ids:
@@ -830,12 +860,13 @@ def rag_search(
             # Manually compute embeddings to avoid Chroma FFI deadlock
             query_embeddings = col._embedding_function(queries)
 
-            res = col.query(
-                query_embeddings=query_embeddings,
-                n_results=internal_k,
-                where=effective_where,
-                include=["documents", "metadatas", "distances"],
-            )
+            responses = [
+                col.query(
+                    query_embeddings=query_embeddings, n_results=internal_k,
+                    where=query_where, include=["documents", "metadatas", "distances"],
+                )
+                for query_where in query_wheres
+            ]
             break
         except Exception as _exc:
             _log.warning("rag_search query failed (attempt %d): %s\n%s", _attempt + 1, _exc, traceback.format_exc())
@@ -852,45 +883,42 @@ def rag_search(
 
     # Consolidated hits map: id -> {distance, rrf_score, document, metadata}
     hits_combined = {}
-    all_q_ids = res.get("ids") or []
-    all_q_docs = res.get("documents") or []
-    all_q_metas = res.get("metadatas") or []
-    all_q_dists = res.get("distances") or []
+    for res in responses:
+        all_q_ids = res.get("ids") or []
+        all_q_docs = res.get("documents") or []
+        all_q_metas = res.get("metadatas") or []
+        all_q_dists = res.get("distances") or []
 
-    for q_idx in range(len(all_q_ids)):
-        q_ids = all_q_ids[q_idx]
-        q_docs = all_q_docs[q_idx] if q_idx < len(all_q_docs) else []
-        q_metas = all_q_metas[q_idx] if q_idx < len(all_q_metas) else []
-        q_dists = all_q_dists[q_idx] if q_idx < len(all_q_dists) else []
+        for q_idx in range(len(all_q_ids)):
+            q_ids = all_q_ids[q_idx]
+            q_docs = all_q_docs[q_idx] if q_idx < len(all_q_docs) else []
+            q_metas = all_q_metas[q_idx] if q_idx < len(all_q_metas) else []
+            q_dists = all_q_dists[q_idx] if q_idx < len(all_q_dists) else []
 
-        for h_idx in range(len(q_ids)):
-            hid = q_ids[h_idx]
-            hdoc = q_docs[h_idx] if h_idx < len(q_docs) else ""
-            hmd = q_metas[h_idx] if h_idx < len(q_metas) else {}
-            hdist = q_dists[h_idx] if h_idx < len(q_dists) else 1.0
+            for h_idx in range(len(q_ids)):
+                hid = q_ids[h_idx]
+                hdoc = q_docs[h_idx] if h_idx < len(q_docs) else ""
+                hmd = q_metas[h_idx] if h_idx < len(q_metas) else {}
+                hdist = q_dists[h_idx] if h_idx < len(q_dists) else 1.0
             
             # Reciprocal Rank Fusion contribution
             # rank is h_idx + 1
-            rrf_val = 1.0 / (RRF_K + (h_idx + 1))
+                rrf_val = 1.0 / (RRF_K + (h_idx + 1))
 
-            if hid not in hits_combined:
-                hits_combined[hid] = {
-                    "distance": hdist,
-                    "rrf_score": rrf_val,
-                    "document": hdoc,
-                    "metadata": hmd,
-                }
-            else:
-                # Keep the smallest distance (highest similarity)
-                if hdist < hits_combined[hid]["distance"]:
-                    hits_combined[hid]["distance"] = hdist
-                # Accumulate RRF score
-                hits_combined[hid]["rrf_score"] += rrf_val
+                if hid not in hits_combined:
+                    hits_combined[hid] = {
+                        "distance": hdist, "rrf_score": rrf_val,
+                        "document": hdoc, "metadata": hmd,
+                    }
+                else:
+                    if hdist < hits_combined[hid]["distance"]:
+                        hits_combined[hid]["distance"] = hdist
+                    hits_combined[hid]["rrf_score"] += rrf_val
 
     # Lexical BM25 results are fused by rank, never by incomparable raw scores.
     # Restrictive arbitrary Chroma filters remain semantic-only; item-key and note
     # restrictions are supported directly by the lexical index.
-    if hybrid and where is None:
+    if hybrid and where is None and include_leaf_ids is None:
         try:
             from lexical_index import search_chunks as lexical_search
 
@@ -936,6 +964,14 @@ def rag_search(
 
     # Sort all consolidated hits by RRF score descending (highest first).
     sorted_hits = sorted(hits_combined.items(), key=lambda x: x[1]["rrf_score"], reverse=True)
+    allow_explicit = explicit_note_intent(queries)
+    sorted_hits = [
+        hit for hit in sorted_hits
+        if retrieval_policy_allowed(
+            hit[1].get("metadata") or {}, allow_explicit=allow_explicit,
+            include_corrupted=include_corrupted,
+        )
+    ]
 
     # Filtering out excluded IDs
     if exclude_chunk_ids:
@@ -1092,7 +1128,24 @@ def _hierarchical_search_v2(
             warnings.append(f"descendant lookup failed for {node['node_id']}: {exc}")
             descendant_by_node[node["node_id"]] = set()
     routed_ids = set().union(*descendant_by_node.values()) if descendant_by_node else set()
+    routed_nodes_by_chunk = {
+        chunk_id: [node_id for node_id, chunk_ids in descendant_by_node.items() if chunk_id in chunk_ids]
+        for chunk_id in routed_ids
+    }
+    leaf_ids: List[str] = []
+    if candidate_nodes:
+        # Resolve searchable leaf node_ids directly from SQLite instead of
+        # hydrating thousands of chunk metadatas from Chroma (R14).
+        try:
+            leaf_ids = get_node_descendant_leaf_ids([node["node_id"] for node in candidate_nodes])
+        except Exception as exc:
+            warnings.append(f"leaf node lookup failed: {exc}")
+    leaf_ids = list(dict.fromkeys(leaf_ids))
     candidate_item_keys = list(candidate_items)[:k_items]
+    leaf_response = rag_search(
+        queries, k=max(k * 12, 60), where=where, include_leaf_ids=leaf_ids,
+        auto_expand=False, hybrid=False,
+    ) if leaf_ids else {"results": []}
     item_response = rag_search(
         queries, k=max(k * 12, 60), where=where, include_item_keys=candidate_item_keys or None,
         auto_expand=False, hybrid=True,
@@ -1101,42 +1154,46 @@ def _hierarchical_search_v2(
         queries, k=max(k * 20, 100), where=where, auto_expand=False, hybrid=True,
     ) if include_direct else {"results": []}
 
-    fused: Dict[str, Dict[str, Any]] = {}
-    scores: Dict[str, float] = {}
-    paths: Dict[str, List[str]] = {}
-    for path_name, weight, response_rows in (
-        ("same_item", 1.2, item_response.get("results") or []),
-        ("direct", 1.0, direct_response.get("results") or []),
+    # Resolve item bibliographic title/year from paragraph chunk metadata, which
+    # carries the real Zotero item title/year — unlike __sum_node metadata whose
+    # `title` is a node (chapter) heading and which has no `year` (R8-1).
+    bib_by_item: Dict[str, Dict[str, Any]] = {}
+    for response_rows in (
+        leaf_response.get("results") or [],
+        item_response.get("results") or [],
+        direct_response.get("results") or [],
     ):
-        for rank, hit in enumerate(response_rows, start=1):
-            chunk_id = str(hit.get("id") or "")
-            if not chunk_id:
-                continue
-            fused[chunk_id] = hit
-            scores[chunk_id] = scores.get(chunk_id, 0.0) + weight / (RRF_K + rank)
-            paths.setdefault(chunk_id, []).append(path_name)
-            matched_nodes = [node_id for node_id, ids in descendant_by_node.items() if chunk_id in ids]
-            if matched_nodes:
-                scores[chunk_id] += 1.7 / (RRF_K + rank)
-                paths[chunk_id].append("summary_descendant")
-                hit = dict(hit)
-                hit["routed_by_node_ids"] = matched_nodes
-                fused[chunk_id] = hit
-    ordered_ids = sorted(scores, key=lambda chunk_id: (-scores[chunk_id], chunk_id))[:k]
+        for row in response_rows:
+            meta = row.get("meta") or {}
+            key = meta.get("itemKey")
+            if key and key not in bib_by_item:
+                bib_by_item[key] = {"title": meta.get("title"), "year": meta.get("year")}
+
     results = []
-    for chunk_id in ordered_ids:
-        hit = dict(fused[chunk_id])
-        hit["hierarchical_rrf_score"] = scores[chunk_id]
-        hit["retrieval_paths"] = paths.get(chunk_id, [])
+    fused_rows = fuse_retrieval_paths([
+        ("leaf", leaf_response.get("results") or []),
+        ("same_item", item_response.get("results") or []),
+        ("direct", direct_response.get("results") or []),
+    ], routed_nodes_by_chunk=routed_nodes_by_chunk)
+    for row in fused_rows[:k]:
+        hit = dict(row)
+        hit["hierarchical_rrf_score"] = hit.pop("rrf_score")
         if return_summaries:
             item_key = (hit.get("meta") or {}).get("itemKey")
             summary = load_item_summary(item_key) if item_key else None
             hit["item_summary_snippet"] = (summary.get("summary") or "")[:120] if summary else ""
+            # Snippet is still sourced from the legacy item_summaries table until
+            # backfill replaces it with the item_root node summary (R8-2).
+            hit["item_summary_provenance"] = "legacy" if summary else "none"
         results.append(hit)
     response: Dict[str, Any] = {
         "results": results, "candidate_nodes": candidate_nodes,
         "candidate_items": [
-            {"item_key": key, "title": metadata.get("title"), "year": metadata.get("year")}
+            {
+                "item_key": key,
+                "title": (bib_by_item.get(key) or {}).get("title") or metadata.get("title"),
+                "year": (bib_by_item.get(key) or {}).get("year"),
+            }
             for key, metadata in candidate_items.items()
         ],
         "reporting_obligation": (
@@ -1178,7 +1235,10 @@ def hierarchical_search(
         queries = expand_queries(queries, mode="default", timeout=5.0, logger=_log)
 
     paragraph_collection = _col()
-    if os.environ.get("HIERARCHICAL_SEARCH_V2_ENABLE", "0") == "1":
+    # V3 is the active data plane after cutover.  Keep an explicit ``0`` as a
+    # rollback switch for the retained legacy route, but do not make a missing
+    # setting silently select that deprecated path.
+    if os.environ.get("HIERARCHICAL_SEARCH_V2_ENABLE", "1") == "1":
         return _hierarchical_search_v2(
             queries, k=k, k_items=k_items, where=where, include_direct=include_direct,
             return_summaries=return_summaries, paragraph_collection=paragraph_collection,
@@ -1270,98 +1330,13 @@ def hierarchical_search(
 
 
 @mcp.tool()
-def search_cases(
-    query: str | List[str], region: Optional[str] = None, k: int = 10,
-    auto_expand: bool = True,
-) -> Dict[str, Any]:
-    """Find empirical/ethnographic cases using annotations plus direct paragraphs.
-
-    The case annotation index may cover only summarized items, so results are always
-    fused with global ``rag_search(search_mode='case')`` as a coverage safeguard.
-    ``region`` is a case-insensitive partial-match filter on structured annotations.
-    """
-    if k <= 0:
-        return {"results": []}
-    queries = [query] if isinstance(query, str) else list(query)
-    queries = [value.strip() for value in queries if isinstance(value, str) and value.strip()]
-    if not queries:
-        return {"results": [], "warning": "query is empty"}
-    if auto_expand:
-        queries = expand_queries(queries, mode="case", timeout=5.0, logger=_log)
-
-    paragraph_collection = _col()
-    disabled_case_ids = get_disabled_case_ids()
-    case_rows = {
-        int(row["case_id"]): row for row in get_case_annotations()
-        if int(row["case_id"]) not in disabled_case_ids
-    }
-    structured_by_id: dict[int, dict[str, Any]] = {}
-    structured_scores: dict[int, float] = {}
-    warning = None
-    try:
-        client = getattr(paragraph_collection, "_chroma_client", None)
-        case_collection = client.get_collection(f"{_EMB_COLLECTION_NAME or COLLECTION_NAME_DEFAULT}__cases")
-        embeddings = paragraph_collection._embedding_function(queries)
-        response = case_collection.query(
-            query_embeddings=embeddings, n_results=max(k * 5, k),
-            include=["metadatas", "documents", "distances"],
-        )
-        for ranking in response.get("metadatas") or []:
-            for rank, metadata in enumerate(ranking, start=1):
-                case_id = int((metadata or {}).get("case_id") or 0)
-                row = case_rows.get(case_id)
-                if not row:
-                    continue
-                if region and region.casefold() not in str(row.get("region") or "").casefold():
-                    continue
-                structured_by_id[case_id] = row
-                quality_weight = {
-                    "confirmed": 1.0, "partial": 0.85, "candidate": 0.6,
-                }.get(str(row.get("quality_status") or "confirmed"), 0.6)
-                structured_scores[case_id] = structured_scores.get(case_id, 0.0) + (
-                    quality_weight / (RRF_K + rank)
-                )
-    except Exception as exc:
-        warning = f"case annotation index unavailable: {exc}"
-
-    structured = [
-        {"kind": "case", **structured_by_id[case_id], "rrf_score": score,
-         "title": structured_by_id[case_id].get("title") or ""}
-        for case_id, score in structured_scores.items()
-    ]
-    direct = rag_search(
-        queries, k=max(k * 3, k), search_mode="case", auto_expand=False, hybrid=True,
-    ).get("results") or []
-    combined: list[dict[str, Any]] = structured + [
-        {
-            "kind": "chunk", "chunk_id": hit.get("id"),
-            "item_key": (hit.get("meta") or {}).get("itemKey"),
-            "description": hit.get("text"), "citation": hit.get("citation"),
-            "region": None, "rrf_score": 1.0 / (RRF_K + rank), "meta": hit.get("meta"),
-        }
-        for rank, hit in enumerate(direct, start=1)
-    ]
-    combined.sort(key=lambda row: (-float(row.get("rrf_score") or 0), str(row.get("chunk_id") or row.get("case_id"))))
-    result: Dict[str, Any] = {
-        "results": combined[:k],
-        "reporting_obligation": (
-            "If a structured case materially conflicts with its source chunks, "
-            "call report_case_quality before completing the answer."
-        ),
-    }
-    if warning:
-        result["warning"] = warning
-    return result
-
-
-@mcp.tool()
 def extract_references_for_item(
     item_key: str, dry_run: bool = True, use_llm: bool = True,
 ) -> Dict[str, Any]:
     """Extract and resolve one item's bibliography; preview by default.
 
     When ``use_llm`` is true, candidate bibliography text is sent to the configured
-    ``LLM_STANDARD`` provider. ``EXTRACT_EXCLUDE_TAGS`` is enforced fail-closed.
+    ``LLM_STANDARD`` provider; configuring that role is the only gate.
     Set ``dry_run=False`` only after reviewing the preview.
     """
     from reference_agent import extract_references_for_item as run_extraction
@@ -1614,6 +1589,28 @@ def search_items(
     )
 
     return {"items": sorted_items[:k]}
+
+
+def _chunk_by_id(chunk_id: str) -> Dict[str, Any] | None:
+    """Fetch one chunk's document and metadata from the active collection.
+
+    Used by ``report_chunk_quality`` to hash the exact text being reported, so
+    the report retires itself once that text is re-extracted.
+    """
+    if not chunk_id:
+        return None
+    try:
+        response = _col().get(ids=[chunk_id], include=["documents", "metadatas"])
+    except Exception:
+        return None
+    if not (response.get("ids") or []):
+        return None
+    documents = response.get("documents") or [""]
+    metadatas = response.get("metadatas") or [{}]
+    return {
+        "document": documents[0] if documents else "",
+        "metadata": metadatas[0] if metadatas else {},
+    }
 
 
 @mcp.tool()
@@ -2074,52 +2071,80 @@ def list_summary_quality_reports(status: str = "pending") -> Dict[str, Any]:
 
 
 @mcp.tool()
-def report_case_quality(
-    case_id: int, reason: str, details: str,
-    evidence_chunk_ids: Optional[List[str]] = None,
+def report_chunk_quality(
+    item_key: str, chunk_id: str, reason: str, details: str,
 ) -> Dict[str, Any]:
-    """Report a concrete structured-case problem found against source chunks.
+    """Report that a retrieved source chunk's own text is too damaged to use.
 
-    You MUST call this before finishing an answer when a structured case is not an
-    empirical/historical case, contains an unsupported field, uses the wrong context,
-    duplicates another case misleadingly, or otherwise conflicts with its source.
-    Do not report merely because optional region, group, or period fields are absent.
+    Call this when the extracted text itself is defective -- not when a summary
+    is wrong (use ``report_summary_quality``) and not when a chunk is merely
+    off-topic. Report it when OCR has garbled words so that the passage cannot
+    be quoted or reliably searched (for example "srorage and rerrieval" for
+    "storage and retrieval", or a Japanese page where kana appear as visually
+    similar kanji), when the text is mojibake, when a page's content is
+    obviously missing, or when columns have been interleaved so sentences run
+    together out of order.
+
+    A small number of misrecognised characters that you can read through does
+    not need a report. Report when the damage would stop the passage being
+    found by search or quoted accurately -- degraded text is invisible to
+    lexical search, so a reader hitting it is often the only signal available.
+
+    Reports are scoped to the text you actually saw: re-extracting or re-OCRing
+    the document retires the report automatically. Repeat reports of the same
+    passage raise its priority as a re-OCR candidate rather than duplicating it.
+    Reporting is advisory and reversible; nothing is deleted.
 
     Args:
-        case_id: The structured case ID returned by search_cases.
-        reason: not_a_case, unsupported_field, wrong_context, duplicate_case,
-            misleading_description, or other.
-        details: Concrete discrepancy and what the source actually supports.
-        evidence_chunk_ids: Source chunk IDs demonstrating the problem.
+        item_key: Zotero item key the chunk belongs to.
+        chunk_id: The ``id`` of the chunk as returned by search.
+        reason: ocr_garbled, encoding_broken, missing_text,
+            wrong_reading_order, figure_noise, or other.
+        details: What is wrong, quoting the damaged text and, where you can
+            infer it, what it should have said.
     """
     try:
-        from db_relations import submit_case_quality_report
-        report = submit_case_quality_report(
-            case_id=case_id, reason=reason, details=details,
-            evidence_chunk_ids=evidence_chunk_ids, reporter="mcp:claude",
+        from db_relations import submit_chunk_quality_report
+
+        chunk = _chunk_by_id((chunk_id or "").strip())
+        if chunk is None:
+            return {
+                "status": "error",
+                "message": f"chunk_id not found in the active collection: {chunk_id}",
+            }
+        metadata = chunk.get("metadata") or {}
+        page = metadata.get("page")
+        result = submit_chunk_quality_report(
+            item_key=item_key, chunk_id=chunk_id, chunk_text=chunk.get("document") or "",
+            reason=reason, details=details,
+            attachment_key=str(metadata.get("attachmentKey") or ""),
+            page=int(page) if isinstance(page, (int, float)) else None,
         )
-        return {
-            "status": "reported",
-            "message": "The case report is queued for automated triage; use source chunks now.",
-            "report": report,
-        }
+        return {"status": "ok", **result}
     except ValueError as exc:
         return {"status": "error", "message": str(exc)}
-    except Exception as exc:
-        return {"status": "error", "message": f"Could not save report: {exc}"}
+    except Exception as exc:  # noqa: BLE001 - surface, never crash the server
+        return {"status": "error", "message": str(exc)}
 
 
 @mcp.tool()
-def list_case_quality_reports(status: str = "pending") -> Dict[str, Any]:
-    """List structured-case quality reports and automated-triage state."""
+def list_chunk_quality_reports(status: str = "pending") -> Dict[str, Any]:
+    """List reports of damaged source text, most-reported first.
+
+    Args:
+        status: pending, resolved, dismissed, or all.
+    """
     normalized = (status or "pending").strip().lower()
-    if normalized not in {"pending", "disabled", "kept", "all"}:
-        return {"status": "error", "message": "status must be pending, disabled, kept, or all."}
+    if normalized not in {"pending", "resolved", "dismissed", "all"}:
+        return {
+            "status": "error",
+            "message": "status must be pending, resolved, dismissed, or all.",
+        }
     try:
-        from db_relations import get_case_quality_reports
-        reports = get_case_quality_reports(None if normalized == "all" else normalized)
+        from db_relations import get_chunk_quality_reports
+        reports = get_chunk_quality_reports(None if normalized == "all" else normalized)
         return {"status": "ok", "report_count": len(reports), "reports": reports}
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         return {"status": "error", "message": str(exc)}
 
 

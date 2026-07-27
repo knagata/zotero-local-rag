@@ -1,0 +1,4 @@
+{"sample_id":"scanned_pair","regions":[
+  {"id":"r001","text_anchor":"Part III. Post-, Neo-, and New Genre Conceptual Art","expected_text":"Part III. Post-, Neo-, and New Genre Conceptual Art","order":0,"heading_path":["Part III. Post-, Neo-, and New Genre Conceptual Art"],"zone":"body","kind":"heading","locator_required":true,"bbox_required":true},
+  {"id":"r002","text_anchor":"The anthology's third section is comprised of texts","expected_text":"The anthology's third section is comprised of texts","order":1,"heading_path":["Part III. Post-, Neo-, and New Genre Conceptual Art"],"zone":"body","kind":"text","locator_required":true,"bbox_required":true}
+]}

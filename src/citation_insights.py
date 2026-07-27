@@ -1,4 +1,4 @@
-"""Read-only data service for Citation Graph summaries and structured cases."""
+"""Read-only data service for Citation Graph structure and summaries."""
 from __future__ import annotations
 
 from typing import Any, Iterable
@@ -7,7 +7,6 @@ from . import db_relations
 from .chunk_store import get_item_chunks, natural_chunk_key
 
 
-CASE_STATUSES = ("confirmed", "partial", "candidate")
 MAX_PAGE_SIZE = 100
 
 
@@ -60,27 +59,6 @@ def _current_summary_report_status(
         (item_key, section_id, summary_hash),
     ).fetchone()
     return str(row["status"]) if row else None
-
-
-def _case_report_statuses(
-    conn: Any, rows: list[dict[str, Any]],
-) -> dict[int, str]:
-    if not rows:
-        return {}
-    current_hashes = {
-        int(row["case_id"]): db_relations._case_fingerprint(row) for row in rows
-    }
-    placeholders = ",".join("?" for _ in rows)
-    reports = conn.execute(
-        f"SELECT case_id, case_hash, status FROM case_quality_reports "
-        f"WHERE case_id IN ({placeholders})",
-        tuple(current_hashes),
-    ).fetchall()
-    return {
-        int(report["case_id"]): str(report["status"])
-        for report in reports
-        if current_hashes.get(int(report["case_id"])) == report["case_hash"]
-    }
 
 
 def get_processing_overview(item_key: str) -> dict[str, Any]:
@@ -149,18 +127,6 @@ def get_item_insights(item_key: str) -> dict[str, Any]:
         section_count = int(conn.execute(
             "SELECT COUNT(*) FROM section_summaries WHERE item_key = ?", (key,),
         ).fetchone()[0])
-        case_rows = [dict(row) for row in conn.execute(
-            "SELECT * FROM case_annotations WHERE item_key = ? ORDER BY case_id", (key,),
-        ).fetchall()]
-        report_statuses = _case_report_statuses(conn, case_rows)
-        counts = {status: 0 for status in CASE_STATUSES}
-        for row in case_rows:
-            if report_statuses.get(int(row["case_id"])) == "disabled":
-                continue
-            status = str(row.get("quality_status") or "confirmed")
-            if status in counts:
-                counts[status] += 1
-        visible_case_count = sum(counts.values())
         summary = dict(summary_row) if summary_row else None
         if summary:
             summary["kind"] = "extractive" if summary.get("model") == "extractive" else "llm"
@@ -168,14 +134,11 @@ def get_item_insights(item_key: str) -> dict[str, Any]:
                 conn, key, "", summary["summary"], summary.get("model"),
             )
         sections = _generation_status(conn, key, "sections", section_count)
-        cases = _generation_status(conn, key, "cases", visible_case_count)
-        cases["counts"] = counts
         return {
             "item_key": key,
             "abstract": abstract_row["abstract"] if abstract_row else None,
             "summary": summary,
             "sections": sections,
-            "cases": cases,
             "processing": get_processing_overview(key),
         }
     finally:
@@ -246,107 +209,6 @@ def get_section_source(item_key: str, section_id: str) -> dict[str, Any]:
     }
 
 
-def _normalize_statuses(statuses: Iterable[str] | None) -> set[str]:
-    values = {
-        str(value or "").strip().lower() for value in (statuses or CASE_STATUSES)
-        if str(value or "").strip()
-    }
-    unknown = values.difference(CASE_STATUSES)
-    if unknown:
-        raise ValueError("statuses must contain only confirmed, partial, or candidate.")
-    if not values:
-        raise ValueError("at least one case status is required.")
-    return values
-
-
-def list_cases(
-    item_key: str, *, query: str = "", statuses: Iterable[str] | None = None,
-    section_id: str = "", cursor: str | None = None, limit: int = 20,
-) -> dict[str, Any]:
-    key = _item_key(item_key)
-    selected = _normalize_statuses(statuses)
-    needle = str(query or "").strip().casefold()
-    section_key = str(section_id or "").strip()
-    conn = db_relations.get_db_connection()
-    try:
-        rows = [dict(row) for row in conn.execute('''
-            SELECT c.*, COUNT(e.evidence_id) AS evidence_count
-            FROM case_annotations c
-            LEFT JOIN case_evidence e ON e.case_id = c.case_id
-            WHERE c.item_key = ?
-            GROUP BY c.case_id ORDER BY c.case_id
-        ''', (key,)).fetchall()]
-        report_statuses = _case_report_statuses(conn, rows)
-        result = []
-        for row in rows:
-            report_status = report_statuses.get(int(row["case_id"]))
-            if report_status == "disabled":
-                continue
-            quality_status = str(row.get("quality_status") or "confirmed")
-            if quality_status not in selected:
-                continue
-            if section_key and str(row.get("section_id") or "") != section_key:
-                continue
-            searchable = "\n".join(str(row.get(field) or "") for field in (
-                "description", "region", "grp", "period", "practices", "phenomena",
-            )).casefold()
-            if needle and needle not in searchable:
-                continue
-            result.append({
-                "case_id": int(row["case_id"]),
-                "section_id": row.get("section_id") or "",
-                "node_id": row.get("node_id") or "",
-                "title": row.get("title") or "",
-                "description": row["description"],
-                "case_type": row.get("case_type") or "other",
-                "region": row.get("region") or "",
-                "group": row.get("grp") or "",
-                "practices": row.get("practices") or "",
-                "phenomena": row.get("phenomena") or "",
-                "period": row.get("period") or "",
-                "source_kind": row.get("source_kind") or "",
-                "model": row.get("model") or "",
-                "quality_status": quality_status,
-                "confidence": row.get("confidence"),
-                "normalization_version": row.get("normalization_version") or "v1_legacy",
-                "updated_at": row.get("updated_at"),
-                "evidence_count": int(row.get("evidence_count") or 0),
-                "report_status": report_status,
-            })
-        return _page(result, cursor, limit)
-    finally:
-        conn.close()
-
-
-def get_case_evidence(case_id: int) -> dict[str, Any]:
-    try:
-        normalized_id = int(case_id)
-    except (TypeError, ValueError) as exc:
-        raise ValueError("case_id must be an integer.") from exc
-    conn = db_relations.get_db_connection()
-    try:
-        case_row = conn.execute(
-            "SELECT * FROM case_annotations WHERE case_id = ?", (normalized_id,),
-        ).fetchone()
-        if case_row is None:
-            raise KeyError("case was not found.")
-        current = dict(case_row)
-        if _case_report_statuses(conn, [current]).get(normalized_id) == "disabled":
-            raise KeyError("case was not found.")
-        rows = conn.execute(
-            "SELECT field_name, chunk_id, evidence_quote FROM case_evidence "
-            "WHERE case_id = ? ORDER BY evidence_id", (normalized_id,),
-        ).fetchall()
-        return {
-            "case_id": normalized_id,
-            "item_key": current["item_key"],
-            "evidence": [dict(row) for row in rows],
-        }
-    finally:
-        conn.close()
-
-
 __all__ = [
-    "CASE_STATUSES", "get_case_evidence", "get_item_insights", "get_section_source",
-    "list_cases", "list_sections",
+    "get_item_insights", "get_section_source", "list_sections",
 ]

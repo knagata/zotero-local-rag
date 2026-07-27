@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Generate v2 document-node summaries for one item or the local library."""
+"""Generate V3 document-node summaries for one item or the local library."""
 from __future__ import annotations
 
 import argparse
 import json
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -13,7 +15,7 @@ if str(ROOT) not in sys.path:
 
 from src.build_structure_summaries import build_structure_summaries, embed_structure_summaries
 from src.chunk_store import list_item_keys
-from src.db_relations import mark_artifact_status
+from src.db_relations import get_item_processing_status, mark_artifact_status
 
 
 def main() -> None:
@@ -23,28 +25,97 @@ def main() -> None:
     selector.add_argument("--all", action="store_true")
     parser.add_argument("--mode", choices=("extractive", "llm"), default="extractive")
     parser.add_argument("--embed", action="store_true", help="Rebuild the searchable __sum_node collection after summaries")
+    parser.add_argument("--force", action="store_true", help="Regenerate summaries even if the source fingerprint and prompt already match")
     parser.add_argument("--limit", type=int, default=0)
+    parser.add_argument("--dry-run", action="store_true", help="Report selected items without generating summaries")
+    parser.add_argument("--retry-failed", action="store_true", help="Select retryable failed summary items only")
+    parser.add_argument(
+        "--collection",
+        help="Source collection, e.g. zotero_paragraphs_v3 during parallel migration.",
+    )
+    parser.add_argument(
+        "--workers", type=int, default=1,
+        help="Concurrent items to summarize (LLM calls are I/O-bound; each item is an "
+             "independent unit). Each worker opens its own DB connection. Default 1 "
+             "(sequential, unchanged behavior).",
+    )
     args = parser.parse_args()
-    keys = list(dict.fromkeys(args.item or list_item_keys()))
+    if args.workers < 1:
+        parser.error("--workers must be at least 1")
+    keys = list(dict.fromkeys(args.item or list_item_keys(collection_name=args.collection)))
+    if args.retry_failed:
+        keys = [
+            key for key in keys
+            if any(
+                row.get("artifact_type") == "summary"
+                and row.get("status") == "failed" and bool(row.get("retryable"))
+                for row in get_item_processing_status(key)
+            )
+        ]
     if args.limit > 0:
         keys = keys[:args.limit]
+    if args.dry_run:
+        print(json.dumps({
+            "dry_run": True, "items": keys, "count": len(keys), "mode": args.mode,
+            "collection": args.collection, "embed": bool(args.embed),
+            "canonical_data_modified": False,
+        }, ensure_ascii=False, indent=2))
+        return
+    def _process(key: str) -> dict:
+        try:
+            result = build_structure_summaries(
+                key, mode=args.mode, force=args.force, collection_name=args.collection,
+            )
+            return result
+        except Exception as exc:
+            return {"item_key": key, "status": "failed", "error": str(exc)}
+
     output = []
     failures = 0
-    for key in keys:
-        try:
-            output.append(build_structure_summaries(key, mode=args.mode))
-        except Exception as exc:
-            failures += 1
-            output.append({"item_key": key, "status": "failed", "error": str(exc)})
-    embedding = None
-    if args.embed and not failures:
-        embedding = embed_structure_summaries(item_keys=set(keys))
+    succeeded: list[str] = []
+    if args.workers == 1:
         for key in keys:
+            result = _process(key)
+            output.append(result)
+            if result.get("status") == "failed":
+                failures += 1
+            else:
+                succeeded.append(key)
+    else:
+        # Items are independent units of work; each build_structure_summaries()
+        # call opens its own DB connection (safe under WAL) and makes its own
+        # sequential LLM calls internally. Concurrency here overlaps the
+        # network-I/O wait time across items, which dominates wall-clock time.
+        lock = threading.Lock()
+        with ThreadPoolExecutor(max_workers=args.workers) as pool:
+            futures = {pool.submit(_process, key): key for key in keys}
+            for future in as_completed(futures):
+                result = future.result()
+                with lock:
+                    output.append(result)
+                    if result.get("status") == "failed":
+                        failures += 1
+                    else:
+                        succeeded.append(result.get("item_key") or futures[future])
+    embedding = None
+    if args.embed and succeeded:
+        # 索引更新は失敗itemがあっても成功item分だけ実行する（1件失敗で全skipしない）。
+        # --all のときは item_keys=None でstale差分削除経路を生かす。
+        embedding = embed_structure_summaries(
+            item_keys=None if args.all else set(succeeded),
+            base_collection_name=args.collection,
+        )
+        # node要約索引の状態はチャンク埋め込み('embeddings')と分離した専用
+        # artifact_type='summary_index' へ記録する。
+        for key in succeeded:
             mark_artifact_status(
-                key, "embeddings", "success", processor_version="structure-v2-1",
+                key, "summary_index", "success", processor_version="structure-v3-1",
                 counts=embedding, fallback_kind="llm_node_summary_index",
             )
-    print(json.dumps({"items": output, "embedding": embedding, "failed": failures}, ensure_ascii=False, indent=2))
+    print(json.dumps({
+        "items": output, "embedding": embedding, "failed": failures,
+        "succeeded": len(succeeded),
+    }, ensure_ascii=False, indent=2))
     if failures:
         raise SystemExit(1)
 

@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.invalid/ocr-bakeoff-v3-annotation.schema.json",
+  "type": "object",
+  "required": ["sample_id", "regions"],
+  "properties": {
+    "sample_id": {"type": "string"},
+    "regions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "text_anchor", "order"],
+        "properties": {
+          "id": {"type": "string"},
+          "text_anchor": {"type": "string", "minLength": 4},
+          "expected_text": {"type": "string"},
+          "order": {"type": "integer", "minimum": 0},
+          "heading_path": {"type": "array", "items": {"type": "string"}},
+          "zone": {"enum": ["body", "footnote", "endnote", "bibliography", "toc", "index", "colophon", "front_matter", "back_matter", "other_paratext"]},
+          "kind": {"enum": ["text", "heading", "table", "caption", "footnote", "bibliography"]},
+          "locator_required": {"type": "boolean"},
+          "bbox_required": {"type": "boolean"}
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

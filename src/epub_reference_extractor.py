@@ -1,3 +1,12 @@
+"""DEPRECATED / RETIRED (R6, dev-notes/current/77).
+
+This legacy second-pass EPUB DOM parser is no longer used in production:
+``citation_mapper.map_item_local_references`` now reads reference/note candidates
+from the canonical V3 chunks (``chunk_reference_extractor``), whose boundaries and
+body ``noteref`` links are preserved at ingestion.  This module is kept only so the
+validation tool ``scripts/compare_epub_reference_extraction.py`` can compare the
+old and new extractors.  Do not import it from production code.
+"""
 import os
 import sys
 import zipfile

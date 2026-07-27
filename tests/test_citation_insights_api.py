@@ -25,36 +25,17 @@ class CitationInsightsApiTests(unittest.TestCase):
         db_relations.save_section_summary(
             "ITEM", "w0", "section summary", chapter="Chapter", model="deepseek:flash",
         )
-        db_relations.replace_item_case_annotations("ITEM", [{
-            "section_id": "w0", "cases": [{
-                "description": "Grounded observation", "quality_status": "partial",
-                "evidence": [{"field_name": "description", "chunk_id": "chunk-1",
-                              "evidence_quote": "Grounded observation"}],
-            }],
-        }], model="deepseek:test")
 
     def tearDown(self):
         self.db_patch.stop()
         db_relations._db_initialized = False
         self.tempdir.cleanup()
 
-    def test_overview_sections_cases_and_evidence_routes(self):
+    def test_overview_and_sections_routes(self):
         overview = _json(show_citation_graph._route_node_insights("ITEM"))
         self.assertEqual(overview["sections"]["count"], 1)
         sections = _json(show_citation_graph._route_node_sections("ITEM", "", "", 50))
         self.assertEqual(sections["items"][0]["section_id"], "w0")
-        cases = _json(show_citation_graph._route_node_cases(
-            "ITEM", "partial", "", "", "", 20,
-        ))
-        case_id = cases["items"][0]["case_id"]
-        evidence = _json(show_citation_graph._route_case_evidence(case_id))
-        self.assertEqual(evidence["evidence"][0]["chunk_id"], "chunk-1")
-
-    def test_invalid_status_is_a_client_error(self):
-        response = show_citation_graph._route_node_cases(
-            "ITEM", "unknown", "", "", "", 20,
-        )
-        self.assertEqual(response.status_code, 400)
 
     def test_processing_status_distinguishes_degraded_and_blocked_work(self):
         db_relations.mark_artifact_status(
@@ -76,17 +57,15 @@ class CitationInsightsApiTests(unittest.TestCase):
         self.assertEqual(outline["nodes"], [])
 
     def test_quality_report_route_queues_without_hiding(self):
-        case_id = db_relations.get_case_annotations("ITEM")[0]["case_id"]
         response = show_citation_graph._route_quality_report(
             show_citation_graph._QualityReportRequest(
-                target_type="case", case_id=case_id, reason="unsupported_field",
-                details="The saved field is not supported by this source quote.",
+                target_type="item_summary", item_key="ITEM", reason="unsupported_claim",
+                details="The saved summary claim is not supported by the source.",
                 evidence_chunk_ids=["chunk-1"],
             )
         )
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(db_relations.get_case_quality_reports("pending")[0]["reporter"], "citation-graph")
-        self.assertEqual(len(db_relations.get_case_annotations("ITEM")), 1)
+        self.assertEqual(db_relations.get_summary_quality_reports("pending")[0]["reporter"], "citation-graph")
 
     def test_generated_html_contains_accessible_lazy_insights_ui(self):
         html = show_citation_graph._build_sigma_html(
@@ -97,7 +76,7 @@ class CitationInsightsApiTests(unittest.TestCase):
         )
         self.assertIn('role="tablist" aria-label="資料の詳細"', html)
         self.assertIn("/api/node/sections?key=", html)
-        self.assertIn("/api/case/evidence?case_id=", html)
+        self.assertNotIn('data-insight-tab="cases"', html)
         self.assertIn('data-insight-tab="processing"', html)
         self.assertIn('aria-modal="true"', html)
         self.assertIn("var MIN_W = 280, MAX_W = 700", html)

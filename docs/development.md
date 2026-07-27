@@ -30,7 +30,7 @@ Disableは元のS2データを削除せず、`relation_reports` の安定キー�
 
 内部構造は [アーキテクチャ](architecture.md) を参照してください。
 
-Citation Graphへ階層要約・構造化事例を統合する画面仕様は、[階層要約・事例ビュー設計](citation-insights-ui-design.md) を参照してください。
+Citation Graphへ階層要約・文書構造を統合する画面仕様は、[階層要約・構造ビュー設計](citation-insights-ui-design.md) を参照してください。
 
 ## 参考文献の審査キュー
 
@@ -41,22 +41,37 @@ uv run python -m src.reference_quality_report --status pending
 
 参考文献の抽出結果は、原文根拠を再検証してから適用します。修復・分類用CLIの詳細は各コマンドの `--help` を参照してください。
 
+英語学術論文のGROBID enrichmentは本文埋め込みとは独立して実行します。既定はdry-runです。
+
+```bash
+# 対象判定のみ
+.venv/bin/python scripts/run_grobid_enrichment.py --limit 5
+
+# ローカルGROBID service起動後、reference review queueへ保存
+.venv/bin/python scripts/run_grobid_enrichment.py --limit 5 --apply
+```
+
+対象はZotero種別が`journalArticle`、`conferencePaper`、`preprint`の英語PDFだけです。
+同じPDF SHA-256とGROBID versionで成功済みなら再処理せず、GROBID障害は埋め込み・manifest・Chromaへ影響しません。
+
 ## 検索品質評価
 
 ```bash
 uv run python scripts/eval_retrieval.py data/quality/gold_qa.jsonl --k 10
-# v2のLLMノード要約を生成・埋め込み後に、旧経路との比較も出力する
+# V3のLLMノード要約を生成・埋め込み後に、階層検索経路も含めて比較する
 uv run python scripts/eval_retrieval.py data/quality/gold_qa.jsonl --k 10 --include-hierarchical-v2
 ```
 
 ## ローカルデータとバックアップ
 
-重要な運用データ:
+重要な運用データ（現行はV3データプレーン）:
 
 - `data/relations.db`
-- `data/chroma/`
-- `data/lexical.sqlite3`
-- `data/manifest.json`
+- `data/chroma/`（active collection `zotero_paragraphs_v3` と `zotero_paragraphs_v3__sum_node`）
+- `data/lexical_v3.sqlite3`
+- `data/manifest_v3.json`
+
+旧（legacy）の `manifest.json` / `lexical.sqlite3` / 旧collectionはrollback用に1世代保持しています。
 
 大規模修復前だけ `data/backups/` にスナップショットを作成します。修復後にDB整合性と回帰テストを確認し、古い中間バックアップを削除します。`data/`はGitやSoftware Updateでは同期されないため、必要なら利用者側の暗号化バックアップへ保存してください。
 

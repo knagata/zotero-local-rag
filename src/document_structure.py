@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections import defaultdict
 from typing import Any, Dict, Iterable, List, Sequence
 
@@ -18,9 +19,32 @@ except ImportError:  # pragma: no cover - direct src entrypoint
     from chunk_store import natural_chunk_key
 
 
-STRUCTURE_VERSION = "2"
+STRUCTURE_VERSION = "3"
 TARGET_SEGMENT_CHARS = 18_000
 MAX_SEGMENT_CHARS = 30_000
+
+ZONE_POLICIES = {
+    "body": ("include", "normal", "none"),
+    "footnote": ("exclude", "explicit_only", "extract"),
+    "endnote": ("exclude", "explicit_only", "extract"),
+    "bibliography": ("exclude", "exclude", "extract"),
+    "toc": ("exclude", "exclude", "none"),
+    "index": ("exclude", "exclude", "none"),
+    "colophon": ("exclude", "exclude", "none"),
+    "front_matter": ("include", "normal", "none"),
+    "back_matter": ("include", "normal", "none"),
+    "other_paratext": ("exclude", "exclude", "none"),
+    # Text known to be garbage -- OCR noise from a figure, a page that resisted
+    # repair. Kept rather than discarded (note 79, U3) so it stays inspectable
+    # and can be searched deliberately, but excluded from ordinary retrieval and
+    # from summary input so it cannot pollute either.
+    "corrupted": ("exclude", "exclude", "none"),
+}
+
+
+def normalise_zone(value: Any) -> str:
+    zone = str(value or "body").strip().casefold().replace("-", "_")
+    return zone if zone in ZONE_POLICIES else "body"
 
 
 def source_fingerprint(chunks: Sequence[Dict[str, Any]]) -> str:
@@ -81,17 +105,42 @@ def _heading_type(depth: int) -> str:
     return "subsection"
 
 
+_ZOTERO_KEY_RE = re.compile(r"^[A-Za-z0-9]{8}$")
+
+
+def _attachment_key(chunk: Dict[str, Any]) -> str:
+    """Return the best attachment identity available for one source chunk.
+
+    Older enrichment rows can lack ``attachmentKey`` even though their chunk
+    IDs retain the canonical ``<attachment-key>:...`` namespace.  Prefer
+    explicit metadata, but recover that namespace when it is unambiguous.
+    """
+    metadata = chunk.get("metadata") or {}
+    explicit = str(metadata.get("attachmentKey") or metadata.get("attachment_key") or "").strip()
+    if explicit:
+        return explicit
+    prefix = str(chunk.get("id") or "").split(":", 1)[0]
+    return prefix if _ZOTERO_KEY_RE.fullmatch(prefix) else ""
+
+
 def _attachment_groups(chunks: Sequence[Dict[str, Any]]) -> List[tuple[str, List[Dict[str, Any]]]]:
-    groups: Dict[str, List[Dict[str, Any]]] = {}
-    order: List[str] = []
+    """Return document-order attachment runs, never non-contiguous groups.
+
+    One item's rows may contain attachments interleaved by their natural chunk
+    IDs, or old rows with no recoverable attachment identity.  Grouping all
+    matching keys globally made a leaf span intervening chunks, which violates
+    the structure's contiguous-range invariant.  Splitting at every identity
+    boundary preserves source order even for unknown identities; repeated
+    attachment roots remain distinguishable through their first chunk ID.
+    """
+    groups: List[tuple[str, List[Dict[str, Any]]]] = []
     for chunk in sorted(chunks, key=lambda value: natural_chunk_key(str(value.get("id") or ""))):
-        metadata = chunk.get("metadata") or {}
-        key = str(metadata.get("attachmentKey") or "")
-        if key not in groups:
-            groups[key] = []
-            order.append(key)
-        groups[key].append(chunk)
-    return [(key, groups[key]) for key in order]
+        key = _attachment_key(chunk)
+        if not groups or groups[-1][0] != key:
+            groups.append((key, [chunk]))
+        else:
+            groups[-1][1].append(chunk)
+    return groups
 
 
 def _contiguous_segments(chunks: Sequence[Dict[str, Any]]) -> List[List[Dict[str, Any]]]:
@@ -120,6 +169,8 @@ def _node_payload(
     title: str | None, source_kind: str, locator: Dict[str, Any], confidence: float,
 ) -> Dict[str, Any]:
     node_id = _node_id(item_key=item_key, kind=node_type, locator=locator)
+    zone = normalise_zone(locator.get("zone"))
+    summary_policy, retrieval_policy, citation_policy = ZONE_POLICIES[zone]
     return {
         "node_id": node_id,
         "item_key": item_key,
@@ -134,6 +185,12 @@ def _node_payload(
         "source_locator": locator,
         "confidence": confidence,
         "content_chars": 0,
+        "zone": zone,
+        "summary_policy": summary_policy,
+        "retrieval_policy": retrieval_policy,
+        "citation_policy": citation_policy,
+        "extraction_engine": locator.get("extraction_engine"),
+        "extraction_version": locator.get("extraction_version"),
         "first_chunk_id": None,
         "last_chunk_id": None,
         "chunks": [],
@@ -158,19 +215,31 @@ def _roll_up_content(nodes: List[Dict[str, Any]]) -> None:
             continue
         parent = by_id[parent_id]
         parent["content_chars"] += int(node.get("content_chars") or 0)
-        if parent.get("first_chunk_id") is None and node.get("first_chunk_id"):
-            parent["first_chunk_id"] = node["first_chunk_id"]
-        if node.get("last_chunk_id"):
-            parent["last_chunk_id"] = node["last_chunk_id"]
+        child_first = node.get("first_chunk_id")
+        parent_first = parent.get("first_chunk_id")
+        if child_first and (
+            parent_first is None or natural_chunk_key(str(child_first)) < natural_chunk_key(str(parent_first))
+        ):
+            parent["first_chunk_id"] = child_first
+        child_last = node.get("last_chunk_id")
+        parent_last = parent.get("last_chunk_id")
+        if child_last and (
+            parent_last is None or natural_chunk_key(str(child_last)) > natural_chunk_key(str(parent_last))
+        ):
+            parent["last_chunk_id"] = child_last
 
 
 def validate_structure(nodes: Sequence[Dict[str, Any]], chunks: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
-    """Validate coverage, parent ordering, and leaf-only source assignment."""
+    """Validate V3 coverage, hierarchy, order, ranges, zones, and policies."""
     expected = [str(chunk.get("id") or "") for chunk in chunks]
     expected_set = set(expected)
+    position = {chunk_id: index for index, chunk_id in enumerate(expected)}
     seen_nodes: set[str] = set()
+    node_by_id: Dict[str, Dict[str, Any]] = {}
+    children: Dict[str, List[str]] = defaultdict(list)
     assigned: List[str] = []
     errors: List[str] = []
+    sibling_ordinals: set[tuple[str | None, int]] = set()
     for node in nodes:
         node_id = str(node.get("node_id") or "")
         if not node_id or node_id in seen_nodes:
@@ -179,11 +248,62 @@ def validate_structure(nodes: Sequence[Dict[str, Any]], chunks: Sequence[Dict[st
         parent = node.get("parent_node_id")
         if parent and parent not in seen_nodes:
             errors.append(f"parent_not_before_child:{node_id}")
+        if parent:
+            parent_node = node_by_id.get(str(parent))
+            if parent_node is not None and int(node.get("depth") or 0) != int(parent_node.get("depth") or 0) + 1:
+                errors.append(f"depth_mismatch:{node_id}")
+            children[str(parent)].append(node_id)
+        sibling_key = (str(parent) if parent else None, int(node.get("ordinal") or 0))
+        if sibling_key in sibling_ordinals:
+            errors.append(f"duplicate_sibling_ordinal:{node_id}")
+        sibling_ordinals.add(sibling_key)
+        zone = normalise_zone(node.get("zone"))
+        if zone != str(node.get("zone") or "body"):
+            errors.append(f"invalid_zone:{node_id}")
+        expected_policies = ZONE_POLICIES[zone]
+        actual_policies = (
+            node.get("summary_policy", "include"), node.get("retrieval_policy", "normal"),
+            node.get("citation_policy", "none"),
+        )
+        if actual_policies != expected_policies:
+            errors.append(f"zone_policy_mismatch:{node_id}")
         seen_nodes.add(node_id)
+        node_by_id[node_id] = dict(node)
         leaf_chunks = node.get("chunks") or []
         if leaf_chunks and any(child.get("parent_node_id") == node_id for child in nodes):
             errors.append(f"non_leaf_has_chunks:{node_id}")
-        assigned.extend(str(value.get("chunk_id") if isinstance(value, dict) else value) for value in leaf_chunks)
+        leaf_ids = [str(value.get("chunk_id") if isinstance(value, dict) else value) for value in leaf_chunks]
+        leaf_positions = [position[value] for value in leaf_ids if value in position]
+        if leaf_positions and leaf_positions != list(range(min(leaf_positions), max(leaf_positions) + 1)):
+            errors.append(f"noncontiguous_leaf:{node_id}")
+        assigned.extend(leaf_ids)
+    ranges: Dict[str, tuple[int, int, int] | None] = {}
+    for node in reversed(nodes):
+        node_id = str(node.get("node_id") or "")
+        direct_ids = [
+            str(value.get("chunk_id") if isinstance(value, dict) else value)
+            for value in node.get("chunks") or []
+            if str(value.get("chunk_id") if isinstance(value, dict) else value) in position
+        ]
+        child_ranges = [ranges[child_id] for child_id in children.get(node_id, []) if ranges.get(child_id)]
+        positions = [position[value] for value in direct_ids]
+        for child_range in child_ranges:
+            if child_range is not None:
+                positions.extend((child_range[0], child_range[1]))
+        count = len(direct_ids) + sum(child_range[2] for child_range in child_ranges if child_range is not None)
+        if positions:
+            first, last = min(positions), max(positions)
+            ranges[node_id] = (first, last, count)
+            if count != last - first + 1:
+                errors.append(f"noncontiguous_node_range:{node_id}")
+            if node.get("first_chunk_id") and str(node["first_chunk_id"]) != expected[first]:
+                errors.append(f"first_chunk_mismatch:{node_id}")
+            if node.get("last_chunk_id") and str(node["last_chunk_id"]) != expected[last]:
+                errors.append(f"last_chunk_mismatch:{node_id}")
+        else:
+            ranges[node_id] = None
+    if len(expected) != len(expected_set):
+        errors.append("duplicate_input_chunk_id")
     if len(assigned) != len(set(assigned)):
         errors.append("duplicate_chunk_assignment")
     if set(assigned) != expected_set:
@@ -197,7 +317,46 @@ def validate_structure(nodes: Sequence[Dict[str, Any]], chunks: Sequence[Dict[st
         "assigned_chunk_count": len(assigned),
         "node_count": len(nodes),
         "leaf_count": sum(1 for node in nodes if node.get("chunks")),
+        "zone_counts": dict(sorted({
+            zone: sum(1 for node in nodes if node.get("chunks") and normalise_zone(node.get("zone")) == zone)
+            for zone in ZONE_POLICIES
+        }.items())),
     }
+
+
+def attach_structure_metadata(
+    chunks: Sequence[Dict[str, Any]], nodes: Sequence[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Return copied chunks annotated with their canonical V3 leaf and policies."""
+    leaf_by_chunk: Dict[str, Dict[str, Any]] = {}
+    for node in nodes:
+        for value in node.get("chunks") or []:
+            chunk_id = str(value.get("chunk_id") if isinstance(value, dict) else value)
+            if not chunk_id or chunk_id in leaf_by_chunk:
+                raise ValueError("each chunk must map to exactly one leaf")
+            leaf_by_chunk[chunk_id] = dict(node)
+    output: List[Dict[str, Any]] = []
+    for chunk in chunks:
+        chunk_id = str(chunk.get("id") or "")
+        leaf = leaf_by_chunk.get(chunk_id)
+        if leaf is None:
+            raise ValueError(f"chunk has no canonical leaf: {chunk_id}")
+        metadata = dict(chunk.get("metadata") or {})
+        locator = leaf.get("source_locator") or {}
+        metadata.update({
+            "node_id": leaf["node_id"], "zone": leaf.get("zone", "body"),
+            "depth": int(leaf.get("depth") or 0),
+            "summary_policy": leaf.get("summary_policy", "include"),
+            "retrieval_policy": leaf.get("retrieval_policy", "normal"),
+            "citation_policy": leaf.get("citation_policy", "none"),
+            "extraction_engine": leaf.get("extraction_engine") or metadata.get("extraction_engine") or "unknown",
+            "extraction_version": leaf.get("extraction_version") or metadata.get("extraction_version") or "unknown",
+            "chunk_scheme": 3,
+        })
+        if locator.get("path") and not metadata.get("structure_path"):
+            metadata["structure_path"] = list(locator["path"])
+        output.append({**chunk, "metadata": metadata})
+    return output
 
 
 def build_document_structure(item_key: str, chunks: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
@@ -251,12 +410,15 @@ def build_document_structure(item_key: str, chunks: Sequence[Dict[str, Any]]) ->
         index = 0
         while index < len(attachment_chunks):
             chunk = attachment_chunks[index]
-            path = _metadata_path(chunk.get("metadata") or {})
+            metadata = chunk.get("metadata") or {}
+            path = _metadata_path(metadata)
+            zone = normalise_zone(metadata.get("zone"))
             run = [chunk]
             index += 1
             while index < len(attachment_chunks):
-                next_path = _metadata_path(attachment_chunks[index].get("metadata") or {})
-                if next_path != path:
+                next_metadata = attachment_chunks[index].get("metadata") or {}
+                next_path = _metadata_path(next_metadata)
+                if next_path != path or normalise_zone(next_metadata.get("zone")) != zone:
                     break
                 run.append(attachment_chunks[index])
                 index += 1
@@ -287,7 +449,9 @@ def build_document_structure(item_key: str, chunks: Sequence[Dict[str, Any]]) ->
                 leaf = add_node(
                     item_key=item_key, parent_node_id=parent["node_id"], node_type="semantic_segment",
                     depth=parent["depth"] + 1, title=None, source_kind="metadata_heading",
-                    locator={"attachment_key": attachment_key, "first_chunk_id": run[0]["id"], "path": path},
+                    locator={"attachment_key": attachment_key, "first_chunk_id": run[0]["id"], "path": path, "zone": zone,
+                             "extraction_engine": metadata.get("extraction_engine"),
+                             "extraction_version": metadata.get("extraction_version")},
                     confidence=0.85,
                 )
                 _set_leaf_chunks(leaf, run)
@@ -300,7 +464,9 @@ def build_document_structure(item_key: str, chunks: Sequence[Dict[str, Any]]) ->
                         depth=parent["depth"] + 1, title=None, source_kind="semantic_fallback",
                         locator={
                             "attachment_key": attachment_key, "first_chunk_id": segment[0]["id"],
-                            "segment_index": segment_index,
+                            "segment_index": segment_index, "zone": zone,
+                            "extraction_engine": metadata.get("extraction_engine"),
+                            "extraction_version": metadata.get("extraction_version"),
                         }, confidence=0.5,
                     )
                     _set_leaf_chunks(leaf, segment)
@@ -329,5 +495,6 @@ def build_document_structure(item_key: str, chunks: Sequence[Dict[str, Any]]) ->
 
 __all__ = [
     "MAX_SEGMENT_CHARS", "STRUCTURE_VERSION", "TARGET_SEGMENT_CHARS",
-    "build_document_structure", "source_fingerprint", "validate_structure",
+    "ZONE_POLICIES", "attach_structure_metadata", "build_document_structure", "normalise_zone",
+    "source_fingerprint", "validate_structure",
 ]

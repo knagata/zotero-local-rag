@@ -818,16 +818,19 @@ def map_item_global_citations(item_key: str, title: str = "", year: str = "", cr
         "references_mapped_count": ref_mapped_count
     }
 
-def map_item_local_references(item_key: str, epub_path: str, epub_budget: int = 50) -> Dict[str, Any]:
+def map_item_local_references(item_key: str, epub_path: str = "", epub_budget: int = 50) -> Dict[str, Any]:
     """
-    Parses local EPUB to extract footnotes/endnotes, attempts to resolve them to Semantic Scholar,
-    and saves to global_references.
+    Extract references/notes from the item's canonical V3 chunks (bibliography,
+    endnote, footnote zones), resolve them to Semantic Scholar, and save to
+    global_references.  ``epub_path`` is accepted for backward compatibility but
+    no longer parsed: reference boundaries and body ``noteref`` links are already
+    preserved at ingestion, so the second EPUB parse is retired (R6).
     """
-    from epub_reference_extractor import extract_epub_references
+    from chunk_reference_extractor import extract_references_from_chunks
     from db_relations import insert_reference
 
-    print(f"        -> Extracting local EPUB references for {item_key}...", file=sys.stderr)
-    local_refs = extract_epub_references(epub_path, item_key)
+    print(f"        -> Extracting local references for {item_key} from V3 chunks...", file=sys.stderr)
+    local_refs = extract_references_from_chunks(item_key)
 
     if not local_refs:
         return {"status": "success", "message": "No EPUB references found.", "mapped_count": 0}

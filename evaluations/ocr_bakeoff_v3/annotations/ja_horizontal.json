@@ -1,0 +1,4 @@
+{"sample_id":"ja_horizontal","regions":[
+  {"id":"r001","text_anchor":"はじめに","expected_text":"はじめに","order":0,"heading_path":["はじめに"],"zone":"body","kind":"heading","locator_required":true,"bbox_required":true},
+  {"id":"r002","text_anchor":"米糖相克とは稲作を志向する台湾人","expected_text":"米糖相克とは稲作を志向する台湾人","order":1,"heading_path":["はじめに"],"zone":"body","kind":"text","locator_required":true,"bbox_required":true}
+]}

@@ -1796,34 +1796,11 @@ def _build_sigma_html(
     margin: 0; padding-left: var(--space-3); border-left: 2px solid var(--outline-variant);
     color: var(--on-surface-variant); font-size: 12px; line-height: 1.6; white-space: pre-wrap;
   }
-  .case-statuses { display: flex; flex-wrap: wrap; gap: var(--space-1); }
-  .case-status {
-    min-height: var(--control-height); padding: 0 9px; border-radius: 999px;
-    border: 1px solid var(--outline-variant); background: none;
-    color: var(--on-surface-variant); font-size: 11.5px; cursor: pointer;
-  }
-  .case-status.confirmed[aria-pressed="true"] { color: var(--status-confirmed); border-color: color-mix(in srgb, var(--status-confirmed) 45%, var(--surface)); background: color-mix(in srgb, var(--status-confirmed) 16%, var(--surface)); }
-  .case-status.partial[aria-pressed="true"] { color: var(--status-partial); border-color: color-mix(in srgb, var(--status-partial) 45%, var(--surface)); background: color-mix(in srgb, var(--status-partial) 16%, var(--surface)); }
-  .case-status.candidate[aria-pressed="true"] { color: var(--status-candidate); border-color: color-mix(in srgb, var(--status-candidate) 45%, var(--surface)); background: color-mix(in srgb, var(--status-candidate) 16%, var(--surface)); }
-  .case-card { padding: var(--space-3); }
-  .case-card-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); }
-  .case-badge, .reported-badge {
+  .reported-badge {
     display: inline-flex; align-items: center; min-height: 22px; padding: 0 7px;
     border-radius: 999px; font-size: 10.5px; font-weight: 600;
   }
-  .case-badge.confirmed { color: var(--status-confirmed); background: color-mix(in srgb, var(--status-confirmed) 16%, var(--surface)); }
-  .case-badge.partial { color: var(--status-partial); background: color-mix(in srgb, var(--status-partial) 16%, var(--surface)); }
-  .case-badge.candidate { color: var(--status-candidate); background: color-mix(in srgb, var(--status-candidate) 16%, var(--surface)); }
   .reported-badge { color: var(--status-reported); background: color-mix(in srgb, var(--status-reported) 16%, var(--surface)); }
-  .case-description {
-    margin-top: var(--space-2); color: var(--on-surface); font-size: 13px; line-height: 1.55;
-    display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden;
-  }
-  .case-description.expanded { display: block; }
-  .case-chips { display: flex; flex-wrap: wrap; gap: var(--space-1); margin-top: var(--space-2); }
-  .case-chip { padding: 2px 6px; border-radius: 999px; background: var(--surface-container-high); color: var(--on-surface-variant); font-size: 10.5px; }
-  .case-technical { margin-top: var(--space-2); color: var(--text-dis); font-size: 10.5px; overflow-wrap: anywhere; }
-  .case-technical summary { cursor: pointer; }
   .insights-more { width: 100%; margin-top: var(--space-2); }
   .quality-overlay {
     display: none; position: fixed; inset: 0; z-index: 4000; align-items: center; justify-content: center;
@@ -1857,7 +1834,7 @@ def _build_sigma_html(
     .insight-actions .insight-btn { flex: 1 1 auto; }
   }
   @media (pointer: coarse) {
-    .insights-tab, .insights-width-btn, .insight-btn, .case-status { min-height: 44px; }
+    .insights-tab, .insights-width-btn, .insight-btn { min-height: 44px; }
   }
   @media (prefers-reduced-motion: reduce) {
     .insights-skeleton { animation: none; }
@@ -4743,14 +4720,6 @@ function _showInsightsToast(message) {
 }
 
 function _qualityReasons(targetType) {
-  if (targetType === 'case') return [
-    ['not_a_case', '事例ではない'],
-    ['misleading_description', '原文にない内容を含む'],
-    ['unsupported_field', 'フィールドの根拠が不十分'],
-    ['wrong_context', '文脈または対象の取り違え'],
-    ['duplicate_case', '重複事例'],
-    ['other', 'その他']
-  ];
   return [
     ['unsupported_claim', '原文にない内容を含む'],
     ['missing_context', '重要な限定条件が失われている'],
@@ -4828,7 +4797,6 @@ function _ensureQualityDialog() {
       target_type: _qualityContext.targetType,
       item_key: _qualityContext.itemKey || '',
       section_id: _qualityContext.sectionId || '',
-      case_id: _qualityContext.caseId == null ? null : _qualityContext.caseId,
       reason: document.getElementById('quality-reason').value,
       details: details,
       evidence_chunk_ids: selectedChunks
@@ -4893,13 +4861,9 @@ var InsightsPane = (function() {
 
   function statusText(status, kind) {
     if (status === 'processed_empty') {
-      return kind === 'cases'
-        ? 'この資料から該当する事例は抽出されませんでした。'
-        : 'この資料には表示できる節要約がありません。';
+      return 'この資料には表示できる節要約がありません。';
     }
-    return kind === 'cases'
-      ? '構造化事例はまだ生成されていません。Maintenance Widgetで要約・事例更新を実行してください。'
-      : '節要約はまだ生成されていません。Maintenance Widgetで要約更新を実行してください。';
+    return '節要約はまだ生成されていません。Maintenance Widgetで要約更新を実行してください。';
   }
 
   function shell(node, requestId) {
@@ -4918,7 +4882,6 @@ var InsightsPane = (function() {
             '<button class="insights-tab" role="tab" id="ins-tab-overview" data-insight-tab="overview" aria-controls="ins-panel-overview" aria-selected="true">概要</button>' +
             '<button class="insights-tab" role="tab" id="ins-tab-outline" data-insight-tab="outline" aria-controls="ins-panel-outline" aria-selected="false">構造</button>' +
             '<button class="insights-tab" role="tab" id="ins-tab-sections" data-insight-tab="sections" aria-controls="ins-panel-sections" aria-selected="false">節要約 …</button>' +
-            '<button class="insights-tab" role="tab" id="ins-tab-cases" data-insight-tab="cases" aria-controls="ins-panel-cases" aria-selected="false">事例 …</button>' +
             '<button class="insights-tab" role="tab" id="ins-tab-processing" data-insight-tab="processing" aria-controls="ins-panel-processing" aria-selected="false">処理状態</button>' +
           '</div>' +
         '</div>' +
@@ -4926,7 +4889,6 @@ var InsightsPane = (function() {
           '<section class="insights-panel" role="tabpanel" id="ins-panel-overview" aria-labelledby="ins-tab-overview">' + skeleton() + '</section>' +
           '<section class="insights-panel" role="tabpanel" id="ins-panel-outline" aria-labelledby="ins-tab-outline" hidden></section>' +
           '<section class="insights-panel" role="tabpanel" id="ins-panel-sections" aria-labelledby="ins-tab-sections" hidden></section>' +
-          '<section class="insights-panel" role="tabpanel" id="ins-panel-cases" aria-labelledby="ins-tab-cases" hidden></section>' +
           '<section class="insights-panel" role="tabpanel" id="ins-panel-processing" aria-labelledby="ins-tab-processing" hidden></section>' +
         '</div>' +
       '</div>'
@@ -4977,21 +4939,13 @@ var InsightsPane = (function() {
       panel.hidden = panel.id !== 'ins-panel-' + name;
     });
     if (name === 'sections' && !current.sectionsReady) setupSections(current);
-    if (name === 'cases' && !current.casesReady) setupCases(current);
     if (name === 'outline' && !current.outlineReady) setupOutline(current);
     if (name === 'processing') renderProcessing(current);
   }
 
   function updateCounts(state) {
     var sectionTab = document.getElementById('ins-tab-sections');
-    var caseTab = document.getElementById('ins-tab-cases');
     if (sectionTab) sectionTab.textContent = '節要約 ' + Number(state.data.sections.count || 0);
-    if (caseTab) {
-      var counts = state.data.cases.counts || {};
-      caseTab.textContent = '事例 ' + (
-        Number(counts.confirmed || 0) + Number(counts.partial || 0) + Number(counts.candidate || 0)
-      );
-    }
   }
 
   function renderAbstract(state, abstract) {
@@ -5280,224 +5234,11 @@ var InsightsPane = (function() {
     });
   }
 
-  function setupCases(state) {
-    state.casesReady = true;
-    state.caseRows = [];
-    state.caseCursor = null;
-    state.caseQuery = '';
-    state.caseSection = '';
-    state.caseStatuses = {confirmed: true, partial: true, candidate: false};
-    var panel = document.getElementById('ins-panel-cases');
-    if (!panel) return;
-    if (state.data.cases.status !== 'available') {
-      panel.innerHTML = '<div class="insights-empty">' + esc(statusText(state.data.cases.status, 'cases')) + '</div>';
-      return;
-    }
-    var counts = state.data.cases.counts || {};
-    panel.innerHTML =
-      '<div class="insights-toolbar">' +
-        '<input class="insights-input" id="case-search" type="search" placeholder="事例を検索…" aria-label="構造化事例を検索">' +
-        '<div class="case-statuses" aria-label="品質状態で絞り込む">' +
-          '<button class="case-status confirmed" data-case-status="confirmed" aria-pressed="true">✓ 確定 ' + Number(counts.confirmed || 0) + '</button>' +
-          '<button class="case-status partial" data-case-status="partial" aria-pressed="true">◐ 部分 ' + Number(counts.partial || 0) + '</button>' +
-          '<button class="case-status candidate" data-case-status="candidate" aria-pressed="false">○ 候補 ' + Number(counts.candidate || 0) + '</button>' +
-        '</div>' +
-        '<select class="insights-select" id="case-section" aria-label="節で絞り込む"><option value="">節: すべて</option></select>' +
-        '<div class="insights-countline" id="case-countline"></div>' +
-      '</div><div id="case-list">' + skeleton() + '</div>' +
-      '<button class="insight-btn insights-more" id="case-more" hidden>さらに20件を表示</button>';
-    var timer = null;
-    document.getElementById('case-search').addEventListener('input', function(event) {
-      clearTimeout(timer);
-      timer = setTimeout(function() {
-        state.caseQuery = event.target.value.trim(); loadCases(state, true);
-      }, 200);
-    });
-    document.querySelectorAll('.case-status').forEach(function(button) {
-      button.addEventListener('click', function() {
-        var key = button.dataset.caseStatus;
-        var selectedCount = Object.keys(state.caseStatuses).filter(function(name) {
-          return state.caseStatuses[name];
-        }).length;
-        if (state.caseStatuses[key] && selectedCount === 1) return;
-        state.caseStatuses[key] = !state.caseStatuses[key];
-        button.setAttribute('aria-pressed', state.caseStatuses[key] ? 'true' : 'false');
-        loadCases(state, true);
-      });
-    });
-    document.getElementById('case-section').addEventListener('change', function(event) {
-      state.caseSection = event.target.value; loadCases(state, true);
-    });
-    document.getElementById('case-more').addEventListener('click', function() { loadCases(state, false); });
-    loadCaseSectionOptions(state);
-    loadCases(state, true);
-  }
-
-  function loadCaseSectionOptions(state) {
-    _insightsApi('/api/node/sections?key=' + encodeURIComponent(state.itemKey) + '&limit=100')
-      .then(function(data) {
-        if (current !== state) return;
-        var select = document.getElementById('case-section');
-        if (!select) return;
-        (data.items || []).forEach(function(row) {
-          var option = document.createElement('option');
-          option.value = row.section_id;
-          option.textContent = row.chapter || ('節 ' + row.section_id);
-          select.appendChild(option);
-        });
-      }).catch(function() {});
-  }
-
-  function loadCases(state, reset) {
-    if (reset) { state.caseRows = []; state.caseCursor = null; }
-    var list = document.getElementById('case-list');
-    if (!list || current !== state) return;
-    if (reset) list.innerHTML = skeleton();
-    var fetchSeq = ++state.caseFetchSeq;
-    var selected = Object.keys(state.caseStatuses).filter(function(name) {
-      return state.caseStatuses[name];
-    });
-    var url = '/api/node/cases?key=' + encodeURIComponent(state.itemKey) +
-      '&statuses=' + encodeURIComponent(selected.join(',')) +
-      '&section_id=' + encodeURIComponent(state.caseSection) +
-      '&q=' + encodeURIComponent(state.caseQuery) + '&limit=20' +
-      (state.caseCursor ? '&cursor=' + encodeURIComponent(state.caseCursor) : '');
-    _insightsApi(url).then(function(data) {
-      if (current !== state || state.requestId !== _ctxPaneReq || fetchSeq !== state.caseFetchSeq) return;
-      state.caseRows = state.caseRows.concat(data.items || []);
-      state.caseCursor = data.next_cursor;
-      renderCases(state, data.total || 0);
-    }).catch(function(error) {
-      if (current !== state) return;
-      list.innerHTML = '<div class="insights-error">読み込めませんでした: ' + esc(error.message) + '</div>' +
-        '<button class="insight-btn insights-more" id="case-retry">再試行</button>';
-      var retry = document.getElementById('case-retry');
-      if (retry) retry.addEventListener('click', function() { loadCases(state, reset); });
-    });
-  }
-
-  function chipHtml(label, value) {
-    if (!value) return '';
-    return String(value).split(';').map(function(part) {
-      var text = part.trim(); return text ? '<span class="case-chip">' + esc(label + ': ' + text) + '</span>' : '';
-    }).join('');
-  }
-
-  function renderCases(state, total) {
-    var list = document.getElementById('case-list');
-    var countline = document.getElementById('case-countline');
-    if (!list) return;
-    if (countline) countline.textContent = total + '件を表示対象にしています';
-    if (!state.caseRows.length) {
-      list.innerHTML = '<div class="insights-empty">選択中の条件に該当する事例はありません。<br>' +
-        '<button class="insight-btn" id="case-clear">条件を解除</button></div>';
-      var clear = document.getElementById('case-clear');
-      if (clear) clear.addEventListener('click', function() {
-        state.caseQuery = ''; state.caseSection = '';
-        state.caseStatuses = {confirmed: true, partial: true, candidate: false};
-        setupCases(state);
-      });
-    } else {
-      var labels = {
-        confirmed: ['✓ 確定', 'confirmed'], partial: ['◐ 部分', 'partial'], candidate: ['○ 候補', 'candidate']
-      };
-      list.innerHTML = state.caseRows.map(function(row, index) {
-        var status = labels[row.quality_status] || labels.candidate;
-        var reported = row.report_status === 'pending'
-          ? '<span class="reported-badge">報告済み・判定待ち</span>' : '';
-        var expanded = state.expandedCases[row.case_id];
-        var evidenceOpen = state.evidenceOpen[row.case_id];
-        return '<article class="insight-card case-card">' +
-          '<div class="case-card-head"><span class="case-badge ' + status[1] + '">' + status[0] + '</span>' + reported +
-            (row.title ? '<span class="insight-card-title">' + esc(row.title) + '</span>' : '') + '</div>' +
-          '<div class="case-description' + (expanded ? ' expanded' : '') + '">' + esc(row.description) + '</div>' +
-          '<div class="case-chips">' + chipHtml('地域', row.region) + chipHtml('集団', row.group) +
-            chipHtml('時期', row.period) + chipHtml('実践', row.practices) + chipHtml('現象', row.phenomena) + '</div>' +
-          '<div class="insight-meta">' + esc(row.section_id ? ('節 ' + row.section_id) : '') + '</div>' +
-          '<div class="insight-actions">' +
-            '<button class="insight-btn case-expand-btn" data-case-index="' + index + '">' + (expanded ? '説明を折りたたむ' : '説明を全文表示') + '</button>' +
-            '<button class="insight-btn case-evidence-btn" data-case-index="' + index + '">' + (evidenceOpen ? '根拠を隠す' : '根拠を見る') + '</button>' +
-            '<button class="insight-btn case-report-btn" data-case-index="' + index + '"' +
-              (row.report_status === 'pending' ? ' disabled' : '') + '>問題を報告</button>' +
-          '</div>' +
-          '<div class="insight-source" id="case-evidence-' + row.case_id + '"' + (evidenceOpen ? '' : ' hidden') + '></div>' +
-          '<details class="case-technical"><summary>技術詳細</summary><div>case ' + row.case_id +
-            ' · confidence ' + esc(row.confidence == null ? '—' : row.confidence) + '<br>' + esc(row.model || '') +
-            (row.updated_at ? ' · ' + esc(_fmtSummaryDate(row.updated_at)) : '') + '</div></details>' +
-        '</article>';
-      }).join('');
-    }
-    list.querySelectorAll('.case-expand-btn').forEach(function(button) {
-      button.addEventListener('click', function() {
-        var row = state.caseRows[Number(button.dataset.caseIndex)];
-        state.expandedCases[row.case_id] = !state.expandedCases[row.case_id];
-        renderCases(state, total);
-      });
-    });
-    list.querySelectorAll('.case-evidence-btn').forEach(function(button) {
-      button.addEventListener('click', function() {
-        var row = state.caseRows[Number(button.dataset.caseIndex)];
-        state.evidenceOpen[row.case_id] = !state.evidenceOpen[row.case_id];
-        renderCases(state, total);
-        if (state.evidenceOpen[row.case_id]) drawCaseEvidence(state, row);
-      });
-    });
-    list.querySelectorAll('.case-report-btn').forEach(function(button) {
-      button.addEventListener('click', function() {
-        var row = state.caseRows[Number(button.dataset.caseIndex)];
-        ensureCaseEvidence(state, row).then(function(data) {
-          if (current !== state) return;
-          _openQualityReport({
-            targetType: 'case', itemKey: state.itemKey, caseId: row.case_id,
-            evidence: data.evidence || [],
-            returnFocusSelector: '.case-expand-btn[data-case-index="' + button.dataset.caseIndex + '"]',
-            onSaved: function() { row.report_status = 'pending'; renderCases(state, total); }
-          }, button);
-        }).catch(function(error) { _showInsightsToast('根拠を読み込めませんでした: ' + error.message); });
-      });
-    });
-    state.caseRows.forEach(function(row) {
-      if (state.evidenceOpen[row.case_id]) drawCaseEvidence(state, row);
-    });
-    var more = document.getElementById('case-more');
-    if (more) { more.hidden = !state.caseCursor; more.textContent = 'さらに20件を表示'; }
-  }
-
-  function ensureCaseEvidence(state, row) {
-    if (state.evidenceCache[row.case_id]) return Promise.resolve(state.evidenceCache[row.case_id]);
-    return _insightsApi('/api/case/evidence?case_id=' + encodeURIComponent(row.case_id)).then(function(data) {
-      state.evidenceCache[row.case_id] = data; return data;
-    });
-  }
-
-  function drawCaseEvidence(state, row) {
-    var wrap = document.getElementById('case-evidence-' + row.case_id);
-    if (!wrap) return;
-    wrap.hidden = false;
-    if (!state.evidenceCache[row.case_id]) wrap.innerHTML = skeleton();
-    ensureCaseEvidence(state, row).then(function(data) {
-      if (current !== state || !wrap.parentNode) return;
-      var evidence = data.evidence || [];
-      if (!evidence.length) {
-        wrap.innerHTML = '<div class="insights-error">根拠データを読み込めません。問題を報告してください。</div>';
-        return;
-      }
-      wrap.innerHTML = evidence.map(function(item, index) {
-        return '<div class="source-chunk"><div class="source-chunk-head">根拠 ' + (index + 1) + ' / ' +
-          evidence.length + ' · ' + esc(item.field_name || 'description') + ' · ' + esc(item.chunk_id) +
-          '</div><blockquote class="source-quote">' + esc(item.evidence_quote) + '</blockquote></div>';
-      }).join('');
-    }).catch(function(error) {
-      if (wrap.parentNode) wrap.innerHTML = '<div class="insights-error">根拠を読み込めませんでした: ' + esc(error.message) + '</div>';
-    });
-  }
-
   function open(node, requestId) {
     var state = {
       node: node, itemKey: node.itemKey, requestId: requestId, activeTab: 'overview',
-      data: null, sectionsReady: false, casesReady: false, outlineReady: false,
-      sectionSourceCache: {}, evidenceCache: {}, expandedCases: {}, evidenceOpen: {},
-      sectionFetchSeq: 0, caseFetchSeq: 0
+      data: null, sectionsReady: false, outlineReady: false,
+      sectionSourceCache: {}, sectionFetchSeq: 0
     };
     current = state;
     shell(node, requestId);
@@ -6919,42 +6660,10 @@ def _route_node_section_source(key: str, section_id: str) -> JSONResponse:
         return JSONResponse({"error": str(exc)}, status_code=500)
 
 
-@app.get("/api/node/cases")
-def _route_node_cases(
-    key: str, statuses: str = "confirmed,partial", section_id: str = "",
-    q: str = "", cursor: str = "", limit: int = 20,
-) -> JSONResponse:
-    from src.citation_insights import list_cases
-    selected = [value for value in statuses.split(",") if value.strip()]
-    try:
-        return JSONResponse(list_cases(
-            key, query=q, statuses=selected, section_id=section_id,
-            cursor=cursor or None, limit=limit,
-        ))
-    except ValueError as exc:
-        return JSONResponse({"error": str(exc)}, status_code=400)
-    except Exception as exc:
-        return JSONResponse({"error": str(exc)}, status_code=500)
-
-
-@app.get("/api/case/evidence")
-def _route_case_evidence(case_id: int) -> JSONResponse:
-    from src.citation_insights import get_case_evidence
-    try:
-        return JSONResponse(get_case_evidence(case_id))
-    except ValueError as exc:
-        return JSONResponse({"error": str(exc)}, status_code=400)
-    except KeyError as exc:
-        return JSONResponse({"error": str(exc)}, status_code=404)
-    except Exception as exc:
-        return JSONResponse({"error": str(exc)}, status_code=500)
-
-
 class _QualityReportRequest(BaseModel):
     target_type: str
     item_key: str = ""
     section_id: str = ""
-    case_id: int | None = None
     reason: str
     details: str
     evidence_chunk_ids: list[str] = []
@@ -6962,17 +6671,10 @@ class _QualityReportRequest(BaseModel):
 
 @app.post("/api/quality-report")
 def _route_quality_report(body: _QualityReportRequest) -> JSONResponse:
-    """Queue a summary or case issue without immediately hiding its target."""
-    from src.db_relations import submit_case_quality_report, submit_summary_quality_report
+    """Queue a summary issue without immediately hiding its target."""
+    from src.db_relations import submit_summary_quality_report
     try:
-        if body.target_type == "case":
-            if body.case_id is None:
-                raise ValueError("case_id is required for a case report.")
-            report = submit_case_quality_report(
-                case_id=body.case_id, reason=body.reason, details=body.details,
-                evidence_chunk_ids=body.evidence_chunk_ids, reporter="citation-graph",
-            )
-        elif body.target_type in {"item_summary", "section_summary"}:
+        if body.target_type in {"item_summary", "section_summary"}:
             report = submit_summary_quality_report(
                 item_key=body.item_key,
                 section_id=body.section_id if body.target_type == "section_summary" else None,
@@ -6980,7 +6682,7 @@ def _route_quality_report(body: _QualityReportRequest) -> JSONResponse:
                 evidence_chunk_ids=body.evidence_chunk_ids, reporter="citation-graph",
             )
         else:
-            raise ValueError("target_type must be item_summary, section_summary, or case.")
+            raise ValueError("target_type must be item_summary or section_summary.")
         return JSONResponse({"ok": True, "report": report})
     except ValueError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
@@ -7126,7 +6828,6 @@ def _natural_key(s: str) -> list:
 def _route_generate_summary(body: _SummaryRequest) -> JSONResponse:
     """ChromaDB チャンクからDeepSeekで要約を生成してキャッシュする。"""
     from db_relations import get_item_summary, save_item_summary
-    from build_summaries import _excluded_from_llm
     from llm_client import DeepSeekClient, LLMError
 
     # キャッシュ済みで force=False なら即返す
@@ -7138,7 +6839,7 @@ def _route_generate_summary(body: _SummaryRequest) -> JSONResponse:
                 "updated_at": cached["updated_at"], "cached": True,
             })
 
-    excluded, exclusion_reason = _excluded_from_llm(body.item_key)
+    excluded, exclusion_reason = False, None
     if excluded:
         return JSONResponse(
             {"error": f"クラウド要約対象外です: {exclusion_reason}"}, status_code=403,

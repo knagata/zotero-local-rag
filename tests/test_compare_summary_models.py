@@ -10,13 +10,13 @@ from src.llm_client import InvalidLLMResponse
 
 
 class SummaryComparisonTests(unittest.TestCase):
-    def test_selector_strategy_uses_id_selection_pipeline(self):
+    def test_summary_only_strategy_uses_summary_pipeline(self):
         section = {
             "section_id": "c0", "chapter": "Chapter",
             "chunks": [{"id": "a", "text": "source text", "metadata": {}}],
         }
         generated = {
-            "summary": "要約", "cases": [], "chapter_authors": [],
+            "summary": "要約", "chapter_authors": [],
             "first_publication_note": None,
             "_verification": {"total_generated": 0, "discard_rate": 0.0},
         }
@@ -24,19 +24,13 @@ class SummaryComparisonTests(unittest.TestCase):
             compare_summary_models.build_summaries, "classify_section_content",
             return_value="content",
         ), patch.object(
-            compare_summary_models.build_summaries, "_llm_selector_section",
-            return_value=(generated, "deepseek:test:selector"),
-        ) as selector, patch.object(
             compare_summary_models.build_summaries, "_llm_section",
-        ) as quote:
+            return_value=(generated, "deepseek:test:summary-only"),
+        ) as summary:
             result = compare_summary_models._compare_section(
-                section, strategy="selector", samples=5, min_votes=3,
+                section, strategy="summary-only", samples=5, min_votes=3,
             )
-        selector.assert_called_once_with(
-            section, samples=5, min_votes=3, judge_samples=3,
-            judge_min_votes=2, judge_reasoning="disabled",
-        )
-        quote.assert_not_called()
+        summary.assert_called_once_with(section)
         self.assertEqual(result["classification"], "accepted")
 
     def test_invalid_json_is_a_section_model_failure_not_provider_outage(self):
@@ -70,14 +64,12 @@ class SummaryComparisonTests(unittest.TestCase):
         generated = {
             "section_id": "c0", "chapter": "Chapter", "status": "generated",
             "model": "deepseek:deepseek-v4-pro", "extractive_summary": "original text",
-            "llm_summary": "要約", "cases": [], "chapter_authors": [],
+            "llm_summary": "要約", "chapter_authors": [],
             "first_publication_note": None,
             "verification": {"total_generated": 0, "discard_rate": 0.0},
             "classification": "accepted",
         }
         with tempfile.TemporaryDirectory() as tmp, patch.object(
-            compare_summary_models.build_summaries, "_excluded_from_llm", return_value=(False, None)
-        ), patch.object(
             compare_summary_models, "get_item_chunks", return_value=section["chunks"]
         ), patch.object(
             compare_summary_models.build_summaries, "split_sections", return_value=[section]

@@ -1,0 +1,875 @@
+{
+  "comparison_version": "ocr-bakeoff-comparison-v2",
+  "metric_order": [
+    "heading_hierarchy",
+    "reading_order",
+    "zone_classification",
+    "table_caption_retention",
+    "locator_bbox_recovery",
+    "tree_integrity",
+    "text_accuracy"
+  ],
+  "tie_break_rule": [
+    "higher mean total score",
+    "higher mean metrics in METRIC_ORDER",
+    "lower mean duration_seconds",
+    "lower mean process_peak_rss_mb",
+    "lexicographically smaller engine name"
+  ],
+  "duplicate_run_rule": "prefer status completed > ready > unavailable > blocked > failed; then higher score and metrics; then lower duration and peak RSS",
+  "runs": [
+    {
+      "sample_id": "en_two_column",
+      "category": "english_two_column",
+      "engine": "docling",
+      "status": "completed",
+      "score": 0.755102,
+      "metrics": {
+        "heading_hierarchy": 1.0,
+        "reading_order": 0.0,
+        "zone_classification": 1.0,
+        "table_caption_retention": 1.0,
+        "locator_bbox_recovery": 1.0,
+        "tree_integrity": 1.0,
+        "text_accuracy": 0.585028
+      },
+      "duration_seconds": 3.22,
+      "process_peak_rss_mb": 1049.453
+    },
+    {
+      "sample_id": "tables_math",
+      "category": "tables_and_math",
+      "engine": "docling",
+      "status": "completed",
+      "score": 0.970144,
+      "metrics": {
+        "heading_hierarchy": 1.0,
+        "reading_order": 1.0,
+        "zone_classification": 1.0,
+        "table_caption_retention": 1.0,
+        "locator_bbox_recovery": 1.0,
+        "tree_integrity": 1.0,
+        "text_accuracy": 0.502405
+      },
+      "duration_seconds": 1.802,
+      "process_peak_rss_mb": 1142.719
+    },
+    {
+      "sample_id": "ja_horizontal",
+      "category": "japanese_horizontal",
+      "engine": "docling",
+      "status": "completed",
+      "score": 0.973221,
+      "metrics": {
+        "heading_hierarchy": 1.0,
+        "reading_order": 1.0,
+        "zone_classification": 1.0,
+        "table_caption_retention": 1.0,
+        "locator_bbox_recovery": 1.0,
+        "tree_integrity": 1.0,
+        "text_accuracy": 0.553691
+      },
+      "duration_seconds": 0.586,
+      "process_peak_rss_mb": 1142.719
+    },
+    {
+      "sample_id": "ja_vertical",
+      "category": "japanese_vertical",
+      "engine": "docling",
+      "status": "completed",
+      "score": 0.37027,
+      "metrics": {
+        "heading_hierarchy": 0.0,
+        "reading_order": 0.0,
+        "zone_classification": 0.5,
+        "table_caption_retention": 1.0,
+        "locator_bbox_recovery": 0.5,
+        "tree_integrity": 1.0,
+        "text_accuracy": 0.171171
+      },
+      "duration_seconds": 2.507,
+      "process_peak_rss_mb": 1290.609
+    },
+    {
+      "sample_id": "notes_bibliography_book",
+      "category": "notes_and_bibliography",
+      "engine": "docling",
+      "status": "completed",
+      "score": 0.490964,
+      "metrics": {
+        "heading_hierarchy": 0.5,
+        "reading_order": 0.0,
+        "zone_classification": 0.5,
+        "table_caption_retention": 1.0,
+        "locator_bbox_recovery": 0.5,
+        "tree_integrity": 1.0,
+        "text_accuracy": 0.349398
+      },
+      "duration_seconds": 4.239,
+      "process_peak_rss_mb": 1614.547
+    },
+    {
+      "sample_id": "embedded_text_pair",
+      "category": "embedded_text",
+      "engine": "docling",
+      "status": "completed",
+      "score": 0.97294,
+      "metrics": {
+        "heading_hierarchy": 1.0,
+        "reading_order": 1.0,
+        "zone_classification": 1.0,
+        "table_caption_retention": 1.0,
+        "locator_bbox_recovery": 1.0,
+        "tree_integrity": 1.0,
+        "text_accuracy": 0.549008
+      },
+      "duration_seconds": 0.569,
+      "process_peak_rss_mb": 1614.547
+    },
+    {
+      "sample_id": "scanned_pair",
+      "category": "scanned",
+      "engine": "docling",
+      "status": "completed",
+      "score": 0.753176,
+      "metrics": {
+        "heading_hierarchy": 0.0,
+        "reading_order": 1.0,
+        "zone_classification": 1.0,
+        "table_caption_retention": 1.0,
+        "locator_bbox_recovery": 1.0,
+        "tree_integrity": 1.0,
+        "text_accuracy": 0.552941
+      },
+      "duration_seconds": 8.106,
+      "process_peak_rss_mb": 1614.547
+    },
+    {
+      "sample_id": "no_outline",
+      "category": "no_outline",
+      "engine": "docling",
+      "status": "completed",
+      "score": 0.728631,
+      "metrics": {
+        "heading_hierarchy": 0.0,
+        "reading_order": 1.0,
+        "zone_classification": 1.0,
+        "table_caption_retention": 1.0,
+        "locator_bbox_recovery": 1.0,
+        "tree_integrity": 1.0,
+        "text_accuracy": 0.143852
+      },
+      "duration_seconds": 0.446,
+      "process_peak_rss_mb": 1614.547
+    },
+    {
+      "sample_id": "en_two_column",
+      "category": "english_two_column",
+      "engine": "ndlocr_lite",
+      "status": "completed",
+      "score": 0.731948,
+      "metrics": {
+        "heading_hierarchy": 0.0,
+        "reading_order": 1.0,
+        "zone_classification": 1.0,
+        "table_caption_retention": 1.0,
+        "locator_bbox_recovery": 1.0,
+        "tree_integrity": 1.0,
+        "text_accuracy": 0.199134
+      },
+      "duration_seconds": 3.41,
+      "process_peak_rss_mb": 76.391
+    },
+    {
+      "sample_id": "tables_math",
+      "category": "tables_and_math",
+      "engine": "ndlocr_lite",
+      "status": "completed",
+      "score": 0.830199,
+      "metrics": {
+        "heading_hierarchy": 1.0,
+        "reading_order": 1.0,
+        "zone_classification": 1.0,
+        "table_caption_retention": 0.0,
+        "locator_bbox_recovery": 1.0,
+        "tree_integrity": 1.0,
+        "text_accuracy": 0.169976
+      },
+      "duration_seconds": 3.226,
+      "process_peak_rss_mb": 82.781
+    },
+    {
+      "sample_id": "ja_horizontal",
+      "category": "japanese_horizontal",
+      "engine": "ndlocr_lite",
+      "status": "completed",
+      "score": 0.360968,
+      "metrics": {
+        "heading_hierarchy": 0.0,
+        "reading_order": 0.0,
+        "zone_classification": 0.5,
+        "table_caption_retention": 1.0,
+        "locator_bbox_recovery": 0.5,
+        "tree_integrity": 1.0,
+        "text_accuracy": 0.016129
+      },
+      "duration_seconds": 2.648,
+      "process_peak_rss_mb": 86.844
+    },
+    {
+      "sample_id": "ja_vertical",
+      "category": "japanese_vertical",
+      "engine": "ndlocr_lite",
+      "status": "completed",
+      "score": 0.363904,
+      "metrics": {
+        "heading_hierarchy": 0.0,
+        "reading_order": 0.0,
+        "zone_classification": 0.5,
+        "table_caption_retention": 1.0,
+        "locator_bbox_recovery": 0.5,
+        "tree_integrity": 1.0,
+        "text_accuracy": 0.065068
+      },
+      "duration_seconds": 2.185,
+      "process_peak_rss_mb": 86.844
+    },
+    {
+      "sample_id": "notes_bibliography_book",
+      "category": "notes_and_bibliography",
+      "engine": "ndlocr_lite",
+      "status": "completed",
+      "score": 0.570537,
+      "metrics": {
+        "heading_hierarchy": 0.0,
+        "reading_order": 1.0,
+        "zone_classification": 0.0,
+        "table_caption_retention": 1.0,
+        "locator_bbox_recovery": 1.0,
+        "tree_integrity": 1.0,
+        "text_accuracy": 0.508951
+      },
+      "duration_seconds": 3.286,
+      "process_peak_rss_mb": 276.578
+    },
+    {
+      "sample_id": "embedded_text_pair",
+      "category": "embedded_text",
+      "engine": "ndlocr_lite",
+      "status": "completed",
+      "score": 0.739762,
+      "metrics": {
+        "heading_hierarchy": 0.0,
+        "reading_order": 1.0,
+        "zone_classification": 1.0,
+        "table_caption_retention": 1.0,
+        "locator_bbox_recovery": 1.0,
+        "tree_integrity": 1.0,
+        "text_accuracy": 0.329366
+      },
+      "duration_seconds": 3.729,
+      "process_peak_rss_mb": 276.578
+    },
+    {
+      "sample_id": "scanned_pair",
+      "category": "scanned",
+      "engine": "ndlocr_lite",
+      "status": "completed",
+      "score": 0.736192,
+      "metrics": {
+        "heading_hierarchy": 0.0,
+        "reading_order": 1.0,
+        "zone_classification": 1.0,
+        "table_caption_retention": 1.0,
+        "locator_bbox_recovery": 1.0,
+        "tree_integrity": 1.0,
+        "text_accuracy": 0.269859
+      },
+      "duration_seconds": 3.413,
+      "process_peak_rss_mb": 276.578
+    },
+    {
+      "sample_id": "no_outline",
+      "category": "no_outline",
+      "engine": "ndlocr_lite",
+      "status": "completed",
+      "score": 0.734881,
+      "metrics": {
+        "heading_hierarchy": 0.0,
+        "reading_order": 1.0,
+        "zone_classification": 1.0,
+        "table_caption_retention": 1.0,
+        "locator_bbox_recovery": 1.0,
+        "tree_integrity": 1.0,
+        "text_accuracy": 0.248016
+      },
+      "duration_seconds": 2.472,
+      "process_peak_rss_mb": 276.578
+    },
+    {
+      "sample_id": "en_two_column",
+      "category": "english_two_column",
+      "engine": "pymupdf",
+      "status": "completed",
+      "score": 0.365102,
+      "metrics": {
+        "heading_hierarchy": 0.0,
+        "reading_order": 0.0,
+        "zone_classification": 0.5,
+        "table_caption_retention": 1.0,
+        "locator_bbox_recovery": 0.5,
+        "tree_integrity": 1.0,
+        "text_accuracy": 0.085028
+      },
+      "duration_seconds": 0.062,
+      "process_peak_rss_mb": 50.797
+    },
+    {
+      "sample_id": "tables_math",
+      "category": "tables_and_math",
+      "engine": "pymupdf",
+      "status": "completed",
+      "score": 0.850144,
+      "metrics": {
+        "heading_hierarchy": 1.0,
+        "reading_order": 1.0,
+        "zone_classification": 1.0,
+        "table_caption_retention": 0.0,
+        "locator_bbox_recovery": 1.0,
+        "tree_integrity": 1.0,
+        "text_accuracy": 0.502405
+      },
+      "duration_seconds": 0.041,
+      "process_peak_rss_mb": 53.531
+    },
+    {
+      "sample_id": "ja_horizontal",
+      "category": "japanese_horizontal",
+      "engine": "pymupdf",
+      "status": "completed",
+      "score": 0.370435,
+      "metrics": {
+        "heading_hierarchy": 0.0,
+        "reading_order": 0.0,
+        "zone_classification": 0.5,
+        "table_caption_retention": 1.0,
+        "locator_bbox_recovery": 0.5,
+        "tree_integrity": 1.0,
+        "text_accuracy": 0.173913
+      },
+      "duration_seconds": 0.031,
+      "process_peak_rss_mb": 56.094
+    },
+    {
+      "sample_id": "ja_vertical",
+      "category": "japanese_vertical",
+      "engine": "pymupdf",
+      "status": "completed",
+      "score": 0.363986,
+      "metrics": {
+        "heading_hierarchy": 0.0,
+        "reading_order": 0.0,
+        "zone_classification": 0.5,
+        "table_caption_retention": 1.0,
+        "locator_bbox_recovery": 0.5,
+        "tree_integrity": 1.0,
+        "text_accuracy": 0.066434
+      },
+      "duration_seconds": 0.004,
+      "process_peak_rss_mb": 56.094
+    },
+    {
+      "sample_id": "notes_bibliography_book",
+      "category": "notes_and_bibliography",
+      "engine": "pymupdf",
+      "status": "completed",
+      "score": 0.571074,
+      "metrics": {
+        "heading_hierarchy": 0.0,
+        "reading_order": 1.0,
+        "zone_classification": 0.0,
+        "table_caption_retention": 1.0,
+        "locator_bbox_recovery": 1.0,
+        "tree_integrity": 1.0,
+        "text_accuracy": 0.517905
+      },
+      "duration_seconds": 0.009,
+      "process_peak_rss_mb": 57.297
+    },
+    {
+      "sample_id": "embedded_text_pair",
+      "category": "embedded_text",
+      "engine": "pymupdf",
+      "status": "completed",
+      "score": 0.753466,
+      "metrics": {
+        "heading_hierarchy": 0.0,
+        "reading_order": 1.0,
+        "zone_classification": 1.0,
+        "table_caption_retention": 1.0,
+        "locator_bbox_recovery": 1.0,
+        "tree_integrity": 1.0,
+        "text_accuracy": 0.557772
+      },
+      "duration_seconds": 0.015,
+      "process_peak_rss_mb": 57.625
+    },
+    {
+      "sample_id": "scanned_pair",
+      "category": "scanned",
+      "engine": "pymupdf",
+      "status": "completed",
+      "score": 0.22,
+      "metrics": {
+        "heading_hierarchy": 0.0,
+        "reading_order": 0.0,
+        "zone_classification": 0.0,
+        "table_caption_retention": 1.0,
+        "locator_bbox_recovery": 0.0,
+        "tree_integrity": 1.0,
+        "text_accuracy": 0.0
+      },
+      "duration_seconds": 0.002,
+      "process_peak_rss_mb": 57.625
+    },
+    {
+      "sample_id": "no_outline",
+      "category": "no_outline",
+      "engine": "pymupdf",
+      "status": "completed",
+      "score": 0.363659,
+      "metrics": {
+        "heading_hierarchy": 0.0,
+        "reading_order": 0.0,
+        "zone_classification": 0.5,
+        "table_caption_retention": 1.0,
+        "locator_bbox_recovery": 0.5,
+        "tree_integrity": 1.0,
+        "text_accuracy": 0.060976
+      },
+      "duration_seconds": 0.009,
+      "process_peak_rss_mb": 57.797
+    },
+    {
+      "sample_id": "en_two_column",
+      "category": "english_two_column",
+      "engine": "yomitoku",
+      "status": "completed",
+      "score": 0.975102,
+      "metrics": {
+        "heading_hierarchy": 1.0,
+        "reading_order": 1.0,
+        "zone_classification": 1.0,
+        "table_caption_retention": 1.0,
+        "locator_bbox_recovery": 1.0,
+        "tree_integrity": 1.0,
+        "text_accuracy": 0.585028
+      },
+      "duration_seconds": 13.716,
+      "process_peak_rss_mb": 2457.453
+    },
+    {
+      "sample_id": "tables_math",
+      "category": "tables_and_math",
+      "engine": "yomitoku",
+      "status": "completed",
+      "score": 0.487879,
+      "metrics": {
+        "heading_hierarchy": 1.0,
+        "reading_order": 0.0,
+        "zone_classification": 0.5,
+        "table_caption_retention": 0.0,
+        "locator_bbox_recovery": 0.5,
+        "tree_integrity": 1.0,
+        "text_accuracy": 0.464646
+      },
+      "duration_seconds": 7.526,
+      "process_peak_rss_mb": 2712.203
+    },
+    {
+      "sample_id": "ja_horizontal",
+      "category": "japanese_horizontal",
+      "engine": "yomitoku",
+      "status": "completed",
+      "score": 0.973221,
+      "metrics": {
+        "heading_hierarchy": 1.0,
+        "reading_order": 1.0,
+        "zone_classification": 1.0,
+        "table_caption_retention": 1.0,
+        "locator_bbox_recovery": 1.0,
+        "tree_integrity": 1.0,
+        "text_accuracy": 0.553691
+      },
+      "duration_seconds": 6.883,
+      "process_peak_rss_mb": 2712.203
+    },
+    {
+      "sample_id": "ja_vertical",
+      "category": "japanese_vertical",
+      "engine": "yomitoku",
+      "status": "completed",
+      "score": 0.665969,
+      "metrics": {
+        "heading_hierarchy": 0.0,
+        "reading_order": 1.0,
+        "zone_classification": 0.5,
+        "table_caption_retention": 1.0,
+        "locator_bbox_recovery": 1.0,
+        "tree_integrity": 1.0,
+        "text_accuracy": 0.599476
+      },
+      "duration_seconds": 5.076,
+      "process_peak_rss_mb": 2712.203
+    },
+    {
+      "sample_id": "notes_bibliography_book",
+      "category": "notes_and_bibliography",
+      "engine": "yomitoku",
+      "status": "completed",
+      "score": 0.589621,
+      "metrics": {
+        "heading_hierarchy": 0.0,
+        "reading_order": 1.0,
+        "zone_classification": 0.0,
+        "table_caption_retention": 1.0,
+        "locator_bbox_recovery": 1.0,
+        "tree_integrity": 1.0,
+        "text_accuracy": 0.82701
+      },
+      "duration_seconds": 5.282,
+      "process_peak_rss_mb": 2712.203
+    },
+    {
+      "sample_id": "embedded_text_pair",
+      "category": "embedded_text",
+      "engine": "yomitoku",
+      "status": "completed",
+      "score": 0.972934,
+      "metrics": {
+        "heading_hierarchy": 1.0,
+        "reading_order": 1.0,
+        "zone_classification": 1.0,
+        "table_caption_retention": 1.0,
+        "locator_bbox_recovery": 1.0,
+        "tree_integrity": 1.0,
+        "text_accuracy": 0.548894
+      },
+      "duration_seconds": 9.984,
+      "process_peak_rss_mb": 2712.203
+    },
+    {
+      "sample_id": "scanned_pair",
+      "category": "scanned",
+      "engine": "yomitoku",
+      "status": "completed",
+      "score": 0.75177,
+      "metrics": {
+        "heading_hierarchy": 0.0,
+        "reading_order": 1.0,
+        "zone_classification": 1.0,
+        "table_caption_retention": 1.0,
+        "locator_bbox_recovery": 1.0,
+        "tree_integrity": 1.0,
+        "text_accuracy": 0.529502
+      },
+      "duration_seconds": 8.995,
+      "process_peak_rss_mb": 2712.203
+    },
+    {
+      "sample_id": "no_outline",
+      "category": "no_outline",
+      "engine": "yomitoku",
+      "status": "completed",
+      "score": 0.726349,
+      "metrics": {
+        "heading_hierarchy": 0.0,
+        "reading_order": 1.0,
+        "zone_classification": 1.0,
+        "table_caption_retention": 1.0,
+        "locator_bbox_recovery": 1.0,
+        "tree_integrity": 1.0,
+        "text_accuracy": 0.105819
+      },
+      "duration_seconds": 5.804,
+      "process_peak_rss_mb": 2712.203
+    },
+    {
+      "sample_id": "en_two_column",
+      "category": "english_two_column",
+      "engine": "mistral_ocr",
+      "status": "completed",
+      "score": 0.975102,
+      "metrics": {
+        "heading_hierarchy": 1.0,
+        "reading_order": 1.0,
+        "zone_classification": 1.0,
+        "table_caption_retention": 1.0,
+        "locator_bbox_recovery": 1.0,
+        "tree_integrity": 1.0,
+        "text_accuracy": 0.585028
+      },
+      "duration_seconds": 2.001,
+      "process_peak_rss_mb": 72.547
+    },
+    {
+      "sample_id": "tables_math",
+      "category": "tables_and_math",
+      "engine": "mistral_ocr",
+      "status": "completed",
+      "score": 0.911918,
+      "metrics": {
+        "heading_hierarchy": 1.0,
+        "reading_order": 1.0,
+        "zone_classification": 1.0,
+        "table_caption_retention": 0.5,
+        "locator_bbox_recovery": 1.0,
+        "tree_integrity": 1.0,
+        "text_accuracy": 0.531973
+      },
+      "duration_seconds": 1.39,
+      "process_peak_rss_mb": 73.875
+    },
+    {
+      "sample_id": "ja_horizontal",
+      "category": "japanese_horizontal",
+      "engine": "mistral_ocr",
+      "status": "completed",
+      "score": 0.97331,
+      "metrics": {
+        "heading_hierarchy": 1.0,
+        "reading_order": 1.0,
+        "zone_classification": 1.0,
+        "table_caption_retention": 1.0,
+        "locator_bbox_recovery": 1.0,
+        "tree_integrity": 1.0,
+        "text_accuracy": 0.555172
+      },
+      "duration_seconds": 4.044,
+      "process_peak_rss_mb": 76.281
+    },
+    {
+      "sample_id": "ja_vertical",
+      "category": "japanese_vertical",
+      "engine": "mistral_ocr",
+      "status": "completed",
+      "score": 0.665969,
+      "metrics": {
+        "heading_hierarchy": 0.0,
+        "reading_order": 1.0,
+        "zone_classification": 0.5,
+        "table_caption_retention": 1.0,
+        "locator_bbox_recovery": 1.0,
+        "tree_integrity": 1.0,
+        "text_accuracy": 0.599476
+      },
+      "duration_seconds": 0.809,
+      "process_peak_rss_mb": 76.984
+    },
+    {
+      "sample_id": "notes_bibliography_book",
+      "category": "notes_and_bibliography",
+      "engine": "mistral_ocr",
+      "status": "completed",
+      "score": 0.589561,
+      "metrics": {
+        "heading_hierarchy": 0.0,
+        "reading_order": 1.0,
+        "zone_classification": 0.0,
+        "table_caption_retention": 1.0,
+        "locator_bbox_recovery": 1.0,
+        "tree_integrity": 1.0,
+        "text_accuracy": 0.826025
+      },
+      "duration_seconds": 1.418,
+      "process_peak_rss_mb": 77.922
+    },
+    {
+      "sample_id": "embedded_text_pair",
+      "category": "embedded_text",
+      "engine": "mistral_ocr",
+      "status": "completed",
+      "score": 0.97294,
+      "metrics": {
+        "heading_hierarchy": 1.0,
+        "reading_order": 1.0,
+        "zone_classification": 1.0,
+        "table_caption_retention": 1.0,
+        "locator_bbox_recovery": 1.0,
+        "tree_integrity": 1.0,
+        "text_accuracy": 0.549008
+      },
+      "duration_seconds": 3.457,
+      "process_peak_rss_mb": 78.547
+    },
+    {
+      "sample_id": "scanned_pair",
+      "category": "scanned",
+      "engine": "mistral_ocr",
+      "status": "completed",
+      "score": 0.973165,
+      "metrics": {
+        "heading_hierarchy": 1.0,
+        "reading_order": 1.0,
+        "zone_classification": 1.0,
+        "table_caption_retention": 1.0,
+        "locator_bbox_recovery": 1.0,
+        "tree_integrity": 1.0,
+        "text_accuracy": 0.552758
+      },
+      "duration_seconds": 3.78,
+      "process_peak_rss_mb": 78.656
+    },
+    {
+      "sample_id": "no_outline",
+      "category": "no_outline",
+      "engine": "mistral_ocr",
+      "status": "completed",
+      "score": 0.724767,
+      "metrics": {
+        "heading_hierarchy": 0.0,
+        "reading_order": 1.0,
+        "zone_classification": 1.0,
+        "table_caption_retention": 1.0,
+        "locator_bbox_recovery": 1.0,
+        "tree_integrity": 1.0,
+        "text_accuracy": 0.07945
+      },
+      "duration_seconds": 2.08,
+      "process_peak_rss_mb": 78.703
+    }
+  ],
+  "category_winners": [
+    {
+      "category": "embedded_text",
+      "winner": "docling",
+      "mean_score": 0.97294,
+      "completed_runs": 1
+    },
+    {
+      "category": "english_two_column",
+      "winner": "yomitoku",
+      "mean_score": 0.975102,
+      "completed_runs": 1
+    },
+    {
+      "category": "japanese_horizontal",
+      "winner": "mistral_ocr",
+      "mean_score": 0.97331,
+      "completed_runs": 1
+    },
+    {
+      "category": "japanese_vertical",
+      "winner": "yomitoku",
+      "mean_score": 0.665969,
+      "completed_runs": 1
+    },
+    {
+      "category": "no_outline",
+      "winner": "ndlocr_lite",
+      "mean_score": 0.734881,
+      "completed_runs": 1
+    },
+    {
+      "category": "notes_and_bibliography",
+      "winner": "yomitoku",
+      "mean_score": 0.589621,
+      "completed_runs": 1
+    },
+    {
+      "category": "scanned",
+      "winner": "mistral_ocr",
+      "mean_score": 0.973165,
+      "completed_runs": 1
+    },
+    {
+      "category": "tables_and_math",
+      "winner": "docling",
+      "mean_score": 0.970144,
+      "completed_runs": 1
+    }
+  ],
+  "engine_averages": [
+    {
+      "engine": "mistral_ocr",
+      "completed_runs": 8,
+      "mean_score": 0.848342,
+      "mean_metrics": {
+        "heading_hierarchy": 0.625,
+        "reading_order": 1.0,
+        "zone_classification": 0.8125,
+        "table_caption_retention": 0.9375,
+        "locator_bbox_recovery": 1.0,
+        "tree_integrity": 1.0,
+        "text_accuracy": 0.534861
+      },
+      "mean_duration_seconds": 2.372375,
+      "mean_process_peak_rss_mb": 76.6894
+    },
+    {
+      "engine": "yomitoku",
+      "completed_runs": 8,
+      "mean_score": 0.767856,
+      "mean_metrics": {
+        "heading_hierarchy": 0.5,
+        "reading_order": 0.875,
+        "zone_classification": 0.75,
+        "table_caption_retention": 0.875,
+        "locator_bbox_recovery": 0.9375,
+        "tree_integrity": 1.0,
+        "text_accuracy": 0.526758
+      },
+      "mean_duration_seconds": 7.90825,
+      "mean_process_peak_rss_mb": 2680.3592
+    },
+    {
+      "engine": "docling",
+      "completed_runs": 8,
+      "mean_score": 0.751806,
+      "mean_metrics": {
+        "heading_hierarchy": 0.5625,
+        "reading_order": 0.625,
+        "zone_classification": 0.875,
+        "table_caption_retention": 1.0,
+        "locator_bbox_recovery": 0.875,
+        "tree_integrity": 1.0,
+        "text_accuracy": 0.425937
+      },
+      "mean_duration_seconds": 2.684375,
+      "mean_process_peak_rss_mb": 1385.461
+    },
+    {
+      "engine": "ndlocr_lite",
+      "completed_runs": 8,
+      "mean_score": 0.633549,
+      "mean_metrics": {
+        "heading_hierarchy": 0.125,
+        "reading_order": 0.75,
+        "zone_classification": 0.75,
+        "table_caption_retention": 0.875,
+        "locator_bbox_recovery": 0.875,
+        "tree_integrity": 1.0,
+        "text_accuracy": 0.225812
+      },
+      "mean_duration_seconds": 3.046125,
+      "mean_process_peak_rss_mb": 179.8965
+    },
+    {
+      "engine": "pymupdf",
+      "completed_runs": 8,
+      "mean_score": 0.482233,
+      "mean_metrics": {
+        "heading_hierarchy": 0.125,
+        "reading_order": 0.375,
+        "zone_classification": 0.5,
+        "table_caption_retention": 0.875,
+        "locator_bbox_recovery": 0.625,
+        "tree_integrity": 1.0,
+        "text_accuracy": 0.245554
+      },
+      "mean_duration_seconds": 0.021625,
+      "mean_process_peak_rss_mb": 55.8575
+    }
+  ],
+  "scoring_fix_note": "v2 (2026-07-21) fixes a region-matching bug in src/ocr_bakeoff.py: _match_regions used to compare a short ground-truth anchor against a candidate block's FULL text via SequenceMatcher.ratio(), which is diluted whenever the block is a much longer multi-sentence paragraph than the anchor, and did not strip markdown emphasis (*_`#) that OCR engines emit around otherwise-verbatim text, breaking exact substring containment. Both are fixed (partial-match ratio measured against the anchor's own length; markdown decoration stripped before matching only, not for text_accuracy scoring). Re-scoring all engines' already-cached raw output (no re-extraction) shows docling and pymupdf unchanged (no bug hit their samples) while ndlocr_lite's mean rose from 0.542092 to 0.633549 (embedded_text_pair, scanned_pair) and would have raised mistral_ocr's first pass from 0.803 to 0.848342 (no_outline)."
+}

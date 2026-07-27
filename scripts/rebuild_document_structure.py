@@ -14,16 +14,39 @@ if str(ROOT) not in sys.path:
 
 from src.chunk_store import get_item_chunks, list_item_keys
 from src.db_relations import (
-    get_document_structure,
+    get_document_structure, get_item_processing_status,
     mark_artifact_status,
     replace_document_structure,
 )
 from src.document_structure import STRUCTURE_VERSION, build_document_structure
+from src.orphan_cleanup import note_only_item
 
 
-def rebuild_item(item_key: str, *, dry_run: bool, force: bool, run_id: str) -> dict:
-    chunks = get_item_chunks(item_key)
+def rebuild_item(
+    item_key: str, *, dry_run: bool, force: bool, run_id: str,
+    collection_name: str | None = None,
+) -> dict:
+    all_chunks = get_item_chunks(item_key, collection_name=collection_name)
+    chunks = [
+        row for row in all_chunks
+        if str((row.get("metadata") or {}).get("source_type") or "") != "note"
+    ]
     if not chunks:
+        # Notes are searchable annotations but are deliberately outside the
+        # canonical document tree, so an item whose only content is notes has
+        # no structure to build *by design*. Recording that as ``blocked``
+        # made it a permanent entry in the unresolved list, which the
+        # maintenance summary then reports forever (FSIXT5VE, 2026-07-27).
+        # ``excluded`` says the same thing without implying something is stuck.
+        if note_only_item(all_chunks):
+            if not dry_run:
+                mark_artifact_status(
+                    item_key, "structure", "excluded", reason_code="note_only_item",
+                    message="Item has only Zotero notes, which are excluded from the "
+                            "canonical document tree by design.",
+                    run_id=run_id,
+                )
+            return {"item_key": item_key, "status": "excluded", "reason_code": "note_only_item"}
         if not dry_run:
             mark_artifact_status(
                 item_key, "structure", "blocked", reason_code="no_chunks",
@@ -67,7 +90,7 @@ def rebuild_item(item_key: str, *, dry_run: bool, force: bool, run_id: str) -> d
             run_id=run_id,
         )
         if not unchanged:
-            for artifact_type in ("summary", "cases", "embeddings"):
+            for artifact_type in ("summary", "embeddings"):
                 mark_artifact_status(
                     item_key, artifact_type, "stale", reason_code="structure_changed",
                     source_fingerprint=built["source_fingerprint"], run_id=run_id,
@@ -90,16 +113,32 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true", help="Build and validate without writing derived data")
     parser.add_argument("--force", action="store_true", help="Rebuild even when source fingerprint is unchanged")
     parser.add_argument("--limit", type=int, default=0, help="Maximum number of selected items (0 = all)")
+    parser.add_argument("--retry-failed", action="store_true", help="Select retryable failed structure items only")
+    parser.add_argument(
+        "--collection", help="Source Chroma collection; use zotero_paragraphs_v3 during parallel migration.",
+    )
     args = parser.parse_args()
-    keys = list(dict.fromkeys(args.item or list_item_keys())) if args.all or args.item else []
+    keys = list(dict.fromkeys(args.item or list_item_keys(collection_name=args.collection))) if args.all or args.item else []
+    if args.retry_failed:
+        keys = [
+            key for key in keys
+            if any(
+                row.get("artifact_type") == "structure"
+                and row.get("status") == "failed" and bool(row.get("retryable"))
+                for row in get_item_processing_status(key)
+            )
+        ]
     if args.limit > 0:
         keys = keys[: args.limit]
-    run_id = f"structure-v2-{uuid.uuid4().hex[:12]}"
+    run_id = f"structure-v3-{uuid.uuid4().hex[:12]}"
     results = []
     failed = 0
     for item_key in keys:
         try:
-            results.append(rebuild_item(item_key, dry_run=args.dry_run, force=args.force, run_id=run_id))
+            results.append(rebuild_item(
+                item_key, dry_run=args.dry_run, force=args.force, run_id=run_id,
+                collection_name=args.collection,
+            ))
         except Exception as exc:  # continue so one bad document does not stop maintenance
             failed += 1
             results.append({"item_key": item_key, "status": "failed", "error": str(exc)})
@@ -110,4 +149,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

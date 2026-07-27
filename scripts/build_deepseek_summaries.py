@@ -159,9 +159,6 @@ def _process_item(
     item_key: str, *, model: str, workers: int, checkpoint_dir: Path,
     fallback_model: str | None = None,
 ) -> dict:
-    excluded, reason = build_summaries._excluded_from_llm(item_key)
-    if excluded:
-        return {"item_key": item_key, "status": "excluded", "reason": reason}
     chunks = get_item_chunks(item_key)
     if not chunks:
         return {"item_key": item_key, "status": "no_chunks"}

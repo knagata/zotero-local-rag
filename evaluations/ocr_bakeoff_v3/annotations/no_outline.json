@@ -1,0 +1,4 @@
+{"sample_id":"no_outline","regions":[
+  {"id":"r001","text_anchor":"This banal story provides a point of entry","expected_text":"This banal story provides a point of entry","order":0,"heading_path":["INTRODUCTION"],"zone":"body","kind":"text","locator_required":true,"bbox_required":true},
+  {"id":"r002","text_anchor":"The Politics of Operations examines how particular operations of capital","expected_text":"The Politics of Operations examines how particular operations of capital","order":1,"heading_path":["INTRODUCTION"],"zone":"body","kind":"text","locator_required":true,"bbox_required":true}
+]}

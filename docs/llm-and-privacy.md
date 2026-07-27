@@ -5,8 +5,8 @@
 ## LLMを使う機能
 
 - 日英クエリ拡張
-- 高品質な資料・章要約
-- 逐語根拠付きの事例抽出
+- 文書構造からのbottom-up要約（資料・章）
+- 無構造な長編PDFのAI目次推定
 - PDF/HTMLの参考文献抽出
 - 曖昧な参考文献候補の分類・整理
 
@@ -32,33 +32,43 @@ LLM_REVIEW=deepseek:deepseek-v4-pro
 
 ## クラウド送信ポリシー
 
-推奨はZoteroタグによるブラックリストです。
+資料単位のクラウド除外タグは**2026-07-27に撤去しました**。
 
-```dotenv
-SUMMARY_EXCLUDE_TAGS=private,confidential,no-cloud
-EXTRACT_EXCLUDE_TAGS=private,confidential,no-cloud
-```
+索引に入れた資料は `rag_search` がチャンクとして返し、それはアシスタントへ渡ります。
+つまり「索引には入れるがクラウドへは出さない」は成立しません。意味のある判断は
+**その資料をライブラリに入れるかどうか**であり、資料単位の拒否ではありませんでした。
 
-タグ確認ができない場合も送信しません。全資料を送信してよい場合だけ、明示的に設定します。
+実害もありました。タグ照会はZoteroへのHTTP問い合わせで、失敗時はfail-closedで
+「送信不可」を返すため、**Zoteroが一瞬落ちただけで全スキャンPDFが不要な再OCRへ回る**
+という挙動になっていました。
 
-```dotenv
-SUMMARY_ALLOW_CLOUD_ALL=1
-EXTRACT_ALLOW_CLOUD_ALL=1
-```
+クラウド利用の可否は機能フラグで制御します。**既定はすべて0**で、`Setup.command` の
+プリセット選択に応じて明示的に有効化されます。課金が発生するのはDeepSeek（LLM）と
+Mistral OCRだけで、Semantic Scholarの鍵は無料です（ただし鍵なしではrate limitで
+実用にならないため、鍵が無ければCitation Networkは有効化しません）。
 
-除外タグはGit管理外の `.env.policy` に分離できます。
+| フラグ | 対象 |
+|---|---|
+| `LLM_CHEAP` / `LLM_STANDARD` / `LLM_REVIEW` | 要約・参照抽出・品質判定 |
+| `PDF_AI_TOC_FAST_PATH_ENABLE` | AI目次（冒頭20頁を送信） |
+| `PDF_MISTRAL_TOC_QUEUE_ENABLE` | Mistral OCR Batch（ファイル全体を送信） |
+| `MISTRAL_OCR_FALLBACK_ENABLE` | Mistral OCR 同期フォールバック（ファイル全体） |
 
 ## LLM要約
 
+文書構造V3の葉からbottom-upにAI要約を生成し、`__sum_node` 検索索引を更新します。
+
 ```bash
-uv run python -m src.build_summaries --mode llm
+uv run python scripts/build_structure_summaries.py --all --mode llm --embed
 ```
 
 既定のローカル抽出型要約は外部送信しません。
 
 ```bash
-uv run python -m src.build_summaries
+uv run python scripts/build_structure_summaries.py --all --mode extractive --embed
 ```
+
+全件AI要約の生成はpilot→ユーザー承認後に有効化する運用です（[環境設定](configuration.md#メンテナンス時のai要約) 参照）。
 
 ## 参考文献抽出
 
@@ -77,6 +87,4 @@ uv run python scripts/review_references.py list --status pending --limit 20
 
 モデル出力だけでWorkを統合せず、原文、著者、書名、刊年、DOI/ISBN等を決定的に再検証します。不確実な候補は別著作として保留します。
 
-## 夜間要約
-
-夜間実行は初期状態で無効です。利用する場合は [環境設定](configuration.md#夜間実行) を参照してください。
+英語学術論文向けのGROBID enrichmentは埋め込みとは独立して実行します。詳細は [開発・保守](development.md) を参照してください。

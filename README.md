@@ -55,14 +55,20 @@ Citation NetworkにはSemantic ScholarのAPIキーが必要です。
 
 macOSでは [Maintenance-Widget.command](Maintenance-Widget.command) をダブルクリックします。
 
-次の四処理が既定で選択されているため、通常はEnterを5回押すだけです。
+`MAINTENANCE_AUTO_APPROVE=1` が既定のため、すべての更新（Mistral OCR Batchを含む）を確認なしで
+実行します。確認式に戻すには `.env` または起動環境で `MAINTENANCE_AUTO_APPROVE=0` を指定します。
 
-1. Zoteroライブラリの差分更新
-2. ローカル抽出型要約の更新
+1. Zoteroライブラリの差分更新（＋文書構造の更新）
+2. 要約の差分更新（DeepSeekによるAI要約。未承認時は限定pilotバッチ）
 3. Citation Networkの更新
-4. 報告された引用関係の確認
+4. 報告された品質・引用関係の確認
+5. Mistral OCR Batchの送信、または完了済み結果の回収・品質確認・採用（任意）
 
-不要な項目だけ `n` を入力して除外できます。ログはTerminalへ表示されます。
+不要な項目だけ `n` を入力して除外できます。実行後に未解決の処理状態サマリも表示されます。ログはTerminalへ表示されます。
+
+AI要約の全件backfillは費用確認とユーザー承認後に行います。それまではWidgetが限定件数の
+LLM pilotを実行し、既に最新の要約は追加API呼び出しなしでskipします。Mistral Batchも、
+初回は送信だけを行い、完了後にWidgetを再起動して同項目を許可したときに回収・品質確認・採用します。
 
 詳しくは [日常の使い方](docs/daily-use.md) を参照してください。
 

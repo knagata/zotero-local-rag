@@ -1,4 +1,5 @@
 chromadb
+psutil
 sentence-transformers
 huggingface-hub>=0.34.0,<1.0
 pymupdf
@@ -8,4 +9,7 @@ typing_extensions
 trafilatura
 EbookLib
 pydantic>=2.12,<3
+typer>=0.12.5,<0.25.0
 docling
+yomitoku
+rapidocr

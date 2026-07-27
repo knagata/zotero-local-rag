@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
-"""Run a bounded re-OCR queue, regenerate summaries, and write a quality report."""
+"""Plan, evaluate, and explicitly adopt a per-item V3 re-OCR result.
+
+The default is always dry-run.  ``--adopt`` is deliberately limited to one
+item and consumes a previously prepared result after the deterministic gate.
+"""
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import json
-import re
-import shutil
-import sqlite3
-import subprocess
-import sys
-from datetime import datetime
+import os
 from pathlib import Path
+import sys
 from typing import Any
 
 
@@ -19,157 +20,192 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.chunk_store import get_item_chunks
-from src.manifest import load_manifest
+from src.db_relations import mark_artifact_status
+from src.embedder import get_collection
+from src.reocr_adoption import adopt_prepared_reocr
+from src.reocr_quality import evaluate_adoption_gate, majority_language, text_metrics
 
 
-REPEAT_ARTIFACT_RE = re.compile(r"(.)\1{19,}")
-
-
-def _selected_rows(path: Path, limit: int) -> list[dict[str, Any]]:
+def selected_rows(path: Path, limit: int, item_key: str | None = None) -> list[dict[str, Any]]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     rows = payload.get("candidates")
     if not isinstance(rows, list):
         raise ValueError("candidate JSON must contain a candidates array")
-    return [row for row in rows[:limit] if isinstance(row, dict)]
+    selected = [row for row in rows if isinstance(row, dict)]
+    if item_key:
+        selected = [row for row in selected if str(row.get("item_key") or "") == item_key]
+    return selected[:limit]
 
 
-def _relation_counts(item_key: str) -> dict[str, int]:
-    connection = sqlite3.connect(ROOT / "data" / "relations.db")
-    try:
-        return {
-            "sections": connection.execute(
-                "SELECT COUNT(*) FROM section_summaries WHERE item_key = ?", (item_key,),
-            ).fetchone()[0],
-            "cases": connection.execute(
-                "SELECT COUNT(*) FROM case_annotations WHERE item_key = ?", (item_key,),
-            ).fetchone()[0],
-        }
-    finally:
-        connection.close()
+def _prepared_results(path: Path | None) -> dict[tuple[str, str], dict[str, Any]]:
+    if path is None:
+        return {}
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    rows = payload.get("results")
+    if not isinstance(rows, list):
+        raise ValueError("result JSON must contain a results array")
+    return {
+        (str(row.get("item_key") or ""), str(row.get("attachment_key") or "")): row
+        for row in rows if isinstance(row, dict)
+    }
 
 
-def snapshot(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    manifest = load_manifest(ROOT / "data" / "manifest.json")
-    result = []
-    for row in rows:
-        item_key = str(row.get("item_key") or "")
-        attachment_key = str(row.get("attachment_key") or "")
-        chunks = [
-            chunk for chunk in get_item_chunks(item_key)
-            if chunk.get("metadata", {}).get("attachmentKey") == attachment_key
-        ]
-        text = "\n".join(str(chunk.get("text") or "") for chunk in chunks)
-        quality = (manifest.get("files", {}).get(attachment_key, {}).get("quality") or {})
-        result.append({
-            "item_key": item_key,
-            "attachment_key": attachment_key,
-            "language": row.get("lang") or "unknown",
-            "chunks": len(chunks),
-            "characters": len(text),
-            "pages": len({chunk.get("metadata", {}).get("page") for chunk in chunks}),
-            "repeat_artifacts": len(REPEAT_ARTIFACT_RE.findall(text)),
-            "quality": {
-                "parser": quality.get("parser") or "unknown",
-                "is_scanned": bool(quality.get("is_scanned")),
-                "is_corrupted": bool(quality.get("is_corrupted")),
-            },
-            "relations": _relation_counts(item_key),
-        })
-    return result
+def compare_result(
+    row: dict[str, Any], prepared: dict[str, Any], *,
+    chunk_loader=get_item_chunks, min_character_ratio: float = 0.8,
+    max_character_ratio: float = 1.5,
+) -> dict[str, Any]:
+    item_key = str(row.get("item_key") or "")
+    attachment_key = str(row.get("attachment_key") or "")
+    old_chunks = [
+        chunk for chunk in chunk_loader(item_key)
+        if str((chunk.get("metadata") or {}).get("attachmentKey") or "") == attachment_key
+    ]
+    blocks = prepared.get("blocks")
+    if not isinstance(blocks, list):
+        raise ValueError(f"prepared result for {attachment_key} must contain blocks")
+    quality = prepared.get("quality") if isinstance(prepared.get("quality"), dict) else {}
+    expected_pages = int(
+        quality.get("total_pages") or row.get("quality", {}).get("total_pages") or 0
+    )
+    before = text_metrics(old_chunks, total_pages=expected_pages)
+    after = text_metrics(blocks, total_pages=expected_pages)
+    if quality.get("page_coverage") is not None:
+        after["page_coverage"] = float(quality["page_coverage"])
+    gate = evaluate_adoption_gate(
+        before, after, min_character_ratio=min_character_ratio,
+        max_character_ratio=max_character_ratio,
+    )
+    before_language = majority_language(old_chunks)
+    after_language = majority_language(blocks)
+    return {
+        "item_key": item_key, "attachment_key": attachment_key,
+        "engine": prepared.get("engine") or row.get("target_engine"),
+        "version": prepared.get("version") or row.get("target_version"),
+        "before": before, "after": after,
+        "language": {
+            "before": before_language, "after": after_language,
+            "matches": before_language == "unknown" or after_language == before_language,
+        },
+        "structure": {
+            "before": row.get("structure_status") or "unavailable",
+            "after": prepared.get("structure_status") or "unavailable",
+            "flat_fallback_resolved": (
+                row.get("structure_status") == "flat_fallback"
+                and prepared.get("structure_status") in {"exact", "recovered"}
+            ),
+            "heading_count_before": int(row.get("heading_count") or 0),
+            "heading_count_after": int(prepared.get("heading_count") or 0),
+        },
+        "quality_gate": gate,
+    }
 
 
-def _back_up() -> list[str]:
-    stamp = datetime.now().astimezone().strftime("%Y%m%d-%H%M%S")
-    backup_dir = ROOT / "data" / "backups"
-    backup_dir.mkdir(parents=True, exist_ok=True)
-    paths = []
-    for name in ("relations.db", "lexical.sqlite3", "manifest.json"):
-        source = ROOT / "data" / name
-        if not source.exists():
-            continue
-        target = backup_dir / f"{source.stem}-before-reocr-{stamp}{source.suffix}"
-        shutil.copy2(source, target)
-        paths.append(str(target.relative_to(ROOT)))
-    return paths
+def validate_adoption_args(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
+    if args.force_adopt and not args.item:
+        parser.error("--force-adopt requires exactly one --item KEY")
+    if args.force_adopt:
+        args.adopt = True
+    if args.adopt and not args.item:
+        parser.error("--adopt requires exactly one --item KEY")
+    if args.adopt and args.limit != 1:
+        parser.error("--adopt requires --limit 1")
+    if args.adopt and args.results is None:
+        parser.error("--adopt requires --results from a completed dry-run extraction")
 
 
-def _run(command: list[str]) -> None:
-    subprocess.run(command, cwd=ROOT, check=True)
-
-
-def main() -> None:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--candidates", type=Path, required=True)
+    parser.add_argument("--results", type=Path, help="Prepared, non-canonical V3 extraction results")
     parser.add_argument("--limit", type=int, default=2)
-    parser.add_argument("--llm", default="codex_cli:gpt-5.6-luna")
-    parser.add_argument("--max-discard-rate", type=float, default=0.25)
-    parser.add_argument("--min-character-ratio", type=float, default=0.75)
+    parser.add_argument("--item", help="Process exactly one itemKey")
+    parser.add_argument("--adopt", action="store_true", help="Adopt one gate-passing result into the V3 indexes")
+    parser.add_argument("--force-adopt", action="store_true", help="Human override; requires --item and --limit 1")
+    parser.add_argument("--min-character-ratio", type=float, default=0.8)
+    parser.add_argument("--max-character-ratio", type=float, default=1.5)
     parser.add_argument("--output", type=Path, required=True)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     if args.limit < 1:
         parser.error("--limit must be positive")
-    rows = _selected_rows(args.candidates, args.limit)
+    if not 0 < args.min_character_ratio <= args.max_character_ratio:
+        parser.error("character ratio thresholds are invalid")
+    validate_adoption_args(args, parser)
+    rows = selected_rows(args.candidates, args.limit, args.item)
     if not rows:
-        parser.error("candidate queue is empty")
-
-    before = snapshot(rows)
-    backups = _back_up()
-    _run([
-        sys.executable, "src/index_from_zotero.py", "--progress",
-        "--reocr-candidates", str(args.candidates), "--reocr-limit", str(args.limit),
-    ])
-
-    audits = []
-    audit_dir = ROOT / "data" / "quality" / "reocr-audits"
-    for item_key in dict.fromkeys(str(row.get("item_key") or "") for row in rows):
-        if not item_key:
+        parser.error("candidate queue is empty for the selected scope")
+    prepared = _prepared_results(args.results)
+    comparisons = []
+    for row in rows:
+        key = (str(row.get("item_key") or ""), str(row.get("attachment_key") or ""))
+        if key not in prepared:
+            comparisons.append({
+                "item_key": key[0], "attachment_key": key[1],
+                "status": "awaiting_dry_run_extraction", "quality_gate": None,
+            })
             continue
-        audit_path = audit_dir / f"{item_key}.json"
-        _run([
-            sys.executable, "-m", "src.build_summaries", "--mode", "llm", "--force",
-            "--item", item_key, "--llm", args.llm, "--audit-output", str(audit_path),
-        ])
-        audits.extend(json.loads(audit_path.read_text(encoding="utf-8")).get("items", []))
+        comparison = compare_result(
+            row, prepared[key], min_character_ratio=args.min_character_ratio,
+            max_character_ratio=args.max_character_ratio,
+        )
+        comparison["status"] = "evaluated"
+        comparisons.append(comparison)
 
-    after = snapshot(rows)
-    before_by_attachment = {row["attachment_key"]: row for row in before}
-    failures = []
-    for current in after:
-        previous = before_by_attachment[current["attachment_key"]]
-        baseline = max(1, int(previous["characters"]))
-        current["character_ratio"] = round(current["characters"] / baseline, 4)
-        if current["character_ratio"] < args.min_character_ratio:
-            failures.append(f"{current['attachment_key']}: character ratio below threshold")
-        if current["repeat_artifacts"]:
-            failures.append(f"{current['attachment_key']}: pathological repeat artifact")
-    for audit in audits:
-        verification = audit.get("verification") or {}
-        if float(verification.get("discard_rate") or 0) > args.max_discard_rate:
-            failures.append(f"{audit.get('item_key')}: grounding discard rate above threshold")
-        if verification.get("suspicious_sections"):
-            failures.append(f"{audit.get('item_key')}: suspicious sections remain")
-
+    failures = [
+        row for row in comparisons
+        if row.get("quality_gate") is not None and not row["quality_gate"]["passed"]
+    ]
+    awaiting = [row for row in comparisons if row.get("quality_gate") is None]
+    authorized = bool(args.adopt and not awaiting and (args.force_adopt or not failures))
     report = {
-        "generated_at": datetime.now().astimezone().isoformat(),
-        "candidates": str(args.candidates),
-        "limit": args.limit,
-        "llm": args.llm,
-        "thresholds": {
-            "max_discard_rate": args.max_discard_rate,
-            "min_character_ratio": args.min_character_ratio,
-        },
-        "backups": backups,
-        "before": before,
-        "after": after,
-        "summary_audits": audits,
-        "quality_gate": {"passed": not failures, "failures": failures},
+        "schema_version": "reocr-comparison-v3",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "dry_run": not bool(args.adopt),
+        "force_adopt": bool(args.force_adopt),
+        "adoption_authorized": authorized,
+        "canonical_data_modified": False,
+        "comparisons": comparisons,
     }
+    if authorized:
+        comparison = comparisons[0]
+        selected = rows[0]
+        key = (str(selected.get("item_key") or ""), str(selected.get("attachment_key") or ""))
+        collection_name = os.environ.get("CHROMA_COLLECTION_V3", "zotero_paragraphs_v3")
+        chroma_dir = Path(os.environ.get("CHROMA_DIR", ROOT / "data" / "chroma"))
+        manifest_path = Path(os.environ.get("MANIFEST_V3_PATH", ROOT / "data" / "manifest_v3.json"))
+        lexical_path = Path(os.environ.get("LEXICAL_V3_DB_PATH", ROOT / "data" / "lexical_v3.sqlite3"))
+        collection = get_collection(
+            chroma_dir=chroma_dir, project_root=ROOT,
+            chroma_collection_env=collection_name,
+            chroma_collection_default="zotero_paragraphs_v3",
+            persist_active_config=False,
+        )
+        old_chunks = get_item_chunks(key[0], chroma_dir=chroma_dir, collection_name=collection_name)
+        report["adoption"] = adopt_prepared_reocr(
+            item_key=key[0], attachment_key=key[1], prepared=prepared[key],
+            collection=collection, old_item_chunks=old_chunks,
+            manifest_path=manifest_path, lexical_path=lexical_path,
+            force=bool(args.force_adopt),
+            gate_passed=bool(comparison["quality_gate"]["passed"]),
+        )
+        report["canonical_data_modified"] = True
+    elif args.adopt and failures:
+        failure = failures[0]
+        mark_artifact_status(
+            str(failure.get("item_key") or ""), "extraction", "degraded",
+            attachment_key=str(failure.get("attachment_key") or ""),
+            reason_code="ocr_below_threshold", counts=failure.get("quality_gate"),
+        )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    print(json.dumps({"quality_gate": report["quality_gate"]}, ensure_ascii=False))
-    if failures:
-        raise SystemExit(3)
+    print(json.dumps({
+        "dry_run": report["dry_run"], "evaluated": len(comparisons) - len(awaiting),
+        "awaiting": len(awaiting), "failed": len(failures), "adoption_authorized": authorized,
+    }, ensure_ascii=False))
+    if args.adopt and not authorized:
+        return 3
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

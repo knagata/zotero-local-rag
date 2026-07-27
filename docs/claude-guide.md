@@ -2,7 +2,7 @@
 
 [READMEへ戻る](../README.md)
 
-この文書は、ClaudeがZoteroライブラリを効率よく探索するためのツール選択と検索手順をまとめたものです。
+この文書は、ClaudeがZoteroライブラリを効率よく探索するためのツール選択と検索手順をまとめたものです。現行の取り込み・検索はV3データプレーン（`zotero_paragraphs_v3`）です。
 
 ---
 
@@ -47,18 +47,22 @@
 
 俯瞰的な質問、関連文献の発見、複数資料の比較では最初に使います。資料要約と章要約から候補を選び、その候補内の段落検索と全体への直接検索をRRFで統合します。
 
+> **現況**: LLMノード要約索引（`__sum_node`）の全件生成はpilot→承認待ちのため、現時点では要約層が実質空で、直接段落検索（direct fallback）へ縮退して動作します。要約が入るまでは `rag_search` と結果はほぼ同等になります。
+
 - **`k`**: 最終的に返す根拠段落数 (デフォルト `8`)。
 - **`k_items`**: 要約層で残す候補資料数 (デフォルト `12`)。
 - **`include_direct`**: 要約で取りこぼした資料を拾う全体段落検索を併用するか (デフォルト `true`)。
 - **`return_summaries`**: 候補資料と段落に要約スニペットを付けるか (デフォルト `true`)。
 
-### `get_item_summary` / `search_cases`
+### `get_item_summary` / `rag_search(search_mode="case")`
 
 - `get_item_summary(item_key=...)`: 保存済みの資料要約全文をローカルDBから取得します。
+  現在は抽出型（extractive）中心で、LLM要約の全件生成は承認待ちです。返り値の
+  provenance（`legacy`/`none` 等）で由来を確認できます。
 - 要約は検索候補を絞るための索引であり、引用可能な事実源ではありません。研究上の主張や
   書誌情報は、検索結果の原文チャンクまたはZotero原資料で必ず確認してください。
-- `search_cases(query=..., region=...)`: 構造化された事例注釈と `rag_search(search_mode="case")` を統合します。事例注釈が未生成でも、直接段落検索へ自動フォールバックします。
-- 構造化事例が原文と矛盾する、事例ではない、またはフィールドが根拠不十分な場合は、回答を終える前に `report_case_quality` で具体的な根拠チャンクとともに報告します。単に地域・時期などが欠けているだけでは報告しません。
+- 事例を探すときは `rag_search(query=..., search_mode="case")` を使います。構造化事例DBは
+  廃止済みで、これは索引を介さず原文段落をHyDE・抽象度展開つきで直接検索するモードです。
 
 ### `get_chunk_context`（前後文脈）
 
@@ -110,12 +114,12 @@ ChromaDBのインデックスとメタデータを強制的にリロードしま
 ### `build_citation_network`（引用ネットワーク構築）
 
 特定のZotero文献について、以下の両方を一括で実行し、引用ネットワークのデータベースを構築します。
-1. **引用先の抽出**: EPUBから注釈（脚注・章末注）を自動抽出し、参照頻度（cite_count）の高い順に最大50件をSemantic Scholarで解決して保存。
+1. **引用先の抽出**: 取り込み時に境界保持されたV3チャンク（bibliography/endnote/footnote zone）から参照候補を復元し、参照頻度（cite_count）の高い順に最大50件をSemantic Scholarで解決して保存（旧EPUB二重パースは廃止）。
 2. **被引用の抽出**: Semantic Scholar APIを利用して「外部のどの論文から引用されているか」を取得して保存。
 
 - **`item_key`**: 対象のZotero `itemKey`。
 
-> **EPUB参照バジェットについて**: 脚注が大量にある書籍（編著など）では、重要度の低い参照は `s2_status='skipped'` として保留されます。`uv run src/update_citations.py --resume-skipped` でバジェットを増やして後から再解決できます。
+> **参照バジェットについて**: 参照が大量にある書籍（編著など）では、重要度の低い参照は `s2_status='skipped'` として保留されます。`uv run src/update_citations.py --resume-skipped` でバジェットを増やして後から再解決できます。
 
 ### `get_references_for_item` / `get_chunk_references`
 
@@ -140,6 +144,12 @@ Semantic Scholarの関係は原則として信頼します。分野の違いや�
 
 報告は即時Disableではありません。最終判断は `Maintenance-Widget.command` で人間が行います。ClaudeはDisableやKeepを実行できません。
 
+### `report_summary_quality` / `list_summary_quality_reports`
+
+- `report_summary_quality(...)`: 資料要約・章要約に、原文と矛盾する記述や裏付けのない主張など具体的根拠がある問題を発見したとき、人間の確認待ちとして報告します。
+- `list_summary_quality_reports(status=...)`: `pending` などの報告状態を参照します。
+- 報告は助言的・可逆で、実行時点でレコードが削除・確定されるわけではありません。単に意外・話題が離れているだけでは報告しません。
+
 ### `suggest_unowned_works`（未所蔵文献）
 
 引用ネットワークを集計し、複数の所蔵文献から参照されているのにライブラリにない文献を
@@ -156,7 +166,7 @@ Semantic Scholarの関係は原則として信頼します。分野の違いや�
 
 - **`item_key`**: 起点となるZoteroアイテム。
 - **`method`**: `"coupling"`（共有参考文献）、`"cocitation"`（同じ外部論文からの共引用）、
-  `"semantic"`（本文チャンク平均ベクトル）、`"case_overlap"`（地域・実践・現象の共有）、
+  `"semantic"`（本文チャンク平均ベクトル）、
   `"hybrid"`（引用2方式+意味類似の等重みRRF、デフォルト）。
 - **`k`**: 最大取得件数（デフォルト `10`）。
 
@@ -167,7 +177,7 @@ Semantic Scholarの関係は原則として信頼します。分野の違いや�
 PDF・HTML・EPUBの参考文献候補を構造化し、正準worksグラフへ解決します。
 
 - `extract_references_for_item` は既定で `dry_run=true` のためDBを書き換えません。
-- `use_llm=true` では候補テキストを `LLM_STANDARD` へ送信します。`EXTRACT_EXCLUDE_TAGS` に該当するアイテム、またはタグ確認不能時はfail-closedで停止します。
+- `use_llm=true` では候補テキストを `LLM_STANDARD` へ送信します。資料単位の除外タグは2026-07-27に撤去され、`LLM_STANDARD` の設定有無が唯一のゲートです。
 - 保存時は DOI/ISBN、CiNii Research (`CINII_APP_ID` 設定時)、NDL Searchの順に候補を照合し、低信頼結果も根拠とともに保持します。
 - `confirm_reference_match(edge_id, work_id)` で低信頼エッジを正しいworkへ付け替え、`work_id` を省略すると棄却します。
 
@@ -248,7 +258,7 @@ PDF・HTML・EPUBの参考文献候補を構造化し、正準worksグラフへ�
 **ケースC：文献の引用・被引用ネットワークを分析したい場合**
 ```
 1. build_citation_network(item_key="KEY1") 
-   → Zotero内のEPUBから引用先を抽出し、外部APIから被引用データを取得して一括でデータベースを構築
+   → V3チャンク（参考文献・注のzone）から引用先を抽出し、外部APIから被引用データを取得して一括でデータベースを構築
 
 2. get_cited_chunks_for_item(item_key="KEY1")
    → 外部から最も多く引用されている重要な段落のランキングを取得

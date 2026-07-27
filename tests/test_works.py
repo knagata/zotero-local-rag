@@ -73,18 +73,12 @@ class CanonicalWorksTests(unittest.TestCase):
     def test_invalidate_item_summaries_removes_all_chunk_derived_rows(self):
         db_relations.save_item_summary("ITEM", "summary", "test")
         db_relations.save_section_summary("ITEM", "c0", "section", model="test")
-        db_relations.replace_case_annotations("ITEM", "c0", [{
-            "description": "case", "region": None, "group": None,
-            "practices": [], "phenomena": [], "period": None,
-            "chunk_id": "old", "source_kind": "primary", "evidence_quote": "case",
-        }], model="test")
         counts = db_relations.invalidate_item_summaries("ITEM")
         self.assertEqual(counts, {
-            "case_annotations": 1, "section_summaries": 1, "item_summaries": 1,
+            "section_summaries": 1, "item_summaries": 1,
         })
         self.assertIsNone(db_relations.get_item_summary("ITEM"))
         self.assertEqual(db_relations.get_section_summaries("ITEM"), [])
-        self.assertEqual(db_relations.get_case_annotations("ITEM"), [])
 
     def test_conservative_title_match_and_year(self):
         first = db_relations.resolve_work(title="Essai sur le don", authors="Mauss", year=1925)
@@ -227,7 +221,7 @@ class CanonicalWorksTests(unittest.TestCase):
         self.assertEqual(counts["edges"], 0)
         self.assertEqual(edges, 0)
 
-    def test_summary_and_case_crud(self):
+    def test_summary_crud(self):
         db_relations.save_item_summary(
             "ITEM1", "日本語要約", "extractive", summary_en="English summary",
             keywords="gift; 贈与", chunk_count=12, source_mtime=1.5,
@@ -236,23 +230,10 @@ class CanonicalWorksTests(unittest.TestCase):
             "ITEM1", "c1", "章要約", chapter="第一章", model="extractive",
             chunk_count=4, chapter_authors="A. Author",
         )
-        db_relations.replace_case_annotations(
-            "ITEM1", "c1", [{
-                "description": "交換の事例", "region": "Melanesia",
-                "practices": ["kula"], "phenomena": ["reciprocity"],
-                "evidence_quote": "Kula exchange was observed in Melanesia.",
-            }], model="test",
-        )
         self.assertEqual(db_relations.get_item_summary("ITEM1")["summary_en"], "English summary")
         self.assertEqual(db_relations.get_section_summaries("ITEM1")[0]["chapter"], "第一章")
-        self.assertEqual(db_relations.get_case_annotations("ITEM1")[0]["practices"], "kula")
-        self.assertEqual(
-            db_relations.get_case_annotations("ITEM1")[0]["evidence_quote"],
-            "Kula exchange was observed in Melanesia.",
-        )
         db_relations.delete_section_summary("ITEM1", "c1")
         self.assertEqual(db_relations.get_section_summaries("ITEM1"), [])
-        self.assertEqual(db_relations.get_case_annotations("ITEM1"), [])
 
     def test_extractive_summary_bundle_replacement_is_atomic_and_guarded(self):
         db_relations.save_item_summary("ITEM", "extractive", "extractive", chunk_count=2)

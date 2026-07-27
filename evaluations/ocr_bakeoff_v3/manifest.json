@@ -1,0 +1,16 @@
+{
+  "$schema": "manifest.schema.json",
+  "version": "ocr-bakeoff-v3.1",
+  "frozen": true,
+  "path_policy": "PDF paths are supplied only through environment variables and are never committed.",
+  "samples": [
+    {"id": "en_two_column", "category": "english_two_column", "pages": [2], "path_env": "OCR_BAKEOFF_EN_TWO_COLUMN_PDF", "ground_truth": "annotations/en_two_column.json"},
+    {"id": "tables_math", "category": "tables_and_math", "pages": [5], "path_env": "OCR_BAKEOFF_TABLES_MATH_PDF", "ground_truth": "annotations/tables_math.json"},
+    {"id": "ja_horizontal", "category": "japanese_horizontal", "pages": [2], "path_env": "OCR_BAKEOFF_JA_HORIZONTAL_PDF", "ground_truth": "annotations/ja_horizontal.json"},
+    {"id": "ja_vertical", "category": "japanese_vertical", "pages": [20], "path_env": "OCR_BAKEOFF_JA_VERTICAL_PDF", "ground_truth": "annotations/ja_vertical.json"},
+    {"id": "notes_bibliography_book", "category": "notes_and_bibliography", "pages": [528, 550], "path_env": "OCR_BAKEOFF_NOTES_BOOK_PDF", "ground_truth": "annotations/notes_bibliography_book.json"},
+    {"id": "embedded_text_pair", "category": "embedded_text", "pages": [2], "pair": "scan_pair", "path_env": "OCR_BAKEOFF_EMBEDDED_TEXT_PDF", "ground_truth": "annotations/embedded_text_pair.json"},
+    {"id": "scanned_pair", "category": "scanned", "pages": [10], "pair": "scan_pair", "path_env": "OCR_BAKEOFF_SCANNED_PDF", "ground_truth": "annotations/scanned_pair.json"},
+    {"id": "no_outline", "category": "no_outline", "pages": [10], "path_env": "OCR_BAKEOFF_NO_OUTLINE_PDF", "ground_truth": "annotations/no_outline.json"}
+  ]
+}

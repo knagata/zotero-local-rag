@@ -31,6 +31,7 @@ class MaintenanceCommandTests(unittest.TestCase):
                 "HOME": str(home),
                 "MAINTENANCE_TEST_LOG": str(log_path),
                 "MAINTENANCE_FAIL_FIRST": "1" if fail_first else "0",
+                "MAINTENANCE_AUTO_APPROVE": "0",
             })
             env.update(extra_env or {})
             result = subprocess.run(
@@ -44,18 +45,59 @@ class MaintenanceCommandTests(unittest.TestCase):
     def test_enter_defaults_run_all_maintenance_steps(self):
         result, calls = self.run_command("\n\n\n\n\n")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        # No data/quality/summary_backfill_approved marker exists, so the summary
+        # step runs a bounded batch (default 10 items, 10 workers) rather than the
+        # full backfill (R17). A read-only artifact-status summary runs last (R19).
         self.assertEqual(calls, [
             "run src/index_from_zotero.py --progress",
             "run python scripts/rebuild_document_structure.py --all",
-            "run python -m src.build_summaries",
-            "run python scripts/build_deepseek_summaries.py --output data/quality/maintenance-summary-report.json",
-            "run python scripts/build_deepseek_cases.py --output data/quality/maintenance-case-report.json",
+            "run python scripts/build_structure_summaries.py --all --mode llm --limit 10 --workers 10 --embed",
             "run src/update_citations.py --all",
             "run python scripts/triage_quality_reports.py",
             "run python scripts/review_relation_reports.py",
             "run python scripts/review_summary_quality_reports.py",
-            "run python scripts/review_case_quality_reports.py",
+            "run python scripts/list_artifact_status.py --unresolved-only",
         ])
+
+    def test_explicit_mistral_permission_submits_new_batch_and_explains_followup(self):
+        # The fifth response explicitly permits the cloud Batch submission;
+        # the sixth confirms the planned work.
+        result, calls = self.run_command(
+            "n\nn\nn\nn\ny\n\n",
+            extra_env={"MISTRAL_BATCH_STATE_PATH": "tmp/test_widget_mistral_state.json"},
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(calls, [
+            "run python scripts/run_mistral_ocr_batch.py --submit --state tmp/test_widget_mistral_state.json",
+            "run python scripts/list_artifact_status.py --unresolved-only",
+        ])
+        self.assertIn("処理完了後にMaintenance-Widget.commandを再度起動", result.stdout)
+
+    def test_summary_batch_size_and_workers_are_configurable(self):
+        result, calls = self.run_command(
+            "\n\n\n\n\n",
+            extra_env={"SUMMARY_BACKFILL_BATCH_SIZE": "25", "SUMMARY_BACKFILL_WORKERS": "8"},
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(
+            "run python scripts/build_structure_summaries.py --all --mode llm --limit 25 --workers 8 --embed",
+            calls,
+        )
+
+    def test_auto_approval_runs_cloud_batch_without_prompt(self):
+        result, calls = self.run_command(
+            "",
+            extra_env={
+                "MAINTENANCE_AUTO_APPROVE": "1",
+                "MISTRAL_BATCH_STATE_PATH": "tmp/test_widget_auto_state.json",
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("すべての選択と開始確認を自動許可", result.stdout)
+        self.assertIn(
+            "run python scripts/run_mistral_ocr_batch.py --submit --state tmp/test_widget_auto_state.json",
+            calls,
+        )
 
     def test_user_can_skip_one_update(self):
         result, calls = self.run_command("\nn\n\n\n\n")
@@ -67,7 +109,7 @@ class MaintenanceCommandTests(unittest.TestCase):
             "run python scripts/triage_quality_reports.py",
             "run python scripts/review_relation_reports.py",
             "run python scripts/review_summary_quality_reports.py",
-            "run python scripts/review_case_quality_reports.py",
+            "run python scripts/list_artifact_status.py --unresolved-only",
         ])
 
     def test_failure_stops_later_updates(self):
@@ -75,14 +117,6 @@ class MaintenanceCommandTests(unittest.TestCase):
         self.assertEqual(result.returncode, 7)
         self.assertEqual(calls, ["run src/index_from_zotero.py --progress"])
         self.assertIn("後続処理を実行せず終了", result.stdout)
-
-    def test_v2_case_flag_switches_only_llm_pipeline(self):
-        result, calls = self.run_command("\n\n\n\n\n", extra_env={"CASE_PIPELINE_V2_ENABLE": "1"})
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("run python scripts/build_structure_summaries.py --all --mode llm --embed", calls)
-        self.assertIn("run python scripts/build_structure_cases.py --all --output data/quality/maintenance-structure-case-report.json", calls)
-        self.assertNotIn("run python scripts/build_deepseek_cases.py --output data/quality/maintenance-case-report.json", calls)
-
 
 if __name__ == "__main__":
     unittest.main()

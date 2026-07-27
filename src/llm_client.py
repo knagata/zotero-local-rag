@@ -62,7 +62,18 @@ class RateLimitReached(LLMError):
 
 
 class InvalidLLMResponse(LLMError):
-    """A provider returned output that cannot satisfy the requested contract."""
+    """A provider returned output that cannot satisfy the requested contract.
+
+    ``raw`` carries the undecodable text when there was any. A caller that can
+    make partial use of a broken reply -- currently only the OCR-layer audit,
+    which verifies every recovered item against the source -- needs the text
+    itself; the parser's message names a character offset into a string it
+    would otherwise discard.
+    """
+
+    def __init__(self, message: str, raw: str = ""):
+        super().__init__(message)
+        self.raw = raw
 
 
 class LLMClient(Protocol):
@@ -74,7 +85,8 @@ class LLMClient(Protocol):
     ) -> str: ...
 
     def generate_json(
-        self, prompt: str, *, schema: dict[str, Any], timeout: float = 30.0
+        self, prompt: str, *, schema: dict[str, Any], timeout: float = 30.0,
+        max_tokens: int = 4096,
     ) -> dict[str, Any]: ...
 
 
@@ -91,9 +103,15 @@ def _is_rate_limit(error: BaseException | str) -> bool:
 
 
 def _retry(
-    operation: Callable[[], T], *, attempts: int = 3, initial_delay: float = 0.5
+    operation: Callable[[], T], *, attempts: int | None = None, initial_delay: float = 0.5
 ) -> T:
     """Retry transient provider failures and preserve quota exhaustion."""
+    if attempts is None:
+        try:
+            attempts = int(os.environ.get("LLM_RETRY_ATTEMPTS", "3"))
+        except ValueError:
+            attempts = 3
+    attempts = min(5, max(1, attempts))
     last_error: BaseException | None = None
     for attempt in range(attempts):
         try:
@@ -139,11 +157,15 @@ def _extract_json(value: Any) -> dict[str, Any]:
     except json.JSONDecodeError:
         start, end = text.find("{"), text.rfind("}")
         if start < 0 or end <= start:
-            raise InvalidLLMResponse("The model response did not contain a JSON object.")
+            raise InvalidLLMResponse(
+                "The model response did not contain a JSON object.", raw=text,
+            )
         try:
             parsed = json.loads(text[start : end + 1])
         except json.JSONDecodeError as exc:
-            raise InvalidLLMResponse(f"Invalid JSON response: {exc}") from exc
+            raise InvalidLLMResponse(
+                f"Invalid JSON response: {exc}", raw=text[start : end + 1],
+            ) from exc
     if not isinstance(parsed, dict):
         raise InvalidLLMResponse("The model response was valid JSON but not an object.")
     return parsed
@@ -246,10 +268,11 @@ class GeminiClient:
         return self._generate(prompt, max_tokens=max_tokens, timeout=timeout)
 
     def generate_json(
-        self, prompt: str, *, schema: dict[str, Any], timeout: float = 30.0
+        self, prompt: str, *, schema: dict[str, Any], timeout: float = 30.0,
+        max_tokens: int = 4096,
     ) -> dict[str, Any]:
         return _extract_json(
-            self._generate(prompt, max_tokens=4096, timeout=timeout, schema=schema)
+            self._generate(prompt, max_tokens=max_tokens, timeout=timeout, schema=schema)
         )
 
 
@@ -287,11 +310,12 @@ class AnthropicClient:
         )))
 
     def generate_json(
-        self, prompt: str, *, schema: dict[str, Any], timeout: float = 30.0
+        self, prompt: str, *, schema: dict[str, Any], timeout: float = 30.0,
+        max_tokens: int = 4096,
     ) -> dict[str, Any]:
         def call() -> dict[str, Any]:
             response = self._client(timeout).messages.create(
-                model=self.model, max_tokens=4096,
+                model=self.model, max_tokens=max_tokens,
                 messages=[{"role": "user", "content": prompt}],
                 tools=[{"name": "return_result", "description": "Return the requested structured result.", "input_schema": schema}],
                 tool_choice={"type": "tool", "name": "return_result"},
@@ -355,10 +379,11 @@ class OpenAICompatibleClient:
         return self._request(prompt, max_tokens=max_tokens, timeout=timeout)
 
     def generate_json(
-        self, prompt: str, *, schema: dict[str, Any], timeout: float = 30.0
+        self, prompt: str, *, schema: dict[str, Any], timeout: float = 30.0,
+        max_tokens: int = 4096,
     ) -> dict[str, Any]:
         result = _extract_json(self._request(
-            prompt, max_tokens=4096, timeout=timeout, schema=schema
+            prompt, max_tokens=max_tokens, timeout=timeout, schema=schema
         ))
         _validate_schema_subset(result, schema)
         return result
@@ -447,10 +472,11 @@ class DeepSeekClient:
         return self._request(prompt, max_tokens=max_tokens, timeout=timeout)
 
     def generate_json(
-        self, prompt: str, *, schema: dict[str, Any], timeout: float = 30.0
+        self, prompt: str, *, schema: dict[str, Any], timeout: float = 30.0,
+        max_tokens: int = 4096,
     ) -> dict[str, Any]:
         result = _extract_json(self._request(
-            prompt, max_tokens=4096, timeout=timeout, schema=schema
+            prompt, max_tokens=max_tokens, timeout=timeout, schema=schema
         ))
         _validate_schema_subset(result, schema)
         return result
@@ -529,7 +555,8 @@ class CLIAgentClient:
         return value.strip()
 
     def generate_json(
-        self, prompt: str, *, schema: dict[str, Any], timeout: float = 300.0
+        self, prompt: str, *, schema: dict[str, Any], timeout: float = 300.0,
+        max_tokens: int = 4096,
     ) -> dict[str, Any]:
         return _extract_json(_retry(
             lambda: self._run(prompt, timeout=timeout, schema=schema)
@@ -557,9 +584,11 @@ class FallbackLLMClient:
         return self._call("generate_text", prompt, max_tokens=max_tokens, timeout=timeout)
 
     def generate_json(
-        self, prompt: str, *, schema: dict[str, Any], timeout: float = 30.0
+        self, prompt: str, *, schema: dict[str, Any], timeout: float = 30.0,
+        max_tokens: int = 4096,
     ) -> dict[str, Any]:
-        return self._call("generate_json", prompt, schema=schema, timeout=timeout)
+        return self._call("generate_json", prompt, schema=schema, timeout=timeout,
+                          max_tokens=max_tokens)
 
 
 def _parse_spec(spec: str) -> tuple[str, str]:

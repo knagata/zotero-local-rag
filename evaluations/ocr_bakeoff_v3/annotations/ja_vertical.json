@@ -1,0 +1,4 @@
+{"sample_id":"ja_vertical","regions":[
+  {"id":"r001","text_anchor":"夫との人生","expected_text":"夫との人生","order":0,"heading_path":["夫との人生"],"zone":"body","kind":"heading","locator_required":true,"bbox_required":true},
+  {"id":"r002","text_anchor":"日本軍も向こうの人を捕虜にしましたよね","expected_text":"日本軍も向こうの人を捕虜にしましたよね","order":1,"heading_path":["夫との人生"],"zone":"body","kind":"text","locator_required":true,"bbox_required":true}
+]}
