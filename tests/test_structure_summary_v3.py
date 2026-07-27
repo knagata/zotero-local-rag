@@ -7,7 +7,8 @@ from unittest.mock import patch
 
 from src import db_relations
 from src.build_structure_summaries import (
-    MAX_PARENT_INPUT_CHARS, _chunk_groups, _select_searchable_summary_rows, build_structure_summaries,
+    MAX_PARENT_INPUT_CHARS, _chunk_groups, _select_searchable_summary_rows,
+    adds_nothing_over_its_children, build_structure_summaries,
 )
 from src.document_structure import build_document_structure
 
@@ -257,4 +258,49 @@ if __name__ == "__main__":
         }
         self.assertTrue(summaries, "the chain must still be populated")
         self.assertNotIn("parent summary text", set(summaries.values()))
+
+    def test_paying_and_keeping_consult_the_same_rule(self):
+        """One definition, not two agreeing copies.
+
+        The rule lived only at the index, which discarded 9,766 parents that
+        generation had already paid an LLM to produce. Two copies would fix
+        that until one of them drifted -- and the direction of drift is
+        spending. Redefining the rule must therefore move both sites at once:
+        here it is inverted, and both must follow it.
+        """
+        chunks = [{
+            "id": "A:p1", "text": "the only body paragraph " * 80,
+            "metadata": {"attachmentKey": "A", "structure_path": ["Only Chapter"], "zone": "body"},
+        }]
+        self._persist_structure("ITEM", chunks)
+        parent_calls = []
+
+        def fake_item(title, rows, **kwargs):
+            parent_calls.append(title)
+            return {"summary": "parent summary text"}, "deepseek:standard"
+
+        # Inverted: a one-child parent now *does* add something.
+        with patch("src.build_structure_summaries.adds_nothing_over_its_children",
+                   side_effect=lambda count: count != 1), \
+             patch("src.build_structure_summaries._deepseek_model", return_value="deepseek-chat"), \
+             patch("src.build_structure_summaries._llm_summary_only_section",
+                   side_effect=lambda section, **kw: ({"summary": "leaf summary text"}, "deepseek:cheap")), \
+             patch("src.build_structure_summaries._llm_summary_only_item", side_effect=fake_item), \
+             patch("src.build_structure_summaries.get_item_chunks", return_value=chunks):
+            build_structure_summaries("ITEM", mode="llm")
+            # Generation followed the redefinition and paid for the parent.
+            self.assertEqual(len(parent_calls), 1)
+            # The index must follow the very same redefinition and keep it.
+            rows = [
+                {"node_id": "root", "parent_node_id": None},
+                {"node_id": "chapter", "parent_node_id": "root"},
+                {"node_id": "leaf", "parent_node_id": "chapter"},
+            ]
+            kept = {row["node_id"] for row in _select_searchable_summary_rows(rows)}
+        self.assertIn("chapter", kept)
+
+    def test_the_shipped_rule_suppresses_exactly_the_one_child_case(self):
+        self.assertTrue(adds_nothing_over_its_children(1))
+        self.assertFalse(adds_nothing_over_its_children(2))
+        self.assertFalse(adds_nothing_over_its_children(0))
 

@@ -163,15 +163,38 @@ def _chunk_groups(rows: List[Dict[str, Any]]) -> List[List[Dict[str, Any]]]:
     return groups
 
 
+def adds_nothing_over_its_children(child_count: int) -> bool:
+    """Whether a parent's summary would only restate its children's.
+
+    THE SINGLE DEFINITION. Generation calls it to decide whether to *pay* for a
+    summary; the search index calls it to decide whether to *keep* one. Those
+    were once separate judgements in separate places, and the split had exactly
+    the consequence the arrangement invites: the index suppressed 9,766 parents
+    as duplicates that generation had already paid an LLM to produce -- 42% of
+    a full rebuild's calls, bought and discarded (2026-07-28).
+
+    Keep the rule here. A copy at either site can drift silently, and the
+    direction it drifts in is spending.
+
+    A parent with one child covers exactly that child's text, so reducing it
+    yields a summary of a summary while the child says the same thing more
+    precisely.
+    """
+    return child_count == 1
+
+
 def _select_searchable_summary_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Suppress duplicate one-child parents while retaining the more precise child."""
+    """Drop parents that only restate a single child, keeping the child."""
     searchable_ids = {str(row["node_id"]) for row in rows}
     children: Dict[str, List[str]] = defaultdict(list)
     for row in rows:
         parent_id = str(row.get("parent_node_id") or "")
         if parent_id in searchable_ids:
             children[parent_id].append(str(row["node_id"]))
-    suppressed = {parent_id for parent_id, child_ids in children.items() if len(child_ids) == 1}
+    suppressed = {
+        parent_id for parent_id, child_ids in children.items()
+        if adds_nothing_over_its_children(len(child_ids))
+    }
     return [row for row in rows if str(row["node_id"]) not in suppressed]
 
 
@@ -425,16 +448,11 @@ def build_structure_summaries(
                 continue
             input_fingerprint = _parent_input_fingerprint(title, child_rows)
             cached = reusable.get(input_fingerprint) if use_llm else None
-            if len(child_rows) == 1:
-                # A parent with a single child covers exactly the child's text,
-                # so summarizing it produces a summary of a summary that
-                # _select_searchable_summary_rows then suppresses at embed time
-                # in favour of the more precise child. Measured on a full
-                # rebuild: 9,623 such parents, 98% with the child's source
-                # length to within 5% -- 42% of that run's LLM calls, paid for
-                # and discarded (2026-07-28). Adopt the child's summary instead;
-                # the grandparent's reduction still receives a summary here, and
-                # the duplicate is still suppressed downstream.
+            if adds_nothing_over_its_children(len(child_rows)):
+                # Same rule the search index applies -- asked here, before the
+                # call is billed, rather than after. Adopt the child's summary:
+                # a grandparent's reduction still receives one at this node, and
+                # the duplicate is still suppressed at embed time.
                 only_child = child_rows[0]
                 summary = str(only_child.get("summary") or "")
                 kind = str(only_child.get("kind") or "llm")
