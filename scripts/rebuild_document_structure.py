@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.chunk_store import get_item_chunks, list_item_keys
+from src.chunk_store import active_collection_name, get_item_chunks, list_item_keys
 from src.db_relations import (
     get_document_structure, get_item_processing_status,
     mark_artifact_status,
@@ -20,6 +20,42 @@ from src.db_relations import (
 )
 from src.document_structure import STRUCTURE_VERSION, build_document_structure
 from src.orphan_cleanup import note_only_item
+
+
+def _resync_chunk_metadata(item_key: str, collection_name: str | None) -> int:
+    """Copy the new leaf identity and policies back onto the item's chunks."""
+    import chromadb
+
+    from src.db_relations import get_db_connection
+    from src.structure_metadata_sync import desired_chunk_metadata, stale_chunk_updates
+
+    connection = get_db_connection()
+    nodes = [dict(row) for row in connection.execute(
+        "SELECT node_id, zone, summary_policy, retrieval_policy, citation_policy "
+        "FROM document_nodes WHERE item_key = ?", (item_key,))]
+    mapping: dict[str, list[str]] = {}
+    for node_id, chunk_id in connection.execute(
+        "SELECT c.node_id, c.chunk_id FROM document_node_chunks c "
+        "JOIN document_nodes n ON n.node_id = c.node_id WHERE n.item_key = ?", (item_key,)
+    ):
+        mapping.setdefault(str(node_id), []).append(str(chunk_id))
+    desired = desired_chunk_metadata(nodes, mapping)
+    if not desired:
+        return 0
+    name = collection_name or active_collection_name()
+    collection = chromadb.PersistentClient(path=str(ROOT / "data" / "chroma")).get_collection(name)
+    ids = list(desired)
+    current: dict[str, dict] = {}
+    for start in range(0, len(ids), 500):
+        got = collection.get(ids=ids[start:start + 500], include=["metadatas"])
+        for chunk_id, metadata in zip(got.get("ids") or [], got.get("metadatas") or []):
+            current[str(chunk_id)] = dict(metadata or {})
+    updates = stale_chunk_updates(current, desired)
+    keys = list(updates)
+    for start in range(0, len(keys), 500):
+        batch = keys[start:start + 500]
+        collection.update(ids=batch, metadatas=[updates[key] for key in batch])
+    return len(updates)
 
 
 def rebuild_item(
@@ -80,6 +116,15 @@ def rebuild_item(
             structure_version=STRUCTURE_VERSION, status=built["status"],
             confidence=built["confidence"], nodes=built["nodes"], diagnostics=built["diagnostics"],
         )
+        # Node ids are derived from content, so a rebuild renames them, and
+        # retrieval filters candidate chunks on the copy of node_id held in
+        # Chroma -- not on the database. Leaving that copy behind made the leaf
+        # route, the highest-weighted of the three fused routes, match nothing
+        # and return silently empty: 213,748 chunks (44.7%) were in that state
+        # before this call existed (2026-07-28). The structure and the chunks
+        # that point at it have to be written in the same breath.
+        resynced = _resync_chunk_metadata(item_key, collection_name) if not dry_run else 0
+        result["chunk_metadata_resynced"] = resynced
         artifact_status = "success" if built["status"] in {"exact", "recovered"} else "degraded"
         mark_artifact_status(
             item_key, "structure", artifact_status,

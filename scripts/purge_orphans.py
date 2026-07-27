@@ -163,6 +163,35 @@ def _purge_content(item_keys: list[str]) -> dict[str, int]:
     return removed
 
 
+def _purge_attachments(attachment_keys: list[str]) -> dict[str, int]:
+    """Delete a deleted attachment's chunks from Chroma and the FTS index.
+
+    Keyed on the attachment rather than the item because that is the identity
+    an attachment deleted from Zotero still carries in the index. The FTS rows
+    are removed by chunk id, in the same pass: a Chroma-only delete leaves the
+    text lexically searchable, which is how deleted material keeps answering
+    keyword queries after it has visibly gone from vector search.
+    """
+    import chromadb
+
+    from src.lexical_index import delete_by_chunk_ids
+
+    removed = {"chroma": 0, "fts": 0}
+    name = active_collection_name(chroma_dir=CHROMA_DIR)
+    collection = chromadb.PersistentClient(path=str(CHROMA_DIR)).get_collection(name)
+    lexical_path = Path(os.environ.get("LEXICAL_DB_PATH", ROOT / "data" / "lexical_v3.sqlite3"))
+    for key in attachment_keys:
+        got = collection.get(where={"attachmentKey": key}, include=[])
+        ids = got.get("ids") or []
+        if not ids:
+            continue
+        for start in range(0, len(ids), 500):
+            collection.delete(ids=ids[start:start + 500])
+        removed["chroma"] += len(ids)
+        removed["fts"] += delete_by_chunk_ids(ids, path=lexical_path) or 0
+    return removed
+
+
 async def main_async(args: argparse.Namespace) -> int:
     api = ZoteroLocalAPI()
     attachments = await api.list_normalized_attachments(
@@ -176,15 +205,31 @@ async def main_async(args: argparse.Namespace) -> int:
               "Refusing to purge on a partial view of the library.", file=sys.stderr)
         return 1
 
+    manifest_path = ROOT / "data" / "manifest_v3.json"
     live = live_item_keys(attachments, notes)
     parents = attachment_parents(attachments)
     report = classify_ledger_keys(_ledger_keys(), live_keys=live,
                                   attachment_parents_map=parents)
 
+    # Candidates must come from what is *indexed*, not only from what the
+    # ledger happens to know. An attachment deleted from Zotero that still
+    # holds chunks has no ledger rows to be found by, and is not a stale
+    # manifest row either (stale requires the chunks to be gone already), so
+    # nothing proposed it for removal: two such attachments were serving 1,286
+    # chunks of deleted material (2026-07-28). Every candidate is still
+    # confirmed against Zotero individually before anything is deleted.
+    live_attachments = {
+        str(getattr(attachment, "attachmentKey", "")) for attachment in attachments
+    }
+    live_attachments.discard("")
+    indexed_attachments = set(list_attachment_keys(collection_name=active_collection_name()))
+    indexed_attachments |= set(load_manifest(manifest_path).get("files") or {})
+    orphan_attachments = sorted(indexed_attachments - live_attachments - live)
+
     gone, unconfirmed = await _confirm_deleted(api, report.deleted)
+    gone_attachments, unconfirmed_attachments = await _confirm_deleted(api, orphan_attachments)
     counts = _count_content(gone + unconfirmed + report.reparented)
 
-    manifest_path = ROOT / "data" / "manifest_v3.json"
     manifest = load_manifest(manifest_path)
     stale_rows = stale_manifest_keys(
         manifest.get("files") or {},
@@ -196,6 +241,8 @@ async def main_async(args: argparse.Namespace) -> int:
         "live_item_keys": len(live),
         "confirmed_deleted": [{"item_key": k, **counts.get(k, {})} for k in gone],
         "unconfirmed_skipped": [{"item_key": k, **counts.get(k, {})} for k in unconfirmed],
+        "deleted_attachments_still_indexed": gone_attachments,
+        "attachments_unconfirmed_skipped": unconfirmed_attachments,
         "stale_manifest_rows": [
             {"attachment_key": k,
              "title": ((manifest.get("files") or {}).get(k) or {}).get("title", "")}
@@ -214,6 +261,12 @@ async def main_async(args: argparse.Namespace) -> int:
         for key in report.reparented:
             db_relations.drop_stale_identity_rows(key, parents.get(key, ""))
         payload["reparented_rows_retired"] = len(report.reparented)
+        if gone_attachments:
+            payload["attachment_content_removed"] = _purge_attachments(gone_attachments)
+            files = manifest.get("files") or {}
+            for key in gone_attachments:
+                files.pop(key, None)
+            save_manifest(manifest_path, manifest)
         if stale_rows:
             files = manifest.get("files") or {}
             for key in stale_rows:
@@ -222,7 +275,7 @@ async def main_async(args: argparse.Namespace) -> int:
         payload["manifest_rows_removed"] = len(stale_rows) if args.apply else 0
 
     print(json.dumps(payload, ensure_ascii=False, indent=2))
-    if not args.apply and (gone or report.reparented or stale_rows):
+    if not args.apply and (gone or report.reparented or stale_rows or gone_attachments):
         print("\n[DRY-RUN] Nothing was deleted. Re-run with --apply to purge.",
               file=sys.stderr)
     return 0
