@@ -186,10 +186,21 @@ def extract_main_text_from_html(raw_html: str) -> str:
     return html_to_text(raw_html)
 
 
+#: The walk stops *before* these, so their own attributes never classify the
+#: content they contain. ``<main>`` is by definition the document's principal
+#: content, so a zone term on it applies to everything inside and therefore
+#: distinguishes nothing -- while the zones it can select are exclusionary.
+#: A Squarespace page carries ``<main class="Index">`` (their name for a
+#: landing-page layout, not a book index), which marked all 790 elements of a
+#: 65,000-character essay ``zone="index"`` and so ``retrieval_policy="exclude"``:
+#: the document vanished from search entirely (TA2PTL9B, 2026-07-28).
+_CONTENT_ROOTS = {"html", "body", "main", None}
+
+
 def _semantic_tokens(tag: Any) -> set[str]:
     """Collect EPUB/ARIA/class semantics from a tag and its ancestors."""
     tokens: set[str] = set()
-    while tag is not None and getattr(tag, "name", None) not in {"html", "body", None}:
+    while tag is not None and getattr(tag, "name", None) not in _CONTENT_ROOTS:
         for attribute in ("epub:type", "role", "class", "id"):
             value = tag.get(attribute)
             for item in value if isinstance(value, list) else [value]:

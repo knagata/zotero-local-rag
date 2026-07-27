@@ -31,6 +31,7 @@ load_dotenv_native(ROOT)
 
 from src.manifest import load_manifest
 from src.pdf_provenance import SCAN_DERIVED_CLASSES, classify_pdf_source
+from src.db_relations import get_artifact_processing_statuses
 from src.zotero_source_localapi import ZoteroLocalAPI
 
 
@@ -268,6 +269,54 @@ def retry_deferred(queue_path: Path, attachment_keys: set[str] | None = None) ->
     return retried
 
 
+def reconcile_adopted(queue_path: Path) -> int:
+    """Close out deferrals whose Mistral Batch result has since been adopted.
+
+    A deferral is a claim about the *future* -- "this document is waiting on a
+    Batch send". Nothing retired that claim once the send happened, so the
+    label outlived the work it described. Reading the queue months later, 31
+    documents looked unsent when their results had been adopted on 2026-07-27,
+    and the next step would have been to pay to OCR them a second time
+    (2026-07-28).
+
+    The ledger is the authority, not this file: a row is closed only when
+    ``artifact_processing_status`` records the extraction as succeeded with the
+    Mistral processor. A deferral with no such record is left alone, because
+    "not yet adopted" and "adopted but unrecorded" must not be conflated in the
+    direction that loses work.
+    """
+    queue = _read_json(queue_path)
+    rows = queue.get("items") if isinstance(queue.get("items"), list) else []
+    adopted = {
+        str(row.get("attachment_key") or ""): row
+        for row in get_artifact_processing_statuses(artifact_type="extraction")
+        if str(row.get("status")) == "success"
+        and str(row.get("processor_version") or "").startswith("mistral")
+    }
+    closed = 0
+    for row in rows:
+        if not isinstance(row, dict) or row.get("status") != "deferred":
+            continue
+        if str(row.get("attachment_key") or "") not in adopted:
+            continue
+        row["status"] = "completed_via_mistral_batch"
+        row["reconciled_at"] = _now()
+        closed += 1
+    if closed:
+        queue["summary"] = _summarise(rows)
+        _write_json(queue_path, queue)
+    return closed
+
+
+def _summarise(rows: list[Any]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        if isinstance(row, dict):
+            status = str(row.get("status") or "pending")
+            counts[status] = counts.get(status, 0) + 1
+    return counts
+
+
 def recover_interrupted(queue_path: Path) -> int:
     """Return rows left ``running`` by an interrupted supervisor to pending."""
     queue = _read_json(queue_path)
@@ -292,10 +341,18 @@ def main() -> int:
     parser.add_argument("--max-attempts", type=int, default=3)
     parser.add_argument("--attachment", action="append", help="Run only this attachment key; repeatable.")
     parser.add_argument("--retry-deferred", action="store_true", help="Explicitly retry deferred selected item(s).")
+    parser.add_argument(
+        "--reconcile-adopted", action="store_true",
+        help="Close deferrals whose Batch result the ledger records as adopted.",
+    )
     parser.add_argument("--recover-interrupted", action="store_true", help="Reset stale running rows before a resume.")
     parser.add_argument("--log-dir", type=Path, default=DEFAULT_LOG_DIR)
     parser.add_argument("--audit-dir", type=Path, default=DEFAULT_AUDIT_DIR)
     args = parser.parse_args()
+    if args.reconcile_adopted:
+        print(json.dumps({"reconciled": reconcile_adopted(args.queue)}, ensure_ascii=False))
+        return 0
+
     if not args.prepare and not args.run:
         parser.error("select --prepare, --run, or both")
     if args.max_attempts < 1 or args.limit < 0:

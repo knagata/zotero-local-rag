@@ -323,6 +323,31 @@ A（PDF構造化）・B（課金LLM）は独立、C（構造抽出エンジン�
     監査のglobal failureは0になった（`passed:false`は残るが、これは未移行の
     legacy 526件によるもので別件）。
 
+- [x] ~~**U8: zone誤分類で資料が1件まるごと検索から消えていた**~~ (2026-07-28)
+  - `excavating.ai.html`（Crawford & Paglen、65,000字）の全ノードが`zone=index` /
+    `retrieval_policy=exclude`。`retrieval_policy_allowed()`はRRF統合後の全ヒットに
+    適用されるので、階層検索だけでなく通常の`rag_search`からも**完全に不可視**だった。
+  - 原因は **`<main class="Index">`** ただ1つ。Squarespaceがランディングページの
+    レイアウト名に使う語で、書籍の索引とは無関係。`_semantic_tokens()`が祖先を遡るため、
+    `<main>`配下の790要素すべてがこれを継承していた。
+  - 対処1: 走査を`main`の手前で止める（`_CONTENT_ROOTS`）。`<main>`は定義上その文書の
+    主要コンテンツなので、そこに付いたzone語は全体に等しく掛かり、何も区別しない。
+  - 対処2: `_reclaim_fully_excluded_document()`。**内容を持つ葉がすべて除外zoneなら
+    body へ戻す。** zone判定は文書の一部についての推測であって、全体に当たった時点で
+    構造の記述をやめて文書を消している。自分の索引だけで構成された文書は存在しない。
+    `corrupted`は対象外（意図的な除外であって誤分類ではない）。テスト3件。
+  - 再取込・再構築後、検索1〜5位をこの資料が占める（直前まで0件）。
+  - **未解決**: 同資料の237,831字が`endnote`（本文は50,611字）。比率が不自然で見出し
+    パスの引きずりが疑われるが、`endnote`は`explicit_only`で不可視ではないため別件。
+- [x] ~~**U9: Mistral batch採用後にキューが更新されない**~~ (2026-07-28)
+  - deferralは「これから送る」という将来についての主張だが、送信・採用後にそれを retire
+    する手順が無く、ラベルが作業より長く生き残っていた。31件が未送信に見え、**同じ資料に
+    二重課金する寸前**だった（実際にユーザーはこの誤報告を受けて入金した）。
+  - `--reconcile-adopted`を追加。判断の権威はキューではなく台帳で、
+    `artifact_processing_status`が`success`かつ`processor_version=mistral*`の行だけを閉じる。
+    台帳に記録が無いdeferralは触らない（「未採用」と「採用済みだが未記録」を、作業を失う
+    方向に混同しないため）。Docling成功でクラウドdeferralを閉じないこともテストで固定。
+
 ### Phase 4準備: 設計レビュー指摘の修正（backfill前・正本: `dev-notes/current/76_v3_design_review_refactoring_plan.md`）
 
 - [x] ~~**R1（P1・pilot前必須）: 要約の差分スキップを実装する**~~ (2026-07-23)

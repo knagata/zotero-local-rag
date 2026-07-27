@@ -359,6 +359,54 @@ def attach_structure_metadata(
     return output
 
 
+#: Zones whose policy removes content from ordinary retrieval. "corrupted" is
+#: deliberately absent: text known to be garbage is *meant* to be excluded, and
+#: a document that is entirely corrupted has not been misclassified.
+_EXCLUDING_ZONES = {"index", "toc", "bibliography", "colophon", "other_paratext"}
+
+
+def _reclaim_fully_excluded_document(nodes: List[Dict[str, Any]]) -> str:
+    """Restore a document whose every content-bearing leaf was excluded.
+
+    A zone heuristic is a guess about *part* of a document. Applied to all of
+    it, the guess has stopped describing structure and simply erases the work.
+    No real document consists solely of its own index or table of contents, so
+    this outcome is a misclassification by construction, whatever produced it.
+    Left alone it fails silently and invisibly -- the document is not ranked
+    badly in search, it is absent from it.
+
+    Only leaves are consulted: intermediate heading nodes take their zone from
+    the heading itself and stay ``body``, so a whole-document check that
+    included them would never fire. Found via ``<main class="Index">`` on a
+    Squarespace page, which marked a 65,000-character essay a book index
+    (TA2PTL9B, 2026-07-28). The heuristic is fixed in ``html_extract``; this
+    guard is here because the next such token will come from somewhere else.
+
+    Returns the zone that was reclaimed, or "" when nothing was changed.
+    """
+    parents = {str(node.get("parent_node_id") or "") for node in nodes}
+    leaves = [
+        node for node in nodes
+        if str(node.get("node_id")) not in parents
+        and int(node.get("content_chars") or 0) > 0
+    ]
+    if not leaves:
+        return ""
+    zones = {str(node.get("zone") or "") for node in leaves}
+    if len(zones) != 1:
+        return ""
+    zone = zones.pop()
+    if zone not in _EXCLUDING_ZONES:
+        return ""
+    summary_policy, retrieval_policy, citation_policy = ZONE_POLICIES["body"]
+    for node in leaves:
+        node["zone"] = "body"
+        node["summary_policy"] = summary_policy
+        node["retrieval_policy"] = retrieval_policy
+        node["citation_policy"] = citation_policy
+    return zone
+
+
 def build_document_structure(item_key: str, chunks: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
     """Build a canonical tree from ordered extractor chunks.
 
@@ -480,6 +528,9 @@ def build_document_structure(item_key: str, chunks: Sequence[Dict[str, Any]]) ->
     })
     if not diagnostics["valid"]:
         raise ValueError(f"invalid generated document structure: {diagnostics['errors']}")
+    reclaimed = _reclaim_fully_excluded_document(nodes)
+    if reclaimed:
+        diagnostics["reclaimed_fully_excluded_zone"] = reclaimed
     if explicit_runs and not fallback_runs:
         status, confidence = "exact", 0.85
     elif explicit_runs:

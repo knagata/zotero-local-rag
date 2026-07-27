@@ -150,3 +150,54 @@ class U5QueueStateTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReconcileAdoptedTests(unittest.TestCase):
+    """A deferral is a claim about the future and must be retired when met.
+
+    Nothing closed a deferral once its Batch result was adopted, so the label
+    outlived the work. Read back later, 31 documents looked unsent when their
+    results had been adopted, and the next step would have been to pay to OCR
+    them a second time (2026-07-28).
+    """
+
+    def _queue(self, tmp, rows):
+        path = Path(tmp) / "queue.json"
+        path.write_text(json.dumps({"schema_version": "x", "items": rows}), encoding="utf-8")
+        return path
+
+    def test_a_deferral_the_ledger_calls_adopted_is_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._queue(tmp, [{"attachment_key": "A", "status": "deferred"}])
+            ledger = [{"attachment_key": "A", "status": "success", "processor_version": "mistral_ocr"}]
+            with patch.object(MODULE, "get_artifact_processing_statuses", return_value=ledger):
+                self.assertEqual(MODULE.reconcile_adopted(path), 1)
+            row = json.loads(path.read_text())["items"][0]
+            self.assertEqual(row["status"], "completed_via_mistral_batch")
+            self.assertIn("reconciled_at", row)
+
+    def test_a_deferral_with_no_ledger_record_is_left_alone(self):
+        # "not yet adopted" and "adopted but unrecorded" must not be conflated
+        # in the direction that silently drops the work.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._queue(tmp, [{"attachment_key": "A", "status": "deferred"}])
+            with patch.object(MODULE, "get_artifact_processing_statuses", return_value=[]):
+                self.assertEqual(MODULE.reconcile_adopted(path), 0)
+            self.assertEqual(json.loads(path.read_text())["items"][0]["status"], "deferred")
+
+    def test_a_local_extraction_does_not_close_a_cloud_deferral(self):
+        # The document was deferred *to Mistral*; a later Docling success is a
+        # different outcome and must not be read as the Batch having landed.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._queue(tmp, [{"attachment_key": "A", "status": "deferred"}])
+            ledger = [{"attachment_key": "A", "status": "success", "processor_version": "docling"}]
+            with patch.object(MODULE, "get_artifact_processing_statuses", return_value=ledger):
+                self.assertEqual(MODULE.reconcile_adopted(path), 0)
+
+    def test_rows_in_other_states_are_untouched(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._queue(tmp, [{"attachment_key": "A", "status": "completed"}])
+            ledger = [{"attachment_key": "A", "status": "success", "processor_version": "mistral_ocr"}]
+            with patch.object(MODULE, "get_artifact_processing_statuses", return_value=ledger):
+                self.assertEqual(MODULE.reconcile_adopted(path), 0)
+            self.assertEqual(json.loads(path.read_text())["items"][0]["status"], "completed")
