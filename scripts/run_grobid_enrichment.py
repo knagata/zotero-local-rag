@@ -19,6 +19,7 @@ from src.db_relations import (
     get_item_processing_status, mark_artifact_status, stage_reference_candidates,
 )
 from src.env_utils import load_dotenv_native
+from src.feature_gates import grobid_enrichment_enabled, verify_enabled_features
 from src.grobid_enrichment import process_pdf, should_enrich
 from src.text_utils import detect_lang
 from src.zotero_source_localapi import ZoteroLocalAPI
@@ -121,7 +122,23 @@ def main(argv: list[str] | None = None) -> int:
     if args.limit < 0:
         parser.error("--limit must be non-negative")
     args.dry_run = not args.apply
-    os.environ["GROBID_ENRICHMENT_ENABLE"] = "1"
+    # Previously this forced the flag on, which made the flag decorative and
+    # meant "GROBID is off" and "GROBID is running" were never checked at the
+    # one place that can act on them.  Enabling the feature is now the
+    # operator's declaration, and a declaration without a service is an error
+    # rather than a silent no-op (see src/feature_gates.py).
+    if not grobid_enrichment_enabled():
+        print(
+            "GROBID enrichment is off. Set GROBID_ENRICHMENT_ENABLE=1 in .env "
+            "and start a local GROBID service before running this worker.",
+            file=sys.stderr,
+        )
+        return 2
+    problems = verify_enabled_features()
+    if problems:
+        for problem in problems:
+            print(problem, file=sys.stderr)
+        return 2
     result = asyncio.run(run(args))
     print(json.dumps({**result, "dry_run": args.dry_run}, ensure_ascii=False))
     return 0 if result["failed"] == 0 else 3

@@ -54,6 +54,10 @@ uv run python -m src.reference_quality_report --status pending
 対象はZotero種別が`journalArticle`、`conferencePaper`、`preprint`の英語PDFだけです。
 同じPDF SHA-256とGROBID versionで成功済みなら再処理せず、GROBID障害は埋め込み・manifest・Chromaへ影響しません。
 
+実行前に`.env`で`GROBID_ENRICHMENT_ENABLE=1`を設定し、ローカルGROBID serviceを起動してください。
+flagが`0`のとき、またはflagが`1`なのにserviceが応答しないときは、workerが処理を始める前にexit code 2で停止します
+（他のoptional機能と同じく`src/feature_gates.py`が判定します）。
+
 ## 検索品質評価
 
 ```bash

@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from src import build_summaries
+from src import db_relations
 from src import summary_core
 from src.build_summaries import SECTION_WINDOW, split_sections
 from src.embedder import resolve_collection_name
@@ -17,6 +18,29 @@ from src.llm_client import RateLimitReached
 
 
 class SummaryPipelineTests(unittest.TestCase):
+    def setUp(self) -> None:
+        """Isolate the database.
+
+        Without this, three cases here reached the *real* data/relations.db --
+        mark_insight_generation_status was not mocked, so running the suite
+        upserted a row into a legacy table that the retirement audit watches for
+        new writes. The audit's write-zero gate then failed on rows the tests
+        had produced, which is exactly the signal it exists to give about
+        production traffic (2026-07-28). Every other suite touching db_relations
+        already patches DB_PATH in setUp; this file was the omission.
+        """
+        self._tempdir = tempfile.TemporaryDirectory()
+        self._db_patch = patch.object(
+            db_relations, "DB_PATH", str(Path(self._tempdir.name) / "relations.db"),
+        )
+        self._db_patch.start()
+        db_relations._db_initialized = False
+
+    def tearDown(self) -> None:
+        self._db_patch.stop()
+        db_relations._db_initialized = False
+        self._tempdir.cleanup()
+
     def test_codex_schemas_are_strict_objects(self):
         def assert_strict(schema):
             if schema.get("type") == "object":

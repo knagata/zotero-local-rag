@@ -26,7 +26,15 @@ MAX_SEGMENT_CHARS = 30_000
 ZONE_POLICIES = {
     "body": ("include", "normal", "none"),
     "footnote": ("exclude", "explicit_only", "extract"),
-    "endnote": ("exclude", "explicit_only", "extract"),
+    # Endnotes are searchable like body text (user decision, 2026-07-28). In the
+    # humanities the substantive argument often lives in them -- one essay here
+    # carries 12,717 characters in note [1] alone -- so gating them behind a
+    # query that happens to contain the word "note" loses exactly the buried
+    # material this index exists to surface. Footnotes stay explicit_only:
+    # they are predominantly bibliographic. The zone travels with each result
+    # so a reader can still see that a passage came from the notes.
+    # summary_policy stays "exclude": notes must not feed a section's summary.
+    "endnote": ("exclude", "normal", "extract"),
     "bibliography": ("exclude", "exclude", "extract"),
     "toc": ("exclude", "exclude", "none"),
     "index": ("exclude", "exclude", "none"),

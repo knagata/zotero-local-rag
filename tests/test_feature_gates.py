@@ -22,7 +22,7 @@ ALL_GATES = (
     fg.ai_toc_enabled, fg.ocr_layer_audit_enabled, fg.query_expansion_enabled,
     fg.llm_summaries_enabled, fg.llm_reference_extraction_enabled,
     fg.mistral_batch_queue_enabled, fg.citation_network_enabled,
-    fg.pdf_structure_recovery_enabled,
+    fg.pdf_structure_recovery_enabled, fg.grobid_enrichment_enabled,
 )
 
 _CLEARED = {
@@ -32,6 +32,7 @@ _CLEARED = {
     "QUERY_EXPANSION_ENABLE": "", "LLM_SUMMARIES_ENABLE": "",
     "LLM_REFERENCE_EXTRACTION_ENABLE": "", "PDF_MISTRAL_TOC_QUEUE_ENABLE": "",
     "CITATION_NETWORK_ENABLE": "", "PDF_STRUCTURE_RECOVERY_ENABLE": "",
+    "GROBID_ENRICHMENT_ENABLE": "", "GROBID_URL": "",
     # Choice (C). Omitting these let a developer's real .env -- loaded into
     # os.environ by an unrelated test earlier in the run -- decide the engine,
     # so these cases passed alone and failed in the full suite.
@@ -227,3 +228,70 @@ class StructureEngineTests(unittest.TestCase):
         with env, dotenv, patch.object(fg, "granite_configured", return_value=False):
             problems = fg.verify_enabled_features()
         self.assertTrue(any("granite" in p for p in problems))
+
+
+def _ok_response():
+    """A stand-in for a live ``/api/isalive`` reply."""
+    return type("Response", (), {"status_code": 200})()
+
+
+class GrobidGateTests(unittest.TestCase):
+    """GROBID's resource is a running service, not a key (note 84).
+
+    Every other requirement can be settled from configuration, so it is
+    checked on every start. GROBID needs no credential, which means the only
+    thing worth verifying is whether the service answers -- and that costs a
+    request. ``FEATURE_REQUIREMENTS`` makes the cost proportionate: the probe
+    happens only for a feature someone deliberately switched on.
+    """
+
+    def setUp(self):
+        fg.reset_grobid_probe()
+
+    def tearDown(self):
+        fg.reset_grobid_probe()
+
+    def test_the_url_defaults_to_the_local_service(self):
+        env, dotenv = _env()
+        with env, dotenv:
+            self.assertEqual(fg.grobid_url(), fg.DEFAULT_GROBID_URL)
+
+    def test_a_trailing_slash_is_not_carried_into_request_paths(self):
+        env, dotenv = _env(GROBID_URL="http://127.0.0.1:8070/")
+        with env, dotenv:
+            self.assertEqual(fg.grobid_url(), "http://127.0.0.1:8070")
+
+    def test_enabled_without_a_running_service_is_reported(self):
+        env, dotenv = _env(GROBID_ENRICHMENT_ENABLE="1")
+        with env, dotenv, patch("httpx.get", side_effect=OSError("refused")):
+            problems = fg.verify_enabled_features()
+        self.assertEqual(len(problems), 1)
+        self.assertIn("GROBID enrichment", problems[0])
+        self.assertIn("GROBID_URL", problems[0])
+
+    def test_enabled_with_a_running_service_is_coherent(self):
+        env, dotenv = _env(GROBID_ENRICHMENT_ENABLE="1")
+        response = _ok_response()
+        with env, dotenv, patch("httpx.get", return_value=response):
+            self.assertEqual(fg.verify_enabled_features(), [])
+
+    def test_a_stopped_service_is_not_probed_while_the_feature_is_off(self):
+        # The probe is affordable only because it never runs for an install
+        # that is not using GROBID.
+        env, dotenv = _env()
+        with env, dotenv, patch("httpx.get") as get:
+            self.assertEqual(fg.verify_enabled_features(), [])
+            get.assert_not_called()
+
+    def test_the_probe_is_asked_once_per_process(self):
+        env, dotenv = _env()
+        response = _ok_response()
+        with env, dotenv, patch("httpx.get", return_value=response) as get:
+            self.assertTrue(fg.grobid_service_available())
+            self.assertTrue(fg.grobid_service_available())
+        self.assertEqual(get.call_count, 1)
+
+    def test_an_unreachable_service_is_false_rather_than_an_exception(self):
+        env, dotenv = _env()
+        with env, dotenv, patch("httpx.get", side_effect=OSError("refused")):
+            self.assertFalse(fg.grobid_service_available())

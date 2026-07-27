@@ -95,14 +95,17 @@ LLMロールはプロバイダ接頭辞つきで指定します（例: `deepseek
 | `SUMMARY_BATCH_MAX_ITEMS` / `SUMMARY_BATCH_WORKERS` | メンテナンス要約バッチの規模・並列度 |
 | `MAINTENANCE_AUTO_APPROVE` | `1`ならWidgetの全確認を自動許可、`0`なら対話確認 | `1` |
 
-### クラウド送信ポリシー（fail-closed）
+### クラウド送信ポリシー
 
-本文をLLMへ送る処理は、次のいずれかのポリシーが明示されるまで安全のため停止します。
+クラウドへ本文を送るかどうかは**機能フラグそのものが決めます**（`LLM_*`ロール、
+`PDF_AI_TOC_FAST_PATH_ENABLE`、`PDF_MISTRAL_TOC_QUEUE_ENABLE`）。既定はすべて`0`で、
+有効なのに必要な鍵が無ければ起動時に停止します。
 
-| 変数 | 用途 |
-|---|---|
+資料単位の除外タグ・`*_ALLOW_CLOUD_ALL`・`MISTRAL_OCR_FALLBACK_ENABLE`は2026-07-27に
+撤去しました。**Zoteroライブラリの資料はRAGで使う時点でチャンクがクラウドへ送られる**ため、
+資料単位で「クラウド不可」を表明する仕組みは実態と噛み合っていませんでした。
 
-除外タグは秘密値と分離して `.env.policy`（Git管理外）に置けます。詳細は
+詳細は
 [LLMとプライバシー](llm-and-privacy.md) を参照してください。
 
 ### PDFルーティング
@@ -135,7 +138,6 @@ AIの印刷ページ番号は採用せず、本文で再発見した見出しの
 | `RAPIDOCR_DPI` / `RAPIDOCR_MIN_CONFIDENCE` | 固定レイアウトEPUB・明示re-OCR向けの英/他言語OCR（通常PDFルートでは使わない） | `200` / `0.45` |
 | `NDLOCR_BIN` / `NDLOCR_DPI` / `NDLOCR_TIMEOUT_SEC` | 日本語ローカルOCR（NDLOCR-Lite） | — / `200` / `14400` |
 | `MISTRAL_OCR_API_KEY` / `MISTRAL_OCR_MODEL` / `MISTRAL_OCR_BASE_URL` | Mistral OCR（クラウド・Batch API）。専用queue採用に使用 | — |
-| `MISTRAL_OCR_FALLBACK_ENABLE` | 明示re-OCR用の同期Mistral許可。通常PDFの自動経路はBatch queueのみ | `0` |
 | `MISTRAL_OCR_BATCH_MAX_INPUT_BYTES` | Batch入力のbase64 JSONL概算上限。大容量PDFを一括uploadせず、残りは次回Batchへ回す | `104857600`（100 MiB） |
 | `MISTRAL_OCR_BATCH_UPLOAD_WORKERS` | 分割したBatch入力を並列uploadする最大数 | `3` |
 
@@ -149,7 +151,7 @@ V3へ採用します。採用済みBatchは状態ファイルに記録され、�
 
 | 変数 | 用途 | 既定 |
 |---|---|---|
-| `GROBID_ENRICHMENT_ENABLE` | `1`で、独立workerから英語の`journalArticle`/`conferencePaper`/`preprint`をGROBID reference enrichment対象にする。埋め込みtransaction内では呼ばない | `0` |
+| `GROBID_ENRICHMENT_ENABLE` | `1`で、独立workerから英語の`journalArticle`/`conferencePaper`/`preprint`をGROBID reference enrichment対象にする。埋め込みtransaction内では呼ばない。`0`のままworkerを実行すると、黙って何もせずに終わらずexit code 2で停止する | `0` |
 | `GROBID_URL` | ローカルGROBID REST serviceのbase URL | `http://127.0.0.1:8070` |
 | `GROBID_TIMEOUT_SEC` | 1資料あたりのHTTP timeout秒 | `120` |
 

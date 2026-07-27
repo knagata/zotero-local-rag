@@ -1064,6 +1064,10 @@ def rag_search(
                     "chapter": md.get("chapter"),
                     "section": md.get("section"),
                     "lang": md.get("lang"),
+                    # Endnotes are returned in ordinary results, so the reader
+                    # needs to see when a passage is one -- an unmarked note
+                    # reads as body text and would be cited as such.
+                    "zone": md.get("zone"),
                 },
             }
         )

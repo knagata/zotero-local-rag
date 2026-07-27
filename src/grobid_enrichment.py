@@ -10,6 +10,11 @@ import xml.etree.ElementTree as ET
 
 import httpx
 
+try:
+    from .feature_gates import DEFAULT_GROBID_URL, grobid_enrichment_enabled
+except ImportError:  # direct execution with src/ on sys.path
+    from feature_gates import DEFAULT_GROBID_URL, grobid_enrichment_enabled
+
 NS = {"tei": "http://www.tei-c.org/ns/1.0"}
 XML_ID = "{http://www.w3.org/XML/1998/namespace}id"
 SUPPORTED_ITEM_TYPES = {"journalArticle", "conferencePaper", "preprint"}
@@ -28,7 +33,7 @@ class GrobidResult:
 
 def should_enrich(*, item_type: str | None, language: str | None, source_type: str) -> bool:
     return (
-        os.environ.get("GROBID_ENRICHMENT_ENABLE", "0").strip() == "1"
+        grobid_enrichment_enabled()
         and source_type == "pdf"
         and str(item_type or "") in SUPPORTED_ITEM_TYPES
         and str(language or "").casefold().split("-")[0] == "en"
@@ -106,7 +111,7 @@ def parse_tei(xml_text: str) -> GrobidResult:
 
 
 def process_pdf(pdf_path: Path, *, timeout: float | None = None) -> GrobidResult:
-    base = os.environ.get("GROBID_URL", "http://127.0.0.1:8070").rstrip("/")
+    base = (os.environ.get("GROBID_URL") or DEFAULT_GROBID_URL).rstrip("/")
     request_timeout = timeout or float(os.environ.get("GROBID_TIMEOUT_SEC", "120"))
     with pdf_path.open("rb") as handle:
         response = httpx.post(

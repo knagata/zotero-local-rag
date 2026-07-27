@@ -83,6 +83,47 @@ def citation_network_configured() -> bool:
     return bool(_env("S2_API_KEY"))
 
 
+DEFAULT_GROBID_URL = "http://127.0.0.1:8070"
+
+#: Memoised health probe result, so a single process asks the service once.
+_grobid_probe: bool | None = None
+
+
+def grobid_url() -> str:
+    _ensure_env_loaded()
+    return (_env("GROBID_URL") or DEFAULT_GROBID_URL).rstrip("/")
+
+
+def grobid_service_available() -> bool:
+    """Whether a local GROBID service answers right now.
+
+    Unlike the other requirements this one cannot be settled from
+    configuration alone: GROBID needs no key, so "configured" and "running"
+    are the same question and only the service can answer it. The probe is
+    affordable precisely because it is reached through ``FEATURE_REQUIREMENTS``,
+    which asks only about features that are switched on -- and the flag is off
+    unless an operator turned it on. Forgetting to start the service is the
+    ordinary GROBID mistake, and it is the one this turns into a message.
+    """
+    global _grobid_probe
+    if _grobid_probe is not None:
+        return _grobid_probe
+    try:
+        import httpx
+
+        response = httpx.get(f"{grobid_url()}/api/isalive", timeout=2.0)
+        _grobid_probe = response.status_code == 200
+    except Exception:
+        _grobid_probe = False
+    return _grobid_probe
+
+
+def reset_grobid_probe() -> None:
+    """Forget the cached probe (a long-lived process may outlive the service)."""
+    global _grobid_probe
+    _grobid_probe = None
+
+
 def flag_enabled(name: str, *, default: bool = False) -> bool:
     """Resolve a feature flag. Unset means off unless a caller says otherwise."""
     _ensure_env_loaded()
@@ -115,6 +156,10 @@ FEATURE_REQUIREMENTS = {
     "CITATION_NETWORK_ENABLE": (
         "Citation Network", "S2_API_KEY", citation_network_configured,
     ),
+    "GROBID_ENRICHMENT_ENABLE": (
+        "GROBID enrichment", "a running local GROBID service (GROBID_URL)",
+        grobid_service_available,
+    ),
 }
 
 
@@ -144,6 +189,16 @@ def mistral_batch_queue_enabled() -> bool:
 
 def citation_network_enabled() -> bool:
     return flag_enabled("CITATION_NETWORK_ENABLE")
+
+
+def grobid_enrichment_enabled() -> bool:
+    """Whether the separate GROBID worker may run.
+
+    Deliberately not consulted inside the embedding transaction: GROBID is a
+    post-embedding evidence stage, and a stopped service must never hold up
+    indexing.
+    """
+    return flag_enabled("GROBID_ENRICHMENT_ENABLE")
 
 
 def pdf_structure_recovery_enabled() -> bool:
@@ -275,6 +330,8 @@ def enabled_features() -> dict[str, bool]:
         "llm_reference_extraction": llm_reference_extraction_enabled(),
         "mistral_batch_queue": mistral_batch_queue_enabled(),
         "citation_network": citation_network_enabled(),
+        # Flag state only: the snapshot must stay free of network probes.
+        "grobid_enrichment": grobid_enrichment_enabled(),
     }
 
 
@@ -283,6 +340,8 @@ __all__ = [
     "STRUCTURE_ENGINES", "granite_configured", "structure_engine_for",
     "structure_engine_page_boundary", "ai_toc_enabled", "citation_network_configured",
     "citation_network_enabled", "cloud_ocr_configured", "enabled_features",
+    "DEFAULT_GROBID_URL", "grobid_enrichment_enabled", "grobid_service_available",
+    "grobid_url", "reset_grobid_probe",
     "flag_enabled", "llm_configured", "llm_reference_extraction_enabled",
     "llm_summaries_enabled", "mistral_batch_queue_enabled",
     "ocr_layer_audit_enabled", "pdf_structure_recovery_enabled",

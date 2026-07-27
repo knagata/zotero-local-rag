@@ -52,7 +52,6 @@ Mistral OCRだけで、Semantic Scholarの鍵は無料です（ただし鍵な�
 | `LLM_CHEAP` / `LLM_STANDARD` / `LLM_REVIEW` | 要約・参照抽出・品質判定 |
 | `PDF_AI_TOC_FAST_PATH_ENABLE` | AI目次（冒頭20頁を送信） |
 | `PDF_MISTRAL_TOC_QUEUE_ENABLE` | Mistral OCR Batch（ファイル全体を送信） |
-| `MISTRAL_OCR_FALLBACK_ENABLE` | Mistral OCR 同期フォールバック（ファイル全体） |
 
 ## LLM要約
 

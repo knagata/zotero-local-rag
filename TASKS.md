@@ -86,7 +86,20 @@
     既存`reference_review_queue`へreview-onlyでstageする。works graphへ直接書かない。
   - 実論文`FRIZY8BS`で9 references、4/4 citation linksを保存し、同fingerprint再実行がservice
     停止中でもskipされることを確認。関連19テスト成功。
-- [ ] **GROBID enrichmentの運用方法を確定する**
+- [x] ~~**GROBID enrichmentの運用方法を確定する**~~ (2026-07-28)
+  - **実バグ発見**: 唯一の入口`scripts/run_grobid_enrichment.py`が実行直前に
+    `os.environ["GROBID_ENRICHMENT_ENABLE"]="1"`で**flagを無条件に上書き**していた。
+    flagは装飾でしかなく、「有効なのにserviceが停止している」という最も起きやすい
+    運用ミスをどこも検出しなかった。上書きを廃止し、flag offまたは
+    `verify_enabled_features()`が問題を返す場合は1件も処理せずexit 2。
+  - `feature_gates`へ登録。GROBIDは鍵を持たないので「設定済み」＝「起動中」であり、
+    判定はhealth probe（`/api/isalive`、timeout 2秒、プロセス内memo化）しかない。
+    `FEATURE_REQUIREMENTS`は**有効な機能しか`available()`を呼ばない**ので、既定0の環境では
+    HTTPが1回も出ない（テストで固定）。診断snapshotにもprobeを入れない。
+  - 運用: launchd常駐ではなく手動起動。health checkはworker起動時のみ。実行は埋め込み直後
+    ではなく`--limit`分割の全件backfill 1回＋以後は手動追い込み（SHA-256と
+    `grobid:0.9.0-crf`のskipで差分のみ）。詳細は`dev-notes/current/84_grobid_and_epub_fallback.md`。
+  - 以下は当初の設計方針（維持）:
   - 基本方針: GROBIDをS2引用更新pipelineのローカル前処理として位置付ける。
     `PDF埋め込み → GROBID抽出 → reference照合/審査 → S2同定・外部引用network更新`の順にする。
   - GROBIDの参考文献原文・本文中引用位置は一次証拠として保持し、S2のpaper ID・正規化書誌・
@@ -105,7 +118,16 @@
     ログ保持期間を決め、通常の`--retry-failed`と混同しない専用再試行手順を文書化する。
   - 日本語その他の非対象言語を誤処理しない監査と、削除済みZotero itemに属するGROBID派生候補の
     purge方針を決定する。
-- [ ] **非標準・固定レイアウトEPUBのフォールバックを実装する**
+- [x] ~~**非標準・固定レイアウトEPUBのフォールバックを実装する**~~ (2026-07-28・実装済みを確認)
+  - 実データ検証: manifest上のEPUB **200件すべてが索引済み、チャンク0件は0件**。
+    engine内訳は`epub_dom` 192 / `epub_dom_leaf_fallback`のみ3・混在2 /
+    `ndlocr-lite_epub_fixed_layout` 2 / `rapidocr_epub_fixed_layout` 1。
+  - note 74の5件は全て回収済み（XASKBF88 138 / EI7JN68R 183 / CAXCWCQB 1,110 /
+    CCHED4LQ 1,474 / BMKYYFCZ 1,088 チャンク）。固定レイアウト3件は`epub:spineN` locatorへ復帰。
+  - **feature gateには載せない**: 外部リソース不要で、失敗時は既存経路へ落ちる。
+    local OCR側に既にavailability判定があるため二重switchになる。
+  - 残差は`CAXCWCQB`と`4CTI73FQ`のstructure_v3が`flat_fallback`である点のみ。本文欠落ではない。
+  - 以下は当初の実装方針（達成済み）:
   - `XASKBF88` / `EI7JN68R`はSAGE系のleaf `div`本文を抽出するDOM fallbackを追加し、
     約70,990 / 87,819文字の本文を構造付きで回収する。
   - `CAXCWCQB` / `CCHED4LQ` / `BMKYYFCZ`は130 / 268 / 391ページ画像の固定レイアウト
@@ -346,8 +368,14 @@ A（PDF構造化）・B（課金LLM）は独立、C（構造抽出エンジン�
     構造の記述をやめて文書を消している。自分の索引だけで構成された文書は存在しない。
     `corrupted`は対象外（意図的な除外であって誤分類ではない）。テスト3件。
   - 再取込・再構築後、検索1〜5位をこの資料が占める（直前まで0件）。
-  - **未解決**: 同資料の237,831字が`endnote`（本文は50,611字）。比率が不自然で見出し
-    パスの引きずりが疑われるが、`endnote`は`explicit_only`で不可視ではないため別件。
+  - 同資料の237,831字が`endnote`（本文50,611字）である件は**調査のうえ対処しないと決めた**
+    (2026-07-28)。見出しパスの引きずりではない: 資料自身が`<h1>END NOTES</h1>`（DOM位置95%）
+    の下にこれらを置いており、分類は資料の構造に忠実である。注[1]だけで12,717字という
+    書き方が異例なだけで、Squarespaceの1ブロックに注と散文が混在しているため、zone層では
+    分離できない（分離するには`<p>`内部を解析する content 層の処理が要る）。
+  - **1件のために機構を足さない根拠**: 1万字超の530件を走査し、傍題(paratext)が60%を
+    超えるのはこの1件のみ。系統的な型ではない。また`endnote`は`exclude`ではなく
+    `explicit_only`なので、U8の「完全に不可視」とは深刻度が違う。
 - [x] ~~**U9: Mistral batch採用後にキューが更新されない**~~ (2026-07-28)
   - deferralは「これから送る」という将来についての主張だが、送信・採用後にそれを retire
     する手順が無く、ラベルが作業より長く生き残っていた。31件が未送信に見え、**同じ資料に
@@ -641,6 +669,18 @@ A（PDF構造化）・B（課金LLM）は独立、C（構造抽出エンジン�
   - `zotero_paragraphs_v3__sum_node` 12,280件。内訳: 要約22,118 − extractive 215（`searchable=0`、
     索引に入らないことをDBで確認済み）− 単一子の親9,623（子と同内容のため抑制）。
   - **未確認**: summary collection障害時のdirect fallback。下のR9の試験で扱う。
+
+- [x] ~~**注(endnote)を通常検索の対象にする**~~ (2026-07-28・ユーザー決定)
+  - 変更前は`endnote`/`footnote`とも`explicit_only`で、クエリに「注」「出典」等の語
+    （`_EXPLICIT_NOTE_INTENT`の正規表現）が無ければ**9,259チャンクが検索に出なかった**。
+  - 人文系では注に実質的な議論が入る。同日調べた`excavating.ai`は注[1]だけで12,717字あり、
+    「テーマ外文献に埋まった事例を探す」用途では、これを語の偶然に依存して隠すのは損失が大きい。
+  - `endnote`→`normal`（8,381チャンク＋201ノードを移行）。`footnote`は書誌情報中心のため
+    `explicit_only`のまま。`summary_policy`は両方`exclude`を維持（注が章要約に混ざるのは別問題）。
+  - **`zone`が検索結果に一切出ていなかったので`meta`へ追加した。** これが無いと注が本文と
+    区別できないまま返り、そのまま引用される。
+  - **注意**: `ZONE_POLICIES`の変更は取込時にしか効かない。`retrieval_policy`はチャンクの
+    メタデータとDB行に焼き込まれるので、既存分は個別更新が要る。
 
 ### Phase 5: 階層検索を既定へ切り替える
 
