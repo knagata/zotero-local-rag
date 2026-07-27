@@ -6,7 +6,9 @@
 
 ### Phase 3: V3並行再取込とカットオーバー監査を完走する
 
-- [ ] **V3全件再取込を小分けで実行する**（EPUB 195/200・HTML 44/44完了、PDF実行中）
+- [x] ~~**V3全件再取込を小分けで実行する**~~ (2026-07-28)
+  - manifest 586件（EPUB 200 / PDF 342 / HTML 44）。全件cutover監査が521/521で通過している
+    ことが完了の根拠（監査は全legacy itemのV3カバレッジを要求する）。
   - `INGEST_STRUCTURED_V3_ENABLE=1`で`--limit`を使い、item単位transactionで再開可能なバッチとして実行する。
   - 各バッチ後にmanifest件数、V3 Chroma件数、FTS件数、artifact失敗/再試行件数を照合する。
   - OCR由来PDFは既存テキストをV3境界へ再構成し、再OCRは専用queueへ分離する。
@@ -136,10 +138,17 @@
   - `failed/retryable`を`--retry-failed`で再実行する。
   - `empty / blocked / degraded`を混同せず、未解消item keyとreason codeを一覧化する。
   - 新規script `scripts/list_artifact_status.py`: --unresolved-only / --retryable-only / --item で照会。
-- [ ] **全件cutover auditを実行する**
-  - `scripts/audit_v3_cutover.py`を全legacy item対象で実行し、coverage 100%、重複0、zone分布、構造状態、文字量比outlierを保存する。
-  - 文字量比outlierを資料単位で説明し、説明不能な減少を0件にする。
-  - EPUB・outline PDF・無構造PDF・論文を各3件以上目視確認し、章節欠落・並置誤りを記録する。
+- [x] ~~**全件cutover auditを実行する**~~ (2026-07-28)
+  - `passed: true` / 521件中失敗0 / global failures 0。同日朝の時点では428件が失敗していた
+    （`stale_structure_fingerprint` 423 + `missing_v3_item` 5）。
+  - 削除済み5件（Zoteroが404を返す）は`--exclude-item`で除外する。この5件はlegacyにのみ残る。
+  - 構造状態: recovered 257 / exact 171 / flat_fallback 112 / unavailable 18。
+  - 保存先: `evaluations/v3_cutover_audit_current.json`。
+  - **未了分は下の2項目へ分離した**（監査の実行と、その結果の目視レビューは別作業）。
+- [ ] **EPUB・outline PDF・無構造PDF・論文を各3件以上目視確認する**
+  - 章節欠落・並置誤りを記録する。2026-07-28時点で未実施。
+  - 動機づけ: 同日、`<main class="Index">`ひとつで65,000字の資料が検索から完全に消えていた
+    （U8）。集計値はすべて正常に見えていたので、**目視でしか見つからない類の障害が現に存在する**。
 - [x] ~~**active collection切替の実行手順を確定する**~~ (2026-07-23)
   - 全件監査pass後に、active Chroma / FTS / manifestをV3へ同時切替した。
   - `.env`で`CHROMA_COLLECTION=zotero_paragraphs_v3`、`MANIFEST_PATH=data/manifest_v3.json`、
@@ -617,27 +626,33 @@ A（PDF構造化）・B（課金LLM）は独立、C（構造抽出エンジン�
   - feature自体の既定はoff。PDF再取込batchでは`PDF_AI_TOC_FAST_PATH_ENABLE=1`と
     `PDF_AI_TOC_MIN_PAGES=30`を明示して有効化する。
   - 実装詳細: `dev-notes/current/71_ai_toc_fast_path_implementation.md`
-- [ ] **V3 10件LLM要約pilotを実行する**（前提: R1・R3修正後）
-  - exact/recoveredの書籍・論文を混合し、leaf→親→item rootのbottom-up生成を実行する。
-  - 費用、時間、メタ応答率、success/empty/degraded/failed、extractive混在によるcandidate件数を記録する。
-  - 併せて親要約のcheap/standard品質比較を行い、R5（還元モデル役）を決定する。
-  - ユーザーに全件backfill判断を依頼できる比較レポートを作る。
-- [ ] **承認後にLLM要約を全件backfillする**
-  - exact/recoveredを優先し、flat_fallbackはsegment要約だけ生成する。
-  - stale/failedを差分再開し、`input_scope_json`とsource fingerprintを監査する。
-- [ ] **V3 node要約索引を構築する**
-  - accepted/candidateのLLM要約だけを`zotero_paragraphs_v3__sum_node`へ格納する。
-  - extractive要約が検索索引へ入らないことと、summary collection障害時のdirect fallbackを確認する。
+- [~] **V3 10件LLM要約pilot** — 全件backfill実施により目的を失った (2026-07-28)
+  - pilotは「全件をやるべきか」を判断するための材料集めだったが、構造再構築が423件の要約を
+    無効化したため、全件再生成が選択ではなく前提になった。実測は本番実行から得ている
+    （23,020呼び出し / 1時間13分 / workers=40で失敗0）。
+  - **未回収の論点が1つある**: 親要約のcheap/standard品質比較（R5＝還元モデル役の決定）は
+    行っていない。現状は`_deepseek_model`の既定のまま。
+- [x] ~~**承認後にLLM要約を全件backfillする**~~ (2026-07-28)
+  - 22,118件（生成23,020回、うち1,000字未満の4,385件は後から削除）。
+  - 差分再開は`_summaries_are_current()`が担当し、再実行はLLM呼び出し0で済む。
+  - **計画と違えた点**: exact/recovered優先・flat_fallbackはsegment限定という区別はせず、
+    対象423件を一律に処理した。構造が総入れ替えになったので優先度を付ける意味が無かった。
+- [x] ~~**V3 node要約索引を構築する**~~ (2026-07-28)
+  - `zotero_paragraphs_v3__sum_node` 12,280件。内訳: 要約22,118 − extractive 215（`searchable=0`、
+    索引に入らないことをDBで確認済み）− 単一子の親9,623（子と同内容のため抑制）。
+  - **未確認**: summary collection障害時のdirect fallback。下のR9の試験で扱う。
 
 ### Phase 5: 階層検索を既定へ切り替える
 
 - [ ] **V3 active切替後の検索統合試験を実行する**
   - leaf限定、policy filter、3経路RRF、direct fallback、provenanceを実データで確認する。
   - LLM query expansionを除くローカル検索p95を記録する。
-  - 注意（R9）: `HIERARCHICAL_SEARCH_V2_ENABLE=1`は既に本番有効だが、`__sum_node`が
-    空のため現状はdirect fallback縮退経路のみが動作・検証済み。pilotで実データが
-    入った時点でsummary routing経路を含む本試験を実施してタスクを閉じる。
-- [ ] **`HIERARCHICAL_SEARCH_V2_ENABLE=1`を既定化する**
+  - 注意（R9）: この前提は解消した。`__sum_node`は12,280件で埋まっており(2026-07-28)、
+    **summary routing経路を含む本試験が実施可能**になった。手動クエリ2本
+    （英語・日本語）で要約レイヤーが応答することは確認済みだが、統合試験は未実施。
+- [~] **`HIERARCHICAL_SEARCH_V2_ENABLE=1`を既定化する** — コード側は既定済み、試験待ち
+  - `rag_mcp_server.py`の既定値は既に`"1"`で、`.env`でも明示有効。つまり**実質的には
+    既定化されている**。残るのは上の検索統合試験を通してこの状態を追認することだけ。
   - UI/MCP/maintenance一巡を確認し、問題時はflagで旧経路へ戻せる状態を維持する。
 
 ### Phase 6: rollback期間後にlegacyを撤去する
@@ -659,9 +674,12 @@ A（PDF構造化）・B（課金LLM）は独立、C（構造抽出エンジン�
 
 ### 継続監査
 
-- [ ] **V3 cutover後の文字量比outlier 21件を資料単位でレビューする**
-  - `evaluations/v3_cutover_audit_20260723_live_sources.json`のoutlierを優先度順に確認する。
+- [ ] **V3 cutover後の文字量比outlierを資料単位でレビューする**
+  - 2026-07-28の全件監査で**27件**（21件は2026-07-23時点の数）。うち5件はZoteroから削除済みの
+    item（`ratio=0.0`）なので実質22件。正本は`evaluations/v3_cutover_audit_current.json`。
   - `CAXCWCQB`の旧PyMuPDF由来scanned警告はRapidOCR品質結果と分離し、警告来歴の整理を行う。
+  - 目的は**説明不能な減少が0件であることの確認**。ざっと見た限り大半はV3側の改善で、例えば
+    `2N3HG369`はlegacy 8チャンクに対しV3 2,481チャンク（取れていなかったものが取れた）。
 
 - [ ] **決定的fixtureと全テストを各cutover候補で実行する**
   - coverage、zone、境界跨ぎ0、bottom-up scope、OCR gate、状態遷移、検索fallbackを維持する。
@@ -691,15 +709,18 @@ A（PDF構造化）・B（課金LLM）は独立、C（構造抽出エンジン�
 
 ## Waiting On Human Decision
 
-- [ ] **LLM要約全件backfillの承認**
-  - V3 10件pilotの費用・時間・メタ応答率を提示した時点で確認を依頼する。
+- [x] ~~**LLM要約全件backfillの承認**~~ (2026-07-28)
+  - 承認を得て実行済み。ただし提示した規模の見積もりは実測と乖離した（当初7,006要約と伝え、
+    着地は23,020呼び出し）。小さい資料5件からの外挿だったのが原因で、ノード数の分布は
+    中央値39・平均84と大きく偏っている。**この種の外挿は中央値と分布を見てから出すこと。**
 - [ ] **legacy物理削除のrollback期間満了確認**
   - V3 cutover後に旧正本を1世代保持し、削除直前に確認する。
-- [ ] **Mistral OCRフォールバックの本番有効化判断**
-  - AI目次gate不合格資料を専用Batchへ送る方針はユーザー承認済みで、実API E2Eも成功。
-  - 一方、通常ingestion内から同期的に全PDFを送る`MISTRAL_OCR_FALLBACK_ENABLE`は別機能として
-    `0`のまま維持する。専用Batch候補の初回送信・品質レポート確認後に、同期fallbackが
-    本当に必要かを判断する。
+- [x] ~~**Mistral OCRフォールバックの本番有効化判断**~~ (2026-07-27)
+  - 判断不要になった。`MISTRAL_OCR_FALLBACK_ENABLE`はフラグごと撤去済み。Mistral OCRへ至る
+    経路はすべて明示的な操作（`--reocr-candidates`への投入、`--submit`）の後ろにあるか、
+    後で別途送るための候補を記録するだけで、通常のingestionが同期的に呼ぶことはない。
+    既に明示的な操作の前に2枚目のスイッチを置いても、防ぐはずの障害（鍵があるのに黙って
+    何もしない）を生むだけだった。
 
 ## Done
 
