@@ -797,6 +797,71 @@ A（PDF構造化）・B（課金LLM）は独立、C（構造抽出エンジン�
   - `tests/test_col_staleness_corroboration.py`を追加（5件）。修正前のコードに戻すと
     全件失敗することを確認済み。全779件のテストスイートが通過。
 
+- [x] ~~**P2-01: Docling merge前破棄でページ全損**~~ (2026-07-29)
+  - `docling_extract.py`の`split_long_paragraph`直後にあった
+    `if len(part) < HARD_MIN_CHARS: continue`が、`_merge_docling_chunks`（同一
+    block_type/zone/heading の連続片を結合してから`hard_min_chars`で最終判定する）
+    に断片が届く前に個別に破棄していた。1ブロック1行のようなページでは全断片が
+    しきい値未満になり、結合の材料が一つも残らずページ全体が消えていた
+    （pdf_extract.py側で既に直した劣化ページ復帰と同型の欠陥）。
+  - 事前フィルタを撤去し、空文字列のみ弾くよう変更。断片は全て`_merge_docling_chunks`
+    へ渡り、そこで結合・最終しきい値判定を行う。
+  - 副次的に発見: `tests/test_pdf_extract_layout.py`で、`if __name__=="__main__"`
+    ガードの後ろに追記された2テスト（P3-1zone確認・P3-9 CJK確認として本日
+    「確認済み」と報告していたもの）が、実際にはガード直後の別関数の**本体内に
+    ネストして定義され、一度も収集・実行されていなかった**ことが判明。クラスへ
+    戻して復活させ、両方とも現行コードで通過することを確認。`tests/test_no_orphaned_test_methods.py`
+    をこの形（`if __name__`ガード内だけでなく、任意の関数内にネストした`test_*`定義）
+    まで検出するよう拡張。
+
+- [x] ~~**P2-02: 反復ヘッダ除去でページ消失**~~ (2026-07-29)
+  - `pdf_extract.py`の反復行・反復prefix除去で`layout_records`が空になった場合の
+    `continue`が2箇所とも無言でページを捨てており、`empty_pages`にも
+    `low_text_pages`にも記録が残らなかった。`quality_info["repeated_header_dropped_pages"]`
+    を追加し、除去によって空になったページ番号を記録するよう修正。
+
+- [x] ~~**P2-04: Mistral OCR網羅偽装**~~ (2026-07-29)
+  - `mistral_ocr_extract.py`の`quality["ocr_pages"]`が応答内容に関わらず常に
+    `range(1, page_count+1)`だった。応答から欠落したページ・ブロック0件のページを
+    `ocr_pages`から除外し、差分を`missing_pages`として記録するよう修正。
+
+- [x] ~~**P2-08: ローカルOCR Doclingフォールバック型バグ**~~ (確認のみ・既に解決済み)
+  - コミット`3b9e2d3`（本セッション前半）で既に修正済みと確認。テストも存在。
+
+- [x] ~~**P2-09/P2-14: gibberish判定・default_qualityが健全体を装う**~~ (2026-07-29)
+  - `html_extract.py`のHTML/EPUB両抽出関数、6箇所の早期return全てが
+    `default_quality`（健全な空1ページ文書に見える形）をそのまま返しており、
+    「読めなかった」「DOMブロック0件」「gibberish判定」「EbookLib未導入」
+    「EPUB読込失敗」のどれで諦めたのか記録が残らなかった。各returnに
+    `failure_reason`を追加。`local_ocr_pipeline.py:175`は既に十分な失敗記録
+    （`local_ocr`内のattempts/gate詳細）を持っており対象外と確認。
+
+- [x] ~~**P2-13: 抽出ステータスが部分欠落を表現できない**~~ (2026-07-29)
+  - `extraction=success`が添付単位の二値で、583添付がsuccessのまま539ページの
+    欠落を抱えていた実測（原本比較でのみ発見）。純粋関数`_pages_without_chunks()`
+    を追加し、`mark_artifact_status`の`counts`に`pages_without_chunks`・
+    `chars_out`を記録するよう修正。
+
+- [x] ~~**P2-15: 原本比較の装飾グリフ誤検出**~~ (2026-07-29)
+  - `source_page_chars()`が`len(text)`をそのまま使っており、「•」約1,000個の
+    装飾的な羅列が`MIN_SOURCE_PAGE_CHARS`を超えて本文と誤認されていた
+    （VU5FWYMC p1）。`_meaningful_char_count()`（alnum文字のみ数える）を追加し、
+    閾値ではなく文字種で判定するよう変更。
+
+- [x] ~~**P6-3: item非所属チャンクが監査の目に届かない**~~ (2026-07-29)
+  - `audit_v3_cutover.py`のitem単位比較はlegacy item keyを反復するため、
+    itemKeyを持たないチャンクは一度も評価されない（1,774件実測）。
+    `chunk_store.list_chunk_ids_without_item()`（LEFT JOIN、itemKey行が
+    そもそも無いケースも拾う）を追加し、グローバルゲートの
+    `chunks_without_item`失敗として配線。
+  - P6-1（node_id実在確認）・P6-4（zone/retrieval_policy不到達検査）は
+    確認の結果、既に本セッション前半の code-review 対応で
+    `dangling_node_ids`・`unretrievable_documents`として実装・配線済みだった。
+  - P6-6（添付単位の構造欠落がitem単位で隠れる）は`document_structures`が
+    item_keyのみでキーされている設計そのものに起因し、P4-1/P4-8の
+    fingerprint・再構築設計と絡むため、単純な不変条件追加では閉じない。
+    今回は見送り、P4-1/P4-8と合わせて設計判断が必要と再確認。
+
 ### Phase 5: 階層検索を既定へ切り替える
 
 - [ ] **V3 active切替後の検索統合試験を実行する**
