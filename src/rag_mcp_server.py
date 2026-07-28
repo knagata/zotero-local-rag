@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 os.environ["HF_HUB_OFFLINE"] = "1"
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -223,6 +224,14 @@ _EMB_COLLECTION_NAME: Optional[str] = None
 # Combined mtime of chroma.sqlite3 and manifest.json at the time _COL was last initialized.
 # Used to proactively detect when the indexer has written new data.
 _COL_INIT_MTIME: float = 0.0
+# Embedding row count for the active collection at the time _COL was last
+# initialized (or last corroborated). Constructing *any* PersistentClient for
+# CHROMA_DIR -- including a read-only one from an audit/verification script --
+# touches chroma.sqlite3's mtime, so the mtime check alone cannot tell "the
+# indexer wrote new vectors" apart from "someone else just opened a client to
+# read." A row-count mismatch is the corroborating signal that data actually
+# changed.
+_COL_INIT_ROW_COUNT: Optional[int] = None
 
 
 def _db_mtime_sum() -> float:
@@ -240,6 +249,40 @@ def _db_mtime_sum() -> float:
     except OSError:
         pass
     return m
+
+
+def _collection_row_count(collection_name: str) -> Optional[int]:
+    """Embedding row count for one collection, read directly via read-only SQLite.
+
+    Deliberately bypasses chromadb.PersistentClient: constructing one is exactly
+    the action that perturbs chroma.sqlite3's mtime and would defeat the point
+    of using this as a corroborating signal. Returns None if the count cannot
+    be determined (e.g. the DB is missing or momentarily locked), in which case
+    callers should fail safe and treat the mtime signal as unconfirmed.
+    """
+    db_path = os.path.join(CHROMA_DIR, "chroma.sqlite3")
+    if not os.path.exists(db_path):
+        return None
+    try:
+        connection = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5)
+    except sqlite3.OperationalError:
+        return None
+    try:
+        row = connection.execute(
+            """
+            SELECT COUNT(*)
+            FROM collections c
+            JOIN segments s ON s.collection = c.id AND s.scope = 'METADATA'
+            JOIN embeddings e ON e.segment_id = s.id
+            WHERE c.name = ?
+            """,
+            (collection_name,),
+        ).fetchone()
+        return int(row[0]) if row is not None else None
+    except sqlite3.Error:
+        return None
+    finally:
+        connection.close()
 
 
 def _reset_col() -> None:
@@ -290,7 +333,7 @@ def _reset_col() -> None:
 
 
 def _col():
-    global _COL, _EMB_FN, _EMB_COLLECTION_NAME, _COL_INIT_MTIME
+    global _COL, _EMB_FN, _EMB_COLLECTION_NAME, _COL_INIT_MTIME, _COL_INIT_ROW_COUNT
 
     # --- Proactive staleness check ---
     # The HNSW index is memory-mapped, so when the indexer rewrites it the new
@@ -298,12 +341,36 @@ def _col():
     # which causes "Error finding id".  We detect this by comparing the mtime of
     # both the SQLite DB and the manifest (the latter is updated last).
     # If it changed, invalidate before any query runs.
+    #
+    # But mtime alone over-triggers: constructing *any* PersistentClient for
+    # CHROMA_DIR -- including a read-only one from an unrelated audit script --
+    # bumps chroma.sqlite3's mtime without writing a single new vector. Before
+    # paying for the expensive _reset_col() (which discards and re-mmaps the
+    # whole HNSW segment), corroborate with the actual embedding row count,
+    # read directly via SQLite so the corroboration check doesn't itself
+    # perturb anything. Only a genuine row-count change earns a reset; a false
+    # alarm still gets its mtime bookmark advanced so the same stale signal
+    # doesn't keep re-triggering this check on every subsequent call.
     current_mtime = _db_mtime_sum()
     if _COL is not None and current_mtime > _COL_INIT_MTIME:
-        msg = f"ChromaDB/Manifest modified since last init (prev={_COL_INIT_MTIME:.3f}, new={current_mtime:.3f}) — reloading collection"
-        print(f"[zotero-rag] {msg}", file=sys.stderr)
-        _log.info(msg)
-        _reset_col()
+        current_count = (
+            _collection_row_count(_EMB_COLLECTION_NAME) if _EMB_COLLECTION_NAME else None
+        )
+        row_count_changed = current_count is None or current_count != _COL_INIT_ROW_COUNT
+        if row_count_changed:
+            msg = (
+                f"ChromaDB/Manifest modified since last init (prev={_COL_INIT_MTIME:.3f}, "
+                f"new={current_mtime:.3f}, rows {_COL_INIT_ROW_COUNT}->{current_count}) — reloading collection"
+            )
+            print(f"[zotero-rag] {msg}", file=sys.stderr)
+            _log.info(msg)
+            _reset_col()
+        else:
+            _log.info(
+                "ChromaDB mtime advanced but row count unchanged (%s) — no genuine write, skipping reset",
+                current_count,
+            )
+            _COL_INIT_MTIME = current_mtime
 
     if _COL is not None:
         return _COL
@@ -384,12 +451,13 @@ def _col():
         # Other errors (e.g. collection not fully initialized) are non-fatal;
         # the query itself will fail with a specific error message.
 
-    # Record the DB mtime so we can detect future indexer writes.
+    # Record the DB mtime and row count so we can detect future indexer writes.
     _COL_INIT_MTIME = _db_mtime_sum()
     try:
         _count = _COL.count()
     except Exception:
         _count = "?"
+    _COL_INIT_ROW_COUNT = _count if isinstance(_count, int) else None
     _log.info("Collection initialized: name=%s count=%s mtime=%.3f", collection_name, _count, _COL_INIT_MTIME)
     return _COL
 

@@ -779,6 +779,24 @@ A（PDF構造化）・B（課金LLM）は独立、C（構造抽出エンジン�
     （`is_cjk`/`no_space`）を`min_chars`/`max_chars`の選択に使っており、同じ判定を
     そのまま渡すだけで済んだ。
 
+- [x] ~~**P5: `PersistentClient`構築がHNSWキャッシュを不必要に無効化**~~ (2026-07-29)
+  - `rag_mcp_server.py`の`_col()`は`chroma.sqlite3`+manifestのmtime合計が上がったら
+    indexerが書き込んだと判断し`_reset_col()`（~2GBのHNSWセグメントを破棄・再mmap）を
+    呼んでいた。しかし`chromadb.PersistentClient`を**構築するだけ**で（読み取り専用の
+    監査スクリプトでも）`chroma.sqlite3`のmtimeが上がることを確認済み——このチェックは
+    「indexerが新規ベクトルを書いた」と「誰かが読み取り用にクライアントを開いただけ」を
+    区別できていなかった。P5監査で測定されたp95約20秒・最悪30〜90秒のクエリ遅延の
+    直接原因。
+  - 修正: mtime上昇を「疑い」のトリガーとしては維持しつつ、`_reset_col()`実行前に
+    実際のembedding行数（`chroma.sqlite3`を`mode=ro`の生SQLiteで直接読む
+    `_collection_row_count()`。行数確認自体がmtimeを乱さないよう`chromadb`クライアントは
+    経由しない）で裏付けを取るよう変更。行数が変化していなければ誤検知と判断し
+    `_reset_col()`をスキップするが、`_COL_INIT_MTIME`はその場で新しい値へ更新し、同じ
+    誤検知シグナルが以後のクエリ毎に再トリガーし続けることを防ぐ。行数取得自体が
+    失敗した場合（DB読めない等）はfail-safeでリセットを実行する。
+  - `tests/test_col_staleness_corroboration.py`を追加（5件）。修正前のコードに戻すと
+    全件失敗することを確認済み。全779件のテストスイートが通過。
+
 ### Phase 5: 階層検索を既定へ切り替える
 
 - [ ] **V3 active切替後の検索統合試験を実行する**
