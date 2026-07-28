@@ -75,6 +75,16 @@ def compare_item(
         failures.append("duplicate_v3_chunk_ids")
     if new_source_rows and new["node_coverage"] != 1.0:
         failures.append("incomplete_node_coverage")
+    # zone was reported but never asserted, and retrieval_policy appeared in
+    # this file not at all -- which is how a 65,000-character essay marked
+    # zone="index" throughout left search entirely while the gate passed
+    # (ND49KK4N, 2026-07-28). A document holding text must expose some of it.
+    if new_source_rows and any(str(row.get("text") or "").strip() for row in new_source_rows):
+        if not any(
+            str((row.get("metadata") or {}).get("retrieval_policy") or "normal") == "normal"
+            for row in new_source_rows
+        ):
+            failures.append("no_retrievable_chunks")
     return {
         "item_key": item_key, "old": old, "new": new,
         "delta": {

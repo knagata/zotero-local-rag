@@ -115,3 +115,37 @@ class ShortTokenSearchTests(unittest.TestCase):
 
     def test_a_long_term_that_matches_nothing_still_excludes(self):
         self.assertEqual(self._ids("移民 資本主義"), [])
+
+
+class DeletionReachesTheLexicalIndexTests(unittest.TestCase):
+    """Removing an attachment must remove it from keyword search too.
+
+    A Chroma-only delete leaves the text answering keyword queries after it has
+    visibly gone from vector search, which reads to a user as the deleted
+    document coming back (2026-07-28).
+    """
+
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.path = Path(self.tempdir.name) / "lexical.sqlite3"
+        upsert_chunks(
+            ["a", "b"],
+            ["removed document about urbanization", "kept document about urbanization"],
+            [
+                {"itemKey": "I1", "lang": "en", "source_type": "pdf", "attachmentKey": "GONE"},
+                {"itemKey": "I2", "lang": "en", "source_type": "pdf", "attachmentKey": "KEPT"},
+            ],
+            path=self.path,
+        )
+
+    def tearDown(self):
+        self.tempdir.cleanup()
+
+    def test_the_deleted_attachment_stops_answering(self):
+        delete_by_attachment_keys(["GONE"], path=self.path)
+        found = [row["chunk_id"] for row in search_chunks("urbanization", k=10, path=self.path)]
+        self.assertEqual(found, ["b"])
+
+    def test_the_other_attachment_is_untouched(self):
+        delete_by_attachment_keys(["GONE"], path=self.path)
+        self.assertTrue(search_chunks("kept", k=10, path=self.path))

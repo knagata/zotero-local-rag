@@ -53,3 +53,53 @@ def test_node_coverage_requires_the_node_to_exist():
     # Without a live set the old, weaker reading is preserved for callers that
     # genuinely have nothing to check against.
     assert module.item_metrics(rows)["node_coverage"] == 1.0
+
+
+def test_a_document_no_query_can_reach_fails_the_gate():
+    """zone was reported but never asserted; retrieval_policy was absent entirely.
+
+    That is how a 65,000-character essay marked zone="index" throughout
+    disappeared from search while the cutover gate returned passed
+    (ND49KK4N, 2026-07-28).
+    """
+    import importlib.util
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    spec = importlib.util.spec_from_file_location(
+        "audit_v3_cutover", root / "scripts" / "audit_v3_cutover.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    old_rows = [{"id": "o", "text": "essay text", "metadata": {"source_type": "pdf"}}]
+    hidden = [{"id": "a", "text": "essay text", "metadata": {
+        "source_type": "pdf", "node_id": "dn:live", "retrieval_policy": "exclude"}}]
+    verdict = module.compare_item("ITEM", old_rows, hidden, {"dn:live"})
+    assert "no_retrievable_chunks" in verdict["failures"]
+
+    visible = [{"id": "a", "text": "essay text", "metadata": {
+        "source_type": "pdf", "node_id": "dn:live", "retrieval_policy": "normal"}}]
+    assert "no_retrievable_chunks" not in module.compare_item(
+        "ITEM", old_rows, visible, {"dn:live"})["failures"]
+
+
+def test_a_document_with_some_excluded_zones_still_passes():
+    # An index or bibliography section alongside body text is exactly what the
+    # zone system is for; only a document with nothing reachable is a failure.
+    import importlib.util
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    spec = importlib.util.spec_from_file_location(
+        "audit_v3_cutover", root / "scripts" / "audit_v3_cutover.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    rows = [
+        {"id": "a", "text": "body", "metadata": {
+            "source_type": "pdf", "node_id": "dn:live", "retrieval_policy": "normal"}},
+        {"id": "b", "text": "index entry", "metadata": {
+            "source_type": "pdf", "node_id": "dn:live", "retrieval_policy": "exclude"}},
+    ]
+    verdict = module.compare_item("ITEM", rows, rows, {"dn:live"})
+    assert "no_retrievable_chunks" not in verdict["failures"]
