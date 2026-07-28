@@ -244,6 +244,33 @@ def _delete_by_attachment_keys(
         print(f"[WARN] Lexical index delete failed: {exc}", file=sys.__stderr__)
 
 
+def _pages_without_chunks(
+    chunks: Iterable[Tuple[str, str, Dict[str, Any]]], expected_page_count: Any,
+) -> list[int]:
+    """Expected pages (1-based) that produced zero chunks.
+
+    extraction=success is a per-attachment binary: an attachment can hold
+    this status while individual pages inside it produced zero chunks, and
+    nothing in the ledger says which. 583 attachments recorded success while
+    539 pages across them had no indexed text (2026-07-28, found only by
+    comparing against the original source files -- no index-vs-index check
+    can see this). Returns [] when the expected page count is unknown rather
+    than guessing.
+    """
+    if not isinstance(expected_page_count, (int, float)) or not expected_page_count:
+        return []
+    pages_with_chunks: set[int] = set()
+    for _cid, _text, md in chunks:
+        page = md.get("page")
+        if isinstance(page, bool):
+            continue
+        if isinstance(page, (int, float)):
+            pages_with_chunks.add(int(page))
+        elif isinstance(page, str) and page.isdigit():
+            pages_with_chunks.add(int(page))
+    return sorted(set(range(1, int(expected_page_count) + 1)) - pages_with_chunks)
+
+
 def relieve_memory_pressure() -> None:
     """Best-effort memory cleanup between large batches.
 
@@ -2725,6 +2752,10 @@ async def main_async(args: argparse.Namespace) -> None:
                 "chunks": len(chunks), "source_type": stype,
                 "processed_pages": quality_info.get("processed_pages"),
                 "expected_pages": quality_info.get("expected_pages"),
+                "pages_without_chunks": _pages_without_chunks(
+                    chunks, quality_info.get("expected_pages") or quality_info.get("total_pages"),
+                ),
+                "chars_out": sum(len(text) for _cid, text, _md in chunks),
                 **(
                     {"ai_toc_reason": quality_info.get("ai_toc_recovery_status")}
                     if ai_toc_alignment_failed else {}
