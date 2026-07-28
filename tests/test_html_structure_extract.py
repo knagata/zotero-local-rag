@@ -210,3 +210,37 @@ class NoteCitationResolutionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_paratext_headings_the_vocabulary_used_to_miss():
+    """Vocabulary gaps left real paratext filed as body.
+
+    "Sources" appeared in none of the patterns, so a 72,150-character source
+    list stayed in the body zone (GI85JWZH). The per-chapter form matters as
+    much as the bare word: matching only "Notes" misses every "Notes to
+    Chapter 3" in a book that numbers its note sections (2026-07-28).
+    """
+    from src.html_extract import _BIBLIOGRAPHY_RE, _BACK_MATTER_RE, _INDEX_RE, _NOTE_RE
+
+    assert _BIBLIOGRAPHY_RE.match("Sources")
+    assert _BIBLIOGRAPHY_RE.match("Select Bibliography")
+    assert _BIBLIOGRAPHY_RE.match("Further Reading")
+    assert _BIBLIOGRAPHY_RE.match("参考資料")
+    assert _NOTE_RE.match("Notes to Chapter 3")
+    assert _NOTE_RE.match("Notes")
+    assert _INDEX_RE.match("General Index")
+    assert _INDEX_RE.match("地名索引")
+    assert _BACK_MATTER_RE.match("Glossary")
+
+
+def test_a_body_heading_beginning_with_a_paratext_word_stays_body():
+    """The looser patterns must not swallow ordinary chapter titles.
+
+    "Sources of Power" is a chapter, not a source list, and the trailing-form
+    allowance is restricted to "to"/"for" so it cannot absorb arbitrary titles.
+    """
+    from src.html_extract import _BIBLIOGRAPHY_RE, _NOTE_RE
+
+    assert not _BIBLIOGRAPHY_RE.match("Sources of Power")
+    assert not _BIBLIOGRAPHY_RE.match("References and Realities")
+    assert not _NOTE_RE.match("Notes on the State of Virginia")

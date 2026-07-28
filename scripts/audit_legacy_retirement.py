@@ -139,24 +139,45 @@ def manifest_snapshot(path: Path) -> dict[str, Any]:
 
 
 def chroma_snapshot(path: Path) -> dict[str, Any]:
-    """Inspect only the legacy collection metadata/counts; never create one."""
-    result: dict[str, Any] = {"exists": path.exists(), "collections": {}}
-    if not path.exists():
-        return result
-    import chromadb
+    """Inspect only the legacy collection metadata/counts; never create one.
 
-    client = chromadb.PersistentClient(path=str(path))
+    Read through SQLite in read-only mode rather than through Chroma's client.
+    Constructing ``PersistentClient`` writes: it updates the store's mtime even
+    when nothing is added, so this audit -- whose purpose is to show that the
+    retained backup has not changed -- was itself changing the backup's
+    timestamp every time it ran (2026-07-28). It also makes the client the
+    cheapest way to invalidate a running MCP server's HNSW cache, since that
+    cache treats an mtime change as evidence the ingester wrote.
+    """
+    result: dict[str, Any] = {"exists": path.exists(), "collections": {}}
+    database = path / "chroma.sqlite3"
+    if not path.exists() or not database.exists():
+        return result
+    connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True, timeout=30)
     try:
-        known = {entry.name: entry for entry in client.list_collections()}
+        rows = {
+            str(name): str(metadata_json or "{}")
+            for name, metadata_json in connection.execute(
+                "SELECT name, COALESCE("
+                "  (SELECT json_group_object(key, COALESCE(str_value, int_value, float_value))"
+                "   FROM collection_metadata m WHERE m.collection_id = c.id), '{}')"
+                " FROM collections c"
+            )
+        }
         for name in LEGACY_COLLECTIONS:
-            collection = known.get(name)
-            if collection is None:
+            if name not in rows:
                 result["collections"][name] = {"exists": False, "count": 0}
                 continue
-            metadata = collection.metadata or {}
+            count = connection.execute(
+                "SELECT count(*) FROM embeddings e"
+                " JOIN segments s ON s.id = e.segment_id AND s.scope = 'METADATA'"
+                " JOIN collections c ON c.id = s.collection WHERE c.name = ?",
+                (name,),
+            ).fetchone()[0]
+            metadata = json.loads(rows[name])
             result["collections"][name] = {
                 "exists": True,
-                "count": int(collection.count()),
+                "count": int(count),
                 "metadata": metadata,
                 "metadata_fingerprint": _sha256_bytes([
                     json.dumps(metadata, ensure_ascii=False, sort_keys=True).encode("utf-8"),
@@ -164,8 +185,8 @@ def chroma_snapshot(path: Path) -> dict[str, Any]:
             }
     finally:
         try:
-            client.close()
-        except Exception:  # pragma: no cover - older Chroma clients have no close()
+            connection.close()
+        except Exception:  # pragma: no cover
             pass
     return result
 

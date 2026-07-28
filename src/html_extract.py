@@ -64,8 +64,17 @@ _LEAF_CONTAINER_EXCLUDED_TOKENS = {
 # paragraph prose.  A real heading longer than this is not credible; retaining
 # it as body text prevents a malformed tag from deleting an entire chapter.
 _MALFORMED_HEADING_BODY_CHARS = 240
-_BIBLIOGRAPHY_RE = re.compile(r"^(?:references?|bibliography|works cited|参考文献|引用文献|文献一覧)$", re.I)
-_NOTE_RE = re.compile(r"^(?:notes?|endnotes?|footnotes?|注|注釈|註|巻末注|後注|原注|訳注)$", re.I)
+# "Sources" was in none of these, which is why a 72,150-character source list
+# stayed classified as body text (GI85JWZH, 2026-07-28). The trailing "to
+# Chapter 3" form matters as much as the bare word: a fullmatch against
+# "Notes" alone misses every per-chapter note section in a book that has them.
+_BIBLIOGRAPHY_RE = re.compile(
+    r"^(?:references?|bibliography|select bibliography|further reading|sources|"
+    r"works cited|参考文献|引用文献|文献一覧|文献目録|参考資料)"
+    r"(?:\s*(?:to|for)\s+.+)?$", re.I)
+_NOTE_RE = re.compile(
+    r"^(?:notes?|endnotes?|footnotes?|注|注釈|註|巻末注|後注|原注|訳注|注記)"
+    r"(?:\s*(?:to|for)\s+.+)?$", re.I)
 # In these zones a block often packs many entries (one reference / one note each)
 # into a single element separated by <br/>.  We split on <br/> so each entry
 # becomes its own block, keeping the boundary intact through chunking (Part A of
@@ -73,10 +82,12 @@ _NOTE_RE = re.compile(r"^(?:notes?|endnotes?|footnotes?|注|注釈|註|巻末注
 _ENTRY_ZONES = {"bibliography", "endnote", "footnote"}
 _MIN_ENTRY_CHARS = 8
 _TOC_RE = re.compile(r"^(?:目次|contents?|tableofcontents)$", re.I)
-_INDEX_RE = re.compile(r"^(?:索引|人名索引|事項索引|subjectindex|nameindex|index)$", re.I)
+_INDEX_RE = re.compile(
+    r"^(?:索引|人名索引|事項索引|地名索引|subject\s*index|name\s*index|general\s*index|index)$", re.I)
 _COLOPHON_RE = re.compile(r"^(?:奥付|colophon|copyright)$", re.I)
 _FRONT_MATTER_RE = re.compile(r"^(?:凡例|謝辞|序文|まえがき|acknowledg(?:e)?ments?)$", re.I)
-_BACK_MATTER_RE = re.compile(r"^(?:あとがき|後書き|付録|appendix|afterword)$", re.I)
+_BACK_MATTER_RE = re.compile(
+    r"^(?:あとがき|後書き|付録|付表|appendix|appendices|afterword|glossary|用語集)$", re.I)
 _ZONE_TERMS = {
     "footnote": "footnote", "doc-footnote": "footnote",
     "endnote": "endnote", "doc-endnote": "endnote", "rearnote": "endnote",
