@@ -304,3 +304,51 @@ if __name__ == "__main__":
         self.assertFalse(adds_nothing_over_its_children(2))
         self.assertFalse(adds_nothing_over_its_children(0))
 
+
+
+class InheritedTitleTests(unittest.TestCase):
+    """A chapter heading must reach the summary index.
+
+    Leaves are semantic_segments with no title, and the titled parent above
+    them is usually dropped as a one-child duplicate, so the embedded document
+    -- title plus summary -- carried no heading at all: 11,262 of 12,280 rows
+    had an empty title, and for 9,160 the heading existed in no searchable
+    field. Searching for a chapter by name could not find it (2026-07-28).
+    """
+
+    def test_a_leaf_inherits_the_chapter_heading(self):
+        from src.build_structure_summaries import inherited_title
+        titles = {"root": "", "chap": "Chapter One: Method", "leaf": ""}
+        parents = {"leaf": "chap", "chap": "root", "root": ""}
+        self.assertEqual(inherited_title("leaf", titles, parents), "Chapter One: Method")
+
+    def test_a_node_with_its_own_title_keeps_it(self):
+        from src.build_structure_summaries import inherited_title
+        self.assertEqual(
+            inherited_title("chap", {"chap": "Own", "root": "Ancestor"}, {"chap": "root"}), "Own")
+
+    def test_an_untitled_tree_yields_nothing_rather_than_guessing(self):
+        from src.build_structure_summaries import inherited_title
+        self.assertEqual(inherited_title("leaf", {"leaf": "", "root": ""}, {"leaf": "root"}), "")
+
+    def test_a_cycle_terminates(self):
+        # Node ids are content-derived and a malformed tree must not hang the
+        # embedding pass.
+        from src.build_structure_summaries import inherited_title
+        self.assertEqual(inherited_title("a", {"a": "", "b": ""}, {"a": "b", "b": "a"}), "")
+
+    def test_resolution_uses_the_unsuppressed_tree(self):
+        # The titled parent is exactly the node that one-child suppression
+        # removes, so resolving from the surviving rows alone would find nothing.
+        from src.build_structure_summaries import (
+            _select_searchable_summary_rows, inherited_title,
+        )
+        all_rows = [
+            {"node_id": "chap", "parent_node_id": "root", "title": "Chapter One"},
+            {"node_id": "leaf", "parent_node_id": "chap", "title": None},
+        ]
+        titles = {str(r["node_id"]): str(r.get("title") or "") for r in all_rows}
+        parents = {str(r["node_id"]): str(r.get("parent_node_id") or "") for r in all_rows}
+        surviving = _select_searchable_summary_rows(all_rows)
+        self.assertEqual([r["node_id"] for r in surviving], ["leaf"])
+        self.assertEqual(inherited_title("leaf", titles, parents), "Chapter One")

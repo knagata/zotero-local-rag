@@ -183,6 +183,32 @@ def adds_nothing_over_its_children(child_count: int) -> bool:
     return child_count == 1
 
 
+def inherited_title(
+    node_id: str, titles: Dict[str, str], parents: Dict[str, str],
+) -> str:
+    """The nearest title at or above a node.
+
+    Leaf nodes are ``semantic_segment``s and carry no title of their own, and
+    the titled parent above them is usually dropped as a one-child duplicate.
+    The embedded document was title-plus-summary, so the chapter heading ended
+    up in the index nowhere at all: 11,262 of 12,280 summary rows had an empty
+    title, and for 9,160 the heading text existed in no searchable field
+    (2026-07-28). A reader searching for a chapter by name could not find it.
+
+    Resolution walks the *unsuppressed* tree, because the node holding the
+    title is precisely the one suppression removes.
+    """
+    seen: set[str] = set()
+    current = str(node_id or "")
+    while current and current not in seen:
+        seen.add(current)
+        title = str(titles.get(current) or "").strip()
+        if title:
+            return title
+        current = str(parents.get(current) or "")
+    return ""
+
+
 def _select_searchable_summary_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Drop parents that only restate a single child, keeping the child."""
     searchable_ids = {str(row["node_id"]) for row in rows}
@@ -518,10 +544,14 @@ def embed_structure_summaries(
     cfg = resolve_embedder_settings(ROOT)
     embedding_function = create_embedding_function(cfg)
     collection = open_chroma_collection(CHROMA_DIR, f"{base}__sum_node", embedding_function)
-    rows = _select_searchable_summary_rows([
+    all_rows = [
         row for row in get_all_document_node_summaries(searchable_only=True)
         if item_keys is None or row["item_key"] in item_keys
-    ])
+    ]
+    # Built before suppression: the titled parent is the node suppression drops.
+    titles = {str(row["node_id"]): str(row.get("title") or "") for row in all_rows}
+    parents = {str(row["node_id"]): str(row.get("parent_node_id") or "") for row in all_rows}
+    rows = _select_searchable_summary_rows(all_rows)
     if item_keys is None:
         existing_ids = set(collection.get(include=[]).get("ids") or [])
         expected_ids = {f"sum:node:{row['node_id']}" for row in rows}
@@ -539,12 +569,13 @@ def embed_structure_summaries(
     ids = []
     for row in rows:
         ids.append(f"sum:node:{row['node_id']}")
-        documents.append("\n".join(filter(None, [str(row.get("title") or ""), str(row["summary"])]))[:4000])
+        heading = inherited_title(str(row["node_id"]), titles, parents)
+        documents.append("\n".join(filter(None, [heading, str(row["summary"])]))[:4000])
         metadatas.append({
             "itemKey": str(row["item_key"]), "attachmentKey": str(row.get("attachment_key") or ""),
             "node_id": str(row["node_id"]), "parent_node_id": str(row.get("parent_node_id") or ""),
             "node_type": str(row.get("node_type") or ""), "depth": int(row.get("depth") or 0),
-            "title": str(row.get("title") or ""), "summary_kind": "llm",
+            "title": heading, "summary_kind": "llm",
             "structure_version": "3", "source_fingerprint": str(row.get("source_fingerprint") or ""),
         })
     batch_size = max(1, int(os.environ.get("SUMMARY_EMBED_BATCH_SIZE", "16")))
