@@ -172,9 +172,17 @@ def _merge_docling_chunks(
             return
         output.extend(merge_short_chunk_records(
             pending, min_chars=min_chars, max_chars=max_chars,
+            # reading_order used to be part of this key, and it is unique per
+            # chunk -- so every chunk formed its own boundary group and no two
+            # could ever merge. The rescue this call exists to perform (join
+            # short fragments into a real chunk) was therefore a no-op by
+            # construction for every Docling document. Contiguity is already
+            # guaranteed by iteration order (pending is appended to in
+            # document order and flushed at each preserve-short-label chunk),
+            # so the boundary only needs to distinguish block_type/zone/
+            # heading, the actual semantic seams (2026-07-28).
             boundary_key=lambda _cid, _text, md: (
-                md.get("reading_order"), md.get("block_type"), md.get("zone"),
-                tuple(md.get("structure_path") or ()),
+                md.get("block_type"), md.get("zone"), tuple(md.get("structure_path") or ()),
             ),
         ))
         pending.clear()

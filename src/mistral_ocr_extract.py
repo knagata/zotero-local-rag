@@ -18,7 +18,8 @@ try:
     from .env_utils import load_dotenv_native
     from .text_utils import (
         MAX_CHARS, MAX_CHARS_CJK, TARGET_CHARS, TARGET_CHARS_CJK,
-        is_no_space_language_document, split_long_paragraph,
+        MIN_CHUNK_CHARS, MIN_CHUNK_CHARS_NO_SPACE,
+        is_no_space_language_document, merge_short_chunk_records, split_long_paragraph,
     )
 except ImportError:  # direct `python src/index_from_zotero.py` execution
     from chapter_detect import (
@@ -27,7 +28,8 @@ except ImportError:  # direct `python src/index_from_zotero.py` execution
     from env_utils import load_dotenv_native
     from text_utils import (
         MAX_CHARS, MAX_CHARS_CJK, TARGET_CHARS, TARGET_CHARS_CJK,
-        is_no_space_language_document, split_long_paragraph,
+        MIN_CHUNK_CHARS, MIN_CHUNK_CHARS_NO_SPACE,
+        is_no_space_language_document, merge_short_chunk_records, split_long_paragraph,
     )
 
 
@@ -201,6 +203,10 @@ def extract_chunks_from_pdf_with_mistral_ocr(
     )
 
 
+#: Meaningful at any length, so they skip the merge/HARD_MIN_CHARS drop below.
+_PRESERVE_SHORT_BLOCK_TYPES = {"heading", "page_furniture", "table"}
+
+
 def extract_chunks_from_mistral_ocr_result(
     pdf_path: Path,
     attachment_key: str,
@@ -252,6 +258,13 @@ def extract_chunks_from_mistral_ocr_result(
         is_cjk = is_no_space_language_document("\n".join(block["text"] for block in blocks)[:5000])
         max_chars = MAX_CHARS_CJK if is_cjk else MAX_CHARS
         target_chars = TARGET_CHARS_CJK if is_cjk else TARGET_CHARS
+        min_chars = MIN_CHUNK_CHARS_NO_SPACE if is_cjk else MIN_CHUNK_CHARS
+        # This path never called merge_short_chunk_records at all -- every OCR
+        # block became its own chunk regardless of length, unlike the other
+        # three extractors. Measured: 34% of mistral_ocr chunks were under 40
+        # characters (2026-07-28). page_chunks collects this page's chunks so
+        # they can be merged before extending the running `chunks` list.
+        page_chunks: List[Tuple[str, str, Dict[str, Any]]] = []
 
         for block_index, block in enumerate(blocks):
             block_text = block["text"]
@@ -283,8 +296,21 @@ def extract_chunks_from_mistral_ocr_result(
                     metadata["bbox"] = json.dumps(block["bbox"], ensure_ascii=False, separators=(",", ":"))
                     for axis in ("l", "t", "r", "b"):
                         metadata[f"bbox_{axis}"] = float(block["bbox"][axis])
-                chunks.append((chunk_id, part, metadata))
+                page_chunks.append((chunk_id, part, metadata))
                 total_blocks += 1
+        # Headings and page furniture are meaningful at any length -- a title
+        # is not made less of a title by being short -- so they bypass the
+        # merge and its trailing HARD_MIN_CHARS drop entirely, the same
+        # protection docling_extract.py gives its own short structural labels.
+        mergeable = [c for c in page_chunks if c[2].get("block_type") not in _PRESERVE_SHORT_BLOCK_TYPES]
+        preserved = [c for c in page_chunks if c[2].get("block_type") in _PRESERVE_SHORT_BLOCK_TYPES]
+        merged = merge_short_chunk_records(
+            mergeable, min_chars=min_chars, max_chars=max_chars,
+            boundary_key=lambda _cid, _text, md: (
+                md.get("block_type"), md.get("zone"), tuple(md.get("structure_path") or ()),
+            ),
+        )
+        chunks.extend(sorted(merged + preserved, key=lambda c: c[2].get("para_index", 0)))
         if not outline_path and active_path:
             inferred_path = list(active_path)
 

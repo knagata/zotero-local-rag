@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from src import mistral_ocr_extract
@@ -138,3 +139,62 @@ class MistralOcrAvailabilityTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ExtractChunksMergeTests(unittest.TestCase):
+    """This path never called merge_short_chunk_records at all.
+
+    Every OCR block became its own chunk regardless of length, unlike the
+    other three extractors. Measured: 34% of mistral_ocr chunks were under 40
+    characters (2026-07-28).
+    """
+
+    def _pdf(self, directory, page_count=1):
+        import fitz
+        path = str(Path(directory) / "test.pdf")
+        doc = fitz.open()
+        for _ in range(page_count):
+            doc.new_page(width=600, height=800)
+        doc.save(path)
+        doc.close()
+        return path
+
+    def test_consecutive_short_blocks_on_a_page_are_merged(self):
+        import tempfile
+        from src.mistral_ocr_extract import extract_chunks_from_mistral_ocr_result
+
+        with tempfile.TemporaryDirectory() as directory:
+            pdf_path = self._pdf(directory)
+            result = {"pages": [{
+                "index": 0,
+                "blocks": [
+                    {"type": "text", "content": "one short line of text"},
+                    {"type": "text", "content": "another short line of text"},
+                    {"type": "text", "content": "a third short line of text"},
+                ],
+            }]}
+            chunks, _quality = extract_chunks_from_mistral_ocr_result(
+                Path(pdf_path), "ATT", {}, result,
+            )
+        self.assertLess(len(chunks), 3)
+        self.assertGreaterEqual(sum(len(text) for _cid, text, _md in chunks), 40)
+
+    def test_a_block_type_change_still_forms_a_new_group(self):
+        import tempfile
+        from src.mistral_ocr_extract import extract_chunks_from_mistral_ocr_result
+
+        with tempfile.TemporaryDirectory() as directory:
+            pdf_path = self._pdf(directory)
+            result = {"pages": [{
+                "index": 0,
+                "blocks": [
+                    {"type": "text", "content": "short body text here today"},
+                    {"type": "title", "content": "# A Heading"},
+                    {"type": "text", "content": "short body text again today"},
+                ],
+            }]}
+            chunks, _quality = extract_chunks_from_mistral_ocr_result(
+                Path(pdf_path), "ATT", {}, result,
+            )
+        block_types = [md.get("block_type") for _cid, _text, md in chunks]
+        self.assertIn("heading", block_types)

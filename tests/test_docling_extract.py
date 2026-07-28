@@ -485,3 +485,66 @@ class DoclingExtractTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MergeDoclingChunksTests(unittest.TestCase):
+    """The merge boundary must not key on a per-chunk-unique value.
+
+    reading_order used to be part of the boundary key, and it is unique per
+    chunk -- so every chunk formed its own group and no two could ever merge.
+    The rescue this call exists to perform (join short fragments into a real
+    chunk) was a no-op by construction for every Docling document
+    (2026-07-28).
+    """
+
+    def _chunk(self, cid, text, *, reading_order, block_type="paragraph",
+               zone="body", structure_path=("Chapter One",)):
+        return (cid, text, {
+            "reading_order": reading_order, "block_type": block_type,
+            "zone": zone, "structure_path": list(structure_path),
+        })
+
+    def test_consecutive_short_paragraphs_under_the_same_heading_merge(self):
+        chunks = [
+            self._chunk(f"c{i}", "short line of text here", reading_order=i)
+            for i in range(6)
+        ]
+        merged = docling_extract._merge_docling_chunks(chunks, min_chars=100, max_chars=1000)
+        self.assertLess(len(merged), len(chunks))
+        self.assertGreaterEqual(sum(len(text) for _cid, text, _md in merged), 100)
+
+    def test_a_heading_change_still_forms_a_new_group(self):
+        # Long enough to survive HARD_MIN_CHARS on its own, short of min_chars
+        # so it would merge with an adjacent chunk under the same boundary.
+        text = "word " * 20
+        chunks = [
+            self._chunk("a", text, reading_order=0, structure_path=("Chapter One",)),
+            self._chunk("b", text, reading_order=1, structure_path=("Chapter Two",)),
+        ]
+        merged = docling_extract._merge_docling_chunks(chunks, min_chars=1000, max_chars=2000)
+        # Both stay separate (below min_chars, above HARD_MIN_CHARS) but must
+        # not merge across headings, even though they are adjacent in
+        # reading order.
+        self.assertEqual(len(merged), 2)
+
+    def test_a_zone_change_still_forms_a_new_group(self):
+        text = "word " * 20
+        chunks = [
+            self._chunk("a", text, reading_order=0, zone="body"),
+            self._chunk("b", text, reading_order=1, zone="endnote"),
+        ]
+        merged = docling_extract._merge_docling_chunks(chunks, min_chars=1000, max_chars=2000)
+        self.assertEqual(len(merged), 2)
+
+    def test_preserve_short_labels_are_never_merged_into(self):
+        chunks = [
+            self._chunk("a", "short text", reading_order=0),
+            ("t", "A Table Caption", {
+                "reading_order": 1, "block_type": "caption", "zone": "body",
+                "structure_path": ["Chapter One"],
+            }),
+            self._chunk("b", "more short text", reading_order=2),
+        ]
+        merged = docling_extract._merge_docling_chunks(chunks, min_chars=100, max_chars=1000)
+        ids = [cid for cid, _text, _md in merged]
+        self.assertIn("t", ids)
