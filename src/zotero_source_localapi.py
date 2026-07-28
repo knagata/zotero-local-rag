@@ -29,6 +29,25 @@ class ZoteroAttachment:
     parentItemType: Optional[str] = None
 
 
+def classify_attachment_source_type(content_type: Optional[str], filename: Optional[str]) -> Optional[str]:
+    """Which of pdf/html/epub an attachment's contentType/filename implies, or None.
+
+    The single definition of "eligible attachment type" for this project.
+    Extracted so a reconciliation check (comparing what Zotero has against
+    what the manifest has) can classify eligibility identically to the
+    ingestion path itself, rather than keeping a second copy that could
+    silently drift from what actually gets indexed.
+    """
+    fn_l = (filename or "").lower()
+    if (content_type == "application/pdf") or fn_l.endswith(".pdf"):
+        return "pdf"
+    if (content_type in ("text/html", "application/xhtml+xml")) or fn_l.endswith((".html", ".htm")):
+        return "html"
+    if (content_type == "application/epub+zip") or fn_l.endswith(".epub"):
+        return "epub"
+    return None
+
+
 class ZoteroLocalAPI:
     """Minimal client for the Zotero Local HTTP API.
 
@@ -248,16 +267,8 @@ class ZoteroLocalAPI:
 
             ct = ad.get("contentType")
             fn = (ad.get("filename") or "")
-            fn_l = fn.lower()
-
-            source_type: Optional[str] = None
-            if (ct == "application/pdf") or fn_l.endswith(".pdf"):
-                source_type = "pdf"
-            elif (ct in ("text/html", "application/xhtml+xml")) or fn_l.endswith(".html") or fn_l.endswith(".htm"):
-                source_type = "html"
-            elif (ct == "application/epub+zip") or fn_l.endswith(".epub"):
-                source_type = "epub"
-            else:
+            source_type = classify_attachment_source_type(ct, fn)
+            if source_type is None:
                 continue
 
             parent_key = ad.get("parentItem")

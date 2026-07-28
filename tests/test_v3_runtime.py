@@ -44,6 +44,28 @@ class V3RuntimeTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "missing"):
             bind_manifest_pipeline({"files": {"A": {}}}, "sha256:p", adopt_existing=False)
 
+    def test_adopted_entries_are_marked_distinct_from_measured_ones(self):
+        """Trust must stay distinguishable from measurement.
+
+        adopt_existing stamps every file entry with the runtime fingerprint on
+        trust -- nothing re-derives it from the entry's actual chunks -- and
+        once stamped, the same fingerprint is what the reprocessing-skip check
+        reads as "verified current" forever after. Without a separate marker,
+        an audit has no way to tell a trusted guess from an honest measurement
+        (2026-07-28).
+        """
+        manifest = {"files": {"A": {"mtime": 1}}}
+        bind_manifest_pipeline(manifest, "sha256:p", adopt_existing=True)
+        self.assertTrue(manifest["files"]["A"]["pipeline_fingerprint_adopted"])
+
+    def test_an_entry_that_already_had_a_matching_fingerprint_is_not_marked_adopted(self):
+        # Only entries that were missing a fingerprint and got one on trust are
+        # marked. An entry the pipeline actually measured must not be
+        # relabelled as adopted merely because adopt_existing=True for the run.
+        manifest = {"files": {"A": {"mtime": 1, "pipeline_fingerprint": "sha256:p"}}}
+        bind_manifest_pipeline(manifest, "sha256:p", adopt_existing=True)
+        self.assertNotIn("pipeline_fingerprint_adopted", manifest["files"]["A"])
+
     def test_code_change_is_detected(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "module.py"

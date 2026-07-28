@@ -752,6 +752,22 @@ A（PDF構造化）・B（課金LLM）は独立、C（構造抽出エンジン�
     （以後の書き込みから記録する）。
   - 判定を`_source_content_unchanged()`として純粋関数に切り出し、5テストで固定。
 
+- [x] ~~**P1-06: パイプライン指紋の無条件スタンプに監査痕跡を追加**~~ (2026-07-28)
+  - `bind_manifest_pipeline(adopt_existing=True)`は既存資料に指紋を無条件でスタンプし、
+    以後の再解析skip判定を永久に「一致」させていた。**指紋を押した行為自体が、
+    それが正しいかを検証する機会を奪う自己封印**。次回の再構築（新collection）でも
+    `ensure_pipeline_config`が新規config作成＝`created_pipeline=True`となり再発する。
+  - 挙動は変えず（既存の安定動作を壊さない）、`pipeline_fingerprint_adopted: true`を
+    追加して信頼採用と実測確認を区別できるようにした。
+- [x] ~~**P1-11b: Zoteroを真とする照合チェックを新設**~~ (2026-07-28)
+  - `scripts/verify_zotero_reconciliation.py`。Zotero側の適格添付一覧
+    （`list_pdf_attachments`の生データを共有関数`classify_attachment_source_type`で
+    分類）とmanifestを比較し、欠落を報告する。読み取り専用。
+  - 実行結果: 25件欠落。うち24件は`imported_file`で、`dateAdded`が全て本日06:07〜06:08
+    （作業中にユーザーがZoteroへ追加した分、まだ取込未実行）。残り1件が`linked_url`の
+    `75QYJJYK`（P1-08で既に経路修正済み、再取込待ち）。**バグではなく、チェックが
+    正しく機能した結果**。
+
 ### Phase 5: 階層検索を既定へ切り替える
 
 - [ ] **V3 active切替後の検索統合試験を実行する**

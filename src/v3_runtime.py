@@ -71,7 +71,23 @@ def ensure_pipeline_config(
 def bind_manifest_pipeline(
     manifest: dict[str, Any], pipeline_fingerprint: str, *, adopt_existing: bool,
 ) -> bool:
-    """Bind a manifest and every file entry to one compatible pipeline."""
+    """Bind a manifest and every file entry to one compatible pipeline.
+
+    ``adopt_existing`` fires whenever ``ensure_pipeline_config`` finds no
+    config file to compare against -- at V3 launch, but also every time a
+    fresh collection gets its own config, including the next rebuild. It
+    stamps every file entry with the current fingerprint on trust, not on
+    measurement: nothing here re-derives the entry's actual fingerprint from
+    its recorded chunks to check the claim. Once stamped, the same fingerprint
+    is what the reprocessing-skip check compares against, so an adopted entry
+    reads as "verified current" forever after -- the act of stamping removed
+    the only signal that could have shown the stamp was a guess (2026-07-28).
+
+    Adopted entries are marked as such (``pipeline_fingerprint_adopted``) so a
+    future audit can tell trust from measurement. The skip check is left
+    reading only ``pipeline_fingerprint``, unchanged, so this adds an audit
+    trail without silently forcing a reprocess of every adopted file.
+    """
     previous = str(manifest.get("pipeline_fingerprint") or "")
     if previous and previous != pipeline_fingerprint:
         raise RuntimeError(
@@ -90,6 +106,7 @@ def bind_manifest_pipeline(
             if not adopt_existing:
                 raise RuntimeError("V3 manifest file is missing its pipeline fingerprint.")
             entry["pipeline_fingerprint"] = pipeline_fingerprint
+            entry["pipeline_fingerprint_adopted"] = True
             changed = True
     return changed
 
