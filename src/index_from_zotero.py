@@ -67,7 +67,7 @@ from lexical_index import delete_by_note_key as delete_lexical_note
 from lexical_index import chunk_ids_by_attachment_keys as lexical_chunk_ids_by_attachment_keys
 from lexical_index import upsert_chunks as upsert_lexical_chunks
 
-from manifest import load_manifest, save_manifest
+from manifest import content_signature, load_manifest, save_manifest
 from db_relations import (
     drop_stale_identity_rows, get_item_processing_status, invalidate_item_summaries,
     mark_artifact_status, purge_removed_items, replace_document_structure,
@@ -769,6 +769,29 @@ NO_STRUCTURE_AI_TOC_REASONS = frozenset({
 AI_TOC_ALIGNMENT_FAILURE_REASONS = frozenset({
     "body_coverage_below_threshold", "structured_chunk_ratio_below_threshold",
 })
+
+
+def _source_content_unchanged(
+    prev: Dict[str, Any] | None, *, mtime: float, size: int, signature: str | None,
+) -> bool:
+    """Whether ``prev``'s recorded mtime/size (and content, if known) still match.
+
+    mtime and size alone cannot tell a file replaced at the same path apart
+    from an unchanged one, if the replacement happens to land on the same
+    byte count -- a corrected scan re-saved from the same source, a sync tool
+    that does not always preserve mtime. ``signature`` is only meaningful
+    when both sides have one: an old manifest row written before content
+    signatures existed is not forced to re-parse solely for lacking one
+    (2026-07-28).
+    """
+    if not prev:
+        return False
+    if float(prev.get("mtime", -1)) != mtime or int(prev.get("size", -1)) != size:
+        return False
+    prev_signature = prev.get("content_signature")
+    if prev_signature and signature is not None:
+        return signature == prev_signature
+    return True
 
 
 def _prior_no_structure_ai_toc_status(
@@ -1670,8 +1693,19 @@ async def main_async(args: argparse.Namespace) -> None:
                     file=sys.__stderr__,
                 )
             continue
-        if (prev and float(prev.get("mtime", -1)) == mtime
-                and int(prev.get("size", -1)) == size
+        # Only hashed once mtime and size already look unchanged: a real
+        # difference in either is already conclusive and cheaper to trust
+        # first, so this never adds I/O for a file that has actually changed.
+        mtime_size_match = (
+            prev and float(prev.get("mtime", -1)) == mtime and int(prev.get("size", -1)) == size
+        )
+        current_signature = None
+        if mtime_size_match and prev.get("content_signature"):
+            try:
+                current_signature = content_signature(file_path, size)
+            except OSError:
+                current_signature = None
+        if (_source_content_unchanged(prev, mtime=mtime, size=size, signature=current_signature)
                 and entry_pipeline_matches
                 and a.attachmentKey not in inflight_attachments
                 and not args.retry_failed
@@ -1697,6 +1731,16 @@ async def main_async(args: argparse.Namespace) -> None:
                         file=sys.__stderr__,
                     )
                 continue
+
+        # We are about to write a manifest entry for this attachment -- record
+        # its content signature so a *future* run can tell a same-size
+        # replacement from a genuinely unchanged file. Reuses the signature
+        # already computed above when mtime/size matched a prior signature-
+        # bearing row, so an unchanged file is never hashed twice.
+        try:
+            stored_signature = current_signature or content_signature(file_path, size)
+        except OSError:
+            stored_signature = None
 
         if args.limit and scope_item_key not in processing_item_keys:
             if len(processing_item_keys) >= args.limit:
@@ -2413,6 +2457,7 @@ async def main_async(args: argparse.Namespace) -> None:
                             "mtime": mtime, "size": size, "pdf_path": str(file_path),
                             "title": a.title,
                             "quality": _merge_deferred_ocr_audit_quality(prev, quality_info),
+                            **({"content_signature": stored_signature} if stored_signature else {}),
                         })
                         if STRUCTURED_V3_ENABLE:
                             deferred_entry["pipeline_fingerprint"] = v3_pipeline_fingerprint
@@ -2743,6 +2788,7 @@ async def main_async(args: argparse.Namespace) -> None:
                 "pdf_path": str(file_path),
                 "title": a.title,
                 "quality": quality_info,
+                **({"content_signature": stored_signature} if stored_signature else {}),
                 **({"pipeline_fingerprint": v3_pipeline_fingerprint} if STRUCTURED_V3_ENABLE else {}),
             }
             if stype == "html":
@@ -2766,6 +2812,7 @@ async def main_async(args: argparse.Namespace) -> None:
             "pdf_path": str(file_path),
             "title": a.title,
             "quality": quality_info,
+            **({"content_signature": stored_signature} if stored_signature else {}),
             **({"pipeline_fingerprint": v3_pipeline_fingerprint} if STRUCTURED_V3_ENABLE else {}),
         }
         pending_source_types[a.attachmentKey] = stype

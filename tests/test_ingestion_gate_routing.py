@@ -405,3 +405,42 @@ class StructureEngineDispatchTests(unittest.TestCase):
         _chunks, quality = self._run("granite", docling, granite)
         self.assertEqual(quality["parser"], "docling")
         self.assertEqual(docling.calls, 1)
+
+
+class SourceContentUnchangedTests(unittest.TestCase):
+    """mtime and size alone cannot tell a same-size replacement from no change.
+
+    A file replaced at the same path with the same byte-count -- a corrected
+    scan re-saved from the same source, a sync tool that does not always
+    preserve mtime -- kept its stale text indefinitely, and nothing could
+    detect it: the manifest recorded no information a replacement would
+    change (2026-07-28).
+    """
+
+    def test_matching_mtime_and_size_with_no_stored_signature_is_unchanged(self):
+        # An old row written before content signatures existed must not be
+        # forced to re-parse solely for lacking one.
+        prev = {"mtime": 100.0, "size": 2048}
+        self.assertTrue(module._source_content_unchanged(
+            prev, mtime=100.0, size=2048, signature=None))
+
+    def test_a_stored_signature_that_disagrees_means_changed(self):
+        prev = {"mtime": 100.0, "size": 2048, "content_signature": "sha256:old"}
+        self.assertFalse(module._source_content_unchanged(
+            prev, mtime=100.0, size=2048, signature="sha256:new"))
+
+    def test_a_stored_signature_that_agrees_means_unchanged(self):
+        prev = {"mtime": 100.0, "size": 2048, "content_signature": "sha256:same"}
+        self.assertTrue(module._source_content_unchanged(
+            prev, mtime=100.0, size=2048, signature="sha256:same"))
+
+    def test_differing_mtime_or_size_means_changed_regardless_of_signature(self):
+        prev = {"mtime": 100.0, "size": 2048, "content_signature": "sha256:same"}
+        self.assertFalse(module._source_content_unchanged(
+            prev, mtime=200.0, size=2048, signature="sha256:same"))
+        self.assertFalse(module._source_content_unchanged(
+            prev, mtime=100.0, size=4096, signature="sha256:same"))
+
+    def test_no_prior_entry_means_changed(self):
+        self.assertFalse(module._source_content_unchanged(
+            None, mtime=100.0, size=2048, signature=None))

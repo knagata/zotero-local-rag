@@ -281,6 +281,25 @@ class ZoteroLocalAPI:
                     if not (isinstance(cols, list) and collection_key in cols):
                         continue
 
+            link_mode = str(ad.get("linkMode") or "")
+            if link_mode == "linked_url":
+                # A linked_url attachment is a pointer to an external URL --
+                # Zotero never stores a local file for it, so both the local
+                # path resolution and the Local API file download below were
+                # guaranteed to fail every time, and did so silently (`continue`
+                # inside a bare `except Exception`, printed only with
+                # DEBUG_ZOTERO_LOCALAPI=1). One such attachment (75QYJJYK) was
+                # the single Zotero-eligible attachment absent from the
+                # manifest with no record anywhere of why (2026-07-28). It is
+                # skipped explicitly here, with a visible reason, rather than
+                # attempted and swallowed.
+                print(
+                    f"[WARN] Skipping linked_url attachment (no local file exists to index): "
+                    f"attachment={att_key} parent={parent_key}",
+                    file=sys.stderr,
+                )
+                continue
+
             resolved = self.resolve_pdf_path_from_attachment(att_key, ad, zotero_data_dir)
             if not resolved:
                 # Local API file download fallback
@@ -294,11 +313,14 @@ class ZoteroLocalAPI:
                 try:
                     resolved = await self.fetch_attachment_file_to_cache(att_key, cache_path)
                 except Exception as e:
-                    if os.environ.get("DEBUG_ZOTERO_LOCALAPI") == "1":
-                        print(
-                            f"[DEBUG] Failed to download attachment file via Local API: attachment={att_key} err={e}",
-                            file=sys.stderr,
-                        )
+                    # Always visible, not gated behind a debug flag: a silent
+                    # skip here is exactly how 75QYJJYK disappeared with no
+                    # trace in the manifest, Chroma, or any log (2026-07-28).
+                    print(
+                        f"[WARN] Failed to resolve or download attachment file: "
+                        f"attachment={att_key} parent={parent_key} err={e}",
+                        file=sys.stderr,
+                    )
                     continue
 
             yield ZoteroAttachment(
