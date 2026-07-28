@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 import json
 from pathlib import Path
 import sys
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping, Sequence, Set
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -31,11 +31,22 @@ def source_rows(rows: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
     ]
 
 
-def item_metrics(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+def item_metrics(
+    rows: Sequence[Mapping[str, Any]], live_node_ids: Set[str] | None = None,
+) -> dict[str, Any]:
     rows = source_rows(rows)
     ids = [str(row.get("id") or "") for row in rows]
     zones = Counter(str((row.get("metadata") or {}).get("zone") or "missing") for row in rows)
-    assigned = sum(bool((row.get("metadata") or {}).get("node_id")) for row in rows)
+    # Coverage must mean the node exists, not that the string is non-empty.
+    # Counting the string let 53 items score 1.0 while every one of their
+    # chunks named a node that had been replaced by a rebuild -- the gate's
+    # most substantive check passing on nothing at all (2026-07-28).
+    assigned = sum(
+        bool(node_id) and (live_node_ids is None or node_id in live_node_ids)
+        for node_id in (
+            str((row.get("metadata") or {}).get("node_id") or "") for row in rows
+        )
+    )
     return {
         "chunks": len(rows),
         "characters": sum(len(str(row.get("text") or "")) for row in rows),
@@ -46,11 +57,14 @@ def item_metrics(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     }
 
 
-def compare_item(item_key: str, old_rows: Sequence[Mapping[str, Any]], new_rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+def compare_item(
+    item_key: str, old_rows: Sequence[Mapping[str, Any]], new_rows: Sequence[Mapping[str, Any]],
+    live_node_ids: Set[str] | None = None,
+) -> dict[str, Any]:
     old_source_rows = source_rows(old_rows)
     new_source_rows = source_rows(new_rows)
     old = item_metrics(old_rows)
-    new = item_metrics(new_rows)
+    new = item_metrics(new_rows, live_node_ids)
     old_chars = int(old["characters"])
     is_new_item = not bool(old_source_rows)
     ratio = (int(new["characters"]) / old_chars) if old_chars else None
@@ -158,14 +172,18 @@ def main() -> None:
     comparisons = []
     structure_statuses: Counter[str] = Counter()
     zones: Counter[str] = Counter()
+    # The set every chunk's node_id is checked against. Read once: without it
+    # node coverage only asserts that a string is present, which is how 53
+    # items scored 1.0 with no live structure behind them.
+    from src.db_relations import get_db_connection
+
+    live_node_ids = {
+        str(row[0]) for row in get_db_connection().execute("SELECT node_id FROM document_nodes")
+    }
     for item_key in selected:
         old_rows = get_item_chunks(item_key, collection_name=args.old_collection)
         new_rows = get_item_chunks(item_key, collection_name=args.new_collection)
-        row = compare_item(
-            item_key,
-            old_rows,
-            new_rows,
-        )
+        row = compare_item(item_key, old_rows, new_rows, live_node_ids)
         structure = get_document_structure(item_key)
         row["structure"] = {
             "status": str((structure or {}).get("status") or "missing"),
