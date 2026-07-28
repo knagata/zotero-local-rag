@@ -146,6 +146,11 @@ def chunk_ids_by_attachment_keys(
         connection.close()
 
 
+#: FTS5's trigram tokenizer indexes three-character sequences, so a shorter
+#: token has no trigram to match and cannot be found through MATCH at all.
+TRIGRAM_MIN_CHARS = 3
+
+
 def search_chunks(
     query: str,
     *,
@@ -158,20 +163,40 @@ def search_chunks(
     query = " ".join((query or "").split()).strip()
     if not query or k <= 0 or not _path(path).exists():
         return []
-    short_query = len(query) < 3
-    if short_query:
-        escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    # A trigram index cannot represent a token shorter than three characters,
+    # so such a token matches nothing -- and ANDing it into the MATCH made the
+    # whole query return nothing. The length test used to be applied to the
+    # entire string, so "移民" found rows and "移民 国家" found none, as did
+    # "landscape of power" and "a landscape": one short word anywhere silenced
+    # the search (2026-07-28). Two-character words carry meaning in Japanese
+    # and English articles and prepositions are unavoidable, so multi-word
+    # search was broken in both languages.
+    #
+    # Short tokens are therefore matched with LIKE and long ones with MATCH,
+    # in the same conjunction. Dropping them instead would silently widen the
+    # query beyond what was asked for.
+    tokens = query.split()
+    indexable = [token for token in tokens if len(token) >= TRIGRAM_MIN_CHARS]
+    short_tokens = [token for token in tokens if len(token) < TRIGRAM_MIN_CHARS]
+    where = []
+    params: list[Any] = []
+    if indexable:
+        # Whitespace-separated terms stay independent operands: quoting the
+        # whole query would demand adjacency and collapse recall.
+        where.append("chunks_fts MATCH ?")
+        params.append(" AND ".join(
+            '"' + token.replace('"', '""') + '"' for token in indexable
+        ))
+    for token in short_tokens:
+        escaped = token.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         pattern = f"%{escaped}%"
-        where = ["(body LIKE ? ESCAPE '\\' OR title LIKE ? ESCAPE '\\' OR creators LIKE ? ESCAPE '\\')"]
-        params: list[Any] = [pattern, pattern, pattern]
-    else:
-        # Treat whitespace-separated terms as independent FTS operands. Quoting the
-        # entire expanded query would require adjacency/order and collapse recall.
-        phrase = " AND ".join(
-            '"' + token.replace('"', '""') + '"' for token in query.split()
+        where.append(
+            "(body LIKE ? ESCAPE '\\' OR title LIKE ? ESCAPE '\\' OR creators LIKE ? ESCAPE '\\')"
         )
-        where = ["chunks_fts MATCH ?"]
-        params = [phrase]
+        params.extend([pattern, pattern, pattern])
+    if not where:
+        return []
+    short_query = not indexable
     if not include_notes:
         where.append("source_type <> 'note'")
     if item_keys:
