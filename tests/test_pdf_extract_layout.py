@@ -151,6 +151,38 @@ class PdfLayoutTests(unittest.TestCase):
         self.assertTrue(chunks)
         self.assertTrue(all(zone == "bibliography" for zone in by_page[2]))
 
+    def test_a_page_emptied_by_repeated_header_removal_is_recorded(self):
+        """Repeated-header/footer removal can empty a page entirely.
+
+        The page then appears in neither ``empty_pages`` nor ``low_text_pages``
+        -- quality reporting has no record that content ever existed there,
+        so no audit can distinguish "genuinely blank" from "every line here
+        matched a running header" (2026-07-29).
+        """
+        running_header = "Running Header Example Text"
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "repeated_header.pdf"
+            document = fitz.open()
+            first = document.new_page(width=600, height=800)
+            first.insert_textbox(fitz.Rect(40, 20, 560, 40), running_header, fontsize=10)
+            first.insert_textbox(
+                fitz.Rect(40, 60, 560, 750),
+                "Ordinary body text that makes the first page substantive. " * 10,
+                fontsize=11,
+            )
+            for _ in range(4):
+                page = document.new_page(width=600, height=800)
+                page.insert_textbox(fitz.Rect(40, 20, 560, 40), running_header, fontsize=10)
+            document.save(str(path))
+            document.close()
+
+            with patch.object(pdf_extract, "PDF_OCR_FALLBACK", False), \
+                 patch.object(pdf_extract, "PDF_DROP_REPEATED_LINES", True):
+                _chunks, quality = pdf_extract.extract_chunks_from_pdf(path, "ATT", {"title": "Test"})
+
+        self.assertIn("repeated_header_dropped_pages", quality)
+        self.assertEqual(sorted(quality["repeated_header_dropped_pages"]), [2, 3, 4, 5])
+
     def test_hard_min_chars_is_cjk_aware(self):
         """Every other length constant here has a CJK counterpart already.
 

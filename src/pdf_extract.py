@@ -1005,6 +1005,13 @@ def extract_chunks_from_pdf(
                     "avg_extraction_failure_score": round(avg_extraction_failure_score, 3),
                     "page_scores": page_scores,
                     "has_outline": bool(_toc),
+                    # Populated below when repeated-header/footer removal empties
+                    # a page entirely. Without this, such a page shows up in
+                    # neither empty_pages nor low_text_pages -- it simply never
+                    # existed as far as quality reporting is concerned, and no
+                    # audit can distinguish "genuinely blank page" from "every
+                    # line on this page matched a running header" (2026-07-29).
+                    "repeated_header_dropped_pages": [],
                 }
                 # This dict replaces the safe-default one wholesale, so the
                 # source-class fields have to be re-applied here too.
@@ -1041,6 +1048,7 @@ def extract_chunks_from_pdf(
                             if record["text"].strip() not in repeated_lines
                         ]
                         if not layout_records:
+                            quality_info["repeated_header_dropped_pages"].append(pi + 1)
                             continue
 
                     if repeated_prefixes:
@@ -1054,6 +1062,7 @@ def extract_chunks_from_pdf(
                         else:
                             layout_records = layout_records[1:]
                         if not layout_records:
+                            quality_info["repeated_header_dropped_pages"].append(pi + 1)
                             continue
 
                     paras = [record["text"] for record in layout_records]
