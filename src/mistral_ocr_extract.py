@@ -239,12 +239,14 @@ def extract_chunks_from_mistral_ocr_result(
     total_blocks = 0
     heading_blocks = 0
     inferred_path: List[str] = []
+    covered_pages: List[int] = []
 
     for page_payload in pages:
         page_no = int(page_payload.get("index", 0)) + 1
         blocks = _page_blocks_from_response(page_payload)
         if not blocks:
             continue
+        covered_pages.append(page_no)
 
         chapter_info: Dict[str, str] = {}
         if toc_lookup is not None:
@@ -315,11 +317,20 @@ def extract_chunks_from_mistral_ocr_result(
         if not outline_path and active_path:
             inferred_path = list(active_path)
 
+    covered_pages = sorted(set(covered_pages))
+    # ocr_pages used to be claimed as every page of the source PDF regardless
+    # of what the response actually contained, so a page the API silently
+    # skipped (absent from result["pages"], or present but with no blocks)
+    # left no trace: quality reported full coverage for a page with zero
+    # chunks (2026-07-28). ocr_pages is now the pages that actually produced
+    # output; missing_pages is what full coverage would have required.
+    missing_pages = sorted(set(range(1, page_count + 1)) - set(covered_pages))
     return chunks, {
         "is_scanned": False, "is_corrupted": False,
         "scanned_pages": [], "corrupted_pages": [],
         "total_pages": page_count, "parser": "mistral_ocr", "model": model,
-        "ocr_pages": list(range(1, page_count + 1)),
+        "ocr_pages": covered_pages,
+        "missing_pages": missing_pages,
         "page_confidences": {},
         "blocks": total_blocks, "heading_blocks": heading_blocks,
         "usage_info": result.get("usage_info") or {},

@@ -198,3 +198,69 @@ class ExtractChunksMergeTests(unittest.TestCase):
             )
         block_types = [md.get("block_type") for _cid, _text, md in chunks]
         self.assertIn("heading", block_types)
+
+
+class OcrPageCoverageTests(unittest.TestCase):
+    """P2-04 (2026-07-28): ocr_pages claimed every page of the source PDF
+    regardless of what the response actually contained, so a page the API
+    silently skipped left no trace -- quality reported full coverage for a
+    page with zero chunks."""
+
+    def _pdf(self, directory, page_count=1):
+        import fitz
+        path = str(Path(directory) / "test.pdf")
+        doc = fitz.open()
+        for _ in range(page_count):
+            doc.new_page(width=600, height=800)
+        doc.save(path)
+        doc.close()
+        return path
+
+    def test_a_page_missing_from_the_response_is_not_claimed_as_covered(self):
+        import tempfile
+        from src.mistral_ocr_extract import extract_chunks_from_mistral_ocr_result
+
+        with tempfile.TemporaryDirectory() as directory:
+            pdf_path = self._pdf(directory, page_count=3)
+            # Page index 1 (page 2) is entirely absent from the response.
+            result = {"pages": [
+                {"index": 0, "blocks": [{"type": "text", "content": "first page body text here"}]},
+                {"index": 2, "blocks": [{"type": "text", "content": "third page body text here"}]},
+            ]}
+            _chunks, quality = extract_chunks_from_mistral_ocr_result(
+                Path(pdf_path), "ATT", {}, result,
+            )
+        self.assertEqual(quality["ocr_pages"], [1, 3])
+        self.assertEqual(quality["missing_pages"], [2])
+
+    def test_a_page_present_but_with_no_blocks_is_also_reported_missing(self):
+        import tempfile
+        from src.mistral_ocr_extract import extract_chunks_from_mistral_ocr_result
+
+        with tempfile.TemporaryDirectory() as directory:
+            pdf_path = self._pdf(directory, page_count=2)
+            result = {"pages": [
+                {"index": 0, "blocks": [{"type": "text", "content": "only page with content"}]},
+                {"index": 1, "blocks": []},
+            ]}
+            _chunks, quality = extract_chunks_from_mistral_ocr_result(
+                Path(pdf_path), "ATT", {}, result,
+            )
+        self.assertEqual(quality["ocr_pages"], [1])
+        self.assertEqual(quality["missing_pages"], [2])
+
+    def test_full_coverage_reports_no_missing_pages(self):
+        import tempfile
+        from src.mistral_ocr_extract import extract_chunks_from_mistral_ocr_result
+
+        with tempfile.TemporaryDirectory() as directory:
+            pdf_path = self._pdf(directory, page_count=2)
+            result = {"pages": [
+                {"index": 0, "blocks": [{"type": "text", "content": "first page body text here"}]},
+                {"index": 1, "blocks": [{"type": "text", "content": "second page body text here"}]},
+            ]}
+            _chunks, quality = extract_chunks_from_mistral_ocr_result(
+                Path(pdf_path), "ATT", {}, result,
+            )
+        self.assertEqual(quality["ocr_pages"], [1, 2])
+        self.assertEqual(quality["missing_pages"], [])
