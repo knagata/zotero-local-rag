@@ -334,8 +334,17 @@ def extract_chunks_from_pdf_with_docling(
             parts = split_long_paragraph(para_text, max_chars=local_max_chars, target_chars=local_target_chars)
             for part_index, part in enumerate(parts):
                 part = part.strip()
-                if len(part) < HARD_MIN_CHARS and item_data["block_type"] not in _PRESERVE_SHORT_LABELS:
+                if not part:
                     continue
+                # Do not drop sub-HARD_MIN_CHARS parts here: _merge_docling_chunks
+                # below is where that floor belongs, since it runs *after*
+                # consecutive same-block_type/zone/heading fragments have had a
+                # chance to merge into a real chunk. Filtering before that merge
+                # meant a page whose blocks all happened to be short (e.g. one
+                # line per block) lost every one of them with nothing left to
+                # combine -- the page vanished from the index entirely, the same
+                # failure mode fixed for pdf_extract.py's degenerate-page retry
+                # (2026-07-29).
 
                 chunk_id = f"{attachment_key}:p{pi}:para{para_index}:part{part_index}"
                 md = dict(meta_base)

@@ -132,6 +132,33 @@ class DoclingExtractTests(unittest.TestCase):
         self.assertTrue(reference_texts[1].startswith("Bostrom N (2014)"))
         self.assertTrue(reference_texts[2].startswith("Dennett D (2017)"))
 
+    def test_a_page_of_all_short_text_fragments_is_not_lost_entirely(self):
+        # P2-01 (2026-07-29): each fragment below HARD_MIN_CHARS used to be
+        # dropped before _merge_docling_chunks ever ran, so a page whose text
+        # items all happened to be short one-liners (e.g. one line per block)
+        # produced zero chunks -- the whole page vanished from the index. The
+        # fix lets short fragments reach the merge pass, where consecutive
+        # same-block_type/zone/heading items can combine into a real chunk.
+        items = [
+            (_Item(_Label.TEXT, "one short line"), 1),
+            (_Item(_Label.TEXT, "another short line"), 1),
+            (_Item(_Label.TEXT, "a third short line here"), 1),
+            (_Item(_Label.TEXT, "and a fourth short line"), 1),
+        ]
+        from docling.datamodel.base_models import ConversionStatus
+
+        converter = SimpleNamespace(
+            convert=lambda _path: SimpleNamespace(document=_Doc(items), status=ConversionStatus.SUCCESS)
+        )
+        with patch.object(docling_extract, "get_docling_converter", return_value=converter):
+            chunks, _quality = docling_extract.extract_chunks_from_pdf_with_docling(
+                Path("missing-fixture.pdf"), "ATT", {"itemKey": "ITEM"},
+            )
+        self.assertGreater(len(chunks), 0)
+        combined = " ".join(text for _cid, text, _md in chunks)
+        for fragment in ("one short line", "another short line", "a third short line here", "and a fourth short line"):
+            self.assertIn(fragment, combined)
+
     def test_patch_scanned_pages_remaps_pages_and_namespaces_ids(self):
         # E2c (dev-notes/current/77, user decision 2026-07-25): patching just the
         # scanned pages must (a) remap sub-PDF page numbers back to the original
