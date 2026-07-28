@@ -66,6 +66,26 @@ class CutoverAuditTests(unittest.TestCase):
             chroma_ids={"c"}, lexical_ids=set(), pipeline_config_exists=True,
         ))
 
+    def test_global_gate_catches_chunks_no_per_item_comparison_can_reach(self):
+        # P6-3 (2026-07-29): the per-item comparison iterates legacy item
+        # keys, so a chunk with no itemKey is invisible to it no matter how
+        # many items are compared. This is the one check in the gate that
+        # looks at the whole collection instead of one item at a time.
+        manifest = {
+            "pipeline_fingerprint": "sha256:p", "hnsw_validated": True,
+            "files": {"A": {"quality": {}}},
+        }
+        self.assertEqual(global_gate_failures(
+            manifest=manifest, manifest_attachment_keys={"A"}, chroma_attachment_keys={"A"},
+            chroma_ids={"c"}, lexical_ids={"c"}, pipeline_config_exists=True,
+            chunks_without_item_count=0,
+        ), [])
+        self.assertIn("chunks_without_item", global_gate_failures(
+            manifest=manifest, manifest_attachment_keys={"A"}, chroma_attachment_keys={"A"},
+            chroma_ids={"c"}, lexical_ids={"c"}, pipeline_config_exists=True,
+            chunks_without_item_count=17,
+        ))
+
 
 if __name__ == "__main__":
     unittest.main()

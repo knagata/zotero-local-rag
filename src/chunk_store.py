@@ -117,6 +117,38 @@ def list_attachment_keys(
         connection.close()
 
 
+def list_chunk_ids_without_item(
+    *, chroma_dir: Path = DEFAULT_CHROMA_DIR, collection_name: str | None = None,
+) -> list[str]:
+    """Chunk ids that have no non-empty itemKey.
+
+    audit_v3_cutover.py's per-item comparison iterates legacy item keys, so a
+    chunk with no itemKey is never examined by it -- 1,774 such chunks
+    answered vector search while every gate passed (2026-07-28). A LEFT JOIN
+    against embedding_metadata is required rather than a WHERE on that table
+    directly: a chunk missing the itemKey key entirely has no row there at
+    all, not a row with an empty string, so an inner join would silently skip
+    it same as the per-item audit does.
+    """
+    db_path = _db_path(chroma_dir)
+    name = collection_name or active_collection_name(chroma_dir)
+    if not db_path.exists() or not name:
+        return []
+    connection = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=30)
+    try:
+        rows = connection.execute('''
+            SELECT e.embedding_id
+            FROM collections c JOIN segments s ON s.collection = c.id AND s.scope = 'METADATA'
+            JOIN embeddings e ON e.segment_id = s.id
+            LEFT JOIN embedding_metadata item ON item.id = e.id AND item.key = 'itemKey'
+            WHERE c.name = ? AND COALESCE(item.string_value, '') = ''
+            ORDER BY e.embedding_id
+        ''', (name,)).fetchall()
+        return [str(row[0]) for row in rows]
+    finally:
+        connection.close()
+
+
 def get_item_chunks(
     item_key: str,
     *,

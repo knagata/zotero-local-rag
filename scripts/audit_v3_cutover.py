@@ -15,7 +15,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.chunk_store import (
-    get_item_chunks, list_attachment_keys, list_chunk_ids, list_item_keys,
+    get_item_chunks, list_attachment_keys, list_chunk_ids, list_chunk_ids_without_item,
+    list_item_keys,
 )
 from src.db_relations import get_document_structure
 from src.source_verification import dangling_node_ids, unretrievable_documents
@@ -120,13 +121,20 @@ def structure_failures(
 def global_gate_failures(
     *, manifest: Mapping[str, Any], manifest_attachment_keys: set[str],
     chroma_attachment_keys: set[str], chroma_ids: set[str], lexical_ids: set[str],
-    pipeline_config_exists: bool,
+    pipeline_config_exists: bool, chunks_without_item_count: int = 0,
 ) -> list[str]:
     failures = []
     if manifest_attachment_keys != chroma_attachment_keys:
         failures.append("manifest_chroma_attachment_mismatch")
     if chroma_ids != lexical_ids:
         failures.append("chroma_lexical_id_mismatch")
+    # The per-item comparison above iterates legacy item keys, so a chunk with
+    # no itemKey is never examined by it -- 1,774 such chunks answered vector
+    # search while every per-item gate passed (2026-07-28). This is the only
+    # check in the gate that looks at the whole collection rather than at one
+    # item at a time, and is exactly what catches that population.
+    if chunks_without_item_count:
+        failures.append("chunks_without_item")
     if not manifest.get("pipeline_fingerprint") or not pipeline_config_exists:
         failures.append("missing_v3_pipeline_provenance")
     if manifest.get("hnsw_validated") is not True:
@@ -207,6 +215,7 @@ def main() -> None:
         comparisons.append(row)
     manifest = load_manifest(args.manifest)
     manifest_files = manifest.get("files") if isinstance(manifest.get("files"), dict) else {}
+    orphaned_chunk_ids = list_chunk_ids_without_item(collection_name=args.new_collection)
     global_failures = global_gate_failures(
         manifest=manifest,
         manifest_attachment_keys=set(str(value) for value in manifest_files),
@@ -214,6 +223,7 @@ def main() -> None:
         chroma_ids=set(list_chunk_ids(collection_name=args.new_collection)),
         lexical_ids=set(list_lexical_chunk_ids(path=args.lexical_db)),
         pipeline_config_exists=args.pipeline_config.exists(),
+        chunks_without_item_count=len(orphaned_chunk_ids),
     )
     failed = [row for row in comparisons if not row["passed"]]
     outliers = [row for row in comparisons if row["delta"]["character_ratio_outlier"]]
@@ -228,6 +238,7 @@ def main() -> None:
             "coverage_required": 1.0,
             "note": "Character-ratio outliers require review but do not alone fail the deterministic gate.",
             "global_failures": global_failures,
+            "chunks_without_item": len(orphaned_chunk_ids),
         },
         "structure_statuses": dict(sorted(structure_statuses.items())),
         "v3_zones": dict(sorted(zones.items())),
