@@ -17,6 +17,8 @@ try:
         is_no_space_language_document, joiner_for_text, looks_like_gibberish,
         merge_short_chunk_records, normalize_paragraphs, split_long_paragraph,
     )
+    from . import heading_zone
+    from .heading_zone import classify_heading_path
 except ImportError:  # pragma: no cover - direct src entrypoint
     from text_utils import (
         HARD_MIN_CHARS, MAX_CHARS, TARGET_CHARS, MAX_CHARS_CJK, TARGET_CHARS_CJK,
@@ -24,6 +26,8 @@ except ImportError:  # pragma: no cover - direct src entrypoint
         is_no_space_language_document, joiner_for_text, looks_like_gibberish,
         merge_short_chunk_records, normalize_paragraphs, split_long_paragraph,
     )
+    import heading_zone
+    from heading_zone import classify_heading_path
 
 # Optional: robust main-content extraction for Zotero Web Snapshots
 try:
@@ -64,30 +68,23 @@ _LEAF_CONTAINER_EXCLUDED_TOKENS = {
 # paragraph prose.  A real heading longer than this is not credible; retaining
 # it as body text prevents a malformed tag from deleting an entire chapter.
 _MALFORMED_HEADING_BODY_CHARS = 240
-# "Sources" was in none of these, which is why a 72,150-character source list
-# stayed classified as body text (GI85JWZH, 2026-07-28). The trailing "to
-# Chapter 3" form matters as much as the bare word: a fullmatch against
-# "Notes" alone misses every per-chapter note section in a book that has them.
-_BIBLIOGRAPHY_RE = re.compile(
-    r"^(?:references?|bibliography|select bibliography|further reading|sources|"
-    r"works cited|参考文献|引用文献|文献一覧|文献目録|参考資料)"
-    r"(?:\s*(?:to|for)\s+.+)?$", re.I)
-_NOTE_RE = re.compile(
-    r"^(?:notes?|endnotes?|footnotes?|注|注釈|註|巻末注|後注|原注|訳注|注記)"
-    r"(?:\s*(?:to|for)\s+.+)?$", re.I)
+# Vocabulary moved to heading_zone (the single definition, shared with
+# pdf_extract.py and docling_extract.py). Aliased here rather than deleted so
+# existing call sites and tests keep working; _zone_for_element itself now
+# calls classify_heading_path directly.
+_BIBLIOGRAPHY_RE = heading_zone.BIBLIOGRAPHY_RE
+_NOTE_RE = heading_zone.ENDNOTE_RE
+_TOC_RE = heading_zone.TOC_RE
+_INDEX_RE = heading_zone.INDEX_RE
+_COLOPHON_RE = heading_zone.COLOPHON_RE
+_FRONT_MATTER_RE = heading_zone.FRONT_MATTER_RE
+_BACK_MATTER_RE = heading_zone.BACK_MATTER_RE
 # In these zones a block often packs many entries (one reference / one note each)
 # into a single element separated by <br/>.  We split on <br/> so each entry
 # becomes its own block, keeping the boundary intact through chunking (Part A of
 # dev-notes/current/77).  Body prose stays paragraph-merged.
 _ENTRY_ZONES = {"bibliography", "endnote", "footnote"}
 _MIN_ENTRY_CHARS = 8
-_TOC_RE = re.compile(r"^(?:目次|contents?|tableofcontents)$", re.I)
-_INDEX_RE = re.compile(
-    r"^(?:索引|人名索引|事項索引|地名索引|subject\s*index|name\s*index|general\s*index|index)$", re.I)
-_COLOPHON_RE = re.compile(r"^(?:奥付|colophon|copyright)$", re.I)
-_FRONT_MATTER_RE = re.compile(r"^(?:凡例|謝辞|序文|まえがき|acknowledg(?:e)?ments?)$", re.I)
-_BACK_MATTER_RE = re.compile(
-    r"^(?:あとがき|後書き|付録|付表|appendix|appendices|afterword|glossary|用語集)$", re.I)
 _ZONE_TERMS = {
     "footnote": "footnote", "doc-footnote": "footnote",
     "endnote": "endnote", "doc-endnote": "endnote", "rearnote": "endnote",
@@ -225,23 +222,15 @@ def _zone_for_element(tag: Any, heading_path: List[str]) -> str:
     for token, zone in _ZONE_TERMS.items():
         if token in tokens:
             return zone
-    heading = heading_path[-1] if heading_path else ""
-    heading = re.sub(r"[\s　]+", "", heading).strip("[]［］()（）")
-    if _BIBLIOGRAPHY_RE.match(heading):
-        return "bibliography"
-    if _NOTE_RE.match(heading):
-        return "endnote"
-    if _TOC_RE.match(heading):
-        return "toc"
-    if _INDEX_RE.match(heading):
-        return "index"
-    if _COLOPHON_RE.match(heading):
-        return "colophon"
-    if _FRONT_MATTER_RE.match(heading):
-        return "front_matter"
-    if _BACK_MATTER_RE.match(heading):
-        return "back_matter"
-    return "body"
+    # Checking only the last heading missed the ordinary case of a subsection
+    # with no paratext vocabulary of its own nested under one that has: "Notes"
+    # containing "Chapter 3" classified as body, because only "Chapter 3" was
+    # checked. 2,715 chunks were affected (2026-07-28). classify_heading_path
+    # checks the whole ancestor chain, outermost first.
+    cleaned_path = [
+        re.sub(r"[\s　]+", "", title).strip("[]［］()（）") for title in heading_path
+    ]
+    return classify_heading_path(cleaned_path)
 
 
 def _collect_element_ids(element: Any) -> set[str]:

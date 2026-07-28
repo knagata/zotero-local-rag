@@ -244,3 +244,21 @@ def test_a_body_heading_beginning_with_a_paratext_word_stays_body():
     assert not _BIBLIOGRAPHY_RE.match("Sources of Power")
     assert not _BIBLIOGRAPHY_RE.match("References and Realities")
     assert not _NOTE_RE.match("Notes on the State of Virginia")
+
+
+def test_zone_for_element_checks_the_whole_ancestor_path_not_just_the_leaf():
+    """"Notes" containing "Chapter 3" must classify as endnote.
+
+    Checking only the immediate heading (heading_path[-1]) missed this: "Chapter
+    3" carries no paratext vocabulary of its own, but everything nested under
+    "Notes" is a note regardless. 2,715 chunks were affected (2026-07-28).
+    """
+    from bs4 import BeautifulSoup
+    from src.html_extract import _zone_for_element
+
+    soup = BeautifulSoup("<html><body><div>text</div></body></html>", "html.parser")
+    tag = soup.find("div")
+
+    assert _zone_for_element(tag, ["Notes", "Chapter 3"]) == "endnote"
+    assert _zone_for_element(tag, ["Part One", "Chapter 3"]) == "body"
+    assert _zone_for_element(tag, ["Sources"]) == "bibliography"

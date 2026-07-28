@@ -149,3 +149,38 @@ def test_a_page_whose_lines_are_all_too_short_is_rescued_not_erased():
     )
     assert rescued
     assert sum(len(row[1]) for row in rescued) >= sum(len(row[1]) for row in rows)
+
+    def test_a_heading_from_the_pdf_outline_stamps_a_zone(self):
+        """This was the one PDF path that assigned no zone at all beyond corrupted.
+
+        Paratext classification existed only for AI-TOC and Docling documents,
+        which most PDFs never route through -- an estimated 10.6 million
+        characters across 217 items sat under headings like "Bibliography"
+        while indexed as zone=body (2026-07-28).
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "outline.pdf"
+            document = fitz.open()
+            intro = document.new_page(width=600, height=800)
+            intro.insert_textbox(
+                fitz.Rect(50, 50, 550, 750), "This is the introduction body text. " * 30, fontsize=11,
+            )
+            refs = document.new_page(width=600, height=800)
+            refs.insert_textbox(
+                fitz.Rect(50, 50, 550, 750),
+                "Smith, J. 2020. A book. Jones, K. 2019. Another book. " * 30, fontsize=11,
+            )
+            document.set_toc([[1, "Introduction", 1], [1, "Bibliography", 2]])
+            document.save(str(path))
+            document.close()
+
+            with patch.object(pdf_extract, "PDF_OCR_FALLBACK", False):
+                chunks, _quality = pdf_extract.extract_chunks_from_pdf(path, "ATT", {"title": "Test"})
+
+        by_page = {}
+        for _cid, _text, metadata in chunks:
+            by_page.setdefault(metadata.get("page"), []).append(metadata.get("zone"))
+
+        self.assertTrue(all(zone in (None, "body") for zone in by_page[1]))
+        self.assertTrue(chunks)
+        self.assertTrue(all(zone == "bibliography" for zone in by_page[2]))

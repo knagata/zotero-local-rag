@@ -15,6 +15,7 @@ try:
         is_no_space_language_document, split_long_paragraph, merge_short_chunk_records,
         _cjk_ratio,
     )
+    from .heading_zone import classify_heading
 except ImportError:  # direct execution with src/ on sys.path
     from text_utils import (
         MIN_CHUNK_CHARS, MIN_CHUNK_CHARS_NO_SPACE, MAX_CHARS, TARGET_CHARS,
@@ -22,6 +23,7 @@ except ImportError:  # direct execution with src/ on sys.path
         is_no_space_language_document, split_long_paragraph, merge_short_chunk_records,
         _cjk_ratio,
     )
+    from heading_zone import classify_heading
 
 
 _DOCLING_CONVERTER = None
@@ -31,12 +33,11 @@ _PRESERVE_SHORT_LABELS = {
     "title", "section_header", "table", "caption", "footnote", "reference",
     "formula", "chart", "picture", "document_index",
 }
-_BIBLIOGRAPHY_HEADING_RE = re.compile(
-    r"^(?:references?|bibliography|works\s+cited|参考文献|引用文献|文献一覧)$", re.I,
-)
-_FOOTNOTE_HEADING_RE = re.compile(r"^(?:footnotes?|脚注|註)$", re.I)
-_ENDNOTE_HEADING_RE = re.compile(r"^(?:endnotes?|notes?|巻末注|後注|注)$", re.I)
-_INDEX_HEADING_RE = re.compile(r"^(?:index|索引)$", re.I)
+# Vocabulary moved to heading_zone.classify_heading (the single definition,
+# shared with pdf_extract.py and html_extract.py). This module's own copy
+# used fullmatch and lacked the trailing "to X" allowance, so "Notes to
+# Chapter 3" -- a document that numbers its note sections -- fell through to
+# body in every chapter that had one (2026-07-28).
 
 
 def normalize_docling_label(value: Any) -> str:
@@ -49,16 +50,7 @@ def normalize_docling_label(value: Any) -> str:
 
 
 def _heading_zone(text: str) -> str:
-    normalized = " ".join(text.strip().split())
-    if _BIBLIOGRAPHY_HEADING_RE.fullmatch(normalized):
-        return "bibliography"
-    if _FOOTNOTE_HEADING_RE.fullmatch(normalized):
-        return "footnote"
-    if _ENDNOTE_HEADING_RE.fullmatch(normalized):
-        return "endnote"
-    if _INDEX_HEADING_RE.fullmatch(normalized):
-        return "index"
-    return "body"
+    return classify_heading(text)
 
 
 def zone_for_docling_item(label: str, text: str, section_zone: str = "body") -> str:

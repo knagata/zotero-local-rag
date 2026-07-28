@@ -712,6 +712,27 @@ A（PDF構造化）・B（課金LLM）は独立、C（構造抽出エンジン�
     `passed: true`を出したのは、監査がitem単位で回るためこれらを一度も見ないから。
   - `document_nodes`も0件。該当添付の再取込が必要。
 
+- [x] ~~**P3-1: 主要PDF経路のzone未判定を解消**~~ (2026-07-28)
+  - `pdf_extract.py`はzoneを`corrupted`しか付与せず、paratext判定はAI-TOC/Docling
+    経由の資料限定だった。実測: 約1,060万字・29,147チャンク・217アイテムが本来
+    paratext（文献リスト・索引・後注）なのに`zone=body`のまま検索に出ていた。
+  - 見出し→zoneの語彙が`html_extract.py`・`docling_extract.py`・`pdf_toc_recovery.py`の
+    3ファイルに独立して存在し（P3-5）、しかも末尾の見出ししか見ない実装だったため
+    「Notes」配下の「Chapter 3」がbody扱いになる欠陥（P3-4、実測2,715チャンク）もあった。
+  - `src/heading_zone.py`を新設し単一定義に統合。`classify_heading_path()`は祖先を
+    outermost-firstで辿り、最初に一致したparatext zoneを返す。
+  - `pdf_extract.py`は既に`chapter_detect.py`経由で`structure_path`/`chapter`/`section`を
+    持っていたので、それをそのままこの分類器に渡すだけで済んだ（`corrupted`は優先）。
+    合成PDF（PyMuPDF目次に"Bibliography"見出し）で実証: 該当頁の全チャンクが
+    `zone=bibliography`になることを確認。
+  - `docling_extract.py`の`_heading_zone`は独自語彙・`fullmatch`だったため
+    "Notes to Chapter 3"型が全滅していた。共有関数への委譲に置換。
+  - `html_extract.py`の`_zone_for_element`は末尾の見出しだけを見ていたため
+    祖先を辿る形に修正（P3-4を解消）。既存の正規表現定数は`heading_zone`への
+    エイリアスとして残し、既存テストとの互換を維持。
+  - テスト: `heading_zone`単体18件、PDF実抽出1件（合成PDFで実証）、
+    HTML祖先辿り1件。いずれも修正前に失敗することを確認済み。
+
 ### Phase 5: 階層検索を既定へ切り替える
 
 - [ ] **V3 active切替後の検索統合試験を実行する**

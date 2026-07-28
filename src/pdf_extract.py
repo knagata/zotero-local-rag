@@ -24,6 +24,7 @@ try:
         get_pdf_toc, build_pdf_page_chapter_lookup, build_pdf_page_structure_path_lookup,
     )
     from .pdf_provenance import classify_pdf_source, detect_text_defects
+    from .heading_zone import classify_heading_path
 except ImportError:  # direct execution with src/ on sys.path
     from text_utils import (
         HARD_MIN_CHARS, MAX_CHARS, TARGET_CHARS, MAX_CHARS_CJK,
@@ -36,6 +37,7 @@ except ImportError:  # direct execution with src/ on sys.path
         get_pdf_toc, build_pdf_page_chapter_lookup, build_pdf_page_structure_path_lookup,
     )
     from pdf_provenance import classify_pdf_source, detect_text_defects
+    from heading_zone import classify_heading_path
 
 PDF_DROP_REPEATED_LINES = (os.environ.get("PDF_DROP_REPEATED_LINES") or "1") == "1"
 # Retain unusable page text as zone="corrupted" instead of dropping it silently
@@ -1092,6 +1094,23 @@ def extract_chunks_from_pdf(
                                         chapter_info["structure_path"] = structure_path
                                 except Exception:
                                     pass
+                            # This was the one PDF path that assigned no zone at
+                            # all beyond "corrupted": paratext classification
+                            # existed only for AI-TOC and Docling documents,
+                            # which most PDFs never route through. Measured
+                            # impact of that gap: ~10.6 million characters
+                            # across 217 items sitting under headings like
+                            # "Sources" or "Bibliography" while indexed as
+                            # zone=body (2026-07-28). The heading path already
+                            # computed above for chapter/section metadata is
+                            # exactly the input classify_heading_path needs;
+                            # corrupted text still wins, since reliability is a
+                            # different axis from structure.
+                            heading_path = (
+                                chapter_info.get("structure_path")
+                                or [value for value in (chapter_info.get("chapter"), chapter_info.get("section")) if value]
+                            )
+                            heading_zone = classify_heading_path(heading_path) if heading_path else "body"
                             md.update(
                                 {
                                     "source_type": "pdf",
@@ -1108,7 +1127,8 @@ def extract_chunks_from_pdf(
                                     # put retained corrupted text (U3) in its own
                                     # zone=corrupted leaf, which ZONE_POLICIES
                                     # then excludes from retrieval and summaries.
-                                    **({"zone": record["zone"]} if record.get("zone") else {}),
+                                    **({"zone": record["zone"]} if record.get("zone")
+                                       else ({"zone": heading_zone} if heading_zone != "body" else {})),
                                     "reading_order": int(record.get("reading_order", para_index)),
                                     "column": record.get("column") or "unknown",
                                     "source_block_indices": list(record.get("source_block_indices") or []),

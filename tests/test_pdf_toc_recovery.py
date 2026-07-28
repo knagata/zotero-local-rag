@@ -320,3 +320,50 @@ def test_splice_still_applies_when_the_replacement_carries_the_text():
     spliced = _splice_reference_chunks(structured, entries, [220])
 
     assert [row[0] for row in spliced] == ["d1", "d2", "d3"]
+
+
+def test_docling_reference_enrichment_stamps_the_attachment_key():
+    """meta_base carried itemKey but not attachmentKey.
+
+    Deletion and the source-truth check both key on attachmentKey, so every
+    chunk this path produced was reachable by neither: not purged when the
+    attachment was removed from Zotero, and invisible to the per-attachment
+    orphan accounting even though it was exactly an orphan. 1,917 chunks
+    across 9 items were in this state (2026-07-28, found auditing P1).
+    """
+    chunks = [("c1", "body", {"page": 10, "reading_order": 1})]
+    inferred = {
+        "document_type": "book",
+        "headings": [
+            {"title": "One", "level": 1, "kind": "chapter", "printed_page": "1"},
+            {"title": "Two", "level": 1, "kind": "chapter", "printed_page": "20"},
+        ],
+    }
+    records = {
+        10: [{"text": "One", "reading_order": 0}],
+        30: [{"text": "Two", "reading_order": 0}],
+    }
+    env = {
+        "PDF_AI_TOC_FAST_PATH_ENABLE": "1", "PDF_AI_TOC_MIN_COVERAGE": "0.9",
+        "PDF_AI_TOC_MIN_STRUCTURED_CHUNK_RATIO": "0.8", "PDF_AI_TOC_MIN_PAGES": "30",
+        "PDF_AI_TOC_DOCLING_REFERENCES_ENABLE": "1",
+    }
+    captured_meta_base = {}
+
+    def fake_extract(pdf_path, pages, *, attachment_key, meta_base):
+        captured_meta_base.update(meta_base)
+        return []  # empty is fine; the splice guard leaves structured untouched
+
+    with mock.patch.dict(os.environ, env, clear=False), \
+         mock.patch("src.pdf_toc_recovery.infer_toc", return_value=inferred), \
+         mock.patch("src.pdf_toc_recovery._page_records", return_value=records), \
+         mock.patch("src.pdf_toc_recovery._reference_section_pages", return_value=[10]), \
+         mock.patch("src.docling_extract.extract_reference_sections_with_docling",
+                    side_effect=fake_extract):
+        try_ai_toc_fast_path(Path("sample.pdf"), "ITEM", chunks, {
+            "is_scanned": False, "is_corrupted": False, "total_pages": 30,
+            "scanned_ratio": 0.0, "corrupted_ratio": 0.0, "extraction_failure_ratio": 0.0,
+        })
+
+    assert captured_meta_base.get("itemKey") == "ITEM"
+    assert captured_meta_base.get("attachmentKey"), "attachmentKey must be stamped, not omitted"

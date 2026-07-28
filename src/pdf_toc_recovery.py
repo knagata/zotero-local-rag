@@ -566,8 +566,15 @@ def try_ai_toc_fast_path(
             except ImportError:  # pragma: no cover - direct src entrypoint
                 from docling_extract import extract_reference_sections_with_docling
             try:
-                meta_base = {"itemKey": item_key}
                 attachment_key = str((structured[0][2] if structured else {}).get("attachmentKey") or item_key)
+                # attachmentKey was missing here, so every chunk this path
+                # produced carried itemKey but no attachmentKey. Deletion and
+                # the source-truth check both key on attachmentKey, so these
+                # chunks were reachable by neither: not purged when the
+                # attachment was removed, and invisible to
+                # chunks_without_item's per-attachment accounting even though
+                # they are exactly that (2026-07-28, found while auditing P1).
+                meta_base = {"itemKey": item_key, "attachmentKey": attachment_key}
                 reference_chunks = extract_reference_sections_with_docling(
                     pdf_path, reference_pages, attachment_key=attachment_key, meta_base=meta_base,
                 )
