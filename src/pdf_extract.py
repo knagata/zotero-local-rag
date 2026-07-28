@@ -14,7 +14,7 @@ import fitz  # PyMuPDF
 
 try:
     from .text_utils import (
-        HARD_MIN_CHARS, MAX_CHARS, TARGET_CHARS, MAX_CHARS_CJK,
+        HARD_MIN_CHARS, HARD_MIN_CHARS_CJK, MAX_CHARS, TARGET_CHARS, MAX_CHARS_CJK,
         TARGET_CHARS_CJK, MIN_CHUNK_CHARS, MIN_CHUNK_CHARS_NO_SPACE,
         clean_extracted_text, is_no_space_language_document, joiner_for_text,
         looks_like_gibberish, merge_short_chunk_records, normalize_paragraphs,
@@ -27,7 +27,7 @@ try:
     from .heading_zone import classify_heading_path
 except ImportError:  # direct execution with src/ on sys.path
     from text_utils import (
-        HARD_MIN_CHARS, MAX_CHARS, TARGET_CHARS, MAX_CHARS_CJK,
+        HARD_MIN_CHARS, HARD_MIN_CHARS_CJK, MAX_CHARS, TARGET_CHARS, MAX_CHARS_CJK,
         TARGET_CHARS_CJK, MIN_CHUNK_CHARS, MIN_CHUNK_CHARS_NO_SPACE,
         clean_extracted_text, is_no_space_language_document, joiner_for_text,
         looks_like_gibberish, merge_short_chunk_records, normalize_paragraphs,
@@ -1138,11 +1138,13 @@ def extract_chunks_from_pdf(
                             page_chunks.append((chunk_id, part, md))
 
                     before_merge = list(page_chunks)
+                    local_hard_min = HARD_MIN_CHARS_CJK if is_cjk else HARD_MIN_CHARS
                     page_chunks = merge_short_chunk_records(
                         page_chunks, min_chars=local_min_chunk, max_chars=local_max_chars,
                         boundary_key=lambda _cid, _text, metadata: (
                             metadata.get("page"), metadata.get("reading_order"),
                         ),
+                        hard_min_chars=local_hard_min,
                     )
                     # A page that had text and now has none was not filtered,
                     # it was erased. The boundary above is unique per record, so
@@ -1160,6 +1162,7 @@ def extract_chunks_from_pdf(
                             boundary_key=lambda _cid, _text, metadata: (
                                 metadata.get("page"), metadata.get("chapter"),
                             ),
+                            hard_min_chars=local_hard_min,
                         )
                     chunks.extend(page_chunks)
 

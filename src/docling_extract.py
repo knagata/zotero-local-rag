@@ -11,7 +11,7 @@ from collections import defaultdict
 try:
     from .text_utils import (
         MIN_CHUNK_CHARS, MIN_CHUNK_CHARS_NO_SPACE, MAX_CHARS, TARGET_CHARS,
-        MAX_CHARS_CJK, TARGET_CHARS_CJK, HARD_MIN_CHARS,
+        MAX_CHARS_CJK, TARGET_CHARS_CJK, HARD_MIN_CHARS, HARD_MIN_CHARS_CJK,
         is_no_space_language_document, split_long_paragraph, merge_short_chunk_records,
         _cjk_ratio,
     )
@@ -19,7 +19,7 @@ try:
 except ImportError:  # direct execution with src/ on sys.path
     from text_utils import (
         MIN_CHUNK_CHARS, MIN_CHUNK_CHARS_NO_SPACE, MAX_CHARS, TARGET_CHARS,
-        MAX_CHARS_CJK, TARGET_CHARS_CJK, HARD_MIN_CHARS,
+        MAX_CHARS_CJK, TARGET_CHARS_CJK, HARD_MIN_CHARS, HARD_MIN_CHARS_CJK,
         is_no_space_language_document, split_long_paragraph, merge_short_chunk_records,
         _cjk_ratio,
     )
@@ -162,6 +162,7 @@ def _docling_items(doc: Any) -> Dict[int, List[Dict[str, Any]]]:
 
 def _merge_docling_chunks(
     chunks: List[Tuple[str, str, Dict[str, Any]]], *, min_chars: int, max_chars: int,
+    hard_min_chars: int = HARD_MIN_CHARS,
 ) -> List[Tuple[str, str, Dict[str, Any]]]:
     """Merge only ordinary text parts; semantic short blocks stay standalone."""
     output: List[Tuple[str, str, Dict[str, Any]]] = []
@@ -171,7 +172,7 @@ def _merge_docling_chunks(
         if not pending:
             return
         output.extend(merge_short_chunk_records(
-            pending, min_chars=min_chars, max_chars=max_chars,
+            pending, min_chars=min_chars, max_chars=max_chars, hard_min_chars=hard_min_chars,
             # reading_order used to be part of this key, and it is unique per
             # chunk -- so every chunk formed its own boundary group and no two
             # could ever merge. The rescue this call exists to perform (join
@@ -378,6 +379,7 @@ def extract_chunks_from_pdf_with_docling(
         # zone, reading order, and exact provenance even for short captions or notes.
         page_chunks = _merge_docling_chunks(
             page_chunks, min_chars=local_min_chunk, max_chars=local_max_chars,
+            hard_min_chars=HARD_MIN_CHARS_CJK if is_cjk else HARD_MIN_CHARS,
         )
         chunks.extend(page_chunks)
 

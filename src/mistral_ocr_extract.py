@@ -18,7 +18,7 @@ try:
     from .env_utils import load_dotenv_native
     from .text_utils import (
         MAX_CHARS, MAX_CHARS_CJK, TARGET_CHARS, TARGET_CHARS_CJK,
-        MIN_CHUNK_CHARS, MIN_CHUNK_CHARS_NO_SPACE,
+        MIN_CHUNK_CHARS, MIN_CHUNK_CHARS_NO_SPACE, HARD_MIN_CHARS, HARD_MIN_CHARS_CJK,
         is_no_space_language_document, merge_short_chunk_records, split_long_paragraph,
     )
 except ImportError:  # direct `python src/index_from_zotero.py` execution
@@ -28,7 +28,7 @@ except ImportError:  # direct `python src/index_from_zotero.py` execution
     from env_utils import load_dotenv_native
     from text_utils import (
         MAX_CHARS, MAX_CHARS_CJK, TARGET_CHARS, TARGET_CHARS_CJK,
-        MIN_CHUNK_CHARS, MIN_CHUNK_CHARS_NO_SPACE,
+        MIN_CHUNK_CHARS, MIN_CHUNK_CHARS_NO_SPACE, HARD_MIN_CHARS, HARD_MIN_CHARS_CJK,
         is_no_space_language_document, merge_short_chunk_records, split_long_paragraph,
     )
 
@@ -309,6 +309,7 @@ def extract_chunks_from_mistral_ocr_result(
             boundary_key=lambda _cid, _text, md: (
                 md.get("block_type"), md.get("zone"), tuple(md.get("structure_path") or ()),
             ),
+            hard_min_chars=HARD_MIN_CHARS_CJK if is_cjk else HARD_MIN_CHARS,
         )
         chunks.extend(sorted(merged + preserved, key=lambda c: c[2].get("para_index", 0)))
         if not outline_path and active_path:

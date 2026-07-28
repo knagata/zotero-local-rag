@@ -81,6 +81,18 @@ MIN_CHUNK_CHARS_NO_SPACE = int(os.environ.get("MIN_CHUNK_CHARS_NO_SPACE", "120")
 # Hard minimum to avoid indexing obvious noise (page numbers, single tokens, etc.).
 HARD_MIN_CHARS = int(os.environ.get("HARD_MIN_CHARS", "40"))
 
+# The CJK counterpart to HARD_MIN_CHARS. Every other length constant in this
+# module has one (MIN_CHUNK_CHARS_NO_SPACE alongside MIN_CHUNK_CHARS,
+# MAX_CHARS_CJK/TARGET_CHARS_CJK alongside their Latin equivalents) on the
+# premise, stated below at _resolve_chunk_limits, that CJK carries roughly
+# twice the information per character -- but this one constant stayed
+# language-blind, so the final drop-or-keep decision inside
+# merge_short_chunk_records used the Latin floor even for Japanese and
+# Chinese text (2026-07-28). Halved for the same reason MAX_CHARS_CJK is
+# lower than MAX_CHARS: not an independent judgment call, the same ratio
+# applied where every sibling constant already applies it.
+HARD_MIN_CHARS_CJK = int(os.environ.get("HARD_MIN_CHARS_CJK", str(max(1, HARD_MIN_CHARS // 2))))
+
 # Text cleaning / filtering
 CONTROL_CHARS = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]")
 
@@ -350,6 +362,7 @@ def merge_short_chunk_records(
     max_chars: int,
     boundary_key: Optional[Callable[[str, str, Dict[str, Any]], Hashable]] = None,
     union_keys: Optional[Iterable[str]] = None,
+    hard_min_chars: int = HARD_MIN_CHARS,
 ) -> List[Tuple[str, str, Dict[str, Any]]]:
     """Merge consecutive short chunks into balanced, evenly-sized chunks.
 
@@ -499,7 +512,7 @@ def merge_short_chunk_records(
     # An isolated label/caption remains noise, but short chronology rows and
     # adjacent EPUB records are retained when the forward/backward pass joined
     # them into a useful searchable unit.
-    return [row for row in merged_out if len(row[1]) >= HARD_MIN_CHARS]
+    return [row for row in merged_out if len(row[1]) >= hard_min_chars]
 
 
 def _control_char_ratio(text: str) -> float:

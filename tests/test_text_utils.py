@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import unittest
 
-from src.text_utils import analyze_text_quality, detect_lang, merge_short_chunk_records
+from src.text_utils import (
+    HARD_MIN_CHARS, HARD_MIN_CHARS_CJK, analyze_text_quality, detect_lang,
+    merge_short_chunk_records,
+)
 
 
 class DetectLanguageTests(unittest.TestCase):
@@ -48,6 +51,39 @@ class DetectLanguageTests(unittest.TestCase):
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0][0], "a")
         self.assertEqual(result[0][1], "a" * 20 + "\n\n" + "b" * 25)
+
+    def test_hard_min_chars_defaults_to_the_module_constant(self):
+        chunks = [("a", "x" * (HARD_MIN_CHARS - 1), {"node_id": "one", "zone": "body"})]
+        result = merge_short_chunk_records(
+            chunks, min_chars=1000, max_chars=2000,
+            boundary_key=lambda _cid, _text, md: (md["node_id"], md["zone"]),
+        )
+        self.assertEqual(result, [])
+
+    def test_a_lower_hard_min_chars_can_be_passed_explicitly(self):
+        """The CJK counterpart to HARD_MIN_CHARS.
+
+        Every other length constant in this module has one on the premise
+        that CJK carries roughly twice the information per character, but the
+        final drop-or-keep decision stayed language-blind: a genuinely short
+        but meaningful CJK fragment was measured by the same floor as English
+        (2026-07-28).
+        """
+        text = "x" * (HARD_MIN_CHARS - 1)
+        self.assertLess(HARD_MIN_CHARS_CJK, HARD_MIN_CHARS)
+        self.assertGreater(len(text), HARD_MIN_CHARS_CJK)
+        chunks = [("a", text, {"node_id": "one", "zone": "body"})]
+        dropped = merge_short_chunk_records(
+            chunks, min_chars=1000, max_chars=2000,
+            boundary_key=lambda _cid, _text, md: (md["node_id"], md["zone"]),
+        )
+        kept = merge_short_chunk_records(
+            chunks, min_chars=1000, max_chars=2000,
+            boundary_key=lambda _cid, _text, md: (md["node_id"], md["zone"]),
+            hard_min_chars=HARD_MIN_CHARS_CJK,
+        )
+        self.assertEqual(dropped, [])
+        self.assertEqual(len(kept), 1)
 
     def test_contents_and_index_are_not_classified_as_corruption(self):
         contents = (

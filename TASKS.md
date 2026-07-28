@@ -768,6 +768,17 @@ A（PDF構造化）・B（課金LLM）は独立、C（構造抽出エンジン�
     `75QYJJYK`（P1-08で既に経路修正済み、再取込待ち）。**バグではなく、チェックが
     正しく機能した結果**。
 
+- [x] ~~**P3-9: `HARD_MIN_CHARS`を言語対応に**~~ (2026-07-28)
+  - 他の長さ定数（`MIN_CHUNK_CHARS`/`MAX_CHARS`/`TARGET_CHARS`）は全てCJK版を持つのに、
+    mergeの最終フィルタ`HARD_MIN_CHARS`（既定40）だけが言語盲のまま
+    `merge_short_chunk_records`内部で固定参照されていた。
+  - `HARD_MIN_CHARS_CJK`（既定20、他の定数と同じ比率で半分）を追加し、
+    `merge_short_chunk_records`に`hard_min_chars`引数を追加（既定値は従来通りなので
+    後方互換）。5経路（pdf_extract・html_extract×2箇所・docling_extract・
+    mistral_ocr_extract・rapidocr_extract）全てに配線。各経路は元々CJK判定
+    （`is_cjk`/`no_space`）を`min_chars`/`max_chars`の選択に使っており、同じ判定を
+    そのまま渡すだけで済んだ。
+
 ### Phase 5: 階層検索を既定へ切り替える
 
 - [ ] **V3 active切替後の検索統合試験を実行する**

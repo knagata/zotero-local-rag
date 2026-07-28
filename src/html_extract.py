@@ -12,7 +12,7 @@ from bs4 import BeautifulSoup  # type: ignore
 
 try:
     from .text_utils import (
-        HARD_MIN_CHARS, MAX_CHARS, TARGET_CHARS, MAX_CHARS_CJK, TARGET_CHARS_CJK,
+        HARD_MIN_CHARS, HARD_MIN_CHARS_CJK, MAX_CHARS, TARGET_CHARS, MAX_CHARS_CJK, TARGET_CHARS_CJK,
         MIN_CHUNK_CHARS, MIN_CHUNK_CHARS_NO_SPACE, clean_extracted_text,
         is_no_space_language_document, joiner_for_text, looks_like_gibberish,
         merge_short_chunk_records, normalize_paragraphs, split_long_paragraph,
@@ -21,7 +21,7 @@ try:
     from .heading_zone import classify_heading_path
 except ImportError:  # pragma: no cover - direct src entrypoint
     from text_utils import (
-        HARD_MIN_CHARS, MAX_CHARS, TARGET_CHARS, MAX_CHARS_CJK, TARGET_CHARS_CJK,
+        HARD_MIN_CHARS, HARD_MIN_CHARS_CJK, MAX_CHARS, TARGET_CHARS, MAX_CHARS_CJK, TARGET_CHARS_CJK,
         MIN_CHUNK_CHARS, MIN_CHUNK_CHARS_NO_SPACE, clean_extracted_text,
         is_no_space_language_document, joiner_for_text, looks_like_gibberish,
         merge_short_chunk_records, normalize_paragraphs, split_long_paragraph,
@@ -784,6 +784,7 @@ def extract_chunks_from_html_snapshot(
             tuple(md.get("structure_path") or []), md.get("zone"), md.get("block_type"),
         ),
         union_keys=(_ELEMENT_IDS_TEMP_KEY, _NOTEREF_TEMP_KEY, _NOTEREF_HREFS_TEMP_KEY),
+        hard_min_chars=HARD_MIN_CHARS_CJK if is_cjk else HARD_MIN_CHARS,
     )
     chunks = _resolve_note_citations(chunks)
     ids = [cid for (cid, _, _) in chunks]
@@ -937,6 +938,7 @@ def extract_chunks_from_epub_snapshot(
             tuple(md.get("structure_path") or []), md.get("zone"), md.get("block_type"),
         ),
         union_keys=(_ELEMENT_IDS_TEMP_KEY, _NOTEREF_TEMP_KEY, _NOTEREF_HREFS_TEMP_KEY),
+        hard_min_chars=HARD_MIN_CHARS_CJK if is_cjk else HARD_MIN_CHARS,
     )
     chunks = _resolve_note_citations(chunks)
     ids = [cid for (cid, _, _) in chunks]

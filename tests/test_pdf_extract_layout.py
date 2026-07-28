@@ -184,3 +184,37 @@ def test_a_page_whose_lines_are_all_too_short_is_rescued_not_erased():
         self.assertTrue(all(zone in (None, "body") for zone in by_page[1]))
         self.assertTrue(chunks)
         self.assertTrue(all(zone == "bibliography" for zone in by_page[2]))
+
+    def test_hard_min_chars_is_cjk_aware(self):
+        """Every other length constant here has a CJK counterpart already.
+
+        The final drop-or-keep decision inside merge_short_chunk_records
+        stayed language-blind: a genuinely short but meaningful CJK fragment
+        was measured by the same floor as English (2026-07-28).
+        """
+        from src.text_utils import HARD_MIN_CHARS, HARD_MIN_CHARS_CJK
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "outline.pdf"
+            document = fitz.open()
+            page = document.new_page(width=600, height=800)
+            page.insert_textbox(
+                fitz.Rect(50, 50, 550, 750), "some ordinary English body text. " * 30, fontsize=11,
+            )
+            document.save(str(path))
+            document.close()
+
+            captured = {}
+            real_merge = pdf_extract.merge_short_chunk_records
+
+            def spy(*args, **kwargs):
+                captured["hard_min_chars"] = kwargs.get("hard_min_chars")
+                return real_merge(*args, **kwargs)
+
+            with patch.object(pdf_extract, "PDF_OCR_FALLBACK", False), \
+                 patch.object(pdf_extract, "merge_short_chunk_records", side_effect=spy), \
+                 patch.object(pdf_extract, "is_no_space_language_document", return_value=True):
+                pdf_extract.extract_chunks_from_pdf(path, "ATT", {"title": "Test"})
+
+        self.assertEqual(captured.get("hard_min_chars"), HARD_MIN_CHARS_CJK)
+        self.assertNotEqual(HARD_MIN_CHARS_CJK, HARD_MIN_CHARS)

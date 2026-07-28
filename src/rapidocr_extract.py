@@ -16,6 +16,7 @@ try:
     )
     from .text_utils import (
         MAX_CHARS, MAX_CHARS_CJK, TARGET_CHARS, TARGET_CHARS_CJK,
+        HARD_MIN_CHARS, HARD_MIN_CHARS_CJK,
         is_no_space_language_document, merge_short_chunk_records,
         split_long_paragraph,
     )
@@ -26,6 +27,7 @@ except ImportError:  # direct src entrypoint
     )
     from text_utils import (
         MAX_CHARS, MAX_CHARS_CJK, TARGET_CHARS, TARGET_CHARS_CJK,
+        HARD_MIN_CHARS, HARD_MIN_CHARS_CJK,
         is_no_space_language_document, merge_short_chunk_records,
         split_long_paragraph,
     )
@@ -129,6 +131,7 @@ def _merge_page_chunks(
         min_chars=target,
         max_chars=maximum,
         boundary_key=lambda _chunk_id, _text, metadata: metadata.get("page"),
+        hard_min_chars=HARD_MIN_CHARS_CJK if no_space else HARD_MIN_CHARS,
     )
 
 
