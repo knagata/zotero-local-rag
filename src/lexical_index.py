@@ -98,15 +98,23 @@ def delete_by_note_key(note_key: str, *, path: Path | None = None) -> None:
         connection.close()
 
 
-def delete_by_chunk_ids(ids: Iterable[str], *, path: Path | None = None) -> None:
-    """Delete exact chunk IDs (used by deterministic index repair)."""
+def delete_by_chunk_ids(ids: Iterable[str], *, path: Path | None = None) -> int:
+    """Delete exact chunk IDs (used by deterministic index repair).
+
+    Returns the row count. A caller in purge_orphans.py added the old ``None``
+    return to a running total with ``or 0``, so its reported fts-rows-removed
+    count was always zero regardless of what was actually deleted -- harmless
+    to the deletion itself, but a report that always lies about one of its own
+    numbers (2026-07-28, found in code review).
+    """
     values = [(str(chunk_id),) for chunk_id in set(ids) if chunk_id]
     if not values:
-        return
+        return 0
     connection = _connect(path)
     try:
-        connection.executemany("DELETE FROM chunks_fts WHERE chunk_id = ?", values)
+        cursor = connection.executemany("DELETE FROM chunks_fts WHERE chunk_id = ?", values)
         connection.commit()
+        return cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else len(values)
     finally:
         connection.close()
 

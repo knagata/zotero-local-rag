@@ -52,6 +52,55 @@ class HierarchicalSearchTests(unittest.TestCase):
         self.assertEqual(batch_sizes, [100, 100, 5])
         self.assertEqual(len(result["results"]), 3)
 
+    def test_rank_is_computed_across_merged_batches_not_within_each_one(self):
+        """A batch-2 top hit must not tie a batch-1 top hit at rank 1.
+
+        include_leaf_ids over 100 ids is split into multiple Chroma queries,
+        one per batch (partition_leaf_ids caps each at 100). RRF rank used to
+        come from each batch's own position, so the single best hit in every
+        batch scored the same rank-1 contribution no matter how much worse it
+        was than hits already ranked lower in another batch. 48 of 540 items
+        in the library have more than 100 leaf nodes and so route through more
+        than one batch (2026-07-28, found in code review).
+        """
+        paragraphs = Mock()
+        paragraphs._embedding_function.return_value = [[0.1, 0.2]]
+        # Batch 1: three hits, distances 0.05/0.06/0.07 (all close, all better
+        # than anything in batch 2). Batch 2: one hit, distance 0.5 (far
+        # worse) -- but it would have been "rank 1 of its batch" under the old
+        # per-batch scheme.
+        responses = [
+            {
+                "ids": [["good-1", "good-2", "good-3"]],
+                "documents": [["a" * 250, "b" * 250, "c" * 250]],
+                "metadatas": [[
+                    {"node_id": "n1", "retrieval_policy": "normal"},
+                    {"node_id": "n2", "retrieval_policy": "normal"},
+                    {"node_id": "n3", "retrieval_policy": "normal"},
+                ]],
+                "distances": [[0.05, 0.06, 0.07]],
+            },
+            {
+                "ids": [["far-1"]],
+                "documents": [["d" * 250]],
+                "metadatas": [[{"node_id": "n101", "retrieval_policy": "normal"}]],
+                "distances": [[0.5]],
+            },
+        ]
+        paragraphs.query.side_effect = responses
+        with patch.object(rag_mcp_server, "_col", return_value=paragraphs), \
+             patch.object(rag_mcp_server, "_check_indexing_lock", return_value=(False, None)):
+            result = rag_mcp_server.rag_search(
+                "query", k=4,
+                include_leaf_ids=[f"n{index}" for index in range(101)],
+                auto_expand=False, hybrid=False,
+            )
+        ids_in_order = [row["id"] for row in result["results"]]
+        # The far batch-2 hit must sort behind every batch-1 hit, and the
+        # batch-1 hits must keep their distance order -- neither is possible
+        # if rank came from each batch's own h_idx.
+        self.assertEqual(ids_in_order, ["good-1", "good-2", "good-3", "far-1"])
+
     def test_summary_routing_only_queries_llm_summaries(self):
         summary_collection = Mock()
         summary_collection.query.return_value = {

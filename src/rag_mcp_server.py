@@ -881,8 +881,20 @@ def rag_search(
                 _log.error("rag_search: both attempts failed — returning error message")
                 return {"results": [], "warning": _HNSW_ERROR_MSG, "error": str(_exc)}
 
+    # include_leaf_ids larger than one batch (partition_leaf_ids caps each at
+    # 100) produces multiple entries in `responses`, one Chroma query per
+    # batch. Assigning RRF rank from each batch's own h_idx made batch 2's
+    # single best hit tie batch 1's single best hit at rank 1, regardless of
+    # actual similarity -- the highest-weighted retrieval path was ordered
+    # largely by which batch a chunk's node fell into rather than by
+    # closeness to the query. Measured: 48 of 540 items have more than 100
+    # leaf nodes and so route through more than one batch (2026-07-28, found
+    # in code review). Hits for the same query are now merged across batches
+    # before rank is assigned, so the rank reflects one global ordering.
+    #
     # Consolidated hits map: id -> {distance, rrf_score, document, metadata}
     hits_combined = {}
+    per_query_hits: dict[int, dict[str, dict[str, Any]]] = {}
     for res in responses:
         all_q_ids = res.get("ids") or []
         all_q_docs = res.get("documents") or []
@@ -894,26 +906,31 @@ def rag_search(
             q_docs = all_q_docs[q_idx] if q_idx < len(all_q_docs) else []
             q_metas = all_q_metas[q_idx] if q_idx < len(all_q_metas) else []
             q_dists = all_q_dists[q_idx] if q_idx < len(all_q_dists) else []
+            bucket = per_query_hits.setdefault(q_idx, {})
 
             for h_idx in range(len(q_ids)):
                 hid = q_ids[h_idx]
                 hdoc = q_docs[h_idx] if h_idx < len(q_docs) else ""
                 hmd = q_metas[h_idx] if h_idx < len(q_metas) else {}
                 hdist = q_dists[h_idx] if h_idx < len(q_dists) else 1.0
-            
-            # Reciprocal Rank Fusion contribution
-            # rank is h_idx + 1
-                rrf_val = 1.0 / (RRF_K + (h_idx + 1))
+                existing = bucket.get(hid)
+                if existing is None or hdist < existing["distance"]:
+                    bucket[hid] = {"distance": hdist, "document": hdoc, "metadata": hmd}
 
-                if hid not in hits_combined:
-                    hits_combined[hid] = {
-                        "distance": hdist, "rrf_score": rrf_val,
-                        "document": hdoc, "metadata": hmd,
-                    }
-                else:
-                    if hdist < hits_combined[hid]["distance"]:
-                        hits_combined[hid]["distance"] = hdist
-                    hits_combined[hid]["rrf_score"] += rrf_val
+    for bucket in per_query_hits.values():
+        # Global rank across the merged batches, not per-batch rank.
+        ranked = sorted(bucket.items(), key=lambda item: item[1]["distance"])
+        for rank, (hid, hit) in enumerate(ranked, start=1):
+            rrf_val = 1.0 / (RRF_K + rank)
+            if hid not in hits_combined:
+                hits_combined[hid] = {
+                    "distance": hit["distance"], "rrf_score": rrf_val,
+                    "document": hit["document"], "metadata": hit["metadata"],
+                }
+            else:
+                if hit["distance"] < hits_combined[hid]["distance"]:
+                    hits_combined[hid]["distance"] = hit["distance"]
+                hits_combined[hid]["rrf_score"] += rrf_val
 
     # Lexical BM25 results are fused by rank, never by incomparable raw scores.
     # Restrictive arbitrary Chroma filters remain semantic-only; item-key and note

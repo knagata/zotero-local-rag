@@ -18,6 +18,7 @@ from src.chunk_store import (
     get_item_chunks, list_attachment_keys, list_chunk_ids, list_item_keys,
 )
 from src.db_relations import get_document_structure
+from src.source_verification import dangling_node_ids, unretrievable_documents
 from src.document_structure import STRUCTURE_VERSION, source_fingerprint
 from src.lexical_index import list_chunk_ids as list_lexical_chunk_ids
 from src.manifest import load_manifest
@@ -40,12 +41,14 @@ def item_metrics(
     # Coverage must mean the node exists, not that the string is non-empty.
     # Counting the string let 53 items score 1.0 while every one of their
     # chunks named a node that had been replaced by a rebuild -- the gate's
-    # most substantive check passing on nothing at all (2026-07-28).
+    # most substantive check passing on nothing at all (2026-07-28). Uses the
+    # single definition in source_verification rather than a second copy here:
+    # two copies of "does this node_id exist" is exactly the kind of split
+    # that let the string-only version go unnoticed as long as it did.
+    dangling = set(dangling_node_ids(rows, live_node_ids or set())) if live_node_ids is not None else set()
     assigned = sum(
-        bool(node_id) and (live_node_ids is None or node_id in live_node_ids)
-        for node_id in (
-            str((row.get("metadata") or {}).get("node_id") or "") for row in rows
-        )
+        bool((row.get("metadata") or {}).get("node_id")) and str(row.get("id") or "") not in dangling
+        for row in rows
     )
     return {
         "chunks": len(rows),
@@ -78,13 +81,10 @@ def compare_item(
     # zone was reported but never asserted, and retrieval_policy appeared in
     # this file not at all -- which is how a 65,000-character essay marked
     # zone="index" throughout left search entirely while the gate passed
-    # (ND49KK4N, 2026-07-28). A document holding text must expose some of it.
-    if new_source_rows and any(str(row.get("text") or "").strip() for row in new_source_rows):
-        if not any(
-            str((row.get("metadata") or {}).get("retrieval_policy") or "normal") == "normal"
-            for row in new_source_rows
-        ):
-            failures.append("no_retrievable_chunks")
+    # (ND49KK4N, 2026-07-28). Same reasoning as above: one definition, in
+    # source_verification, used by both the audit and the standalone check.
+    if unretrievable_documents({item_key: new_source_rows}):
+        failures.append("no_retrievable_chunks")
     return {
         "item_key": item_key, "old": old, "new": new,
         "delta": {

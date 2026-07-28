@@ -162,6 +162,41 @@ class DropStaleIdentityRowsTests(unittest.TestCase):
         self.assertEqual(self.db_relations.drop_stale_identity_rows("SAME", "SAME"), 0)
         self.assertEqual(len(self.db_relations.get_item_processing_status("AJSX4LFZ")), 1)
 
+    def test_orphaned_nodes_and_summaries_are_retired_too(self):
+        """document_nodes has no foreign key to document_structures.
+
+        Only document_structures was retired here, so a re-parented attachment
+        left its nodes -- and their summaries -- alive under the dead key,
+        still feeding the summary index and leaf routing (2026-07-28, found in
+        code review).
+        """
+        conn = self.db_relations.get_db_connection()
+        conn.execute(
+            "INSERT INTO document_nodes (node_id, item_key, node_type, depth, ordinal, "
+            "source_kind, zone, summary_policy, retrieval_policy, citation_policy) "
+            "VALUES ('dn:x', 'AJSX4LFZ', 'semantic_segment', 0, 0, "
+            "'metadata_heading', 'body', 'include', 'normal', 'none')"
+        )
+        conn.execute(
+            "INSERT INTO document_node_chunks (node_id, chunk_id, ordinal) VALUES ('dn:x', 'c1', 0)"
+        )
+        conn.commit()
+        conn.close()
+
+        self.db_relations.drop_stale_identity_rows("AJSX4LFZ", "Q56RQ6H6")
+
+        conn = self.db_relations.get_db_connection()
+        try:
+            self.assertEqual(
+                conn.execute("SELECT count(*) FROM document_nodes WHERE item_key='AJSX4LFZ'")
+                .fetchone()[0], 0)
+            self.assertEqual(
+                conn.execute("SELECT count(*) FROM document_node_chunks WHERE node_id='dn:x'")
+                .fetchone()[0], 0)
+        finally:
+            conn.close()
+
+
 
 class PurgeRemovedItemsCandidateTests(unittest.TestCase):
     """Candidates must come from every table purge_removed_items cleans.
@@ -253,6 +288,44 @@ class StaleManifestKeyTests(unittest.TestCase):
         }
         self.assertEqual(stale_manifest_keys(files, ["INDEXED"]), ["GONE"])
 
+
+
+
+class LedgerKeysPendingRemovalTests(unittest.TestCase):
+    """Exposes what purge_removed_items would delete, without deleting it.
+
+    purge_removed_items itself takes no confirmation and deletes everything in
+    the diff, trusting the caller's enumeration to be complete -- the same risk
+    P1-11 found in the stale-attachment deletion. A caller sizing the removal
+    before committing to it needs this (2026-07-28, found in code review).
+    """
+
+    def setUp(self) -> None:
+        import tempfile
+        from unittest.mock import patch
+        import db_relations
+        self.db_relations = db_relations
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.patch = patch.object(
+            db_relations, "DB_PATH", str(Path(self.tempdir.name) / "relations.db"))
+        self.patch.start()
+        db_relations._db_initialized = False
+
+    def tearDown(self) -> None:
+        self.patch.stop()
+        self.db_relations._db_initialized = False
+        self.tempdir.cleanup()
+
+    def test_matches_what_purge_removed_items_would_remove(self):
+        self.db_relations.mark_artifact_status("GONE", "extraction", "success")
+        self.db_relations.mark_artifact_status("ALIVE", "extraction", "success")
+        self.assertEqual(
+            self.db_relations.ledger_keys_pending_removal({"ALIVE"}), {"GONE"})
+
+    def test_nothing_is_actually_deleted(self):
+        self.db_relations.mark_artifact_status("GONE", "extraction", "success")
+        self.db_relations.ledger_keys_pending_removal(set())
+        self.assertEqual(len(self.db_relations.get_item_processing_status("GONE")), 1)
 
 
 if __name__ == "__main__":

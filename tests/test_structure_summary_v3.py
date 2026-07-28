@@ -218,11 +218,6 @@ class StructureSummaryV3Tests(unittest.TestCase):
                 "ITEM", mode="extractive", collection_name="zotero_paragraphs_v3",
             )
         loader.assert_called_once_with("ITEM", collection_name="zotero_paragraphs_v3")
-
-
-if __name__ == "__main__":
-    unittest.main()
-
     def test_a_single_child_parent_adopts_its_child_without_an_llm_call(self):
         """Its text *is* the child's text, so reducing it is a summary of a
         summary -- and `_select_searchable_summary_rows` then suppresses it at
@@ -289,7 +284,12 @@ if __name__ == "__main__":
              patch("src.build_structure_summaries.get_item_chunks", return_value=chunks):
             build_structure_summaries("ITEM", mode="llm")
             # Generation followed the redefinition and paid for the parent.
-            self.assertEqual(len(parent_calls), 1)
+            # A single-attachment, single-chapter document is a genuine
+            # three-level single-child chain (item_root -> attachment_root ->
+            # chapter, each with exactly one child), so inverting "single
+            # child" to mean "pays" pays at every level of that chain, not
+            # just one.
+            self.assertEqual(len(parent_calls), 3)
             # The index must follow the very same redefinition and keep it.
             rows = [
                 {"node_id": "root", "parent_node_id": None},
@@ -299,11 +299,93 @@ if __name__ == "__main__":
             kept = {row["node_id"] for row in _select_searchable_summary_rows(rows)}
         self.assertIn("chapter", kept)
 
+    def test_a_parent_with_one_extractive_and_one_llm_child_is_not_paid_for(self):
+        """Generation and the embed-time selector must count children the same way.
+
+        generated{} held every child regardless of kind, so a parent with one
+        LLM child and one extractive-fallback child looked like a two-child
+        parent during generation (paid for its own reduction) but looked like
+        a one-child parent at embed time, once get_all_document_node_summaries
+        (searchable_only=True) filtered the extractive sibling out -- and was
+        then discarded as a duplicate (2026-07-28, found in code review).
+        """
+        from src.llm_client import LLMError
+
+        chunks = [
+            {"id": "A:p1", "text": "the llm-summarized paragraph text here " * 40,
+             "metadata": {"attachmentKey": "A", "structure_path": ["Chapter", "SubA"], "zone": "body"}},
+            {"id": "A:p2", "text": "the extractive-fallback paragraph text here " * 40,
+             "metadata": {"attachmentKey": "A", "structure_path": ["Chapter", "SubB"], "zone": "body"}},
+        ]
+        self._persist_structure("ITEM", chunks)
+        parent_calls = []
+
+        def fake_section(section, **kwargs):
+            if section.get("chapter") == "SubB":
+                raise LLMError("simulated failure")
+            return {"summary": "leaf summary text"}, "deepseek:cheap"
+
+        def fake_item(title, rows, **kwargs):
+            parent_calls.append(title)
+            return {"summary": "parent summary text"}, "deepseek:standard"
+
+        with patch("src.build_structure_summaries._deepseek_model", return_value="deepseek-chat"), \
+             patch("src.build_structure_summaries._llm_summary_only_section", side_effect=fake_section), \
+             patch("src.build_structure_summaries._llm_summary_only_item", side_effect=fake_item), \
+             patch("src.build_structure_summaries.get_item_chunks", return_value=chunks):
+            build_structure_summaries("ITEM", mode="llm")
+
+        self.assertEqual(
+            parent_calls, [],
+            "the parent has exactly one searchable (llm) child and must adopt it, not be reduced",
+        )
+        rows = [
+            row for row in db_relations.get_all_document_node_summaries()
+            if row["item_key"] == "ITEM"
+        ]
+        summaries = {row["summary"] for row in rows}
+        self.assertNotIn("parent summary text", summaries)
+
+    def test_a_single_non_searchable_child_is_still_adopted_without_payment(self):
+        """A genuine single child must stay cheap regardless of searchability.
+
+        Restricting the single-child check to searchable children (the fix
+        above) must not regress the ordinary case: a parent whose only child
+        happens to be an extractive fallback still has nothing to gain from a
+        paid reduction over it, and must be adopted exactly as before.
+        """
+        from src.llm_client import LLMError
+
+        chunks = [{
+            "id": "A:p1", "text": "the only extractive paragraph text here " * 40,
+            "metadata": {"attachmentKey": "A", "structure_path": ["Chapter", "SubB"], "zone": "body"},
+        }]
+        self._persist_structure("ITEM", chunks)
+        parent_calls = []
+
+        def fake_section(section, **kwargs):
+            raise LLMError("simulated failure")
+
+        def fake_item(title, rows, **kwargs):
+            parent_calls.append(title)
+            return {"summary": "parent summary text"}, "deepseek:standard"
+
+        with patch("src.build_structure_summaries._deepseek_model", return_value="deepseek-chat"), \
+             patch("src.build_structure_summaries._llm_summary_only_section", side_effect=fake_section), \
+             patch("src.build_structure_summaries._llm_summary_only_item", side_effect=fake_item), \
+             patch("src.build_structure_summaries.get_item_chunks", return_value=chunks):
+            build_structure_summaries("ITEM", mode="llm")
+
+        self.assertEqual(parent_calls, [], "a single child, searchable or not, must be adopted for free")
+
     def test_the_shipped_rule_suppresses_exactly_the_one_child_case(self):
         self.assertTrue(adds_nothing_over_its_children(1))
         self.assertFalse(adds_nothing_over_its_children(2))
         self.assertFalse(adds_nothing_over_its_children(0))
 
+
+if __name__ == "__main__":
+    unittest.main()
 
 
 class InheritedTitleTests(unittest.TestCase):

@@ -163,6 +163,26 @@ def _chunk_groups(rows: List[Dict[str, Any]]) -> List[List[Dict[str, Any]]]:
     return groups
 
 
+def _is_searchable(row: Dict[str, Any]) -> bool:
+    """Mirrors document_node_summaries.searchable (db_relations.save_document_node_summary).
+
+    A row only counts as a real, indexable child summary when it is LLM-kind
+    and not degraded/disabled -- an extractive fallback is saved but never
+    embedded. Both call sites of adds_nothing_over_its_children must count
+    children by this same rule, not by "was anything generated for it": one
+    counted an extractive-fallback sibling as a second child (so the parent
+    was paid for), the other filtered it out first via
+    get_all_document_node_summaries(searchable_only=True) (so the same parent
+    was then suppressed as a one-child duplicate at embed time) -- a chapter
+    with one LLM child and one extractive-fallback child was generated and
+    billed as a two-child parent, then discarded as a one-child parent
+    (2026-07-28, found in code review).
+    """
+    return str(row.get("kind") or row.get("summary_kind") or "") == "llm" and str(
+        row.get("quality") or row.get("quality_status") or ""
+    ) in {"accepted", "candidate"}
+
+
 def adds_nothing_over_its_children(child_count: int) -> bool:
     """Whether a parent's summary would only restate its children's.
 
@@ -464,7 +484,13 @@ def build_structure_summaries(
                 )
                 continue
             all_children = children.get(node_id, [])
-            child_rows = [generated[str(child["node_id"])] for child in all_children if str(child["node_id"]) in generated]
+            child_rows = [
+                generated[str(child["node_id"])] for child in all_children
+                if str(child["node_id"]) in generated
+            ]
+            # Only searchable children count toward the single-child rule --
+            # the same population the embed-time selector uses.
+            searchable_child_rows = [row for row in child_rows if _is_searchable(row)]
             exclusions = [
                 excluded for child in all_children
                 for excluded in excluded_by_node.get(str(child["node_id"]), [])
@@ -474,12 +500,21 @@ def build_structure_summaries(
                 continue
             input_fingerprint = _parent_input_fingerprint(title, child_rows)
             cached = reusable.get(input_fingerprint) if use_llm else None
+            # A genuine single child (searchable or not) is adopted regardless
+            # -- there is nothing to gain from paying for a reduction over the
+            # only thing there is to reduce. Only when there is more than one
+            # child does searchability decide it: a parent with two children,
+            # one LLM and one extractive-fallback, must be judged by the count
+            # the embed-time selector will see (1 searchable child), not by
+            # the raw count of everything that was generated (2, which is why
+            # it was billed for a reduction and then suppressed anyway).
             if adds_nothing_over_its_children(len(child_rows)):
-                # Same rule the search index applies -- asked here, before the
-                # call is billed, rather than after. Adopt the child's summary:
-                # a grandparent's reduction still receives one at this node, and
-                # the duplicate is still suppressed at embed time.
                 only_child = child_rows[0]
+            elif len(child_rows) > 1 and adds_nothing_over_its_children(len(searchable_child_rows)):
+                only_child = searchable_child_rows[0]
+            else:
+                only_child = None
+            if only_child is not None:
                 summary = str(only_child.get("summary") or "")
                 kind = str(only_child.get("kind") or "llm")
                 model_name, parts = str(only_child.get("model") or ""), []

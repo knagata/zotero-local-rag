@@ -1478,22 +1478,20 @@ async def main_async(args: argparse.Namespace) -> None:
             stale_keys = set()
 
         for stale_key in stale_keys:
+            # Reuses the same helper the other three deletion call sites in
+            # this file use, rather than a hand-rolled copy: a copy here built
+            # its own lexical path from LEXICAL_DB_PATH with a data/lexical_v3
+            # fallback, which is wrong whenever STRUCTURED_V3_ENABLE is off --
+            # that env var is only set in the V3 branch above, so a legacy run
+            # would delete from the wrong file and leave the retired
+            # attachment answering keyword search (2026-07-28). This helper
+            # instead defers to lexical_index's own default resolution, the
+            # same as every other caller.
             try:
-                col.delete(where={"attachmentKey": stale_key})
+                _delete_by_attachment_keys(col, [stale_key])
                 deleted_stale += 1
             except Exception:
                 pass
-            # The lexical index has to go in the same breath. A Chroma-only
-            # delete leaves the text answering keyword queries after it has
-            # visibly gone from vector search, which reads to a user as the
-            # deleted document coming back (2026-07-28).
-            try:
-                delete_lexical_attachments(
-                    [stale_key],
-                    path=Path(os.environ.get("LEXICAL_DB_PATH", DATA_DIR / "lexical_v3.sqlite3")),
-                )
-            except Exception as exc:  # noqa: BLE001 - reported, never fatal
-                print(f"[WARN] lexical delete failed for {stale_key}: {exc}", file=sys.stderr)
             files_manifest.pop(stale_key, None)
 
         # relations.db からも削除済みアイテムのレコードをパージ。

@@ -159,9 +159,14 @@ def chroma_snapshot(path: Path) -> dict[str, Any]:
             str(name): str(metadata_json or "{}")
             for name, metadata_json in connection.execute(
                 "SELECT name, COALESCE("
-                "  (SELECT json_group_object(key, COALESCE(str_value, int_value, float_value))"
+                "  (SELECT json_group_object(key, COALESCE(str_value, int_value, float_value, bool_value))"
                 "   FROM collection_metadata m WHERE m.collection_id = c.id), '{}')"
                 " FROM collections c"
+                # bool_value was missing from the COALESCE, so a boolean metadata
+                # entry always serialised as null -- and a write that flipped one
+                # from true to false would fingerprint identically before and
+                # after, passing the exact check this audit exists to fail
+                # (2026-07-28, found in code review).
             )
         }
         for name in LEGACY_COLLECTIONS:

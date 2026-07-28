@@ -75,3 +75,50 @@ class LegacyRetirementAuditTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ChromaSnapshotBoolMetadataTests(unittest.TestCase):
+    """A boolean metadata value must change the fingerprint when it flips.
+
+    bool_value was missing from the COALESCE used to read collection_metadata,
+    so any boolean entry always serialised as null -- a write flipping one from
+    true to false fingerprinted identically before and after, passing the exact
+    check this audit exists to fail (2026-07-28, found in code review).
+    """
+
+    def _make_chroma_dir(self, bool_value):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        path = Path(temp.name)
+        with sqlite3.connect(path / "chroma.sqlite3") as conn:
+            conn.executescript("""
+                CREATE TABLE collections (id INTEGER PRIMARY KEY, name TEXT);
+                CREATE TABLE collection_metadata (
+                    collection_id INTEGER, key TEXT,
+                    str_value TEXT, int_value INTEGER, float_value REAL, bool_value INTEGER
+                );
+                CREATE TABLE segments (id INTEGER PRIMARY KEY, collection INTEGER, scope TEXT);
+                CREATE TABLE embeddings (id INTEGER PRIMARY KEY, segment_id INTEGER);
+            """)
+            conn.execute("INSERT INTO collections (id, name) VALUES (1, 'zotero_paragraphs')")
+            conn.execute(
+                "INSERT INTO collection_metadata (collection_id, key, bool_value) VALUES (1, 'flag', ?)",
+                (1 if bool_value else 0,),
+            )
+        return path
+
+    def test_flipping_a_boolean_changes_the_fingerprint(self):
+        from scripts.audit_legacy_retirement import chroma_snapshot
+
+        true_fp = chroma_snapshot(self._make_chroma_dir(True))
+        false_fp = chroma_snapshot(self._make_chroma_dir(False))
+        self.assertNotEqual(
+            true_fp["collections"]["zotero_paragraphs"]["metadata_fingerprint"],
+            false_fp["collections"]["zotero_paragraphs"]["metadata_fingerprint"],
+        )
+
+    def test_the_boolean_value_is_actually_present(self):
+        from scripts.audit_legacy_retirement import chroma_snapshot
+
+        snapshot = chroma_snapshot(self._make_chroma_dir(True))
+        self.assertEqual(snapshot["collections"]["zotero_paragraphs"]["metadata"]["flag"], 1)

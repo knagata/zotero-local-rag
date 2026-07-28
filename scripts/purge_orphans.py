@@ -38,6 +38,12 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+
+#: Guards the ledger purge below, mirroring index_from_zotero's stale-deletion
+#: guard: a removal this large indicates a short Zotero enumeration, not a
+#: shrunken library.
+LEDGER_PURGE_MAX_RATIO = 0.05
+LEDGER_PURGE_MIN_KEYS = 10
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
@@ -257,7 +263,30 @@ async def main_async(args: argparse.Namespace) -> int:
     if args.apply:
         if gone:
             payload["content_removed"] = _purge_content(gone)
-            payload["ledger_removed"] = db_relations.purge_removed_items(live)
+            # purge_removed_items(live) deletes every ledger key absent from
+            # `live` -- computed from the same Zotero enumeration that P1-11
+            # showed can come back short -- with no per-item confirmation
+            # against Zotero at all (2026-07-28, found in code review). This
+            # script's whole design is to confirm every deletion individually,
+            # so a wholesale removal here is refused for the same reason
+            # index_from_zotero refuses one: it is evidence the listing came
+            # back short, not that the library shrank.
+            candidate_removal = db_relations.ledger_keys_pending_removal(live)
+            removal_limit = max(
+                LEDGER_PURGE_MIN_KEYS, int(len(candidate_removal | live) * LEDGER_PURGE_MAX_RATIO),
+            )
+            if len(candidate_removal) > removal_limit:
+                print(
+                    f"[ERROR] Refusing to purge ledger rows for {len(candidate_removal)} items: "
+                    f"that is more than {removal_limit} of {len(live)} live items, which indicates "
+                    "the Zotero listing came back short, not that the library shrank. Nothing was "
+                    "purged. Re-run once Zotero responds fully.",
+                    file=sys.stderr,
+                )
+                payload["ledger_removed"] = {}
+                payload["ledger_purge_refused"] = len(candidate_removal)
+            else:
+                payload["ledger_removed"] = db_relations.purge_removed_items(live)
         for key in report.reparented:
             db_relations.drop_stale_identity_rows(key, parents.get(key, ""))
         payload["reparented_rows_retired"] = len(report.reparented)

@@ -2787,6 +2787,41 @@ def get_network_item_keys() -> List[str]:
         conn.close()
 
 
+def _ledger_populated_item_keys() -> set[str]:
+    """Every item key this project's V3/citation tables currently know about."""
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        keys: set[str] = set()
+        for table, column in (
+            ("item_citation_status", "item_key"),
+            ("global_references", "citing_item_key"),
+            ("global_citations", "cited_item_key"),
+            ("document_structures", "item_key"),
+            ("document_nodes", "item_key"),
+            ("artifact_processing_status", "item_key"),
+        ):
+            try:
+                cursor.execute(f"SELECT DISTINCT {column} FROM {table}")
+            except sqlite3.Error:
+                continue
+            keys |= {str(row[0]).strip() for row in cursor.fetchall() if row[0]}
+        return keys
+    finally:
+        conn.close()
+
+
+def ledger_keys_pending_removal(current_item_keys: set[str]) -> set[str]:
+    """What ``purge_removed_items`` would delete, without deleting it.
+
+    Exposed so a caller can size-check the removal before committing to it --
+    ``purge_removed_items`` itself takes no confirmation and deletes everything
+    this returns, so a caller whose evidence is only an enumeration (as
+    ``current_item_keys`` from Zotero can be) should look at the size first.
+    """
+    return _ledger_populated_item_keys() - current_item_keys
+
+
 def purge_removed_items(current_item_keys: set[str]) -> dict[str, int]:
     """Zoteroから削除されたアイテムキーに関連するDBレコードを削除する。
 
@@ -3514,7 +3549,25 @@ def drop_stale_identity_rows(stale_item_key: str, current_item_key: str) -> int:
             "DELETE FROM artifact_processing_status WHERE item_key = ?",
             (stale_item_key,),
         ).rowcount or 0
-        for table in ("artifact_processing_events", "document_structures"):
+        # document_nodes has no foreign key to document_structures (there is
+        # none to have -- PRAGMA foreign_key_list confirms it), and nothing
+        # else deletes it when only document_structures was retired here. A
+        # re-parented attachment therefore left orphaned nodes and their
+        # summaries live under the dead key, still feeding the summary index
+        # and leaf routing (2026-07-28, found in code review).
+        try:
+            conn.execute(
+                "DELETE FROM document_node_chunks WHERE node_id IN "
+                "(SELECT node_id FROM document_nodes WHERE item_key = ?)",
+                (stale_item_key,),
+            )
+        except sqlite3.Error:
+            pass
+        for table in (
+            "artifact_processing_events", "document_structures",
+            "document_node_summaries", "document_node_summary_parts",
+            "document_node_summary_reuse_cache", "document_nodes",
+        ):
             try:
                 conn.execute(f"DELETE FROM {table} WHERE item_key = ?", (stale_item_key,))
             except sqlite3.Error:

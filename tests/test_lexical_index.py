@@ -6,6 +6,7 @@ from pathlib import Path
 
 from src.lexical_index import (
     delete_by_attachment_keys,
+    delete_by_chunk_ids,
     delete_by_note_key,
     search_chunks,
     upsert_chunks,
@@ -149,3 +150,35 @@ class DeletionReachesTheLexicalIndexTests(unittest.TestCase):
     def test_the_other_attachment_is_untouched(self):
         delete_by_attachment_keys(["GONE"], path=self.path)
         self.assertTrue(search_chunks("kept", k=10, path=self.path))
+
+
+class DeleteByChunkIdsReturnValueTests(unittest.TestCase):
+    """The return value must be the actual row count, not None.
+
+    A caller in purge_orphans.py added the old None return to a running total
+    with `or 0`, so its reported fts-rows-removed count was always zero
+    regardless of what was actually deleted (2026-07-28, found in code review).
+    """
+
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.path = Path(self.tempdir.name) / "lexical.sqlite3"
+        upsert_chunks(
+            ["a", "b", "c"], ["one", "two", "three"],
+            [{"itemKey": "I", "lang": "en", "source_type": "pdf", "attachmentKey": "A"}] * 3,
+            path=self.path,
+        )
+
+    def tearDown(self):
+        self.tempdir.cleanup()
+
+    def test_the_count_of_actually_deleted_rows_is_returned(self):
+        removed = delete_by_chunk_ids(["a", "b"], path=self.path)
+        self.assertEqual(removed, 2)
+
+    def test_ids_not_present_are_not_counted(self):
+        removed = delete_by_chunk_ids(["a", "nonexistent"], path=self.path)
+        self.assertEqual(removed, 1)
+
+    def test_an_empty_id_list_returns_zero(self):
+        self.assertEqual(delete_by_chunk_ids([], path=self.path), 0)
