@@ -54,6 +54,20 @@ def is_blank_page_notice(text: str) -> bool:
     return any(marker in normalised for marker in BLANK_PAGE_MARKERS) and len(normalised) <= 80
 
 
+def _meaningful_char_count(text: str) -> int:
+    """Count only characters that could plausibly be prose: letters or digits.
+
+    ``len(text)`` treats a run of decorative glyphs -- bullets, dashes, box-
+    drawing characters used as a page rule -- as evidence of a page of text.
+    One page of roughly 1,000 "• " bullets cleared MIN_SOURCE_PAGE_CHARS
+    and was reported lost when the index correctly held nothing for it
+    (VU5FWYMC p1, 2026-07-28). Filtering by character class rather than
+    raising the length threshold keeps a genuinely short page of real prose
+    visible to the same check.
+    """
+    return sum(1 for ch in str(text or "") if ch.isalnum())
+
+
 @dataclass
 class DocumentVerdict:
     """What the source says about one attachment, next to what the index holds."""
@@ -86,8 +100,10 @@ def source_page_chars(pdf_path: Path) -> Dict[int, int]:
             # A page whose only text says the page is blank holds no content,
             # so an extractor dropping it is correct and counting it as a loss
             # is not. Reported as zero rather than filtered out, so the page
-            # still appears in the page census.
-            result[index + 1] = 0 if is_blank_page_notice(text) else len(text)
+            # still appears in the page census. Length is measured in
+            # meaningful (alnum) characters, not raw length, so a run of
+            # decorative glyphs cannot pass as evidence of a page of text.
+            result[index + 1] = 0 if is_blank_page_notice(text) else _meaningful_char_count(text)
     return result
 
 

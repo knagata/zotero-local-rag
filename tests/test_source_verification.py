@@ -150,5 +150,38 @@ class BlankPageNoticeTests(unittest.TestCase):
         from source_verification import is_blank_page_notice
         self.assertFalse(is_blank_page_notice(long_text))
 
+
+class MeaningfulCharCountTests(unittest.TestCase):
+    """P2-15 (2026-07-28): a page of decorative glyphs cleared
+    MIN_SOURCE_PAGE_CHARS and was reported lost when the index correctly held
+    nothing for it (VU5FWYMC p1: roughly 1,000 "• " bullets)."""
+
+    def test_decorative_glyph_runs_do_not_count_as_text(self):
+        from source_verification import _meaningful_char_count
+        self.assertEqual(_meaningful_char_count("• " * 1000), 0)
+        self.assertEqual(_meaningful_char_count("---===---"), 0)
+
+    def test_real_prose_still_counts(self):
+        from source_verification import _meaningful_char_count
+        self.assertEqual(_meaningful_char_count("Notes"), 5)
+        self.assertEqual(_meaningful_char_count("参考文献"), 4)
+
+    def test_source_page_chars_ignores_a_bullet_only_page(self):
+        import tempfile
+        import fitz
+        from source_verification import source_page_chars
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "bullets.pdf"
+            document = fitz.open()
+            page = document.new_page(width=600, height=800)
+            page.insert_textbox(fitz.Rect(40, 40, 560, 750), "• " * 800, fontsize=8)
+            document.save(str(path))
+            document.close()
+
+            result = source_page_chars(path)
+
+        self.assertEqual(result[1], 0)
+
 if __name__ == "__main__":
     unittest.main()
