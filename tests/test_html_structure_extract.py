@@ -133,6 +133,40 @@ class HtmlStructureExtractionTests(unittest.TestCase):
         )
 
 
+class FailureReasonIsRecordedTests(unittest.TestCase):
+    """P2-09/P2-14 (2026-07-29): every early-exit path returned a
+    default_quality shaped like a healthy, empty one-page document --
+    indistinguishable from content that genuinely doesn't exist. There was no
+    trace of *why* extraction gave up, so a retry had no hint and review had
+    no signal."""
+
+    def test_a_html_file_with_no_dom_blocks_records_why(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "empty.html"
+            path.write_text("<html><body></body></html>", encoding="utf-8")
+            chunks, quality = extract_chunks_from_html_snapshot(path, "ITEMKEY", {})
+        self.assertEqual(chunks, [])
+        self.assertEqual(quality.get("failure_reason"), "no_dom_blocks")
+
+    def test_an_unreadable_html_path_records_why(self):
+        path = Path("/nonexistent/does-not-exist.html")
+        chunks, quality = extract_chunks_from_html_snapshot(path, "ITEMKEY", {})
+        self.assertEqual(chunks, [])
+        self.assertEqual(quality.get("failure_reason"), "html_read_failed")
+
+    def test_gibberish_sample_records_why(self):
+        gibberish = "asdkj asldkj alksdj alksjd " * 20
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "gibberish.html"
+            path.write_text(f"<html><body><p>{gibberish}</p></body></html>", encoding="utf-8")
+            from unittest.mock import patch
+            from src import html_extract
+            with patch.object(html_extract, "looks_like_gibberish", return_value=True):
+                chunks, quality = extract_chunks_from_html_snapshot(path, "ITEMKEY", {})
+        self.assertEqual(chunks, [])
+        self.assertEqual(quality.get("failure_reason"), "gibberish_sample")
+
+
 class NoteCitationResolutionTests(unittest.TestCase):
     def _chunks_for(self, html: str):
         with tempfile.TemporaryDirectory() as tmp:

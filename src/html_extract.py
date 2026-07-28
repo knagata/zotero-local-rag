@@ -720,15 +720,19 @@ def extract_chunks_from_html_snapshot(
             f"[WARN] Failed to read HTML snapshot: attachment={attachment_key} file={html_path} err={e}",
             file=os.sys.__stderr__,
         )
-        return [], default_quality
+        # default_quality otherwise looks like a healthy, empty one-page
+        # document -- indistinguishable from a document that genuinely has no
+        # content. failure_reason is the only trace of what was actually
+        # discarded (2026-07-29).
+        return [], {**default_quality, "failure_reason": "html_read_failed"}
 
     blocks = extract_dom_blocks(raw_html)
     if not blocks:
-        return [], default_quality
+        return [], {**default_quality, "failure_reason": "no_dom_blocks"}
 
     sample = "\n\n".join(str(block["text"]) for block in blocks[:20])[:5000]
     if looks_like_gibberish(sample):
-        return [], default_quality
+        return [], {**default_quality, "failure_reason": "gibberish_sample"}
     is_cjk = is_no_space_language_document(sample)
     local_min_chunk = MIN_CHUNK_CHARS_NO_SPACE if is_cjk else MIN_CHUNK_CHARS
     local_max_chars = MAX_CHARS_CJK if is_cjk else MAX_CHARS
@@ -810,7 +814,7 @@ def extract_chunks_from_epub_snapshot(
     if ebooklib_epub is None or ITEM_DOCUMENT is None:
         if os.environ.get("DEBUG_HTML") == "1":
             print("[DEBUG] EbookLib not installed; skipping EPUB.", file=os.sys.__stderr__)
-        return [], default_quality
+        return [], {**default_quality, "failure_reason": "ebooklib_not_installed"}
 
     try:
         book = ebooklib_epub.read_epub(str(epub_path))
@@ -819,7 +823,7 @@ def extract_chunks_from_epub_snapshot(
             f"[WARN] Failed to read EPUB: attachment={attachment_key} file={epub_path} err={e}",
             file=os.sys.__stderr__,
         )
-        return [], default_quality
+        return [], {**default_quality, "failure_reason": "epub_read_failed"}
 
     # 章タイトルマップ（失敗しても処理続行）
     _epub_toc_path_map: Dict[int, List[str]] = {}
@@ -873,11 +877,11 @@ def extract_chunks_from_epub_snapshot(
         except Exception as e:
             if os.environ.get("DEBUG_HTML") == "1":
                 print(f"[DEBUG] EPUB profiling failed: {e}", file=os.sys.__stderr__)
-        return [], default_quality
+        return [], {**default_quality, "failure_reason": "no_epub_blocks"}
 
     sample = "\n\n".join(str(block["text"]) for block in all_blocks[:20])[:5000]
     if looks_like_gibberish(sample):
-        return [], default_quality
+        return [], {**default_quality, "failure_reason": "gibberish_sample"}
     is_cjk = is_no_space_language_document(sample)
     local_min_chunk = MIN_CHUNK_CHARS_NO_SPACE if is_cjk else MIN_CHUNK_CHARS
     local_max_chars = MAX_CHARS_CJK if is_cjk else MAX_CHARS
