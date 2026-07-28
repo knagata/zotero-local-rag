@@ -59,3 +59,34 @@ def test_router_falls_back_only_after_gate_rejection():
     assert calls == ["ndlocr_lite", "docling"]
     assert chunks and gate["passed"]
     assert len(quality["local_ocr"]["attempts"]) == 2
+
+
+def test_a_page_count_does_not_crash_the_gate():
+    """Docling reports processed_pages as a count, not a list of page numbers.
+
+    Iterating the count raised TypeError, so every Docling escalation through
+    this gate failed outright -- the local fallback stage was dead rather than
+    merely unhelpful (2026-07-28).
+    """
+    from src.local_ocr_pipeline import evaluate_local_ocr_gate
+
+    chunks = [("A:p%d" % n, "substantive body text " * 30, {"page": n}) for n in (1, 2, 3)]
+    verdict = evaluate_local_ocr_gate(chunks, {"processed_pages": 3}, expected_pages=3)
+    assert "incomplete_ocr_attempt_coverage" not in verdict["reasons"]
+
+
+def test_a_page_list_is_still_read_as_page_numbers():
+    from src.local_ocr_pipeline import evaluate_local_ocr_gate
+
+    chunks = [("A:p1", "substantive body text " * 30, {"page": 1})]
+    verdict = evaluate_local_ocr_gate(chunks, {"ocr_pages": [1]}, expected_pages=3)
+    assert "incomplete_ocr_attempt_coverage" in verdict["reasons"]
+
+
+def test_a_string_is_not_read_as_a_sequence_of_characters():
+    # "12" must not become pages {1, 2}; an unusable value means unknown.
+    from src.local_ocr_pipeline import evaluate_local_ocr_gate
+
+    chunks = [("A:p1", "substantive body text " * 30, {"page": 1})]
+    verdict = evaluate_local_ocr_gate(chunks, {"processed_pages": "12"}, expected_pages=1)
+    assert "incomplete_ocr_attempt_coverage" not in verdict["reasons"]

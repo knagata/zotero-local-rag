@@ -79,8 +79,19 @@ def evaluate_local_ocr_gate(
     characters = sum(len(text) for text in texts)
     gibberish_blocks = sum(int(looks_like_gibberish(text)) for text in texts)
     repeat_artifacts = sum(len(REPEAT_ARTIFACT_RE.findall(text)) for text in texts)
+    # ``ocr_pages`` lists which pages were attempted; Docling's
+    # ``processed_pages`` is a *count* of them. Iterating the count raised
+    # TypeError, so every Docling escalation in this gate failed outright --
+    # the local fallback stage was dead rather than merely unhelpful
+    # (2026-07-28). A count cannot say which pages were covered, so it is read
+    # as the leading run it implies rather than silently treated as page ids.
+    attempted_source = quality.get("ocr_pages") or quality.get("processed_pages") or []
+    if isinstance(attempted_source, int):
+        attempted_source = range(1, max(0, attempted_source) + 1)
+    elif isinstance(attempted_source, (str, bytes)):
+        attempted_source = []
     attempted: set[int] = set()
-    for value in quality.get("ocr_pages") or quality.get("processed_pages") or []:
+    for value in attempted_source:
         try:
             page = int(value)
         except (TypeError, ValueError):

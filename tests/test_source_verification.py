@@ -121,5 +121,34 @@ class CompanionInvariantTests(unittest.TestCase):
         self.assertEqual(unretrievable_documents({"OK": [_chunk("a", "body")]}), [])
 
 
+
+class BlankPageNoticeTests(unittest.TestCase):
+    """A page that says it is blank is not a page that was lost.
+
+    193 of the first run's 539 "lost" pages were deliberately blank. A check
+    that is wrong about a third of its output teaches its reader to discount
+    all of it, which costs more than the finding is worth.
+    """
+
+    def test_the_common_notices_are_recognised(self):
+        from source_verification import is_blank_page_notice
+        for text in ("This page intentionally left blank.",
+                     "THIS PAGE INTENTIONALLY LEFT BLANK",
+                     "  ", "", "白紙"):
+            self.assertTrue(is_blank_page_notice(text), text)
+
+    def test_real_text_is_not_mistaken_for_a_notice(self):
+        from source_verification import is_blank_page_notice
+        self.assertFalse(is_blank_page_notice("Notes INTRODUCTION Epigraph. Nietzsche 2001, 120."))
+        self.assertFalse(is_blank_page_notice("A short but real page of body text."))
+
+    def test_a_long_page_merely_mentioning_the_phrase_is_not_a_notice(self):
+        # A page discussing blank pages is a page of text.
+        long_text = ("The convention of printing 'this page intentionally left blank' "
+                     "originated with military manuals, where an unmarked page invited "
+                     "the suspicion that content had been removed. " * 2)
+        from source_verification import is_blank_page_notice
+        self.assertFalse(is_blank_page_notice(long_text))
+
 if __name__ == "__main__":
     unittest.main()

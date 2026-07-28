@@ -29,6 +29,30 @@ from typing import Any, Dict, Iterable, List, Mapping, Sequence
 #: as an acceptable loss.
 MIN_SOURCE_PAGE_CHARS = 20
 
+#: Pages whose entire text is one of these carry no content, and an extractor
+#: is right to drop them. They were 193 of the first run's 539 "lost" pages --
+#: 36% of the finding was the check misreading a deliberately blank page as a
+#: loss (2026-07-28). A verification that cries wolf on a third of its output
+#: teaches its reader to discount it, so the boilerplate is recognised rather
+#: than the threshold raised: lifting the floor to cover a 34-character notice
+#: would also stop the check seeing a genuinely short page of text.
+BLANK_PAGE_MARKERS = (
+    "this page intentionally left blank",
+    "page intentionally left blank",
+    "intentionally left blank",
+    "this page has been intentionally left blank",
+    "本ページは意図的に空白としています",
+    "白紙",
+)
+
+
+def is_blank_page_notice(text: str) -> bool:
+    """Whether a page's whole text is a notice that the page is empty."""
+    normalised = " ".join(str(text or "").split()).strip().strip(".").casefold()
+    if not normalised:
+        return True
+    return any(marker in normalised for marker in BLANK_PAGE_MARKERS) and len(normalised) <= 80
+
 
 @dataclass
 class DocumentVerdict:
@@ -58,7 +82,12 @@ def source_page_chars(pdf_path: Path) -> Dict[int, int]:
     result: Dict[int, int] = {}
     with fitz.open(str(pdf_path)) as document:
         for index in range(document.page_count):
-            result[index + 1] = len(document[index].get_text().strip())
+            text = document[index].get_text().strip()
+            # A page whose only text says the page is blank holds no content,
+            # so an extractor dropping it is correct and counting it as a loss
+            # is not. Reported as zero rather than filtered out, so the page
+            # still appears in the page census.
+            result[index + 1] = 0 if is_blank_page_notice(text) else len(text)
     return result
 
 
