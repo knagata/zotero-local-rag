@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import stat
+import sys
 import tempfile
 import unittest
 from io import StringIO
@@ -24,9 +25,9 @@ class SetupWizardTests(unittest.TestCase):
             path = Path(directory) / ".env"
             setup_wizard.write_env_file(path, values)
             rendered = path.read_text(encoding="utf-8")
-            self.assertIn("# Core: local search and indexing", rendered)
-            self.assertIn("# Citation network and bibliographic metadata", rendered)
-            self.assertIn("# Other existing settings", rendered)
+            self.assertIn("# 基本設定: ローカル検索と索引", rendered)
+            self.assertIn("# 引用ネットワークと書誌情報", rendered)
+            self.assertIn("# その他の既存設定", rendered)
             self.assertEqual(setup_wizard.read_env_file(path), values)
             self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
             self.assertFalse(path.with_name(".env.tmp").exists())
@@ -70,50 +71,81 @@ class SetupWizardTests(unittest.TestCase):
         self.assertEqual(config["INGEST_STRUCTURED_V3_ENABLE"], "1")
         self.assertEqual(config["CHROMA_COLLECTION"], "zotero_paragraphs_v3")
 
-    def test_local_preset_structures_pdfs_without_paid_services(self):
+    def test_setup_menu_offers_minimal_and_custom_only(self):
+        output = StringIO()
+        with patch("builtins.input", return_value="1"), patch("sys.stdout", output):
+            setup_wizard.configure_feature_level({})
+        rendered = output.getvalue()
+        self.assertIn("[1] Minimal", rendered)
+        self.assertIn("[2] Custom", rendered)
+        self.assertNotIn("Local —", rendered)
+        self.assertNotIn("Full —", rendered)
+
+    def test_custom_allows_granite_for_both_page_buckets(self):
         config: dict[str, str] = {}
-        with patch("builtins.input", side_effect=["2", "n"]), patch(
-            "getpass.getpass", side_effect=["s2-secret"],
-        ), patch("sys.stdout", StringIO()):
+        answers = ["2", "n", "y", "", "2", "2", "", "", "", "", ""]
+        with patch.object(
+            setup_wizard, "_granite_selectable", return_value=True,
+        ), patch("builtins.input", side_effect=answers), patch(
+            "sys.stdout", StringIO(),
+        ):
             setup_wizard.configure_feature_level(config)
+        self.assertEqual(config["FEATURE_LEVEL"], "custom")
         self.assertEqual(config["PDF_STRUCTURE_RECOVERY_ENABLE"], "1")
-        self.assertEqual(config["PDF_STRUCTURE_ENGINE_LONG"], "docling")
-        self.assertEqual(config["CITATION_NETWORK_ENABLE"], "1")
+        self.assertEqual(config["PDF_STRUCTURE_ENGINE_SHORT"], "granite")
+        self.assertEqual(config["PDF_STRUCTURE_ENGINE_LONG"], "granite")
         self.assertEqual(config["PDF_MISTRAL_TOC_QUEUE_ENABLE"], "0")
         for flag in setup_wizard.LLM_FLAGS:
             self.assertEqual(config[flag], "0")
 
-    def test_citation_network_is_switched_off_when_no_s2_key_is_given(self):
-        # The key is free but the unkeyed rate limit is unusable, so leaving the
-        # feature on would only produce a run that refuses to start.
+    def test_custom_citation_network_prompts_for_s2_key(self):
         config: dict[str, str] = {}
-        with patch("builtins.input", side_effect=["2", "n"]), patch(
-            "getpass.getpass", side_effect=[""],
+        with patch(
+            "builtins.input", side_effect=["2", "y", "n", "", "", ""],
+        ), patch.object(
+            setup_wizard.getpass, "getpass", return_value="s2-secret",
         ), patch("sys.stdout", StringIO()):
             setup_wizard.configure_feature_level(config)
-        self.assertEqual(config["CITATION_NETWORK_ENABLE"], "0")
+        self.assertEqual(config["CITATION_NETWORK_ENABLE"], "1")
+        self.assertEqual(config["S2_API_KEY"], "s2-secret")
 
-    def test_full_preset_configures_deepseek_and_mistral(self):
+    def test_custom_can_enable_only_hierarchical_summaries(self):
         config: dict[str, str] = {}
-        with patch("builtins.input", side_effect=["3", "1", "n"]), patch(
-            "getpass.getpass", side_effect=["s2-secret", "deepseek-secret", "mistral-secret"],
+        with patch(
+            "builtins.input",
+            side_effect=["2", "n", "n", "n", "y", "n", "2"],
         ), patch("sys.stdout", StringIO()):
             setup_wizard.configure_feature_level(config)
-        self.assertEqual(config["LLM_CHEAP"], "deepseek:deepseek-v4-flash")
-        self.assertEqual(config["DEEPSEEK_API_KEY"], "deepseek-secret")
+        self.assertEqual(config["LLM_SUMMARIES_ENABLE"], "1")
+        self.assertEqual(config["LLM_CHEAP"], "codex_cli:auto")
+        self.assertEqual(config["PDF_AI_TOC_FAST_PATH_ENABLE"], "0")
+        self.assertEqual(config["OCR_LAYER_AUDIT_ENABLE"], "0")
+        self.assertEqual(config["QUERY_EXPANSION_ENABLE"], "0")
+        self.assertEqual(config["LLM_REFERENCE_EXTRACTION_ENABLE"], "0")
+
+    def test_custom_mistral_engine_requires_its_api_key(self):
+        config: dict[str, str] = {}
+        answers = ["2", "n", "y", "", "1", "2", "", "", "", "", ""]
+        with patch.object(
+            setup_wizard, "_granite_selectable", return_value=False,
+        ), patch("builtins.input", side_effect=answers), patch.object(
+            setup_wizard.getpass, "getpass", return_value="mistral-secret",
+        ), patch("sys.stdout", StringIO()):
+            setup_wizard.configure_feature_level(config)
+        self.assertEqual(config["PDF_STRUCTURE_ENGINE_SHORT"], "docling")
         self.assertEqual(config["PDF_STRUCTURE_ENGINE_LONG"], "mistral")
-        for flag in setup_wizard.LLM_FLAGS:
-            self.assertEqual(config[flag], "1")
+        self.assertEqual(config["PDF_MISTRAL_TOC_QUEUE_ENABLE"], "1")
+        self.assertEqual(config["MISTRAL_OCR_API_KEY"], "mistral-secret")
 
-    def test_full_preset_without_a_mistral_key_falls_back_to_docling(self):
-        # Leaving PDF_STRUCTURE_ENGINE_LONG=mistral would stop the next run.
+    def test_api_key_prompt_explains_that_input_is_hidden(self):
         config: dict[str, str] = {}
-        with patch("builtins.input", side_effect=["3", "1", "n"]), patch(
-            "getpass.getpass", side_effect=["s2-secret", "deepseek-secret", ""],
-        ), patch("sys.stdout", StringIO()):
-            setup_wizard.configure_feature_level(config)
-        self.assertEqual(config["PDF_STRUCTURE_ENGINE_LONG"], "docling")
-        self.assertEqual(config["PDF_MISTRAL_TOC_QUEUE_ENABLE"], "0")
+        output = StringIO()
+        with patch.object(setup_wizard.getpass, "getpass", return_value="secret"), patch.object(
+            sys, "stdout", output,
+        ):
+            setup_wizard._set_required_secret(config, "S2_API_KEY", "S2 key")
+        self.assertIn("APIキーは画面に表示されません", output.getvalue())
+        self.assertNotIn("secret", output.getvalue())
 
     def test_granite_menu_numbers_match_the_rendered_order(self):
         with patch.object(setup_wizard, "_granite_selectable", return_value=True), patch(
@@ -154,7 +186,15 @@ class SetupWizardTests(unittest.TestCase):
             (zotero / "storage").mkdir()
             (zotero / "zotero.sqlite").write_text("", encoding="utf-8")
             config = {
-                **setup_wizard.PRESETS["full"],
+                **setup_wizard.PRESETS["minimal"],
+                "FEATURE_LEVEL": "custom",
+                "PDF_STRUCTURE_RECOVERY_ENABLE": "1",
+                "PDF_AI_TOC_FAST_PATH_ENABLE": "1",
+                "OCR_LAYER_AUDIT_ENABLE": "1",
+                "QUERY_EXPANSION_ENABLE": "1",
+                "LLM_SUMMARIES_ENABLE": "1",
+                "LLM_REFERENCE_EXTRACTION_ENABLE": "1",
+                "CITATION_NETWORK_ENABLE": "1",
                 "ZOTERO_DATA_DIR": str(zotero),
                 "EMB_PROFILE": "bge",
                 "S2_API_KEY": "s2",
@@ -190,7 +230,9 @@ class SetupWizardTests(unittest.TestCase):
         ))
 
     def test_keeping_current_settings_changes_nothing(self):
-        config = dict(setup_wizard.PRESETS["full"])
+        config = dict(setup_wizard.PRESETS["minimal"])
+        config["FEATURE_LEVEL"] = "custom"
+        config["LLM_SUMMARIES_ENABLE"] = "1"
         config["LLM_CHEAP"] = "deepseek:deepseek-v4-flash"
         before = dict(config)
         with patch("builtins.input", side_effect=["0"]), patch("sys.stdout", StringIO()):
@@ -208,15 +250,15 @@ class SetupWizardTests(unittest.TestCase):
 
     def test_status_never_prints_secret_values(self):
         config = {
-            "FEATURE_LEVEL": "llm", "S2_API_KEY": "do-not-print",
+            "FEATURE_LEVEL": "custom", "S2_API_KEY": "do-not-print",
             "DEEPSEEK_API_KEY": "also-secret", "LLM_STANDARD": "deepseek:model",
         }
         output = StringIO()
         with patch("sys.stdout", output):
             setup_wizard.print_configuration_status(config)
         rendered = output.getvalue()
-        self.assertIn("S2 API key     : configured", rendered)
-        self.assertIn("preset         :", rendered)
+        self.assertIn("S2 APIキー     : 設定済み", rendered)
+        self.assertIn("設定種別       :", rendered)
         self.assertNotIn("do-not-print", rendered)
         self.assertNotIn("also-secret", rendered)
 

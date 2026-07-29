@@ -17,11 +17,11 @@ pipeline_config="${PIPELINE_CONFIG_PATH:-$chroma_dir/embedder_config_v3.json}"
 # This workflow is deliberately V3-only. Never let a missing server flag turn
 # its destructive rebuild phase into the legacy reset path.
 if [[ "$collection" != "zotero_paragraphs_v3" ]]; then
-    echo "[停止] 旧collectionまたは任意collectionは使用できません: $collection"
+    echo "[停止] 旧コレクションまたは任意のコレクションは使用できません: $collection"
     exit 2
 fi
 if [[ "$(basename "$manifest")" != "manifest_v3.json" ]]; then
-    echo "[停止] 旧manifestは使用できません: $manifest"
+    echo "[停止] 旧マニフェストは使用できません: $manifest"
     exit 2
 fi
 if [[ "$(basename "$lexical_db")" != "lexical_v3.sqlite3" ]]; then
@@ -29,7 +29,7 @@ if [[ "$(basename "$lexical_db")" != "lexical_v3.sqlite3" ]]; then
     exit 2
 fi
 if [[ "$pipeline_config" != "$chroma_dir/embedder_config_v3.json" ]]; then
-    echo "[停止] pipeline configはV3 Chromaディレクトリ内に固定されています。"
+    echo "[停止] パイプライン設定はV3 Chromaディレクトリ内に固定されています。"
     exit 2
 fi
 export INGEST_STRUCTURED_V3_ENABLE=1
@@ -39,7 +39,7 @@ export LEXICAL_DB_PATH="$lexical_db"
 export CHROMA_DIR="$chroma_dir"
 
 echo "============================================================"
-echo " Zotero Local RAG - Server Database Workflow"
+echo " Zotero Local RAG - サーバーDB構築ワークフロー"
 echo "============================================================"
 echo "各フェーズは別々に実行します。要約はDB監査合格前には開始できません。"
 echo ""
@@ -82,7 +82,7 @@ case "$phase" in
         # A failed re-audit must never leave a previous passing gate available
         # for phase 3.  The gate is recreated only after every phase-2 check.
         if [[ -e "$gate_path" ]]; then
-            echo "[情報] 前回のDB監査gateを無効化します: $gate_path"
+            echo "[情報] 前回のDB監査合格証明を無効化します: $gate_path"
             rm -f -- "$gate_path"
         fi
         run_step "Zotero実在庫とmanifestの完全照合" uv run python scripts/verify_zotero_reconciliation.py \
@@ -96,15 +96,15 @@ case "$phase" in
             --zotero-report "$zotero_audit_path" --source-report "$source_audit_path" \
             --output "$gate_path"
         echo ""
-        echo "[合格] 現在のDB世代に結び付いた要約実行gateを作成しました: $gate_path"
+        echo "[合格] 現在のDB世代に結び付いた要約実行の合格証明を作成しました: $gate_path"
         ;;
     3)
         if [[ ! -f "$gate_path" ]]; then
-            echo "[停止] DB監査gateがありません。先にフェーズ2を合格させてください: $gate_path"
+            echo "[停止] DB監査の合格証明がありません。先にフェーズ2を合格させてください: $gate_path"
             exit 2
         fi
         echo ""
-        echo "[課金確認] DeepSeek APIで階層要約を生成します。DB変更後の古いgateは自動拒否されます。"
+        echo "[課金確認] DeepSeek APIで階層要約を生成します。DB変更後の古い合格証明は自動拒否されます。"
         read -r -p "続行するには SUMMARIZE と入力してください: " confirmation
         if [[ "$confirmation" != "SUMMARIZE" ]]; then
             echo "キャンセルしました。"

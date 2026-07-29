@@ -36,13 +36,17 @@ uv run scripts/setup_wizard.py
 
 最初は `fast` を推奨します。モデルを変更すると別のベクトル索引が必要です。
 
-### 機能段階
+### セットアップ方式
 
-- Core: ローカル検索だけを設定
-- Citation Network: Semantic Scholar連携を追加（APIキー必須）
-- LLM-assisted: 要約や参考文献抽出にLLMを追加
+- Minimal: APIや追加エンジンを使わず、PDFを平文として索引化
+- Custom: Citation Network、PDF構造化、短いPDFと長いPDFの構造化エンジン、
+  AI目次・OCR監査・クエリ拡張・階層要約・参考文献抽出を一項目ずつ選択
 
-後からウィザードを再実行して拡張できます。
+Customではページ境界の前後それぞれにDocling、Granite、Mistralを独立して指定できます。
+例えば、短いPDFと長いPDFの両方をGraniteにする構成も選べます。Graniteは専用環境が
+検出された場合に選択肢へ表示されます。
+
+APIキーは入力中に画面へ表示されません。後からウィザードを再実行して構成を変更できます。
 
 Citation Networkを使う場合は、事前に[Semantic Scholar APIページ](https://www.semanticscholar.org/product/api)の「Request an API Key」からキーを申請してください。キーなしの共有枠は実用上の制限が厳しいため、このプロジェクトでは必須として扱います。
 
@@ -92,8 +96,9 @@ bash Server-Database-Workflow.command
 3. 合格したDB世代に対してのみ、有料の階層AI要約を生成・索引化する
 4. 階層要約と要約索引を監査する
 
-フェーズ2が成功しない限りフェーズ3は開始できません。`PDF_AI_TOC_FAST_PATH_ENABLE=1` の
-Full構成では、フェーズ1中にAI目次推定がAPIを使用し得る点にも注意してください。
+フェーズ2が成功しない限りフェーズ3は開始できません。Customで
+`PDF_AI_TOC_FAST_PATH_ENABLE=1` を選んだ場合は、フェーズ1中にAI目次推定がAPIを
+使用し得る点にも注意してください。
 
 ## 5. 動作を確認する
 

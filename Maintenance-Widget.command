@@ -5,7 +5,7 @@ cd "$(dirname "$0")"
 export PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$HOME/.local/bin:$HOME/.cargo/bin"
 
 echo "========================================"
-echo " Zotero Local RAG - Maintenance Update"
+echo " Zotero Local RAG - メンテナンス更新"
 echo "========================================"
 echo ""
 echo "日常更新を次の順番でまとめて実行します。"
@@ -64,11 +64,11 @@ if [[ "$maintenance_auto_approve" == "1" ]]; then
 elif ask_disabled "2. 要約を差分更新する（DeepSeek API料金あり・DB監査合格後のみ）"; then
     run_summaries=1
 fi
-if ask_enabled "3. Citation Networkの未処理・エラー分を更新する"; then
+if ask_enabled "3. 引用ネットワークの未処理・エラー分を更新する"; then
     run_citations=1
 fi
 echo "4. 品質報告のAI判定 [退役: 旧要約DBを参照するため実行不可]"
-if ask_disabled "5. Mistral OCR Batchを送信・回収・品質確認・採用する（クラウド送信を含む）"; then
+if ask_disabled "5. Mistral OCRバッチを送信・回収・品質確認・採用する（クラウド送信を含む）"; then
     run_mistral_batch=1
 fi
 
@@ -76,8 +76,8 @@ echo ""
 echo "実行予定:"
 if [[ "$run_library" == "1" ]]; then echo "  ✓ ライブラリ更新"; fi
 if [[ "$run_summaries" == "1" ]]; then echo "  ✓ 文書構造要約・検索索引の更新"; fi
-if [[ "$run_citations" == "1" ]]; then echo "  ✓ Citation Network更新"; fi
-if [[ "$run_mistral_batch" == "1" ]]; then echo "  ✓ Mistral OCR Batch処理"; fi
+if [[ "$run_citations" == "1" ]]; then echo "  ✓ 引用ネットワーク更新"; fi
+if [[ "$run_mistral_batch" == "1" ]]; then echo "  ✓ Mistral OCRバッチ処理"; fi
 
 if [[ "$run_library" == "0" && "$run_summaries" == "0" && "$run_citations" == "0" && "$run_mistral_batch" == "0" ]]; then
     echo "  （選択なし）"
@@ -152,61 +152,61 @@ run_mistral_batch_step() {
 
     case "$phase" in
         "")
-            run_step "Mistral OCR Batch送信" uv run python scripts/run_mistral_ocr_batch.py --submit --state "$mistral_state_path"
+            run_step "Mistral OCRバッチ送信" uv run python scripts/run_mistral_ocr_batch.py --submit --state "$mistral_state_path"
             echo ""
-            echo "[案内] Mistral Batchを送信しました。処理完了後にMaintenance-Widget.commandを再度起動し、"
-            echo "       この項目を明示的に許可してください。次回は結果を回収し、品質gate合格分だけをV3へ採用します。"
+            echo "[案内] Mistralバッチを送信しました。処理完了後にMaintenance-Widget.commandを再度起動し、"
+            echo "       この項目を明示的に許可してください。次回は結果を回収し、品質検証の合格分だけをV3へ採用します。"
             ;;
         prepared|uploaded)
-            run_step "Mistral OCR Batch送信を再開" uv run python scripts/run_mistral_ocr_batch.py --submit --state "$mistral_state_path"
+            run_step "Mistral OCRバッチ送信を再開" uv run python scripts/run_mistral_ocr_batch.py --submit --state "$mistral_state_path"
             echo ""
-            echo "[案内] Mistral Batchを送信しました。処理完了後にWidgetを再起動してこの項目を許可してください。"
+            echo "[案内] Mistralバッチを送信しました。処理完了後にメンテナンス画面を再起動してこの項目を許可してください。"
             ;;
         submitted|queued|running|in_progress)
-            run_step "Mistral OCR Batch状態確認" uv run python scripts/run_mistral_ocr_batch.py --status --state "$mistral_state_path"
+            run_step "Mistral OCRバッチ状態確認" uv run python scripts/run_mistral_ocr_batch.py --status --state "$mistral_state_path"
             phase="$(mistral_state_value phase)"
             if [[ "$phase" != "success" ]]; then
-                echo "[案内] Batchはまだ完了していません（phase=${phase:-unknown}）。完了後にWidgetを再起動してください。"
+                echo "[案内] バッチはまだ完了していません（状態=${phase:-不明}）。完了後にウィジェットを再起動してください。"
                 return 0
             fi
-            run_step "Mistral OCR Batch結果回収・品質確認" uv run python scripts/run_mistral_ocr_batch.py --collect --state "$mistral_state_path"
+            run_step "Mistral OCRバッチ結果回収・品質確認" uv run python scripts/run_mistral_ocr_batch.py --collect --state "$mistral_state_path"
             ;;
         success)
-            run_step "Mistral OCR Batch結果回収・品質確認" uv run python scripts/run_mistral_ocr_batch.py --collect --state "$mistral_state_path"
+            run_step "Mistral OCRバッチ結果回収・品質確認" uv run python scripts/run_mistral_ocr_batch.py --collect --state "$mistral_state_path"
             ;;
         collected)
             ;;
         failed|cancelled|timeout_exceeded)
-            echo "[注意] Mistral Batchは終了状態です（phase=$phase）。状態ファイルを確認し、必要なら個別に再送信してください。"
+            echo "[注意] Mistralバッチは終了状態です（状態=$phase）。状態ファイルを確認し、必要なら個別に再送信してください。"
             return 0
             ;;
         *)
-            echo "[注意] Mistral Batchの未知の状態です（phase=$phase）。安全のため何も実行しません。"
+            echo "[注意] Mistralバッチの未知の状態です（状態=$phase）。安全のため何も実行しません。"
             return 0
             ;;
     esac
 
     adopted_at="$(mistral_state_value adoption_applied_at)"
     if [[ -n "$adopted_at" ]]; then
-        echo "[情報] このBatchの採用は既に完了しています（$adopted_at）。"
+        echo "[情報] このバッチの採用は既に完了しています（$adopted_at）。"
         return 0
     fi
     queue="$(mistral_state_value adoption_queue)"
     adoptable="$(mistral_state_value adoptable_count)"
     if [[ ! "$adoptable" =~ ^[0-9]+$ || "$adoptable" == "0" ]]; then
-        echo "[情報] 品質gateを通過したMistral結果はありません。採用は行いません。"
+        echo "[情報] 品質検証を通過したMistral結果はありません。採用は行いません。"
         return 0
     fi
     if [[ -z "$queue" || ! -f "$queue" ]]; then
-        echo "[エラー] Mistral adoption queueが見つかりません: ${queue:-<empty>}"
+        echo "[エラー] Mistral採用キューが見つかりません: ${queue:-<空>}"
         return 1
     fi
-    run_step "Mistral OCR品質gate合格分をV3へ採用（${adoptable}件）" \
+    run_step "Mistral OCR品質検証の合格分をV3へ採用（${adoptable}件）" \
         uv run src/index_from_zotero.py --reocr-candidates "$queue" --progress
     mark_mistral_adoption_applied
     run_step "Mistral OCR採用分の文書構造V3更新" \
         uv run python scripts/rebuild_document_structure.py --all
-    echo "[完了] Mistral OCRの品質gate合格分をV3へ採用しました。"
+    echo "[完了] Mistral OCRの品質検証合格分をV3へ採用しました。"
 }
 
 if [[ "$run_library" == "1" ]]; then
@@ -233,7 +233,7 @@ if [[ "$run_summaries" == "1" ]]; then
     summary_workers="${SUMMARY_BACKFILL_WORKERS:-10}"
     summary_database_gate="${SUMMARY_DATABASE_GATE:-data/quality/server_database_gate.json}"
     if [[ ! -f "$summary_database_gate" ]]; then
-        echo "[エラー] DB監査gateがありません。先にServer-Database-Workflow.commandの"
+        echo "[エラー] DB監査の合格証明がありません。先にServer-Database-Workflow.commandの"
         echo "         フェーズ2を合格させてください: $summary_database_gate"
         exit 2
     fi
@@ -245,7 +245,7 @@ if [[ "$run_summaries" == "1" ]]; then
             --database-gate "$summary_database_gate"
     else
         echo ""
-        echo "[注意] 全件LLM要約backfillは未承認です（data/quality/summary_backfill_approved が無い）。"
+        echo "[注意] 全件LLM要約の一括生成は未承認です（data/quality/summary_backfill_approved が無い）。"
         echo "       安全のため${summary_batch_size}件のバッチのみ実行します（SUMMARY_BACKFILL_BATCH_SIZEで変更可）。"
         echo "       承認後にマーカーを作成すると、以後は差分の残り分にバッチが順次進みます。"
         run_step "DeepSeek 文書構造V3要約 ${summary_batch_size}件バッチ" \
@@ -255,14 +255,14 @@ if [[ "$run_summaries" == "1" ]]; then
 fi
 
 if [[ "$run_citations" == "1" ]]; then
-    run_step "Citation Network更新" uv run src/update_citations.py --all
+    run_step "引用ネットワーク更新" uv run src/update_citations.py --all
 fi
 
 # 仕様§8: メンテナンス末尾に状態台帳サマリを表示する（read-only）。
 # blocked（Mistral queue候補・cloud拒否）・truncated・failed/retryableの溜まりを毎回可視化。
 echo ""
 echo "========================================================================"
-echo ">> 未解決の処理状態サマリ（read-only）"
+echo ">> 未解決の処理状態サマリ（読み取り専用）"
 echo "========================================================================"
 uv run python scripts/list_artifact_status.py --unresolved-only || true
 

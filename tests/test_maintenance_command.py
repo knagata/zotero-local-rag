@@ -73,7 +73,7 @@ class MaintenanceCommandTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
         self.assertFalse(any("build_structure_summaries.py" in call for call in calls))
-        self.assertIn("DB監査gateがありません", result.stdout)
+        self.assertIn("DB監査の合格証明がありません", result.stdout)
 
     def test_auto_approval_never_runs_paid_cloud_steps(self):
         result, calls = self.run_command(

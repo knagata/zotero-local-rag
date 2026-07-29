@@ -149,8 +149,8 @@ class VerifyEnabledFeaturesTests(unittest.TestCase):
         with env, dotenv:
             problems = fg.verify_enabled_features()
         self.assertEqual(len(problems), 1)
-        self.assertIn("AI TOC fast path", problems[0])
-        self.assertIn("LLM_* role", problems[0])
+        self.assertIn("AI目次推定", problems[0])
+        self.assertIn("LLM_*ロール", problems[0])
 
     def test_each_missing_resource_is_reported_separately(self):
         env, dotenv = _env(
@@ -289,7 +289,7 @@ class GrobidGateTests(unittest.TestCase):
         with env, dotenv, patch("httpx.get", side_effect=OSError("refused")):
             problems = fg.verify_enabled_features()
         self.assertEqual(len(problems), 1)
-        self.assertIn("GROBID enrichment", problems[0])
+        self.assertIn("GROBID補完", problems[0])
         self.assertIn("GROBID_URL", problems[0])
 
     def test_enabled_with_a_running_service_is_coherent(self):

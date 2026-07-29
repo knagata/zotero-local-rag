@@ -158,21 +158,21 @@ def flag_enabled(name: str, *, default: bool = False) -> bool:
 #: feature flag -> the resource it cannot work without. Used both to report a
 #: misconfiguration and to describe features in status output.
 FEATURE_REQUIREMENTS = {
-    "PDF_AI_TOC_FAST_PATH_ENABLE": ("AI TOC fast path", "an LLM_* role", llm_configured),
-    "OCR_LAYER_AUDIT_ENABLE": ("OCR layer audit", "an LLM_* role", llm_configured),
-    "QUERY_EXPANSION_ENABLE": ("query expansion", "an LLM_* role", llm_configured),
-    "LLM_SUMMARIES_ENABLE": ("LLM hierarchical summaries", "an LLM_* role", llm_configured),
+    "PDF_AI_TOC_FAST_PATH_ENABLE": ("AI目次推定", "利用可能なLLM_*ロール", llm_configured),
+    "OCR_LAYER_AUDIT_ENABLE": ("OCRテキスト層監査", "利用可能なLLM_*ロール", llm_configured),
+    "QUERY_EXPANSION_ENABLE": ("クエリ拡張", "利用可能なLLM_*ロール", llm_configured),
+    "LLM_SUMMARIES_ENABLE": ("LLM階層要約", "利用可能なLLM_*ロール", llm_configured),
     "LLM_REFERENCE_EXTRACTION_ENABLE": (
-        "LLM reference extraction", "an LLM_* role", llm_configured,
+        "LLM参考文献抽出", "利用可能なLLM_*ロール", llm_configured,
     ),
     "PDF_MISTRAL_TOC_QUEUE_ENABLE": (
-        "Mistral OCR batch queue", "MISTRAL_OCR_API_KEY", cloud_ocr_configured,
+        "Mistral OCRバッチキュー", "MISTRAL_OCR_API_KEY", cloud_ocr_configured,
     ),
     "CITATION_NETWORK_ENABLE": (
-        "Citation Network", "S2_API_KEY", citation_network_configured,
+        "引用ネットワーク", "S2_API_KEY", citation_network_configured,
     ),
     "GROBID_ENRICHMENT_ENABLE": (
-        "GROBID enrichment", "a running local GROBID service (GROBID_URL)",
+        "GROBID補完", "稼働中のローカルGROBIDサービス（GROBID_URL）",
         grobid_service_available,
     ),
 }
@@ -309,24 +309,26 @@ def verify_enabled_features() -> list[str]:
         raw = _env(setting).casefold()
         if raw and raw not in STRUCTURE_ENGINES:
             problems.append(
-                f"{setting}={raw!r} is not one of {', '.join(STRUCTURE_ENGINES)}."
+                f"{setting}={raw!r}は選択可能な値"
+                f"（{', '.join(STRUCTURE_ENGINES)}）ではありません。"
             )
         elif raw == "mistral" and not cloud_ocr_configured():
             problems.append(
-                f"{setting}=mistral but MISTRAL_OCR_API_KEY is not configured."
+                f"{setting}=mistralですが、MISTRAL_OCR_API_KEYが未設定です。"
             )
         elif raw == "granite" and not granite_configured():
             problems.append(
-                f"{setting}=granite but the isolated Granite environment was not "
-                f"found, or the adapter is not installed (GRANITE_VENV_PYTHON, "
-                f"default {DEFAULT_GRANITE_PYTHON}; adapter src/granite_worker.py). "
-                "Granite needs its own virtualenv because mlx-vlm and Docling "
-                "require incompatible transformers versions."
+                f"{setting}=graniteですが、Granite専用環境が見つからないか、"
+                f"アダプターが未導入です（GRANITE_VENV_PYTHON、"
+                f"既定値 {DEFAULT_GRANITE_PYTHON}、アダプター "
+                f"src/granite_worker.py）。mlx-vlmとDoclingが必要とする"
+                "transformersのバージョンは互換性がないため、Graniteには"
+                "専用virtualenvが必要です。"
             )
     for flag, (label, requirement, available) in FEATURE_REQUIREMENTS.items():
         if flag_enabled(flag) and not available():
             problems.append(
-                f"{label} is enabled ({flag}=1) but {requirement} is not configured."
+                f"{label}は有効（{flag}=1）ですが、{requirement}が未設定です。"
             )
     return problems
 

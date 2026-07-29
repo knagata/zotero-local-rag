@@ -13,24 +13,25 @@ uv run scripts/setup_wizard.py --status
 `Setup.command` と `setup_wizard.py --server` は設定のみを行い、DB構築・埋め込み・クラウドAPIを
 実行しません。
 
-## セットアップのプリセット
+## セットアップ方式
 
 初期設定は `Setup.command` が行います。**機能フラグの既定はすべて0**で、ウィザードが
 選択に応じて明示的に書き込みます。有効なのに必要な鍵が無い場合は、機能名と不足鍵名を
 挙げて起動時に停止します（黙って縮退しません）。
 
-| | 1 最小 | 2 ローカル | 3 フル |
-|---|---|---|---|
-| PDF構造化 | しない（平文チャンク） | する | する |
-| 構造化エンジン（境界未満） | — | Docling | Docling |
-| 構造化エンジン（境界以上） | — | Docling / Granite | Mistral OCR |
-| LLM機能（AI目次・階層要約・クエリ拡張・参照抽出・OCR監査） | なし | なし | あり |
-| Citation Network | S2鍵があれば | S2鍵があれば（推奨） | あり |
-| **課金** | **なし** | **なし** | あり |
+| | 1 Minimal | 2 Custom |
+|---|---|---|
+| PDF構造化 | しない（平文チャンク） | する／しないを選択 |
+| 構造化エンジン | — | ページ境界の前後ごとにDocling／Granite／Mistral |
+| LLM機能 | なし | 5機能を個別に選択 |
+| Citation Network | なし | S2キーを入力して有効化可能 |
+| **課金** | **なし** | 選択内容による |
 
-3つの選択軸は独立しています（エンジンの選択だけはPDF構造化が前提）。プリセットは
-その既定値セットにすぎないので、「PDFは平文でよいがEPUBの階層要約は欲しい」のような
-組み合わせも選べます。
+CustomではCitation Network、PDF構造化、AI目次、OCR監査、クエリ拡張、階層要約、
+参考文献抽出を一項目ずつ設定します。PDF構造化を有効にすると、ページ境界未満と以上の
+エンジンを独立して選べるため、`Granite / Granite`や`Docling / Mistral`など任意の
+組み合わせが可能です。Graniteは専用venvとアダプタが検出された場合に表示されます。
+APIキー入力には非表示入力を使い、入力直前にもその旨を表示します。
 
 ### 構造化エンジンの性格
 
@@ -48,7 +49,7 @@ uv run scripts/setup_wizard.py --status
 
 | 変数 | 用途 | 既定 |
 |---|---|---|
-| `FEATURE_LEVEL` | 選んだプリセットの記録（`core`／`citation`／`llm`）。表示用で、機能の可否は個々のフラグが決める | `core` |
+| `FEATURE_LEVEL` | セットアップ方式の記録（`core`／`custom`）。表示用で、機能の可否は個々のフラグが決める | `core` |
 | `ZOTERO_DATA_DIR` | Zoteroデータフォルダ | `~/Zotero` |
 | `CHROMA_DIR` | ベクトル索引のディレクトリ | `data/chroma` |
 | `EMB_PROFILE` | `fast`または`bge` | `fast` |
@@ -111,27 +112,31 @@ LLMロールはプロバイダ接頭辞つきで指定します（例: `deepseek
 
 ### PDFルーティング
 
-`PDF_AI_TOC_FAST_PATH_ENABLE=1` はFull構成の有料機能です。AI目次推定はDB構築フェーズでも
-本文を送信し得るため、DBだけを先に検証するサーバー構築では課金方針を確認してから有効にします。
+`PDF_AI_TOC_FAST_PATH_ENABLE=1` はCustomで明示的に選ぶ有料機能です。AI目次推定は
+DB構築フェーズでも本文を送信し得るため、DBだけを先に検証するサーバー構築では
+課金方針を確認してから有効にします。
 
 | 変数 | 用途 | 既定 |
 |---|---|---|
+| `PDF_STRUCTURE_RECOVERY_ENABLE` | `1`でPDFの見出しと文書構造を復元する。`0`では構造化エンジンを呼ばず平文として索引化 | `0` |
+| `PDF_STRUCTURE_ENGINE_SHORT` | ページ境界未満のPDFに使うエンジン（`docling`／`granite`／`mistral`） | `docling` |
+| `PDF_STRUCTURE_ENGINE_LONG` | ページ境界以上のPDFに使うエンジン（`docling`／`granite`／`mistral`） | `docling` |
+| `PDF_STRUCTURE_ENGINE_PAGE_BOUNDARY` | 短いPDFと長いPDFを分けるページ数 | `30` |
+| `GRANITE_VENV_PYTHON` | Granite専用virtualenvのPython。アダプタと専用環境の両方がある場合だけ選択可能 | `tmp/granite_docling_venv/bin/python` |
 | `PDF_AI_TOC_FAST_PATH_ENABLE` | `1`で、outlineのないclean-text PDFの冒頭テキストからAI目次を推定し、全文見出し照合gate合格時だけDoclingを省略する。クラウド送信のため明示opt-in | `0` |
 | `PDF_AI_TOC_MIN_PAGES` | AI目次推定を試す最小PDFページ数 | `30` |
 | `PDF_AI_TOC_SAMPLE_PAGES` | AI目次推定へ渡す冒頭PDFページ数 | `20` |
 | `PDF_AI_TOC_MIN_COVERAGE` | 推定見出しのうち全文で順序付き再発見できる必要割合 | `0.90` |
 | `PDF_AI_TOC_MIN_STRUCTURED_CHUNK_RATIO` | 本文アンカー適用後に構造パスを持つ必要があるチャンク割合 | `0.80` |
 | `PDF_AI_TOC_DOCLING_REFERENCES_ENABLE` | `1`で、AI目次採用PDFの参照/文末注セクションのページ範囲だけDoclingで再解析し1エントリ=1チャンクで本文へmerge。fail-closed | `0` |
-| `PDF_MISTRAL_TOC_QUEUE_ENABLE` | `1`で、スキャンPDF（OCR層なし、またはOCR層品質gate不合格）のうち30頁以上をMistral OCR専用batch候補として保留する。30頁未満・本フラグ無効時はDocling | `0` |
+| `PDF_MISTRAL_TOC_QUEUE_ENABLE` | `1`で、短い／長いPDFのいずれかに`mistral`を指定した際のBatch queueを有効化。本フラグ無効時はDoclingへ退避 | `0` |
 | `PYMUPDF_NATIVE_OUTLINE_ANOMALY_RATIO_MAX` | 内蔵outlineがある場合に偽陽性として許容するscanned/corruptedページの上限割合 | `0.02` |
 | `PDF_POPPLER_TEXT_FALLBACK` | `1`で、custom fontをUnicode復号できないページをローカル`pdftotext`で再抽出し品質改善時だけ採用 | `1` |
 
-Full構成で `PDF_AI_TOC_FAST_PATH_ENABLE=1` を有効にすると、AI目次fast pathが資料本文を
+Customで `PDF_AI_TOC_FAST_PATH_ENABLE=1` を有効にすると、AI目次fast pathが資料本文を
 LLMへ送り、フェーズ1のDB構築中にも課金が発生し得ます。料金を発生させずDBだけを検証したい
 場合は、フェーズ1の間このフラグを`0`にしておき、フェーズ2の監査後に必要な資料だけを
 明示的に再処理してください。AI目次fast pathは`PDF_AI_TOC_FAST_PATH_ENABLE`が唯一のゲートです。
-deferし、30頁未満・queue無効時はDoclingへ戻ります。AI目次の見出しcoverage不合格は
-既存のqueue/Docling policyに従います。
 AIの印刷ページ番号は採用せず、本文で再発見した見出しのページとreading orderだけを構造境界に
 使います。
 

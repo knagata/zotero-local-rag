@@ -11,47 +11,47 @@ TMP_DIR="/tmp/zotero-local-rag-update"
 EXTRACTED="$TMP_DIR/zotero-local-rag-main"
 
 echo "========================================"
-echo "   Zotero Local RAG - Updater"
+echo "   Zotero Local RAG - ソフトウェア更新"
 echo "========================================"
 echo ""
-echo "Downloading and updating to the latest version from GitHub."
-echo ".env and data/ (indexes/models) will be preserved."
+echo "GitHubから最新版をダウンロードして更新します。"
+echo ".envとdata/（索引・モデル）は保持されます。"
 echo ""
-read -p "Do you want to continue? [Y/n]: " ans
+read -p "続行しますか？ [Y/n]: " ans
 ans=$(echo "$ans" | tr '[:upper:]' '[:lower:]')
 if [ "$ans" = "n" ]; then
-    echo "Update cancelled."
-    read -p "Press Enter to exit..."
+    echo "更新をキャンセルしました。"
+    read -p "Enterを押すと終了します..."
     exit 0
 fi
 
 echo ""
-echo "[1/4] Downloading latest version..."
+echo "[1/4] 最新版をダウンロードしています..."
 rm -f "$TMP_ZIP"
 if ! curl -L --progress-bar -o "$TMP_ZIP" "$REPO_ZIP"; then
     echo ""
-    echo "[!] Download failed. Please check your internet connection."
-    read -p "Press Enter to exit..."
+    echo "[!] ダウンロードに失敗しました。インターネット接続を確認してください。"
+    read -p "Enterを押すと終了します..."
     exit 1
 fi
 
 echo ""
-echo "[2/4] Extracting..."
+echo "[2/4] 展開しています..."
 rm -rf "$TMP_DIR"
 mkdir -p "$TMP_DIR"
 if ! unzip -q "$TMP_ZIP" -d "$TMP_DIR"; then
-    echo "[!] Extraction failed."
-    read -p "Press Enter to exit..."
+    echo "[!] 展開に失敗しました。"
+    read -p "Enterを押すと終了します..."
     exit 1
 fi
 
 if [ ! -d "$EXTRACTED" ]; then
-    echo "[!] Extracted folder not found: $EXTRACTED"
-    read -p "Press Enter to exit..."
+    echo "[!] 展開後のフォルダが見つかりません: $EXTRACTED"
+    read -p "Enterを押すと終了します..."
     exit 1
 fi
 
-echo "[3/4] Updating files (.env and data/ are preserved)..."
+echo "[3/4] ファイルを更新しています（.envとdata/は保持）..."
 # rsync: preserve .env, data/, .venv/, .claude/ (user data)
 rsync -a \
     --exclude='.env' \
@@ -66,17 +66,17 @@ chmod +x "$SCRIPT_DIR/Software-Update.command"
 chmod +x "$SCRIPT_DIR/Setup.command"
 chmod +x "$SCRIPT_DIR/Maintenance-Widget.command"
 
-echo "[4/4] Cleaning up temporary files..."
+echo "[4/4] 一時ファイルを削除しています..."
 rm -rf "$TMP_DIR" "$TMP_ZIP"
 
 echo ""
 echo "========================================"
-echo "   Update Complete!"
+echo "   更新が完了しました"
 echo "========================================"
 echo ""
-echo "Please restart Claude Desktop to apply the changes."
+echo "変更を反映するためClaude Desktopを再起動してください。"
 echo ""
-read -p "Do you want to run the setup wizard now? [y/N]: " run_idx
+read -p "続けてセットアップウィザードを実行しますか？ [y/N]: " run_idx
 run_idx=$(echo "$run_idx" | tr '[:upper:]' '[:lower:]')
 if [ "$run_idx" = "y" ]; then
     echo ""
@@ -84,7 +84,7 @@ if [ "$run_idx" = "y" ]; then
 fi
 
 echo ""
-read -p "Do you want to run a quality check on the existing index? [y/N]: " run_chk
+read -p "既存索引の品質チェックを実行しますか？ [y/N]: " run_chk
 run_chk=$(echo "$run_chk" | tr '[:upper:]' '[:lower:]')
 if [ "$run_chk" = "y" ]; then
     echo ""
@@ -92,4 +92,4 @@ if [ "$run_chk" = "y" ]; then
 fi
 
 echo ""
-echo "You can safely close this terminal window."
+echo "このターミナルウィンドウは閉じて構いません。"

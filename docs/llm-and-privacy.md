@@ -43,7 +43,7 @@ LLM_REVIEW=deepseek:deepseek-v4-pro
 という挙動になっていました。
 
 クラウド利用の可否は機能フラグで制御します。**既定はすべて0**で、`Setup.command` の
-プリセット選択に応じて明示的に有効化されます。課金が発生するのはDeepSeek（LLM）と
+Custom設定で機能ごとに明示的に有効化されます。課金が発生するのはDeepSeek（LLM）と
 Mistral OCRだけで、Semantic Scholarの鍵は無料です（ただし鍵なしではrate limitで
 実用にならないため、鍵が無ければCitation Networkは有効化しません）。
 
@@ -53,7 +53,7 @@ Mistral OCRだけで、Semantic Scholarの鍵は無料です（ただし鍵な�
 | `PDF_AI_TOC_FAST_PATH_ENABLE` | AI目次（冒頭20頁を送信） |
 | `PDF_MISTRAL_TOC_QUEUE_ENABLE` | Mistral OCR Batch（ファイル全体を送信） |
 
-Full構成では `PDF_AI_TOC_FAST_PATH_ENABLE=1` によるAI目次推定も有料です。これは階層要約とは
+Customで `PDF_AI_TOC_FAST_PATH_ENABLE=1` を選ぶAI目次推定も有料です。これは階層要約とは
 別の処理で、DB構築フェーズ中にも実行され得ます。サーバーでは
 `Server-Database-Workflow.command` のフェーズ1（DB構築）を始める前に、この機能を有効にするか
 決めてください。DB整合性の確認後にのみ階層AI要約へ進む場合は、フェーズ1では`0`にします。

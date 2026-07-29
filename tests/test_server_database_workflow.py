@@ -98,4 +98,4 @@ def test_workflow_rejects_inherited_legacy_collection_before_any_command():
     )
     assert result.returncode == 2
     assert calls == []
-    assert "旧collection" in result.stdout
+    assert "旧コレクション" in result.stdout

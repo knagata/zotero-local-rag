@@ -7,7 +7,7 @@ cd "$(dirname "$0")"
 export PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$HOME/.local/bin:$HOME/.cargo/bin"
 
 echo "========================================"
-echo "   Zotero Local RAG - Citation Graph"
+echo "   Zotero Local RAG - 引用グラフ"
 echo "========================================"
 echo ""
 echo "グラフを構築中です。ブラウザが自動的に開きます..."
