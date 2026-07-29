@@ -6825,7 +6825,7 @@ def _natural_key(s: str) -> list:
 def _route_generate_summary(body: _SummaryRequest) -> JSONResponse:
     """ChromaDB チャンクからDeepSeekで要約を生成してキャッシュする。"""
     from src.db_relations import get_item_summary, save_item_summary
-    from llm_client import DeepSeekClient, LLMError
+    from src.llm_client import DeepSeekClient, LLMError
 
     # キャッシュ済みで force=False なら即返す
     if not body.force:

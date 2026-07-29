@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -40,6 +41,15 @@ class CitationInsightsApiTests(unittest.TestCase):
     def test_abstract_route_uses_the_packaged_database_module(self):
         response = _json(show_citation_graph._route_node_abstract("ITEM"))
         self.assertEqual(response["summary"]["summary"], "item summary")
+
+    def test_summary_generation_route_reaches_packaged_llm_module(self):
+        request = show_citation_graph._SummaryRequest(
+            item_key="MISSING", force=True,
+        )
+        with patch.dict(os.environ, {"DEEPSEEK_API_KEY": ""}):
+            response = show_citation_graph._route_generate_summary(request)
+        self.assertEqual(response.status_code, 503)
+        self.assertIn("DEEPSEEK_API_KEY", _json(response)["error"])
 
     def test_processing_status_distinguishes_degraded_and_blocked_work(self):
         db_relations.mark_artifact_status(

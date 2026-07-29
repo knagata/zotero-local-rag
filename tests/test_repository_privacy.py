@@ -17,6 +17,8 @@ PRIVATE_OUTPUT_NAMES = {
 
 
 def _tracked_paths() -> list[str]:
+    if not (ROOT / ".git").exists():
+        raise unittest.SkipTest("repository privacy checks require a Git checkout")
     result = subprocess.run(
         ["git", "ls-files", "-z"],
         cwd=ROOT,
@@ -45,6 +47,7 @@ class RepositoryPrivacyTests(unittest.TestCase):
 
     def test_tracked_text_does_not_contain_local_zotero_paths(self):
         leaks: list[str] = []
+        # Split the known leaked path so this test does not flag its own source.
         home_marker = "/Users/" + "knag"
         zotero_marker = "Zotero/" + "storage/"
         for relative in _tracked_paths():
