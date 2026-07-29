@@ -27,23 +27,29 @@ class ColStalenessCorroborationTests(unittest.TestCase):
     def setUp(self):
         self._orig_col = rag_mcp_server._COL
         self._orig_mtime = rag_mcp_server._COL_INIT_MTIME
+        self._orig_db_mtime = rag_mcp_server._COL_INIT_DB_MTIME
+        self._orig_manifest_mtime = rag_mcp_server._COL_INIT_MANIFEST_MTIME
         self._orig_row_count = rag_mcp_server._COL_INIT_ROW_COUNT
         self._orig_coll_name = rag_mcp_server._EMB_COLLECTION_NAME
 
     def tearDown(self):
         rag_mcp_server._COL = self._orig_col
         rag_mcp_server._COL_INIT_MTIME = self._orig_mtime
+        rag_mcp_server._COL_INIT_DB_MTIME = self._orig_db_mtime
+        rag_mcp_server._COL_INIT_MANIFEST_MTIME = self._orig_manifest_mtime
         rag_mcp_server._COL_INIT_ROW_COUNT = self._orig_row_count
         rag_mcp_server._EMB_COLLECTION_NAME = self._orig_coll_name
 
-    def test_mtime_rise_with_unchanged_row_count_skips_reset(self):
+    def test_db_touch_with_unchanged_manifest_and_row_count_skips_reset(self):
         stale_col = Mock()
         rag_mcp_server._COL = stale_col
         rag_mcp_server._COL_INIT_MTIME = 100.0
+        rag_mcp_server._COL_INIT_DB_MTIME = 60.0
+        rag_mcp_server._COL_INIT_MANIFEST_MTIME = 40.0
         rag_mcp_server._COL_INIT_ROW_COUNT = 500
         rag_mcp_server._EMB_COLLECTION_NAME = "zotero_paragraphs_v3"
 
-        with patch.object(rag_mcp_server, "_db_mtime_sum", return_value=200.0), \
+        with patch.object(rag_mcp_server, "_db_mtimes", return_value=(160.0, 40.0)), \
              patch.object(rag_mcp_server, "_collection_row_count", return_value=500) as row_count, \
              patch.object(rag_mcp_server, "_reset_col") as reset:
             result = rag_mcp_server._col()
@@ -53,18 +59,47 @@ class ColStalenessCorroborationTests(unittest.TestCase):
         self.assertIs(result, stale_col)
         # The false-alarm mtime is still adopted so it stops re-triggering.
         self.assertEqual(rag_mcp_server._COL_INIT_MTIME, 200.0)
+        self.assertEqual(rag_mcp_server._COL_INIT_DB_MTIME, 160.0)
+        self.assertEqual(rag_mcp_server._COL_INIT_MANIFEST_MTIME, 40.0)
 
-    def test_mtime_rise_with_changed_row_count_triggers_reset(self):
+    def test_manifest_change_reloads_even_when_row_count_is_unchanged(self):
         stale_col = Mock()
         rag_mcp_server._COL = stale_col
         rag_mcp_server._COL_INIT_MTIME = 100.0
+        rag_mcp_server._COL_INIT_DB_MTIME = 60.0
+        rag_mcp_server._COL_INIT_MANIFEST_MTIME = 40.0
         rag_mcp_server._COL_INIT_ROW_COUNT = 500
         rag_mcp_server._EMB_COLLECTION_NAME = "zotero_paragraphs_v3"
 
         def _reset():
             rag_mcp_server._COL = None
 
-        with patch.object(rag_mcp_server, "_db_mtime_sum", return_value=200.0), \
+        with patch.object(rag_mcp_server, "_db_mtimes", return_value=(160.0, 50.0)), \
+             patch.object(rag_mcp_server, "_collection_row_count") as row_count, \
+             patch.object(rag_mcp_server, "_reset_col", side_effect=_reset) as reset, \
+             patch.object(rag_mcp_server, "_EMB_FN", Mock()), \
+             patch.object(
+                 rag_mcp_server, "open_chroma_collection",
+                 return_value=Mock(count=lambda: 500),
+             ):
+            rag_mcp_server._col()
+
+        reset.assert_called_once()
+        row_count.assert_not_called()
+
+    def test_mtime_rise_with_changed_row_count_triggers_reset(self):
+        stale_col = Mock()
+        rag_mcp_server._COL = stale_col
+        rag_mcp_server._COL_INIT_MTIME = 100.0
+        rag_mcp_server._COL_INIT_DB_MTIME = 60.0
+        rag_mcp_server._COL_INIT_MANIFEST_MTIME = 40.0
+        rag_mcp_server._COL_INIT_ROW_COUNT = 500
+        rag_mcp_server._EMB_COLLECTION_NAME = "zotero_paragraphs_v3"
+
+        def _reset():
+            rag_mcp_server._COL = None
+
+        with patch.object(rag_mcp_server, "_db_mtimes", return_value=(160.0, 40.0)), \
              patch.object(rag_mcp_server, "_collection_row_count", return_value=501), \
              patch.object(rag_mcp_server, "_reset_col", side_effect=_reset) as reset, \
              patch.object(rag_mcp_server, "_EMB_FN", Mock()), \
@@ -78,13 +113,15 @@ class ColStalenessCorroborationTests(unittest.TestCase):
         stale_col = Mock()
         rag_mcp_server._COL = stale_col
         rag_mcp_server._COL_INIT_MTIME = 100.0
+        rag_mcp_server._COL_INIT_DB_MTIME = 60.0
+        rag_mcp_server._COL_INIT_MANIFEST_MTIME = 40.0
         rag_mcp_server._COL_INIT_ROW_COUNT = 500
         rag_mcp_server._EMB_COLLECTION_NAME = "zotero_paragraphs_v3"
 
         def _reset():
             rag_mcp_server._COL = None
 
-        with patch.object(rag_mcp_server, "_db_mtime_sum", return_value=200.0), \
+        with patch.object(rag_mcp_server, "_db_mtimes", return_value=(160.0, 40.0)), \
              patch.object(rag_mcp_server, "_collection_row_count", return_value=None), \
              patch.object(rag_mcp_server, "_reset_col", side_effect=_reset) as reset, \
              patch.object(rag_mcp_server, "_EMB_FN", Mock()), \

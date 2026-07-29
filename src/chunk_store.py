@@ -33,7 +33,7 @@ def active_collection_name(chroma_dir: Path = DEFAULT_CHROMA_DIR) -> str | None:
         return None
     connection = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5)
     try:
-        row = connection.execute('''
+        row = connection.execute(r'''
             SELECT c.name, COUNT(e.id) AS n FROM collections c
             LEFT JOIN segments s ON s.collection = c.id AND s.scope = 'METADATA'
             LEFT JOIN embeddings e ON e.segment_id = s.id
@@ -149,6 +149,30 @@ def list_chunk_ids_without_item(
         connection.close()
 
 
+def list_chunk_ids_without_attachment(
+    *, chroma_dir: Path = DEFAULT_CHROMA_DIR, collection_name: str | None = None,
+) -> list[str]:
+    """Return chunks whose attachmentKey metadata is absent or empty."""
+    db_path = _db_path(chroma_dir)
+    name = collection_name or active_collection_name(chroma_dir)
+    if not db_path.exists() or not name:
+        return []
+    connection = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=30)
+    try:
+        rows = connection.execute('''
+            SELECT e.embedding_id
+            FROM collections c JOIN segments s ON s.collection = c.id AND s.scope = 'METADATA'
+            JOIN embeddings e ON e.segment_id = s.id
+            LEFT JOIN embedding_metadata attachment
+                ON attachment.id = e.id AND attachment.key = 'attachmentKey'
+            WHERE c.name = ? AND COALESCE(attachment.string_value, '') = ''
+            ORDER BY e.embedding_id
+        ''', (name,)).fetchall()
+        return [str(row[0]) for row in rows]
+    finally:
+        connection.close()
+
+
 def get_item_chunks(
     item_key: str,
     *,
@@ -194,12 +218,59 @@ def get_item_chunks(
     return sorted(chunks.values(), key=lambda chunk: natural_chunk_key(chunk["id"]))
 
 
+def get_collection_chunks(
+    *,
+    chroma_dir: Path = DEFAULT_CHROMA_DIR,
+    collection_name: str | None = None,
+) -> list[dict[str, Any]]:
+    """Return every chunk in one collection with one SQLite scan."""
+    db_path = _db_path(chroma_dir)
+    name = collection_name or active_collection_name(chroma_dir)
+    if not db_path.exists() or not name:
+        return []
+    connection = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=30)
+    connection.row_factory = sqlite3.Row
+    try:
+        rows = connection.execute('''
+            SELECT e.embedding_id, em.key, em.string_value, em.int_value,
+                   em.float_value, em.bool_value
+            FROM collections c JOIN segments s ON s.collection = c.id AND s.scope = 'METADATA'
+            JOIN embeddings e ON e.segment_id = s.id
+            JOIN embedding_metadata em ON em.id = e.id
+            WHERE c.name = ?
+            ORDER BY e.embedding_id
+        ''', (name,)).fetchall()
+    finally:
+        connection.close()
+
+    chunks: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        chunk = chunks.setdefault(
+            row["embedding_id"],
+            {"id": row["embedding_id"], "text": "", "metadata": {}},
+        )
+        if row["string_value"] is not None:
+            value: Any = row["string_value"]
+        elif row["int_value"] is not None:
+            value = row["int_value"]
+        elif row["float_value"] is not None:
+            value = row["float_value"]
+        else:
+            value = bool(row["bool_value"]) if row["bool_value"] is not None else None
+        if row["key"] == "chroma:document":
+            chunk["text"] = value or ""
+        else:
+            chunk["metadata"][row["key"]] = value
+    return list(chunks.values())
+
+
 def get_item_text(item_key: str, *, max_chars: int | None = None, **kwargs: Any) -> str:
     text = "\n\n".join(chunk["text"] for chunk in get_item_chunks(item_key, **kwargs) if chunk["text"])
     return text[:max_chars] if max_chars is not None else text
 
 
 __all__ = [
-    "active_collection_name", "get_item_chunks", "get_item_text", "list_attachment_keys",
-    "list_chunk_ids", "list_item_keys", "natural_chunk_key",
+    "active_collection_name", "get_collection_chunks", "get_item_chunks", "get_item_text",
+    "list_attachment_keys", "list_chunk_ids", "list_chunk_ids_without_attachment",
+    "list_chunk_ids_without_item", "list_item_keys", "natural_chunk_key",
 ]

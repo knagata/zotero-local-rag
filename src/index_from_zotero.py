@@ -38,7 +38,8 @@ from mistral_ocr_extract import (
     mistral_ocr_available,
 )
 from epub_fallback import (
-    remap_ocr_chunks_to_epub, save_fixed_layout_derivative,
+    add_fixed_layout_terminal_markers, remap_ocr_chunks_to_epub,
+    save_fixed_layout_derivative,
 )
 from extraction_engine import (
     pymupdf_fast_path_passes, pymupdf_fast_path_rejection_reason,
@@ -71,6 +72,7 @@ from manifest import content_signature, load_manifest, save_manifest
 from db_relations import (
     drop_stale_identity_rows, get_item_processing_status, invalidate_item_summaries,
     mark_artifact_status, purge_removed_items, replace_document_structure,
+    reset_ingestion_derived_state,
 )
 from document_structure import attach_structure_metadata, build_document_structure
 from chunk_store import get_item_chunks, list_chunk_ids, list_item_keys
@@ -79,6 +81,7 @@ from v3_runtime import (
     assert_code_unchanged, bind_manifest_pipeline, code_fingerprint,
     ensure_pipeline_config, pipeline_payload,
 )
+from source_coverage import coverage_from_extraction, validate_source_coverage
 
 
 
@@ -122,7 +125,7 @@ RUN_CODE_PATHS = tuple(
         "pdf_extract.py", "docling_extract.py", "docling_worker.py", "extraction_engine.py",
         "local_ocr_pipeline.py", "rapidocr_extract.py", "ndlocr_extract.py", "epub_fallback.py",
         "pdf_toc_recovery.py", "document_structure.py", "v3_migration.py", "v3_runtime.py",
-        "pdf_provenance.py", "ocr_layer_audit.py",
+        "pdf_provenance.py", "ocr_layer_audit.py", "source_coverage.py",
     )
 )
 
@@ -629,6 +632,17 @@ def parse_args() -> argparse.Namespace:
         p.error("--limit must be zero or positive")
     if args.force_reparse and not (args.item or args.attachment or args.limit or args.source_type or args.reocr_candidates):
         p.error("--force-reparse requires a scope (--item, --attachment, --limit, or --source-type) to avoid re-parsing the whole corpus")
+    rebuild_scoped = bool(
+        args.item or args.attachment or args.limit or args.collection
+        or args.source_type or args.reocr_candidates or args.reocr_limit
+        or args.retry_failed or args.reparse_corrupted
+    )
+    if args.rebuild and rebuild_scoped:
+        p.error(
+            "--rebuild must cover the complete library; do not combine it with "
+            "--item/--attachment/--limit/--collection/--source-type/"
+            "--reocr-candidates/--retry-failed/--reparse-corrupted"
+        )
     return args
 
 
@@ -1157,6 +1171,98 @@ def _adopt_with_quality_uncertain(
     return tagged, updated
 
 
+def _epub_ocr_quality_from_mapping(
+    quality_info: dict[str, Any],
+    chunks: list[tuple[str, str, dict[str, Any]]],
+    mapping: dict[str, Any],
+    *,
+    epub_profile: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Translate derivative-PDF OCR evidence back to OPF spine units.
+
+    The OCR engines report 1-based derivative PDF pages, while the canonical
+    EPUB contract is 1-based OPF spine documents.  Keep that mapping explicit
+    so an OCR result cannot become a healthy EPUB merely because it yielded a
+    few remapped chunks.
+    """
+    page_to_spine: dict[int, int] = {}
+    for row in mapping.get("pages") or []:
+        if not isinstance(row, dict):
+            continue
+        try:
+            page_to_spine[int(row["pdf_page_index"]) + 1] = int(row["spine_index"]) + 1
+        except (KeyError, TypeError, ValueError):
+            continue
+    expected_spines = sorted(set(page_to_spine.values()))
+
+    def _page_units(value: Any) -> set[int]:
+        if isinstance(value, bool):
+            return set()
+        if isinstance(value, int):
+            return set(range(1, max(0, value) + 1))
+        if not isinstance(value, (list, tuple, set, range)):
+            return set()
+        result: set[int] = set()
+        for raw in value:
+            if isinstance(raw, bool):
+                continue
+            try:
+                page = int(raw)
+            except (TypeError, ValueError):
+                continue
+            if page > 0:
+                result.add(page)
+        return result
+
+    # Mistral's ``ocr_pages`` is actual output coverage; local adapters use it
+    # for their page attempts.  Either way, an absent page list must remain
+    # unknown rather than being filled optimistically from the derivative.
+    attempted_pages = _page_units(quality_info.get("attempted_pages"))
+    if not attempted_pages:
+        attempted_pages = _page_units(quality_info.get("ocr_pages"))
+    if not attempted_pages:
+        attempted_pages = _page_units(quality_info.get("processed_pages"))
+
+    def _mapped_spines(*fields: str) -> list[int]:
+        pages: set[int] = set()
+        for field in fields:
+            pages.update(_page_units(quality_info.get(field)))
+        return sorted({page_to_spine[page] for page in pages if page in page_to_spine})
+
+    text_spines: set[int] = set()
+    for _chunk_id, text, metadata in chunks:
+        if not str(text or "").strip():
+            continue
+        try:
+            spine = int(metadata.get("chapter_index")) + 1
+        except (TypeError, ValueError):
+            continue
+        if spine in expected_spines:
+            text_spines.add(spine)
+
+    profile = dict(epub_profile or quality_info.get("epub_profile") or {})
+    profile.setdefault("classification", "fixed_layout_image")
+    profile.setdefault("spine_document_count", len(expected_spines))
+    updated = dict(quality_info)
+    updated.pop("source_coverage", None)  # derivative PDF coverage has different units
+    updated.update({
+        "total_pages": len(expected_spines),
+        "spine_document_count": len(expected_spines),
+        "expected_spines": expected_spines,
+        "attempted_spines": sorted({
+            page_to_spine[page] for page in attempted_pages if page in page_to_spine
+        }),
+        "text_spines": sorted(text_spines),
+        "blank_spines": _mapped_spines("blank_pages", "empty_pages"),
+        "failed_spines": _mapped_spines(
+            "missing_pages", "extraction_failure_pages", "invalid_json_pages",
+        ),
+        "epub_profile": profile,
+    })
+    updated["source_coverage"] = coverage_from_extraction("epub", chunks, updated)
+    return updated
+
+
 def _reset_rebuild_target() -> None:
     """Reset only the isolated V3 target; legacy rebuild keeps old behavior."""
     if not STRUCTURED_V3_ENABLE:
@@ -1165,22 +1271,43 @@ def _reset_rebuild_target() -> None:
         if MANIFEST_PATH.exists():
             MANIFEST_PATH.unlink()
         return
-    try:
-        import chromadb
+    import chromadb
 
-        client = chromadb.PersistentClient(path=str(CHROMA_DIR))
-        try:
-            client.delete_collection(str(CHROMA_COLLECTION_ENV or "zotero_paragraphs_v3"))
-        except Exception:
-            pass
+    client = chromadb.PersistentClient(path=str(CHROMA_DIR))
+    target = str(CHROMA_COLLECTION_ENV or "zotero_paragraphs_v3")
+    listed = client.list_collections()
+    names = {
+        str(value if isinstance(value, str) else getattr(value, "name", ""))
+        for value in listed
+    }
+    # Paragraphs and every searchable summary layer form one rebuild
+    # generation.  Retaining an old ``__sum_*`` collection would route new
+    # searches through node/item IDs from the previous corpus.
+    targets = (
+        target,
+        f"{target}__sum_node",
+        f"{target}__sum_item",
+        f"{target}__sum_section",
+    )
+    try:
+        for collection_name in targets:
+            if collection_name in names:
+                # Fail closed: manifest/config/FTS still describe the existing
+                # generation until Chroma confirms all target collections are gone.
+                client.delete_collection(collection_name)
     finally:
-        if MANIFEST_PATH.exists():
-            MANIFEST_PATH.unlink()
-        if V3_PIPELINE_CONFIG_PATH.exists():
-            V3_PIPELINE_CONFIG_PATH.unlink()
-        lexical_v3 = Path(os.environ.get("LEXICAL_DB_PATH", DATA_DIR / "lexical_v3.sqlite3"))
-        if lexical_v3.exists():
-            lexical_v3.unlink()
+        close = getattr(client, "close", None)
+        if callable(close):
+            close()
+
+    reset_ingestion_derived_state()
+    if MANIFEST_PATH.exists():
+        MANIFEST_PATH.unlink()
+    if V3_PIPELINE_CONFIG_PATH.exists():
+        V3_PIPELINE_CONFIG_PATH.unlink()
+    lexical_v3 = Path(os.environ.get("LEXICAL_DB_PATH", DATA_DIR / "lexical_v3.sqlite3"))
+    if lexical_v3.exists():
+        lexical_v3.unlink()
 
 
 def _legacy_source_collection() -> str | None:
@@ -1324,8 +1451,17 @@ async def main_async(args: argparse.Namespace) -> None:
         zotero_data_dir=zotero_data_dir,
         pdf_cache_dir=str(PDF_CACHE_DIR),
         collection_key=args.collection,
+        require_complete=bool(args.rebuild),
     )
     attachments = [a for a in attachments if getattr(a, "pdf_path", None)]
+    # A clean rebuild destroys the prior target.  Prove both source inventories
+    # complete before that destructive boundary, and reuse the exact note
+    # snapshot later so a second, inconsistent listing cannot redefine scope.
+    preflight_notes: list[dict[str, Any]] | None = None
+    if args.rebuild:
+        preflight_notes = await api.list_notes(
+            collection_key=args.collection, require_complete=True,
+        )
 
     # Exact attachment selection is deliberately applied before parent-item
     # selection: --item keeps its normal "all attachments of this parent"
@@ -1557,7 +1693,11 @@ async def main_async(args: argparse.Namespace) -> None:
         # rows, this would have purged e.g. FSIXT5VE -- an item with 42 note
         # chunks that is present in Zotero and not deleted (2026-07-27).
         try:
-            purge_notes = await api.list_notes(collection_key=args.collection)
+            purge_notes = (
+                preflight_notes
+                if preflight_notes is not None
+                else await api.list_notes(collection_key=args.collection)
+            )
         except Exception as exc:
             purge_notes = None
             print(
@@ -1584,13 +1724,16 @@ async def main_async(args: argparse.Namespace) -> None:
 
     updated_pdf = updated_html = updated_epub = 0
     skipped_pdf = skipped_html = skipped_epub = 0
-    failed_extract = 0  # extracted 0 chunks (treated as failure)
+    failed_extract = 0  # zero chunks or incomplete source coverage
+    deferred_extract = 0
 
     pending_ids: list[str] = []
     pending_docs: list[str] = []
     pending_metas: list[dict[str, Any]] = []
 
     pending_manifest_updates: dict[str, dict[str, Any]] = {}
+    pending_extraction_statuses: dict[str, tuple[str, str, dict[str, Any]]] = {}
+    pending_summary_invalidations: set[str] = set()
     pending_delete_attachment_keys: set[str] = set()
     pending_source_types: dict[str, str] = {}
     pending_item_keys: dict[str, str] = {}
@@ -1702,7 +1845,8 @@ async def main_async(args: argparse.Namespace) -> None:
             prev and str(prev.get("pipeline_fingerprint") or "") == v3_pipeline_fingerprint
         ) if STRUCTURED_V3_ENABLE else True
         if (
-                _skip_current_mistral_toc_candidate(
+                not args.rebuild
+                and _skip_current_mistral_toc_candidate(
                     stype=stype, reocr_route=reocr_route,
                     force_reparse=args.force_reparse,
                     reparse_corrupted=args.reparse_corrupted,
@@ -1839,7 +1983,7 @@ async def main_async(args: argparse.Namespace) -> None:
         legacy_entry = legacy_files.get(a.attachmentKey, {}) if isinstance(legacy_files, dict) else {}
         legacy_quality = legacy_entry.get("quality", {}) if isinstance(legacy_entry, dict) else {}
         if (
-            stype == "pdf" and STRUCTURED_V3_ENABLE and not reocr_route
+            stype == "pdf" and STRUCTURED_V3_ENABLE and not args.rebuild and not reocr_route
             and not args.use_docling and not args.reparse_corrupted and not args.force_reparse
             and legacy_collection and is_ocr_derived(legacy_quality)
         ):
@@ -1910,10 +2054,46 @@ async def main_async(args: argparse.Namespace) -> None:
                         if stype == "epub":
                             mapping_path = Path(str(reocr_route.get("epub_mapping_path") or ""))
                             mapping = json.loads(mapping_path.read_text(encoding="utf-8"))
-                            chunks = remap_ocr_chunks_to_epub(
+                            dom_chunks, dom_quality = extract_chunks_from_epub_snapshot(
+                                file_path, a.attachmentKey, meta_base,
+                            )
+                            epub_profile = dict(dom_quality.get("epub_profile") or {})
+                            if epub_profile.get("classification") != "fixed_layout_image":
+                                raise RuntimeError(
+                                    "EPUB OCR adoption is limited to fixed-layout image EPUBs"
+                                )
+                            selected_indices = [
+                                int(value)
+                                for value in mapping.get("requested_spine_indices") or []
+                            ]
+                            profile_count = int(
+                                epub_profile.get("spine_document_count") or 0
+                            )
+                            if selected_indices != list(range(profile_count)):
+                                raise RuntimeError(
+                                    "fixed-layout EPUB OCR must cover the complete OPF spine"
+                                )
+                            returned_pdf_pages = {
+                                int(page.get("index", -1)) + 1
+                                for page in staged_result.get("pages") or []
+                                if isinstance(page, dict)
+                            }
+                            chunks, quality_info = add_fixed_layout_terminal_markers(
+                                chunks, quality_info, mapping,
+                                returned_pdf_pages=returned_pdf_pages,
+                                attachment_key=a.attachmentKey,
+                                metadata=meta_base,
+                            )
+                            ocr_chunks = remap_ocr_chunks_to_epub(
                                 chunks, mapping, epub_path=file_path,
                             )
-                            quality_info["parser"] = "mistral_ocr_epub_fixed_layout"
+                            quality_info = dict(quality_info)
+                            quality_info["parser"] = "mistral_ocr_epub"
+                            chunks = ocr_chunks
+                            quality_info = _epub_ocr_quality_from_mapping(
+                                quality_info, chunks, mapping,
+                                epub_profile=epub_profile,
+                            )
                         quality_info["batch_job_id"] = str(reocr_route.get("batch_job_id") or "")
                     elif stype == "pdf":
                         chunks, quality_info = extract_chunks_from_pdf_with_mistral_ocr(
@@ -2491,6 +2671,7 @@ async def main_async(args: argparse.Namespace) -> None:
                         files_manifest[a.attachmentKey] = deferred_entry
                         save_manifest(MANIFEST_PATH, manifest)
                         skipped_pdf += 1
+                        deferred_extract += 1
                         if show_progress:
                             print(
                                 f"[PROGRESS]   ↳ deferred to Mistral OCR batch: "
@@ -2605,41 +2786,79 @@ async def main_async(args: argparse.Namespace) -> None:
                     file=sys.__stderr__,
                 )
 
-        if (
-            not chunks and stype == "epub"
+        epub_profile = (
+            dict(quality_info.get("epub_profile") or {})
+            if stype == "epub"
             and isinstance(quality_info.get("epub_profile"), dict)
-            and quality_info["epub_profile"].get("classification") == "fixed_layout_image"
+            else {}
+        )
+        if epub_profile.get("classification") == "fixed_layout_image":
+            # The DOM extractor intentionally discards every wrapper in this
+            # class, so every image-backed spine is an OCR target regardless
+            # of incidental wrapper/alt text length.
+            image_primary_indices = sorted({
+                int(page["spine_index"])
+                for page in epub_profile.get("pages") or []
+                if isinstance(page, dict) and page.get("image_exists")
+            })
+        else:
+            # Structured/flowable EPUBs are canonicalized from their DOM.
+            # Covers and illustrations must not trigger local or cloud OCR.
+            image_primary_indices = []
+        failed_epub_units = {
+            int(value) for value in quality_info.get("failed_spines") or []
+        }
+        image_primary_units = {index + 1 for index in image_primary_indices}
+        ocr_target_indices = [
+            index for index in image_primary_indices
+            if index + 1 in failed_epub_units
+        ]
+        unrecoverable_epub_units = failed_epub_units - image_primary_units
+        if (
+            stype == "epub"
+            and epub_profile.get("classification") == "fixed_layout_image"
+            and not chunks
+            and ocr_target_indices
+            and not unrecoverable_epub_units
             and not force_mistral
         ):
+            dom_chunks = list(chunks)
+            dom_quality = dict(quality_info)
             try:
                 derivative = save_fixed_layout_derivative(
                     file_path, DATA_DIR / "epub_ocr_cache", a.attachmentKey,
                 )
                 derivative_pdf = Path(str(derivative["derivative_path"]))
                 expected_pages = len(derivative.get("pages") or [])
-                chunks, quality_info, local_gate = run_local_ocr(
+                ocr_chunks, ocr_quality, local_gate = run_local_ocr(
                     derivative_pdf, a.attachmentKey, meta_base,
                     language=meta_base.get("lang"),
                     expected_pages=expected_pages,
+                    require_text_for_every_page=True,
                     extractors={
                         "rapidocr": extract_chunks_from_pdf_with_rapidocr,
                         "ndlocr_lite": extract_chunks_from_pdf_with_ndlocr,
                         "docling": docling_worker.extract,
                     },
                 )
-                if chunks:
-                    chunks = remap_ocr_chunks_to_epub(
-                        chunks, derivative, epub_path=file_path,
+                if ocr_chunks:
+                    ocr_chunks = remap_ocr_chunks_to_epub(
+                        ocr_chunks, derivative, epub_path=file_path,
                     )
-                    quality_info = dict(quality_info)
-                    quality_info["parser"] = (
-                        f"{quality_info.get('parser') or 'local_ocr'}_epub_fixed_layout"
+                    ocr_quality = dict(ocr_quality)
+                    ocr_quality["parser"] = (
+                        f"{ocr_quality.get('parser') or 'local_ocr'}_epub"
                     )
-                    quality_info["epub_profile"] = {
-                        **quality_info.get("epub_profile", {}),
-                        "classification": "fixed_layout_image",
-                    }
+                    mapped_ocr_quality = _epub_ocr_quality_from_mapping(
+                        ocr_quality, ocr_chunks, derivative,
+                    )
+                    chunks = ocr_chunks
+                    quality_info = _epub_ocr_quality_from_mapping(
+                        ocr_quality, chunks, derivative,
+                        epub_profile=epub_profile,
+                    )
                 else:
+                    chunks, quality_info = dom_chunks, dom_quality
                     cloud_allowed, cloud_reason = mistral_ocr_available()
                     if cloud_allowed:
                         mark_artifact_status(
@@ -2648,7 +2867,7 @@ async def main_async(args: argparse.Namespace) -> None:
                             reason_code=MISTRAL_TOC_QUEUE_REASON,
                             message=(
                                 "Local OCR and Docling quality gates failed for "
-                                "fixed-layout image EPUB; awaiting Mistral OCR batch."
+                                "image-backed EPUB spines; awaiting Mistral OCR batch."
                             ),
                             retryable=False,
                             counts={
@@ -2660,15 +2879,17 @@ async def main_async(args: argparse.Namespace) -> None:
                                 "local_ocr_gate": local_gate,
                                 "batch_document_path": str(derivative_pdf),
                                 "epub_mapping_path": str(derivative["mapping_path"]),
+                                "epub_ocr_spine_indices": ocr_target_indices,
                                 "source_sha256": derivative.get("source_sha256"),
                                 "derivative_sha256": derivative.get("derivative_sha256"),
                             },
                             fallback_kind="mistral_ocr",
                         )
+                        deferred_extract += 1
                         if show_progress:
                             print(
                                 f"[PROGRESS]   ↳ local OCR gates failed; deferred "
-                                f"fixed-layout EPUB to Mistral OCR batch",
+                                f"EPUB image spines to Mistral OCR batch",
                                 file=sys.__stderr__,
                             )
                         continue
@@ -2677,15 +2898,16 @@ async def main_async(args: argparse.Namespace) -> None:
                         quality_info["cloud_fallback_unavailable"] = cloud_reason
                 if show_progress:
                     print(
-                        f"[PROGRESS]   ↳ fixed-layout EPUB local OCR "
-                        f"{'accepted' if chunks else 'failed'}: "
-                        f"engine={quality_info.get('parser')} pages={expected_pages} "
+                        f"[PROGRESS]   ↳ EPUB image-spine local OCR "
+                        f"{'accepted' if ocr_chunks else 'failed'}: "
+                        f"engine={ocr_quality.get('parser')} pages={expected_pages} "
                         f"reasons={local_gate.get('reasons') or []}",
                         file=sys.__stderr__,
                     )
             except Exception as exc:
+                chunks, quality_info = dom_chunks, dom_quality
                 print(
-                    f"[WARN] Fixed-layout EPUB derivative failed: "
+                    f"[WARN] EPUB image-spine derivative/OCR failed: "
                     f"attachment={a.attachmentKey} err={exc}",
                     file=sys.__stderr__,
                 )
@@ -2716,6 +2938,37 @@ async def main_async(args: argparse.Namespace) -> None:
                 )
             continue
 
+        source_coverage = coverage_from_extraction(stype, chunks, quality_info)
+        coverage_verdict = validate_source_coverage(source_coverage)
+        quality_info = dict(quality_info)
+        quality_info["source_coverage"] = source_coverage
+        quality_info["source_coverage_verdict"] = coverage_verdict
+        if not coverage_verdict["passed"]:
+            failed_extract += 1
+            print(
+                f"[WARN] Incomplete source coverage; leaving existing index/manifest unchanged: "
+                f"attachment={a.attachmentKey} type={stype} "
+                f"reasons={coverage_verdict['reasons']} "
+                f"unaccounted={coverage_verdict['unaccounted_units']}",
+                file=sys.__stderr__,
+            )
+            mark_artifact_status(
+                scope_item_key, "extraction", "failed",
+                attachment_key=a.attachmentKey,
+                reason_code="incomplete_source_coverage",
+                message=(
+                    f"Source coverage failed: {coverage_verdict['reasons']}; "
+                    f"unaccounted={coverage_verdict['unaccounted_units']}"
+                )[:1000],
+                retryable=True,
+                counts={
+                    "source_type": stype,
+                    "chunks": len(chunks),
+                    "coverage": source_coverage,
+                },
+            )
+            continue
+
         truncated = bool(quality_info.get("truncated_by_timeout"))
         # P1 (note 78): an AI-TOC alignment failure (headings likely exist but
         # couldn't be deterministically attached) indexes the document
@@ -2740,15 +2993,16 @@ async def main_async(args: argparse.Namespace) -> None:
         else:
             degraded_reason = None
             degraded_message = None
-        mark_artifact_status(
-            a.parentItemKey or a.attachmentKey, "extraction",
+        extraction_status = (
+            scope_item_key,
             "degraded" if (truncated or ai_toc_alignment_failed) else "success",
-            attachment_key=a.attachmentKey,
-            reason_code=degraded_reason,
-            message=degraded_message,
-            retryable=truncated,
-            processor_version=str(quality_info.get("parser") or stype),
-            counts={
+            {
+                "attachment_key": a.attachmentKey,
+                "reason_code": degraded_reason,
+                "message": degraded_message,
+                "retryable": truncated,
+                "processor_version": str(quality_info.get("parser") or stype),
+                "counts": {
                 "chunks": len(chunks), "source_type": stype,
                 "processed_pages": quality_info.get("processed_pages"),
                 "expected_pages": quality_info.get("expected_pages"),
@@ -2760,17 +3014,9 @@ async def main_async(args: argparse.Namespace) -> None:
                     {"ai_toc_reason": quality_info.get("ai_toc_recovery_status")}
                     if ai_toc_alignment_failed else {}
                 ),
+                },
             },
         )
-
-        if reocr_route and a.parentItemKey:
-            counts = invalidate_item_summaries(a.parentItemKey)
-            if show_progress:
-                print(
-                    f"[PROGRESS]   ↳ invalidated derived summaries for item={a.parentItemKey}: "
-                    f"sections={counts['section_summaries']}",
-                    file=sys.__stderr__,
-                )
 
         for _cid, text, md in chunks:
             md["lang"] = detect_lang(text, getattr(a, "language", None))
@@ -2813,6 +3059,10 @@ async def main_async(args: argparse.Namespace) -> None:
 
         if quality_check_only:
             # Only update manifest quality, do not write to ChromaDB
+            mark_artifact_status(
+                extraction_status[0], "extraction", extraction_status[1],
+                **extraction_status[2],
+            )
             files_manifest[a.attachmentKey] = {
                 "mtime": mtime,
                 "size": size,
@@ -2831,6 +3081,9 @@ async def main_async(args: argparse.Namespace) -> None:
             continue
 
         pending_delete_attachment_keys.add(a.attachmentKey)
+        pending_extraction_statuses[a.attachmentKey] = extraction_status
+        if reocr_route and a.parentItemKey:
+            pending_summary_invalidations.add(str(a.parentItemKey))
 
         for cid, text, md in chunks:
             pending_ids.append(cid)
@@ -2889,6 +3142,18 @@ async def main_async(args: argparse.Namespace) -> None:
             if STRUCTURED_V3_ENABLE:
                 _verify_written_attachments(col, expected_ids)
 
+            for item_key, status, status_kwargs in pending_extraction_statuses.values():
+                mark_artifact_status(
+                    item_key, "extraction", status, **status_kwargs,
+                )
+            for item_key in sorted(pending_summary_invalidations):
+                counts = invalidate_item_summaries(item_key)
+                if show_progress:
+                    print(
+                        f"[PROGRESS]   ↳ invalidated derived summaries for item={item_key}: "
+                        f"sections={counts['section_summaries']}",
+                        file=sys.__stderr__,
+                    )
             for ak, entry in pending_manifest_updates.items():
                 files_manifest[ak] = entry
             if STRUCTURED_V3_ENABLE:
@@ -2916,6 +3181,8 @@ async def main_async(args: argparse.Namespace) -> None:
                 )
 
             pending_manifest_updates.clear()
+            pending_extraction_statuses.clear()
+            pending_summary_invalidations.clear()
             pending_delete_attachment_keys.clear()
             pending_source_types.clear()
             pending_item_keys.clear()
@@ -2961,6 +3228,18 @@ async def main_async(args: argparse.Namespace) -> None:
             _verify_written_attachments(col, expected_ids)
 
     if pending_manifest_updates:
+        for item_key, status, status_kwargs in pending_extraction_statuses.values():
+            mark_artifact_status(
+                item_key, "extraction", status, **status_kwargs,
+            )
+        for item_key in sorted(pending_summary_invalidations):
+            counts = invalidate_item_summaries(item_key)
+            if show_progress:
+                print(
+                    f"[PROGRESS]   ↳ invalidated derived summaries for item={item_key}: "
+                    f"sections={counts['section_summaries']}",
+                    file=sys.__stderr__,
+                )
         for ak, entry in pending_manifest_updates.items():
             files_manifest[ak] = entry
         for t in pending_source_types.values():
@@ -2986,6 +3265,8 @@ async def main_async(args: argparse.Namespace) -> None:
                 expected_code_fingerprint=run_code_fingerprint,
             )
         pending_manifest_updates.clear()
+        pending_extraction_statuses.clear()
+        pending_summary_invalidations.clear()
         pending_delete_attachment_keys.clear()
         pending_source_types.clear()
         pending_item_keys.clear()
@@ -2994,10 +3275,15 @@ async def main_async(args: argparse.Namespace) -> None:
     # Notes -> chunks (indexed, but excluded from rag_search by default)
     # ----------------------------
     try:
-        notes = await api.list_notes(collection_key=args.collection)
+        notes = (
+            preflight_notes
+            if preflight_notes is not None
+            else await api.list_notes(collection_key=args.collection)
+        )
     except Exception as e:
-        notes = []
-        print(f"[WARN] Failed to list notes via Zotero Local API: err={e}", file=sys.__stderr__)
+        raise RuntimeError(
+            f"Failed to enumerate Zotero notes; refusing to treat an unknown inventory as empty: {e}"
+        ) from e
 
     if partial_scope:
         scoped_item_keys = set(processing_item_keys) if args.limit else {
@@ -3063,7 +3349,7 @@ async def main_async(args: argparse.Namespace) -> None:
     print(
         f"Done. Updated PDFs={updated_pdf}, Updated HTML(WebClip)={updated_html}, Updated EPUB={updated_epub}, "
         f"Skipped PDFs={skipped_pdf}, Skipped HTML(WebClip)={skipped_html}, Skipped EPUB={skipped_epub}, "
-        f"Deleted stale={deleted_stale}, Failed extract(0 chunks)={failed_extract}"
+        f"Deleted stale={deleted_stale}, Failed extract/coverage={failed_extract}"
         f" | Updated Notes={updated_notes}, Skipped Notes={skipped_notes}, Deleted stale Notes={deleted_stale_notes}"
     )
     print(json.dumps({
@@ -3072,6 +3358,7 @@ async def main_async(args: argparse.Namespace) -> None:
         "updated_pdf": updated_pdf,
         "skipped_pdf": skipped_pdf,
         "failed_extract": failed_extract,
+        "deferred_extract": deferred_extract,
         "inflight_attachments": list(manifest.get("inflight_attachments", [])),
         "hnsw_validated": bool(manifest.get("hnsw_validated")),
     }, ensure_ascii=False))
@@ -3128,6 +3415,17 @@ async def main_async(args: argparse.Namespace) -> None:
 
     _close_chroma_collection(col)
     _release_indexing_lock()
+
+    if args.rebuild:
+        resolved_attachment_keys = {str(row.attachmentKey) for row in attachments}
+        indexed_attachment_keys = {str(value) for value in files_manifest}
+        missing_after_rebuild = sorted(resolved_attachment_keys - indexed_attachment_keys)
+        if failed_extract or deferred_extract or missing_after_rebuild:
+            raise RuntimeError(
+                "Clean rebuild is incomplete: "
+                f"failed={failed_extract} deferred={deferred_extract} "
+                f"missing_manifest_attachments={missing_after_rebuild[:20]}"
+            )
 
 
 if __name__ == "__main__":

@@ -31,6 +31,7 @@ class HierarchicalSearchTests(unittest.TestCase):
     def test_rag_search_partitions_leaf_filter_into_chroma_safe_batches(self):
         paragraphs = Mock()
         paragraphs._embedding_function.return_value = [[0.1, 0.2]]
+        paragraphs.count.return_value = 3
         responses = [
             {"ids": [[f"chunk-{index}"]], "documents": [["x" * 250]],
              "metadatas": [[{"node_id": f"n{index}", "retrieval_policy": "normal"}]],
@@ -100,6 +101,37 @@ class HierarchicalSearchTests(unittest.TestCase):
         # batch-1 hits must keep their distance order -- neither is possible
         # if rank came from each batch's own h_idx.
         self.assertEqual(ids_in_order, ["good-1", "good-2", "good-3", "far-1"])
+
+    def test_rag_search_deepens_once_when_post_filters_underfill_results(self):
+        """Short/excluded nearest neighbours must not permanently consume k."""
+        paragraphs = Mock()
+        paragraphs._embedding_function.return_value = [[0.1, 0.2]]
+
+        def response(prefix, text):
+            return {
+                "ids": [[f"{prefix}-{index}" for index in range(10)]],
+                "documents": [[text for _ in range(10)]],
+                "metadatas": [[{"retrieval_policy": "normal"} for _ in range(10)]],
+                "distances": [[index / 100 for index in range(10)]],
+            }
+
+        # The fixed initial 5*k query contains only fragments.  The deeper
+        # query reaches full paragraphs, so the public k=2 contract is met.
+        paragraphs.query.side_effect = [
+            response("fragment", "too short"),
+            response("full", "evidence " * 40),
+        ]
+        with patch.object(rag_mcp_server, "_col", return_value=paragraphs), \
+             patch.object(rag_mcp_server, "_check_indexing_lock", return_value=(False, None)):
+            result = rag_mcp_server.rag_search(
+                "query", k=2, auto_expand=False, hybrid=False,
+            )
+
+        self.assertEqual([row["id"] for row in result["results"]], ["full-0", "full-1"])
+        self.assertEqual(
+            [call.kwargs["n_results"] for call in paragraphs.query.call_args_list],
+            [10, 20],
+        )
 
     def test_summary_routing_only_queries_llm_summaries(self):
         summary_collection = Mock()
@@ -197,6 +229,37 @@ class HierarchicalSearchTests(unittest.TestCase):
         item_candidate = next(c for c in response["candidate_items"] if c["item_key"] == "ITEM")
         self.assertEqual(item_candidate["title"], "Real Book Title")
         self.assertEqual(item_candidate["year"], 1990)
+
+    def test_v2_routes_same_item_search_by_aggregated_node_rrf(self):
+        """Two lower-ranked nodes for B beat A's first single node."""
+        summary_collection = Mock()
+        summary_collection.query.return_value = {
+            "metadatas": [[
+                {"itemKey": "A", "node_id": "a:1", "title": "A"},
+                {"itemKey": "B", "node_id": "b:1", "title": "B one"},
+                {"itemKey": "B", "node_id": "b:2", "title": "B two"},
+            ]],
+            "documents": [["A", "B one", "B two"]],
+        }
+        client = Mock()
+        client.get_collection.return_value = summary_collection
+        paragraphs = Mock()
+        paragraphs._embedding_function.return_value = [[0.1, 0.2]]
+        paragraphs._chroma_client = client
+        with patch.object(
+            rag_mcp_server, "get_node_descendant_chunks", return_value=[]
+        ), patch.object(
+            rag_mcp_server, "get_node_descendant_leaf_ids", return_value=[]
+        ), patch.object(
+            rag_mcp_server, "rag_search", return_value={"results": []}
+        ) as mock_search:
+            rag_mcp_server._hierarchical_search_v2(
+                ["query"], k=1, k_items=1, where=None, include_direct=False,
+                return_summaries=False, paragraph_collection=paragraphs,
+            )
+
+        self.assertEqual(mock_search.call_count, 1)
+        self.assertEqual(mock_search.call_args.kwargs["include_item_keys"], ["B"])
 
 
 if __name__ == "__main__":

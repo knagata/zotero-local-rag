@@ -73,13 +73,54 @@ class LinkedUrlSkipTests(unittest.TestCase):
         yielded, _ = self._run(raw, resolve_returns="/tmp/zotero/storage/A2/doc.pdf")
         self.assertEqual([attachment.attachmentKey for attachment in yielded], ["A2"])
 
-    def test_a_genuine_resolution_failure_is_still_reported_not_swallowed(self):
+    def test_a_genuine_resolution_failure_stops_incomplete_enumeration(self):
         # The other half of the same defect: a failed download for a non-
         # linked_url attachment used to be silent unless a debug flag was set.
         raw = [_attachment("A3", link_mode="imported_file")]
-        yielded, warning_text = self._run(raw, resolve_returns=None)
-        self.assertEqual(yielded, [])
-        self.assertIn("A3", warning_text)
+        with self.assertRaisesRegex(RuntimeError, "A3"):
+            self._run(raw, resolve_returns=None)
+
+
+class InventoryCompletenessTests(unittest.TestCase):
+    def test_rebuild_inventory_requires_total_results(self):
+        api = ZoteroLocalAPI()
+
+        async def fake_get(_path, params=None, timeout=None):
+            api._last_total_results = None
+            return [_attachment("A1")]
+
+        with patch.object(api, "_get_json", side_effect=fake_get):
+            with self.assertRaisesRegex(RuntimeError, "Total-Results"):
+                asyncio.run(api.list_pdf_attachments(limit=2, require_complete=True))
+
+    def test_rebuild_inventory_rejects_short_partial_listing(self):
+        api = ZoteroLocalAPI()
+
+        async def fake_get(_path, params=None, timeout=None):
+            api._last_total_results = 3
+            # A transiently short first page used to be accepted as EOF.
+            return [_attachment("A1")]
+
+        with patch.object(api, "_get_json", side_effect=fake_get):
+            with self.assertRaisesRegex(RuntimeError, "expected=3"):
+                asyncio.run(api.list_pdf_attachments(limit=2, require_complete=True))
+
+    def test_rebuild_inventory_accepts_exact_unique_total(self):
+        api = ZoteroLocalAPI()
+
+        async def fake_get(_path, params=None, timeout=None):
+            api._last_total_results = 3
+            start = int((params or {}).get("start") or 0)
+            return (
+                [_attachment("A1"), _attachment("A2")]
+                if start == 0 else [_attachment("A3")]
+            )
+
+        with patch.object(api, "_get_json", side_effect=fake_get):
+            rows = asyncio.run(
+                api.list_pdf_attachments(limit=2, require_complete=True)
+            )
+        self.assertEqual([row["key"] for row in rows], ["A1", "A2", "A3"])
 
 
 if __name__ == "__main__":

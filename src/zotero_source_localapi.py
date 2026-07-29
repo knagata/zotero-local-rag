@@ -89,6 +89,7 @@ class ZoteroLocalAPI:
             self.headers["Zotero-API-Key"] = self.api_key
 
         self._parent_cache: Dict[str, Dict[str, Any]] = {}
+        self._last_total_results: Optional[int] = None
 
     def _url(self, path: str) -> str:
         return f"{self.base_url}/{self.user_prefix}/{path.lstrip('/')}"
@@ -102,14 +103,24 @@ class ZoteroLocalAPI:
         async with httpx.AsyncClient(timeout=timeout or self.timeout) as client:
             r = await client.get(self._url(path), headers=self.headers, params=params)
             r.raise_for_status()
+            total = r.headers.get("Total-Results")
+            try:
+                self._last_total_results = int(total) if total is not None else None
+            except (TypeError, ValueError):
+                self._last_total_results = None
             return r.json()
 
-    async def list_pdf_attachments(self, limit: int = 200) -> List[Dict[str, Any]]:
+    async def list_pdf_attachments(
+        self, limit: int = 200, *, require_complete: bool = False,
+    ) -> List[Dict[str, Any]]:
         """Fetch items and return a de-duplicated list (by Zotero item key).
 
         Note: despite the name, we use this to list *attachments* in general (pdf/html).
         """
         seen: Dict[str, Dict[str, Any]] = {}
+        all_seen_keys: set[str] = set()
+        expected_total: Optional[int] = None
+        raw_count = 0
         start = 0
         use_itemtype_filter = True
         while True:
@@ -137,9 +148,19 @@ class ZoteroLocalAPI:
                 else:
                     raise
 
+            page_total = self._last_total_results
+            if page_total is not None:
+                if expected_total is None:
+                    expected_total = page_total
+                elif page_total != expected_total:
+                    raise RuntimeError(
+                        f"Zotero attachment inventory total changed during pagination: "
+                        f"{expected_total} -> {page_total}"
+                    )
             if not isinstance(batch, list) or not batch:
                 break
 
+            raw_count += len(batch)
             for raw in batch:
                 if not isinstance(raw, dict):
                     continue
@@ -148,12 +169,24 @@ class ZoteroLocalAPI:
                     k = raw["data"].get("key")
                 if not k:
                     continue
+                all_seen_keys.add(str(k))
                 seen[str(k)] = raw
 
             start += len(batch)
             if len(batch) < limit:
                 break
 
+        if require_complete:
+            if expected_total is None:
+                raise RuntimeError(
+                    "Zotero attachment inventory has no Total-Results header; "
+                    "refusing a clean rebuild without a completeness proof"
+                )
+            if raw_count != expected_total or len(all_seen_keys) != expected_total:
+                raise RuntimeError(
+                    "Incomplete Zotero attachment inventory: "
+                    f"expected={expected_total} rows={raw_count} unique={len(all_seen_keys)}"
+                )
         return list(seen.values())
 
     async def get_item(self, item_key: str) -> Dict[str, Any]:
@@ -252,12 +285,13 @@ class ZoteroLocalAPI:
         zotero_data_dir: Optional[str],
         pdf_cache_dir: str,
         collection_key: Optional[str] = None,
+        require_complete: bool = False,
     ) -> AsyncIterator[ZoteroAttachment]:
         """Yield normalized PDF/HTML snapshot attachments with resolved local path.
 
         NOTE: async generator; consume via `async for`.
         """
-        raw_atts = await self.list_pdf_attachments()
+        raw_atts = await self.list_pdf_attachments(require_complete=require_complete)
 
         for raw in raw_atts:
             att_key, ad = self._unwrap_item(raw)
@@ -332,7 +366,9 @@ class ZoteroLocalAPI:
                         f"attachment={att_key} parent={parent_key} err={e}",
                         file=sys.stderr,
                     )
-                    continue
+                    raise RuntimeError(
+                        f"Eligible attachment {att_key} has no readable local file"
+                    ) from e
 
             yield ZoteroAttachment(
                 attachmentKey=att_key,
@@ -353,19 +389,27 @@ class ZoteroLocalAPI:
         zotero_data_dir: Optional[str],
         pdf_cache_dir: str,
         collection_key: Optional[str] = None,
+        require_complete: bool = False,
     ) -> List[ZoteroAttachment]:
         out: List[ZoteroAttachment] = []
         async for a in self.iter_normalized_attachments(
             zotero_data_dir=zotero_data_dir,
             pdf_cache_dir=pdf_cache_dir,
             collection_key=collection_key,
+            require_complete=require_complete,
         ):
             out.append(a)
         return out
 
-    async def list_notes(self, collection_key: Optional[str] = None, limit: int = 200) -> List[Dict[str, Any]]:
+    async def list_notes(
+        self, collection_key: Optional[str] = None, limit: int = 200, *,
+        require_complete: bool = False,
+    ) -> List[Dict[str, Any]]:
         """List note items (HTML) with parent bibliographic metadata."""
         seen: Dict[str, Dict[str, Any]] = {}
+        all_seen_keys: set[str] = set()
+        expected_total: Optional[int] = None
+        raw_count = 0
         start = 0
         use_itemtype_filter = True
         while True:
@@ -393,13 +437,26 @@ class ZoteroLocalAPI:
                 else:
                     raise
 
+            page_total = self._last_total_results
+            if page_total is not None:
+                if expected_total is None:
+                    expected_total = page_total
+                elif page_total != expected_total:
+                    raise RuntimeError(
+                        f"Zotero note inventory total changed during pagination: "
+                        f"{expected_total} -> {page_total}"
+                    )
             if not isinstance(batch, list) or not batch:
                 break
 
+            raw_count += len(batch)
             for raw in batch:
                 if not isinstance(raw, dict):
                     continue
                 data = raw.get("data") if isinstance(raw.get("data"), dict) else raw
+                raw_key = raw.get("key") or (data.get("key") if isinstance(data, dict) else None)
+                if raw_key:
+                    all_seen_keys.add(str(raw_key))
                 if not isinstance(data, dict) or data.get("itemType") != "note":
                     continue
                 k = raw.get("key") or data.get("key")
@@ -411,6 +468,17 @@ class ZoteroLocalAPI:
             if len(batch) < limit:
                 break
 
+        if require_complete:
+            if expected_total is None:
+                raise RuntimeError(
+                    "Zotero note inventory has no Total-Results header; "
+                    "refusing a clean rebuild without a completeness proof"
+                )
+            if raw_count != expected_total or len(all_seen_keys) != expected_total:
+                raise RuntimeError(
+                    "Incomplete Zotero note inventory: "
+                    f"expected={expected_total} rows={raw_count} unique={len(all_seen_keys)}"
+                )
         out: List[Dict[str, Any]] = []
         for raw in seen.values():
             note_key, nd = self._unwrap_item(raw)

@@ -75,3 +75,7 @@ data/manifest_v3.json.prebulk_*
 data/mistral_ocr_batches/
 data/mistral_ocr_pilots/
 data/mistral_ocr_batch_state*.json
+data/mistral_ocr_*state.json
+data/pdf_batch_supervisor.lock
+data/pdf_batch_supervisor_state.json
+data/relations.db.bak_*

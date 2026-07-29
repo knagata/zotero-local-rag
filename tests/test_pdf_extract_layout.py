@@ -54,6 +54,94 @@ class PdfLayoutTests(unittest.TestCase):
         self.assertEqual(rows[1]["block_type"], "text")
         self.assertEqual(rows[1]["source_block_indices"], [2])
 
+    def test_narrow_journal_gutter_is_still_read_column_by_column(self):
+        blocks = [
+            _block(88, 42, 542, 57, "running header", 0),
+            _block(68, 75, 299, 143, "left continuation", 1),
+            _block(313, 75, 544, 101, "right continuation", 2),
+            _block(313, 114, 424, 127, "right heading", 3),
+            _block(313, 140, 544, 445, "right body", 4),
+            _block(68, 156, 182, 168, "left heading", 5),
+            _block(68, 182, 299, 487, "left body", 6),
+            _block(68, 500, 299, 721, "left body continued", 7),
+        ]
+
+        records = [
+            {
+                "text": block[4],
+                "bbox": [float(value) for value in block[:4]],
+                "block_type": "text",
+                "source_block_index": index,
+                "source_block_indices": [index],
+            }
+            for index, block in enumerate(blocks)
+        ]
+        rows = pdf_extract._order_layout_blocks(records, 612.0)
+
+        self.assertEqual(
+            [row["text"] for row in rows],
+            [
+                "running header",
+                "left continuation",
+                "left heading",
+                "left body",
+                "left body continued",
+                "right continuation",
+                "right heading",
+                "right body",
+            ],
+        )
+        self.assertEqual(
+            [row["column"] for row in rows],
+            ["full", "left", "left", "left", "left", "right", "right", "right"],
+        )
+
+    def test_one_long_left_block_still_establishes_two_columns(self):
+        page = _Page([
+            _block(38, 59, 289, 736, "left conclusion continuation", 0),
+            _block(307, 59, 387, 67, "Acknowledgements", 1),
+            _block(307, 80, 558, 151, "acknowledgement body", 2),
+            _block(307, 164, 462, 172, "Supplementary material", 3),
+            _block(307, 216, 352, 224, "References", 4),
+            _block(307, 238, 558, 739, "reference entries", 5),
+        ])
+
+        rows = pdf_extract.extract_layout_blocks_from_pdf_page(page)
+
+        self.assertEqual(rows[0]["text"], "left conclusion continuation")
+        self.assertEqual([row["column"] for row in rows], [
+            "left", "right", "right", "right", "right", "right",
+        ])
+
+    def test_same_page_outline_events_start_at_heading_records(self):
+        records = [
+            {"text": "left conclusion continuation"},
+            {"text": "Acknowledgements"},
+            {"text": "support statement"},
+            {"text": "Appendix A. Supplementary material"},
+            {"text": "supplement link"},
+            {"text": "References"},
+            {"text": "AIF, 2014"},
+        ]
+        events = pdf_extract._outline_events_by_page([
+            (1, "Paper", 1),
+            (2, "Conclusion", 13),
+            (2, "Acknowledgements", 14),
+            (2, "Supplementary material", 14),
+            (2, "References", 14),
+        ])[14]
+
+        paths = pdf_extract._resolve_record_structure_paths(
+            records,
+            previous_path=["Paper", "Conclusion"],
+            page_events=events,
+        )
+
+        self.assertEqual(paths[0], ["Paper", "Conclusion"])
+        self.assertEqual(paths[2], ["Paper", "Acknowledgements"])
+        self.assertEqual(paths[4], ["Paper", "Supplementary material"])
+        self.assertEqual(paths[6], ["Paper", "References"])
+
     def test_single_column_uses_geometry_not_raw_block_order(self):
         page = _Page([
             _block(50, 200, 550, 230, "second paragraph", 0),
@@ -151,14 +239,8 @@ class PdfLayoutTests(unittest.TestCase):
         self.assertTrue(chunks)
         self.assertTrue(all(zone == "bibliography" for zone in by_page[2]))
 
-    def test_a_page_emptied_by_repeated_header_removal_is_recorded(self):
-        """Repeated-header/footer removal can empty a page entirely.
-
-        The page then appears in neither ``empty_pages`` nor ``low_text_pages``
-        -- quality reporting has no record that content ever existed there,
-        so no audit can distinguish "genuinely blank" from "every line here
-        matched a running header" (2026-07-29).
-        """
+    def test_a_page_emptied_by_repeated_header_removal_is_restored(self):
+        """Header filtering must not turn an extracted page into a silent gap."""
         running_header = "Running Header Example Text"
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "repeated_header.pdf"
@@ -178,10 +260,109 @@ class PdfLayoutTests(unittest.TestCase):
 
             with patch.object(pdf_extract, "PDF_OCR_FALLBACK", False), \
                  patch.object(pdf_extract, "PDF_DROP_REPEATED_LINES", True):
-                _chunks, quality = pdf_extract.extract_chunks_from_pdf(path, "ATT", {"title": "Test"})
+                chunks, quality = pdf_extract.extract_chunks_from_pdf(path, "ATT", {"title": "Test"})
 
-        self.assertIn("repeated_header_dropped_pages", quality)
-        self.assertEqual(sorted(quality["repeated_header_dropped_pages"]), [2, 3, 4, 5])
+        self.assertEqual(quality["repeated_header_dropped_pages"], [])
+        self.assertEqual(quality["repeated_margin_lines_removed_pages"], [1])
+        self.assertEqual(sorted(quality["repeated_header_restored_pages"]), [2, 3, 4, 5])
+        self.assertIn(running_header, "\n".join(text for _chunk_id, text, _metadata in chunks))
+
+    def test_repeated_body_refrain_in_page_middle_is_never_removed(self):
+        """Frequency alone is not evidence that a paragraph is a header."""
+        refrain = "This repeated refrain is intentional body prose."
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "refrain.pdf"
+            document = fitz.open()
+            for page_number in range(5):
+                page = document.new_page(width=600, height=800)
+                page.insert_textbox(
+                    fitz.Rect(50, 330, 550, 370), refrain, fontsize=11,
+                )
+                page.insert_textbox(
+                    fitz.Rect(50, 410, 550, 700),
+                    f"Page {page_number + 1} has enough distinct body text to remain substantive. " * 8,
+                    fontsize=11,
+                )
+            document.save(path)
+            document.close()
+
+            with patch.object(pdf_extract, "PDF_OCR_FALLBACK", False), \
+                 patch.object(pdf_extract, "PDF_DROP_REPEATED_LINES", True):
+                chunks, _quality = pdf_extract.extract_chunks_from_pdf(path, "ATT", {"title": "Test"})
+
+        extracted = "\n".join(text for _chunk_id, text, _metadata in chunks)
+        self.assertIn(refrain, extracted)
+
+    def test_repeated_top_header_is_removed_without_removing_body(self):
+        running_header = "Journal of Safe Extraction"
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "running_header.pdf"
+            document = fitz.open()
+            for page_number in range(5):
+                page = document.new_page(width=600, height=800)
+                page.insert_textbox(fitz.Rect(50, 20, 550, 40), running_header, fontsize=10)
+                page.insert_textbox(
+                    fitz.Rect(50, 170, 550, 700),
+                    f"Body text unique to page {page_number + 1} and long enough for indexing. " * 12,
+                    fontsize=11,
+                )
+            document.save(path)
+            document.close()
+
+            with patch.object(pdf_extract, "PDF_OCR_FALLBACK", False), \
+                 patch.object(pdf_extract, "PDF_DROP_REPEATED_LINES", True):
+                chunks, _quality = pdf_extract.extract_chunks_from_pdf(path, "ATT", {"title": "Test"})
+
+        extracted = "\n".join(text for _chunk_id, text, _metadata in chunks)
+        self.assertNotIn(running_header, extracted)
+        self.assertIn("Body text unique to page 3", extracted)
+
+    def test_text_only_repeat_helpers_fail_closed_without_position_evidence(self):
+        repeated = "A repeated body paragraph must remain."
+        pages = [[repeated] for _ in range(5)]
+        self.assertEqual(pdf_extract.detect_repeated_lines(pages), set())
+        self.assertEqual(pdf_extract.detect_repeated_prefixes(pages), set())
+        self.assertEqual(
+            pdf_extract.drop_repeated_lines_from_paras([repeated], {repeated}), [repeated],
+        )
+        self.assertEqual(
+            pdf_extract.strip_repeated_prefix_from_first_para([repeated], {"A repeated"}), [repeated],
+        )
+
+    def test_page_label_joined_to_repeated_footer_is_canonicalized(self):
+        footer = (
+            "This report is available at no cost from the National Renewable "
+            "Energy Laboratory at www.nrel.gov/publications."
+        )
+        pages = [
+            [{
+                "text": f"{label} {footer}",
+                "bbox": [83, 733, 531, 771],
+                "page_y0": 0,
+                "page_y1": 792,
+            }]
+            for label in ("iii", "4", "5", "38")
+        ]
+
+        self.assertEqual(pdf_extract.detect_repeated_lines(pages), {footer})
+
+    def test_prefix_stripping_requires_a_first_block_at_page_top(self):
+        prefix = "Journal Header Metadata Shared Prefix 2026 "
+        detected_prefix = prefix[:40]
+        top_pages = [[{
+            "text": f"{prefix}{page_number}: actual opening paragraph",
+            "bbox": [50, 20, 550, 40], "page_y0": 0, "page_y1": 800,
+        }] for page_number in range(5)]
+        prefixes = pdf_extract.detect_repeated_prefixes(top_pages)
+        self.assertEqual(prefixes, {detected_prefix})
+        stripped = pdf_extract._strip_repeated_prefix_from_first_record(top_pages[0], prefixes)
+        self.assertEqual(stripped[0]["text"], f"{prefix[40:]}0: actual opening paragraph")
+
+        middle_pages = [[{
+            "text": f"{prefix}{page_number}: intentional body refrain",
+            "bbox": [50, 330, 550, 350], "page_y0": 0, "page_y1": 800,
+        }] for page_number in range(5)]
+        self.assertEqual(pdf_extract.detect_repeated_prefixes(middle_pages), set())
 
     def test_hard_min_chars_is_cjk_aware(self):
         """Every other length constant here has a CJK counterpart already.

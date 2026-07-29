@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 
 from src.html_extract import (
+    _read_html_skip_styles,
     _extract_epub_document_blocks,
     _resolve_note_citations,
     extract_chunks_from_html_snapshot,
@@ -165,6 +166,48 @@ class FailureReasonIsRecordedTests(unittest.TestCase):
                 chunks, quality = extract_chunks_from_html_snapshot(path, "ITEMKEY", {})
         self.assertEqual(chunks, [])
         self.assertEqual(quality.get("failure_reason"), "gibberish_sample")
+
+    def test_size_limited_html_prefix_is_not_accepted_as_complete(self):
+        # Use a small guard to exercise the same fail-closed path as the
+        # production 10 MiB limit without a needlessly large test fixture.
+        from unittest.mock import patch
+        from src import html_extract
+
+        body = "complete-looking prose " * 20
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "too-large.html"
+            path.write_text(
+                f"<html><body><p>{body}</p><p>{body}</p></body></html>",
+                encoding="utf-8",
+            )
+            with patch.object(html_extract, "MAX_HTML_BYTES", 96):
+                raw_html, reached_eof = _read_html_skip_styles(path)
+                chunks, quality = extract_chunks_from_html_snapshot(path, "ITEMKEY", {})
+
+        self.assertTrue(raw_html)
+        self.assertFalse(reached_eof)
+        self.assertEqual(chunks, [])
+        self.assertEqual(quality.get("failure_reason"), "html_size_truncated")
+        self.assertFalse(quality.get("source_read_complete"))
+
+    def test_uppercase_style_and_script_end_tags_do_not_hide_body(self):
+        body = "This body text must remain visible after skipped markup. " * 8
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "case-insensitive-tags.html"
+            path.write_text(
+                "<html><head><STYLE>p { color: red; }</STYLE>"
+                "<SCRIPT>window.example = true;</SCRIPT></head>"
+                f"<body><p>{body}</p></body></html>",
+                encoding="utf-8",
+            )
+            raw_html, reached_eof = _read_html_skip_styles(path)
+            chunks, quality = extract_chunks_from_html_snapshot(path, "ITEMKEY", {})
+
+        self.assertTrue(reached_eof)
+        self.assertIn("This body text", raw_html)
+        self.assertNotIn("color: red", raw_html)
+        self.assertTrue(chunks)
+        self.assertNotIn("failure_reason", quality)
 
 
 class NoteCitationResolutionTests(unittest.TestCase):

@@ -17,6 +17,23 @@ except ImportError:  # direct src entrypoint
 
 
 REPEAT_ARTIFACT_RE = re.compile(r"(.)\1{19,}")
+CJK_RE = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
+
+
+def _missing_latin_word_boundaries(text: str) -> bool:
+    """Detect OCR that fused a Latin page into implausibly long word runs."""
+    normalized = re.sub(r"\s+", " ", str(text or "")).strip()
+    if len(normalized) < 80:
+        return False
+    nonspace = normalized.replace(" ", "")
+    if not nonspace:
+        return False
+    if len(CJK_RE.findall(nonspace)) / len(nonspace) >= 0.3:
+        return False
+    latin = sum(character.isalpha() for character in nonspace)
+    if latin / len(nonspace) < 0.5:
+        return False
+    return len(normalized) / max(1, normalized.count(" ")) > 11
 
 
 @dataclass(frozen=True)
@@ -66,6 +83,7 @@ def evaluate_local_ocr_gate(
     quality: dict[str, Any],
     *,
     expected_pages: int,
+    require_text_for_every_page: bool = False,
 ) -> dict[str, Any]:
     pages: set[int] = set()
     for _, _, metadata in chunks:
@@ -79,6 +97,9 @@ def evaluate_local_ocr_gate(
     characters = sum(len(text) for text in texts)
     gibberish_blocks = sum(int(looks_like_gibberish(text)) for text in texts)
     repeat_artifacts = sum(len(REPEAT_ARTIFACT_RE.findall(text)) for text in texts)
+    missing_word_boundaries = sum(
+        int(_missing_latin_word_boundaries(text)) for text in texts
+    )
     # ``ocr_pages`` lists which pages were attempted; Docling's
     # ``processed_pages`` is a *count* of them. Iterating the count raised
     # TypeError, so every Docling escalation in this gate failed outright --
@@ -99,6 +120,26 @@ def evaluate_local_ocr_gate(
         if page > 0:
             attempted.add(page)
     expected = set(range(1, max(0, int(expected_pages)) + 1))
+    reported_pages_with_text: set[int] = set()
+    pages_with_text_source = quality.get("pages_with_text")
+    if isinstance(pages_with_text_source, (list, tuple, set, range)):
+        for value in pages_with_text_source:
+            try:
+                page = int(value)
+            except (TypeError, ValueError):
+                continue
+            if page > 0:
+                reported_pages_with_text.add(page)
+    reported_missing_pages: set[int] = set()
+    missing_pages_source = quality.get("missing_pages")
+    if isinstance(missing_pages_source, (list, tuple, set, range)):
+        for value in missing_pages_source:
+            try:
+                page = int(value)
+            except (TypeError, ValueError):
+                continue
+            if page > 0:
+                reported_missing_pages.add(page)
     reasons: list[str] = []
     if not chunks:
         reasons.append("no_chunks")
@@ -106,12 +147,32 @@ def evaluate_local_ocr_gate(
         reasons.append("incomplete_ocr_attempt_coverage")
     if expected and not attempted and not pages:
         reasons.append("no_page_coverage")
-    if characters < max(80, expected_pages * 20):
+    if require_text_for_every_page and expected and pages != expected:
+        reasons.append("incomplete_ocr_text_coverage")
+    # NDLOCR writes one JSON file per rendered input page.  An existing JSON
+    # file with no usable OCR text is still a coverage failure; accepting it
+    # based solely on ``ocr_pages`` used to hide silently empty output.  Honor
+    # the explicit missing-pages contract for every adapter that supplies it,
+    # without imposing this stricter interpretation on legacy Docling/RapidOCR
+    # quality records that do not report page-level text coverage.
+    if expected and reported_missing_pages:
+        reasons.append("missing_ocr_output_pages")
+    if (
+        expected
+        and quality.get("parser") in {"ndlocr-lite", "ndlocr_lite"}
+        and isinstance(pages_with_text_source, (list, tuple, set, range))
+    ):
+        if reported_pages_with_text != expected:
+            reasons.append("incomplete_ocr_text_coverage")
+    character_floor = max(80, expected_pages * 20)
+    if characters < character_floor:
         reasons.append("insufficient_text")
     if gibberish_blocks:
         reasons.append("gibberish_detected")
     if repeat_artifacts:
         reasons.append("repeat_artifacts")
+    if missing_word_boundaries:
+        reasons.append("missing_word_boundaries")
     if quality.get("truncated_by_timeout"):
         reasons.append("truncated_by_timeout")
     return {
@@ -121,10 +182,13 @@ def evaluate_local_ocr_gate(
         "expected_pages": int(expected_pages),
         "attempted_pages": len(attempted),
         "pages_with_text": len(pages),
+        "reported_pages_with_text": len(reported_pages_with_text),
+        "missing_pages": sorted(reported_missing_pages),
         "characters": characters,
         "chunks": len(chunks),
         "gibberish_blocks": gibberish_blocks,
         "repeat_artifacts": repeat_artifacts,
+        "missing_word_boundaries": missing_word_boundaries,
     }
 
 
@@ -137,6 +201,7 @@ def run_local_ocr(
     expected_pages: int,
     vertical: bool = False,
     dense_notes_or_references: bool = False,
+    require_text_for_every_page: bool = False,
     extractors: dict[
         str,
         Callable[
@@ -171,6 +236,7 @@ def run_local_ocr(
             quality.setdefault("parser", engine)
             gate = evaluate_local_ocr_gate(
                 chunks, quality, expected_pages=expected_pages,
+                require_text_for_every_page=require_text_for_every_page,
             )
             attempts.append({"engine": engine, "status": "passed" if gate["passed"] else "rejected", "gate": gate})
             if gate["passed"]:

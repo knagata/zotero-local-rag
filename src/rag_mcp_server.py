@@ -221,9 +221,12 @@ _COL = None
 # a full model reload.
 _EMB_FN = None
 _EMB_COLLECTION_NAME: Optional[str] = None
-# Combined mtime of chroma.sqlite3 and manifest.json at the time _COL was last initialized.
-# Used to proactively detect when the indexer has written new data.
+# Combined mtime retained for diagnostics/tool compatibility. Staleness
+# decisions use the component mtimes so a manifest commit cannot be hidden by
+# an unchanged collection row count.
 _COL_INIT_MTIME: float = 0.0
+_COL_INIT_DB_MTIME: float = 0.0
+_COL_INIT_MANIFEST_MTIME: float = 0.0
 # Embedding row count for the active collection at the time _COL was last
 # initialized (or last corroborated). Constructing *any* PersistentClient for
 # CHROMA_DIR -- including a read-only one from an audit/verification script --
@@ -234,21 +237,29 @@ _COL_INIT_MTIME: float = 0.0
 _COL_INIT_ROW_COUNT: Optional[int] = None
 
 
+def _db_mtimes() -> tuple[float, float]:
+    """Return separate ``(chroma_db, manifest)`` mtimes.
+
+    Opening a read-only Chroma client can touch only ``chroma.sqlite3``. The
+    indexer commits ``manifest.json`` after vector writes, including same-size
+    replacements whose collection row count does not change.
+    """
+    db_mtime = 0.0
+    manifest_mtime = 0.0
+    try:
+        db_mtime = os.path.getmtime(os.path.join(CHROMA_DIR, "chroma.sqlite3"))
+    except OSError:
+        pass
+    try:
+        manifest_mtime = os.path.getmtime(MANIFEST_PATH)
+    except OSError:
+        pass
+    return db_mtime, manifest_mtime
+
+
 def _db_mtime_sum() -> float:
-    """
-    Return the sum of mtimes for chroma.sqlite3 and manifest.json.
-    Watching both ensures we pick up the absolute final state of the indexer.
-    """
-    m = 0.0
-    try:
-        m += os.path.getmtime(os.path.join(CHROMA_DIR, "chroma.sqlite3"))
-    except OSError:
-        pass
-    try:
-        m += os.path.getmtime(MANIFEST_PATH)
-    except OSError:
-        pass
-    return m
+    """Compatibility aggregate used by reload diagnostics."""
+    return sum(_db_mtimes())
 
 
 def _collection_row_count(collection_name: str) -> Optional[int]:
@@ -333,7 +344,8 @@ def _reset_col() -> None:
 
 
 def _col():
-    global _COL, _EMB_FN, _EMB_COLLECTION_NAME, _COL_INIT_MTIME, _COL_INIT_ROW_COUNT
+    global _COL, _EMB_FN, _EMB_COLLECTION_NAME, _COL_INIT_MTIME
+    global _COL_INIT_DB_MTIME, _COL_INIT_MANIFEST_MTIME, _COL_INIT_ROW_COUNT
 
     # --- Proactive staleness check ---
     # The HNSW index is memory-mapped, so when the indexer rewrites it the new
@@ -342,35 +354,55 @@ def _col():
     # both the SQLite DB and the manifest (the latter is updated last).
     # If it changed, invalidate before any query runs.
     #
-    # But mtime alone over-triggers: constructing *any* PersistentClient for
+    # DB mtime alone over-triggers: constructing *any* PersistentClient for
     # CHROMA_DIR -- including a read-only one from an unrelated audit script --
     # bumps chroma.sqlite3's mtime without writing a single new vector. Before
     # paying for the expensive _reset_col() (which discards and re-mmaps the
     # whole HNSW segment), corroborate with the actual embedding row count,
     # read directly via SQLite so the corroboration check doesn't itself
-    # perturb anything. Only a genuine row-count change earns a reset; a false
-    # alarm still gets its mtime bookmark advanced so the same stale signal
-    # doesn't keep re-triggering this check on every subsequent call.
-    current_mtime = _db_mtime_sum()
-    if _COL is not None and current_mtime > _COL_INIT_MTIME:
-        current_count = (
-            _collection_row_count(_EMB_COLLECTION_NAME) if _EMB_COLLECTION_NAME else None
-        )
-        row_count_changed = current_count is None or current_count != _COL_INIT_ROW_COUNT
-        if row_count_changed:
+    # perturb anything. A manifest change, however, is the indexer's commit
+    # signal and always reloads, including same-size replacements.
+    current_db_mtime, current_manifest_mtime = _db_mtimes()
+    db_changed = current_db_mtime != _COL_INIT_DB_MTIME
+    manifest_changed = current_manifest_mtime != _COL_INIT_MANIFEST_MTIME
+    if _COL is not None and (db_changed or manifest_changed):
+        if manifest_changed:
             msg = (
-                f"ChromaDB/Manifest modified since last init (prev={_COL_INIT_MTIME:.3f}, "
-                f"new={current_mtime:.3f}, rows {_COL_INIT_ROW_COUNT}->{current_count}) — reloading collection"
+                "Manifest modified since last collection init "
+                f"({_COL_INIT_MANIFEST_MTIME:.6f}->{current_manifest_mtime:.6f}) "
+                "— reloading collection"
             )
             print(f"[zotero-rag] {msg}", file=sys.stderr)
             _log.info(msg)
             _reset_col()
         else:
-            _log.info(
-                "ChromaDB mtime advanced but row count unchanged (%s) — no genuine write, skipping reset",
-                current_count,
+            current_count = (
+                _collection_row_count(_EMB_COLLECTION_NAME)
+                if _EMB_COLLECTION_NAME else None
             )
-            _COL_INIT_MTIME = current_mtime
+            row_count_changed = (
+                current_count is None or current_count != _COL_INIT_ROW_COUNT
+            )
+            if row_count_changed:
+                msg = (
+                    "ChromaDB modified since last init "
+                    f"({_COL_INIT_DB_MTIME:.6f}->{current_db_mtime:.6f}, "
+                    f"rows {_COL_INIT_ROW_COUNT}->{current_count}) "
+                    "— reloading collection"
+                )
+                print(f"[zotero-rag] {msg}", file=sys.stderr)
+                _log.info(msg)
+                _reset_col()
+            else:
+                _log.info(
+                    "ChromaDB mtime advanced but manifest and row count are "
+                    "unchanged (%s) — treating as read-only client touch",
+                    current_count,
+                )
+                _COL_INIT_DB_MTIME = current_db_mtime
+                _COL_INIT_MTIME = (
+                    _COL_INIT_DB_MTIME + _COL_INIT_MANIFEST_MTIME
+                )
 
     if _COL is not None:
         return _COL
@@ -452,7 +484,8 @@ def _col():
         # the query itself will fail with a specific error message.
 
     # Record the DB mtime and row count so we can detect future indexer writes.
-    _COL_INIT_MTIME = _db_mtime_sum()
+    _COL_INIT_DB_MTIME, _COL_INIT_MANIFEST_MTIME = _db_mtimes()
+    _COL_INIT_MTIME = _COL_INIT_DB_MTIME + _COL_INIT_MANIFEST_MTIME
     try:
         _count = _COL.count()
     except Exception:
@@ -919,35 +952,100 @@ def rag_search(
     if exclude_chunk_ids:
         internal_k += len(exclude_chunk_ids)
 
-    for _attempt in range(2):
-        try:
-            col = _col()
-            if not col:
-                raise ValueError("Chroma collection is empty or not initialized. Run the indexer first.")
-
-            # Manually compute embeddings to avoid Chroma FFI deadlock
-            query_embeddings = col._embedding_function(queries)
-
-            responses = [
-                col.query(
-                    query_embeddings=query_embeddings, n_results=internal_k,
-                    where=query_where, include=["documents", "metadatas", "distances"],
-                )
-                for query_where in query_wheres
-            ]
-            break
-        except Exception as _exc:
-            _log.warning("rag_search query failed (attempt %d): %s\n%s", _attempt + 1, _exc, traceback.format_exc())
-            if _attempt == 0:
-                # Collection state may be stale (indexer ran while server was live).
-                # Wait briefly to let the indexer finish a write cycle, then
-                # reset the cache and re-initialize with a fresh PersistentClient.
-                _reset_col()
-                time.sleep(1)
+    def _query_candidates(n_results: int) -> Optional[List[Dict[str, Any]]]:
+        """Query every leaf batch, retrying once if Chroma's client is stale."""
+        nonlocal col
+        for _attempt in range(2):
+            try:
                 col = _col()
-            else:
-                _log.error("rag_search: both attempts failed — returning error message")
-                return {"results": [], "warning": _HNSW_ERROR_MSG, "error": str(_exc)}
+                if not col:
+                    raise ValueError("Chroma collection is empty or not initialized. Run the indexer first.")
+
+                # Manually compute embeddings to avoid Chroma FFI deadlock.
+                query_embeddings = col._embedding_function(queries)
+                return [
+                    col.query(
+                        query_embeddings=query_embeddings, n_results=n_results,
+                        where=query_where, include=["documents", "metadatas", "distances"],
+                    )
+                    for query_where in query_wheres
+                ]
+            except Exception as _exc:
+                _log.warning("rag_search query failed (attempt %d): %s\n%s", _attempt + 1, _exc, traceback.format_exc())
+                if _attempt == 0:
+                    # Collection state may be stale (indexer ran while server was live).
+                    # Wait briefly to let the indexer finish a write cycle, then
+                    # reset the cache and re-initialize with a fresh PersistentClient.
+                    _reset_col()
+                    time.sleep(1)
+                else:
+                    _log.error("rag_search: both attempts failed — returning error message")
+        return None
+
+    responses = _query_candidates(internal_k)
+    if responses is None:
+        return {"results": [], "warning": _HNSW_ERROR_MSG}
+
+    # The query-level ``where`` already carries item, note, and leaf filters.
+    # Policy, ID exclusion, and minimum-text filtering happen below because the
+    # first two are not always representable in Chroma's metadata grammar.  Do
+    # one bounded deepening pass when those post-filters leave too few semantic
+    # candidates; otherwise a fixed 5*k query can return an arbitrarily short
+    # result list when its nearest neighbours are endnotes or short fragments.
+    allow_explicit = explicit_note_intent(queries)
+    exclude_set = set(exclude_chunk_ids or [])
+    min_return_chars = int(os.environ.get("MIN_RETURN_CHARS", "200"))
+
+    def _usable_semantic_candidate_count(candidate_responses: List[Dict[str, Any]]) -> int:
+        usable_ids: set[str] = set()
+        for response in candidate_responses:
+            all_ids = response.get("ids") or []
+            all_docs = response.get("documents") or []
+            all_metas = response.get("metadatas") or []
+            for q_idx, q_ids in enumerate(all_ids):
+                q_docs = all_docs[q_idx] if q_idx < len(all_docs) else []
+                q_metas = all_metas[q_idx] if q_idx < len(all_metas) else []
+                for hit_idx, hit_id in enumerate(q_ids or []):
+                    if hit_id in exclude_set:
+                        continue
+                    document = q_docs[hit_idx] if hit_idx < len(q_docs) else ""
+                    metadata = q_metas[hit_idx] if hit_idx < len(q_metas) else {}
+                    if (
+                        len(str(document or "").strip()) >= min_return_chars
+                        and retrieval_policy_allowed(
+                            metadata if isinstance(metadata, dict) else {},
+                            allow_explicit=allow_explicit,
+                            include_corrupted=include_corrupted,
+                        )
+                    ):
+                        usable_ids.add(hit_id)
+        return len(usable_ids)
+
+    # Do not turn a search request into an unbounded in-memory ranking.  Count
+    # is only an upper bound under ``where`` filters, but it avoids a pointless
+    # retry once the collection itself is exhausted.  The configurable hard cap
+    # protects broad collections whose count is much larger than this request.
+    try:
+        configured_cap = max(1, int(os.environ.get("RAG_SEARCH_MAX_CANDIDATES", "1000")))
+    except ValueError:
+        configured_cap = 1000
+    try:
+        collection_count = col.count()
+    except Exception:
+        collection_count = None
+    candidate_cap = configured_cap
+    if isinstance(collection_count, int):
+        candidate_cap = min(candidate_cap, collection_count)
+
+    if (
+        _usable_semantic_candidate_count(responses) < k
+        and internal_k < candidate_cap
+    ):
+        deeper_k = min(candidate_cap, max(internal_k + 1, internal_k * 2))
+        deeper_responses = _query_candidates(deeper_k)
+        if deeper_responses is not None:
+            responses = deeper_responses
+            internal_k = deeper_k
 
     # include_leaf_ids larger than one batch (partition_leaf_ids caps each at
     # 100) produces multiple entries in `responses`, one Chroma query per
@@ -1049,7 +1147,6 @@ def rag_search(
 
     # Sort all consolidated hits by RRF score descending (highest first).
     sorted_hits = sorted(hits_combined.items(), key=lambda x: x[1]["rrf_score"], reverse=True)
-    allow_explicit = explicit_note_intent(queries)
     sorted_hits = [
         hit for hit in sorted_hits
         if retrieval_policy_allowed(
@@ -1060,10 +1157,8 @@ def rag_search(
 
     # Filtering out excluded IDs
     if exclude_chunk_ids:
-        exclude_set = set(exclude_chunk_ids)
         sorted_hits = [h for h in sorted_hits if h[0] not in exclude_set]
 
-    min_return_chars = int(os.environ.get("MIN_RETURN_CHARS", "200"))
     sorted_hits = [
         hit for hit in sorted_hits
         if len(str(hit[1].get("document") or "").strip()) >= min_return_chars
@@ -1179,6 +1274,7 @@ def _hierarchical_search_v2(
     candidate_nodes: List[Dict[str, Any]] = []
     candidate_scores: Dict[str, float] = {}
     candidate_items: Dict[str, Dict[str, Any]] = {}
+    candidate_item_scores: Dict[str, float] = {}
     try:
         client = getattr(paragraph_collection, "_chroma_client", None)
         collection = client.get_collection(f"{_EMB_COLLECTION_NAME or COLLECTION_NAME_DEFAULT}__sum_node")
@@ -1196,6 +1292,7 @@ def _hierarchical_search_v2(
                 item_key = str(metadata["itemKey"])
                 score = 1.0 / (RRF_K + rank)
                 candidate_scores[node_id] = candidate_scores.get(node_id, 0.0) + score
+                candidate_item_scores[item_key] = candidate_item_scores.get(item_key, 0.0) + score
                 candidate_items.setdefault(item_key, metadata)
                 if not any(row["node_id"] == node_id for row in candidate_nodes):
                     document = documents[rank - 1] if rank - 1 < len(documents) else ""
@@ -1230,7 +1327,15 @@ def _hierarchical_search_v2(
         except Exception as exc:
             warnings.append(f"leaf node lookup failed: {exc}")
     leaf_ids = list(dict.fromkeys(leaf_ids))
-    candidate_item_keys = list(candidate_items)[:k_items]
+    # A summary collection contains many nodes per item.  Its first-seen dict
+    # order selected items by an incidental Chroma response order, discarding
+    # the RRF evidence accumulated by later nodes and query variants.  Route
+    # paragraphs through the strongest *items*, while preserving the global
+    # leaf-batch ranking performed by rag_search below.
+    candidate_item_keys = sorted(
+        candidate_item_scores,
+        key=lambda item_key: (-candidate_item_scores[item_key], item_key),
+    )[:k_items]
     leaf_response = rag_search(
         queries, k=max(k * 12, 60), where=where, include_leaf_ids=leaf_ids,
         auto_expand=False, hybrid=False,

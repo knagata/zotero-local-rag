@@ -7,7 +7,7 @@ process-group kills, then execs ``caffeinate`` wrapping
 Safe to interrupt and re-run: the differential-skip logic (R1) means already
 generated summaries are skipped with zero LLM calls on the next run.
 
-Usage: detached_summary_backfill.py [--workers N] [--limit N]
+Usage: detached_summary_backfill.py --database-gate PATH [--workers N] [--limit N]
 ``--workers`` (default 10) controls concurrent items; ``--limit`` optionally
 bounds this run to N items instead of the whole remaining backlog.
 """
@@ -23,6 +23,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--workers", type=int, default=20, help="Concurrent items (default 20).")
     parser.add_argument("--limit", type=int, default=0, help="Bound this run to N items (default: all remaining).")
+    parser.add_argument(
+        "--database-gate", type=Path, required=True,
+        help="Passing server rebuild audit for the current DB generation.",
+    )
     args = parser.parse_args()
 
     import os
@@ -32,6 +36,7 @@ def main() -> None:
         "caffeinate", "-i", "-s", python,
         str(ROOT / "scripts" / "build_structure_summaries.py"),
         "--all", "--mode", "llm", "--embed", "--workers", str(args.workers),
+        "--database-gate", str(args.database_gate.resolve()),
     ]
     if args.limit > 0:
         exec_args += ["--limit", str(args.limit)]

@@ -14,15 +14,20 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from src.env_utils import load_dotenv_native
+load_dotenv_native(ROOT)
+
 from src.chunk_store import (
-    get_item_chunks, list_attachment_keys, list_chunk_ids, list_chunk_ids_without_item,
-    list_item_keys,
+    get_item_chunks, list_attachment_keys, list_chunk_ids,
+    list_chunk_ids_without_attachment, list_chunk_ids_without_item, list_item_keys,
 )
 from src.db_relations import get_document_structure
 from src.source_verification import dangling_node_ids, unretrievable_documents
 from src.document_structure import STRUCTURE_VERSION, source_fingerprint
 from src.lexical_index import list_chunk_ids as list_lexical_chunk_ids
 from src.manifest import load_manifest
+from src.source_coverage import validate_source_coverage
+from src.database_gate import database_state_fingerprint
 
 
 def source_rows(rows: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
@@ -115,6 +120,21 @@ def structure_failures(
         failures.append("stale_structure_fingerprint")
     if str(structure.get("status") or "") == "unavailable":
         failures.append("unavailable_v3_structure")
+    expected_attachments = {
+        str((row.get("metadata") or {}).get("attachmentKey") or "")
+        for row in rows
+        if str((row.get("metadata") or {}).get("attachmentKey") or "")
+    }
+    nodes = structure.get("nodes") if isinstance(structure.get("nodes"), list) else []
+    structured_attachments = {
+        str(node.get("attachment_key") or "")
+        for node in nodes
+        if isinstance(node, Mapping)
+        and str(node.get("node_type") or "") == "attachment_root"
+        and str(node.get("attachment_key") or "")
+    }
+    if expected_attachments and structured_attachments != expected_attachments:
+        failures.append("structure_attachment_coverage_mismatch")
     return failures
 
 
@@ -122,6 +142,7 @@ def global_gate_failures(
     *, manifest: Mapping[str, Any], manifest_attachment_keys: set[str],
     chroma_attachment_keys: set[str], chroma_ids: set[str], lexical_ids: set[str],
     pipeline_config_exists: bool, chunks_without_item_count: int = 0,
+    chunks_without_attachment_count: int = 0,
 ) -> list[str]:
     failures = []
     if manifest_attachment_keys != chroma_attachment_keys:
@@ -135,6 +156,8 @@ def global_gate_failures(
     # item at a time, and is exactly what catches that population.
     if chunks_without_item_count:
         failures.append("chunks_without_item")
+    if chunks_without_attachment_count:
+        failures.append("chunks_without_attachment")
     if not manifest.get("pipeline_fingerprint") or not pipeline_config_exists:
         failures.append("missing_v3_pipeline_provenance")
     if manifest.get("hnsw_validated") is not True:
@@ -144,6 +167,13 @@ def global_gate_failures(
     if manifest.get("inflight_attachments"):
         failures.append("inflight_attachments")
     files = manifest.get("files") if isinstance(manifest.get("files"), dict) else {}
+    if any(
+        not isinstance(entry, Mapping)
+        or not isinstance(entry.get("quality"), Mapping)
+        or not validate_source_coverage(entry["quality"].get("source_coverage"))["passed"]
+        for entry in files.values()
+    ):
+        failures.append("incomplete_source_coverage")
     # A worker may report its timeout guard as having fired after it has
     # nevertheless returned every expected page.  Full page coverage is not a
     # partial extraction and must not block cutover merely due to that stale
@@ -173,6 +203,10 @@ def main() -> None:
     )
     parser.add_argument("--item", action="append")
     parser.add_argument(
+        "--new-only", action="store_true",
+        help="Audit the rebuilt target as a standalone database and emit a summary gate.",
+    )
+    parser.add_argument(
         "--exclude-item", action="append", default=[],
         help="Exclude a legacy item intentionally removed from the current source.",
     )
@@ -180,14 +214,20 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     excluded = {str(value) for value in args.exclude_item if value}
-    old_keys = [
+    old_keys = [] if args.new_only else [
         key for key in list_item_keys(collection_name=args.old_collection)
         if key not in excluded
     ]
-    selected = list(dict.fromkeys(args.item or old_keys))
+    new_keys = [
+        key for key in list_item_keys(collection_name=args.new_collection)
+        if key not in excluded
+    ]
+    audited_keys = sorted(set(old_keys) | set(new_keys))
+    selected = list(dict.fromkeys(args.item or audited_keys))
     if args.limit > 0:
         selected = selected[:args.limit]
     comparisons = []
+    attested_chroma_rows: list[Mapping[str, Any]] = []
     structure_statuses: Counter[str] = Counter()
     zones: Counter[str] = Counter()
     # The set every chunk's node_id is checked against. Read once: without it
@@ -195,12 +235,48 @@ def main() -> None:
     # items scored 1.0 with no live structure behind them.
     from src.db_relations import get_db_connection
 
-    live_node_ids = {
-        str(row[0]) for row in get_db_connection().execute("SELECT node_id FROM document_nodes")
-    }
+    connection = get_db_connection()
+    try:
+        live_node_ids = {
+            str(row[0])
+            for row in connection.execute("SELECT node_id FROM document_nodes")
+        }
+        structure_rows = [
+            ("structure", *tuple(row)) for row in connection.execute(
+                "SELECT item_key, source_fingerprint, structure_version, status, "
+                "COALESCE(confidence, ''), node_count, leaf_count, "
+                "COALESCE(diagnostics_json, '') "
+                "FROM document_structures"
+            ).fetchall()
+        ]
+        structure_rows.extend(
+            ("node", *tuple(row)) for row in connection.execute(
+                "SELECT item_key, node_id, COALESCE(parent_node_id, ''), node_type, "
+                "depth, ordinal, COALESCE(title, ''), COALESCE(normalized_title, ''), "
+                "COALESCE(attachment_key, ''), source_kind, "
+                "COALESCE(source_locator_json, ''), COALESCE(confidence, ''), "
+                "content_chars, zone, summary_policy, retrieval_policy, citation_policy, "
+                "COALESCE(first_chunk_id, ''), COALESCE(last_chunk_id, '') "
+                ", COALESCE(extraction_engine, ''), COALESCE(extraction_version, '') "
+                "FROM document_nodes"
+            ).fetchall()
+        )
+        structure_rows.extend(
+            ("mapping", *tuple(row)) for row in connection.execute(
+                "SELECT n.item_key, c.node_id, c.chunk_id, c.ordinal "
+                "FROM document_node_chunks c "
+                "JOIN document_nodes n ON n.node_id = c.node_id"
+            ).fetchall()
+        )
+    finally:
+        connection.close()
     for item_key in selected:
-        old_rows = get_item_chunks(item_key, collection_name=args.old_collection)
+        old_rows = (
+            [] if args.new_only
+            else get_item_chunks(item_key, collection_name=args.old_collection)
+        )
         new_rows = get_item_chunks(item_key, collection_name=args.new_collection)
+        attested_chroma_rows.extend(new_rows)
         row = compare_item(item_key, old_rows, new_rows, live_node_ids)
         structure = get_document_structure(item_key)
         row["structure"] = {
@@ -216,14 +292,20 @@ def main() -> None:
     manifest = load_manifest(args.manifest)
     manifest_files = manifest.get("files") if isinstance(manifest.get("files"), dict) else {}
     orphaned_chunk_ids = list_chunk_ids_without_item(collection_name=args.new_collection)
+    attachmentless_chunk_ids = list_chunk_ids_without_attachment(
+        collection_name=args.new_collection,
+    )
+    chroma_ids = set(list_chunk_ids(collection_name=args.new_collection))
+    lexical_ids = set(list_lexical_chunk_ids(path=args.lexical_db))
     global_failures = global_gate_failures(
         manifest=manifest,
         manifest_attachment_keys=set(str(value) for value in manifest_files),
         chroma_attachment_keys=set(list_attachment_keys(collection_name=args.new_collection)),
-        chroma_ids=set(list_chunk_ids(collection_name=args.new_collection)),
-        lexical_ids=set(list_lexical_chunk_ids(path=args.lexical_db)),
+        chroma_ids=chroma_ids,
+        lexical_ids=lexical_ids,
         pipeline_config_exists=args.pipeline_config.exists(),
         chunks_without_item_count=len(orphaned_chunk_ids),
+        chunks_without_attachment_count=len(attachmentless_chunk_ids),
     )
     failed = [row for row in comparisons if not row["passed"]]
     outliers = [row for row in comparisons if row["delta"]["character_ratio_outlier"]]
@@ -231,18 +313,33 @@ def main() -> None:
         "schema_version": "v3-cutover-audit-1",
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "old_collection": args.old_collection, "new_collection": args.new_collection,
+        "new_only": bool(args.new_only),
         "gate": {
-            "passed": not failed and not global_failures and len(comparisons) == len(old_keys),
+            "passed": not failed and not global_failures and len(comparisons) == len(audited_keys),
             "selected_items": len(comparisons), "legacy_items": len(old_keys),
+            "new_items": len(new_keys), "audited_items": len(audited_keys),
             "failed_items": len(failed), "character_ratio_outliers": len(outliers),
             "coverage_required": 1.0,
             "note": "Character-ratio outliers require review but do not alone fail the deterministic gate.",
             "global_failures": global_failures,
             "chunks_without_item": len(orphaned_chunk_ids),
+            "chunks_without_attachment": len(attachmentless_chunk_ids),
         },
         "structure_statuses": dict(sorted(structure_statuses.items())),
         "v3_zones": dict(sorted(zones.items())),
         "items": comparisons,
+        "database_state": {
+            "fingerprint": database_state_fingerprint(
+                manifest_path=args.manifest,
+                pipeline_config_path=args.pipeline_config,
+                chroma_rows=attested_chroma_rows,
+                lexical_ids=lexical_ids,
+                structure_rows=structure_rows,
+            ),
+            "manifest_path": str(args.manifest.resolve()),
+            "lexical_db_path": str(args.lexical_db.resolve()),
+            "pipeline_config_path": str(args.pipeline_config.resolve()),
+        },
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

@@ -53,6 +53,12 @@ class ClassifyHeadingTests(unittest.TestCase):
         self.assertEqual(classify_heading(""), "body")
         self.assertEqual(classify_heading(None), "body")
 
+    def test_pdf_outline_format_controls_and_section_numbers_are_ignored(self):
+        self.assertEqual(classify_heading("\ufeffReferences"), "bibliography")
+        self.assertEqual(classify_heading("6 References"), "bibliography")
+        self.assertEqual(classify_heading("6. References"), "bibliography")
+        self.assertEqual(classify_heading("IV Notes"), "endnote")
+
 
 class ClassifyHeadingPathTests(unittest.TestCase):
     def test_a_paratext_ancestor_governs_an_unmarked_descendant(self):

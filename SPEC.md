@@ -1,9 +1,8 @@
 # zotero-local-rag: current implementation specification
 
 Status: active implementation contract as of 2026-07-27.  This document
-supersedes historical plans where they conflict.  Design evidence and rollout
-records remain in `dev-notes/current/64_ingestion_redesign_audit_and_plan.md`,
-`75_v3_cutover_20260723.md`, and `79_embedding_gates.md`.
+supersedes historical plans where they conflict. Design evidence and rollout
+records are tracked in `TASKS.md` and the versioned reports under `evaluations/`.
 
 ## Active data plane
 

@@ -9,6 +9,23 @@ from src.reocr_quality import (
 
 
 class ReocrQualityTests(unittest.TestCase):
+    def test_scanned_source_provenance_survives_clean_local_ocr_metrics(self):
+        assessment = candidate_assessment(
+            quality={"total_pages": 2, "scanned_ratio": 0, "source_class": "scanned_no_text"},
+            chunks=[
+                {"text": "Readable recovered English body text. " * 20, "metadata": {"page": page}}
+                for page in (1, 2)
+            ],
+            structure_status="exact",
+            summary_reports=[],
+            current_engine="docling",
+            current_version="1",
+            target_engine="mistral_ocr",
+            target_version="2",
+        )
+        self.assertTrue(assessment["candidate"])
+        self.assertIn("scan_source_without_native_text", assessment["reasons"])
+
     def test_gate_passes_exact_initial_thresholds(self):
         result = evaluate_adoption_gate(
             {"characters": 100, "gibberish_rate": 0.25},

@@ -246,7 +246,6 @@ def extract_chunks_from_mistral_ocr_result(
         blocks = _page_blocks_from_response(page_payload)
         if not blocks:
             continue
-        covered_pages.append(page_no)
 
         chapter_info: Dict[str, str] = {}
         if toc_lookup is not None:
@@ -313,7 +312,21 @@ def extract_chunks_from_mistral_ocr_result(
             ),
             hard_min_chars=HARD_MIN_CHARS_CJK if is_cjk else HARD_MIN_CHARS,
         )
-        chunks.extend(sorted(merged + preserved, key=lambda c: c[2].get("para_index", 0)))
+        emitted = sorted(
+            merged + preserved, key=lambda c: c[2].get("para_index", 0),
+        )
+        if not emitted and page_chunks:
+            # Chunk-size policy must never erase an entire OCR page. Short
+            # title/slogan pages are common in image-layout books; keeping the
+            # source block with an uncertainty marker is safer than silently
+            # turning a successful OCR response into a coverage hole.
+            emitted = page_chunks
+            for _chunk_id, _text, metadata in emitted:
+                metadata["quality_uncertain"] = True
+                metadata["quality_uncertain_reason"] = "short_ocr_page"
+        if emitted:
+            covered_pages.append(page_no)
+            chunks.extend(emitted)
         if not outline_path and active_path:
             inferred_path = list(active_path)
 

@@ -12,12 +12,11 @@ echo "日常更新を次の順番でまとめて実行します。"
 echo "Enterを押すと既定の「実行」を選択します。"
 echo ""
 
-# The library owner may make the maintenance workflow non-interactive. This
-# includes cloud OCR because it is an explicit, persistent opt-in; set to 0 to
-# restore the per-step prompts.
+# The library owner may make local maintenance non-interactive. Paid API steps
+# (hierarchical summaries and cloud OCR) remain explicit per-run opt-ins.
 maintenance_auto_approve="${MAINTENANCE_AUTO_APPROVE:-1}"
 if [[ "$maintenance_auto_approve" == "1" ]]; then
-    echo "[情報] MAINTENANCE_AUTO_APPROVE=1: すべての選択と開始確認を自動許可します。"
+    echo "[情報] MAINTENANCE_AUTO_APPROVE=1: ローカル更新を自動許可します（有料API処理は除外）。"
     echo ""
 fi
 
@@ -39,8 +38,8 @@ ask_disabled() {
     local prompt="$1"
     local answer
     if [[ "$maintenance_auto_approve" == "1" ]]; then
-        echo "$prompt [自動許可]"
-        return 0
+        echo "$prompt [自動実行の対象外]"
+        return 1
     fi
     read -r -p "$prompt [y/N]: " answer
     case "$answer" in
@@ -59,7 +58,11 @@ mistral_state_path="${MISTRAL_BATCH_STATE_PATH:-data/mistral_ocr_batch_state.jso
 if ask_enabled "1. ライブラリを差分更新する"; then
     run_library=1
 fi
-if ask_enabled "2. 要約を差分更新する（ローカル抽出後、DeepSeek APIでAI要約）"; then
+# Paid summaries are never included by auto-approval. They require an explicit
+# per-run opt-in and a server database gate produced after a successful audit.
+if [[ "$maintenance_auto_approve" == "1" ]]; then
+    echo "2. 要約を差分更新する（DeepSeek API料金あり） [自動実行の対象外]"
+elif ask_disabled "2. 要約を差分更新する（DeepSeek API料金あり・DB監査合格後のみ）"; then
     run_summaries=1
 fi
 if ask_enabled "3. Citation Networkの未処理・エラー分を更新する"; then
@@ -232,18 +235,26 @@ if [[ "$run_summaries" == "1" ]]; then
     # 大規模一括backfillは scripts/detached_summary_backfill.py を別途使う。
     summary_batch_size="${SUMMARY_BACKFILL_BATCH_SIZE:-10}"
     summary_workers="${SUMMARY_BACKFILL_WORKERS:-10}"
+    summary_database_gate="${SUMMARY_DATABASE_GATE:-data/quality/server_database_gate.json}"
+    if [[ ! -f "$summary_database_gate" ]]; then
+        echo "[エラー] DB監査gateがありません。先にServer-Database-Workflow.commandの"
+        echo "         フェーズ2を合格させてください: $summary_database_gate"
+        exit 2
+    fi
     # 全件LLM backfillは「pilotバッチ → 費用レポート → ユーザー承認」の後に限る。
     # 承認マーカーが無い間も、Yを押した場合にバッチ単位でpilot実行できるようにする。
     if [[ -f "data/quality/summary_backfill_approved" ]]; then
         run_step "DeepSeek 文書構造V3要約・検索索引更新（差分・${summary_batch_size}件バッチ・${summary_workers}並列）" \
-            uv run python scripts/build_structure_summaries.py --all --mode llm --limit "$summary_batch_size" --workers "$summary_workers" --embed
+            uv run python scripts/build_structure_summaries.py --all --mode llm --limit "$summary_batch_size" --workers "$summary_workers" --embed \
+            --database-gate "$summary_database_gate"
     else
         echo ""
         echo "[注意] 全件LLM要約backfillは未承認です（data/quality/summary_backfill_approved が無い）。"
         echo "       安全のため${summary_batch_size}件のバッチのみ実行します（SUMMARY_BACKFILL_BATCH_SIZEで変更可）。"
         echo "       承認後にマーカーを作成すると、以後は差分の残り分にバッチが順次進みます。"
         run_step "DeepSeek 文書構造V3要約 ${summary_batch_size}件バッチ" \
-            uv run python scripts/build_structure_summaries.py --all --mode llm --limit "$summary_batch_size" --workers "$summary_workers" --embed
+            uv run python scripts/build_structure_summaries.py --all --mode llm --limit "$summary_batch_size" --workers "$summary_workers" --embed \
+            --database-gate "$summary_database_gate"
     fi
 fi
 

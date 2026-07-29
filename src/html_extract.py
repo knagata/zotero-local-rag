@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import posixpath
 import re
+import zipfile
 from html import unescape
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
@@ -19,6 +20,7 @@ try:
     )
     from . import heading_zone
     from .heading_zone import classify_heading_path
+    from .source_coverage import make_source_coverage
 except ImportError:  # pragma: no cover - direct src entrypoint
     from text_utils import (
         HARD_MIN_CHARS, HARD_MIN_CHARS_CJK, MAX_CHARS, TARGET_CHARS, MAX_CHARS_CJK, TARGET_CHARS_CJK,
@@ -28,6 +30,7 @@ except ImportError:  # pragma: no cover - direct src entrypoint
     )
     import heading_zone
     from heading_zone import classify_heading_path
+    from source_coverage import make_source_coverage
 
 # Optional: robust main-content extraction for Zotero Web Snapshots
 try:
@@ -613,8 +616,12 @@ def _resolve_note_citations(
     return chunks
 
 
-def _read_html_skip_styles(path: Path) -> str:
+def _read_html_skip_styles(path: Path) -> Tuple[str, bool]:
     """Read an HTML file, skipping <style> and <script> blocks.
+
+    Return ``(html, reached_eof)``.  ``reached_eof`` is false when the
+    cleaned-content guard stopped the read before EOF was observed.
+    Callers must not treat that prefix as a complete document.
 
     Returns at most MAX_HTML_BYTES of cleaned HTML bytes (decoded to str).
     Large base64 font data inside <style> tags does not count toward the
@@ -630,11 +637,13 @@ def _read_html_skip_styles(path: Path) -> str:
     in_skip = False
     skip_close = b""
     leftover = b""
+    reached_eof = False
 
     with open(path, "rb") as f:
         while cleaned_len < MAX_HTML_BYTES:
             chunk = f.read(CHUNK)
             if not chunk:
+                reached_eof = True
                 break
             chunk = leftover + chunk
             leftover = b""
@@ -651,7 +660,11 @@ def _read_html_skip_styles(path: Path) -> str:
             i = 0
             while i < len(chunk):
                 if in_skip:
-                    end = chunk.find(skip_close, i)
+                    # HTML tag names are ASCII-case-insensitive.  Searching
+                    # the original bytes made ``</STYLE>`` / ``</SCRIPT>``
+                    # appear unclosed, which discarded the rest of an
+                    # otherwise complete snapshot.
+                    end = chunk.lower().find(skip_close, i)
                     if end >= 0:
                         i = end + len(skip_close)
                         in_skip = False
@@ -697,7 +710,7 @@ def _read_html_skip_styles(path: Path) -> str:
                 if cleaned_len >= MAX_HTML_BYTES:
                     break
 
-    return "".join(cleaned_parts)
+    return "".join(cleaned_parts), reached_eof
 
 
 def extract_chunks_from_html_snapshot(
@@ -714,7 +727,7 @@ def extract_chunks_from_html_snapshot(
     }
     chunks: List[Tuple[str, str, Dict[str, Any]]] = []
     try:
-        raw_html = _read_html_skip_styles(html_path)
+        raw_html, reached_eof = _read_html_skip_styles(html_path)
     except Exception as e:
         print(
             f"[WARN] Failed to read HTML snapshot: attachment={attachment_key} file={html_path} err={e}",
@@ -725,6 +738,15 @@ def extract_chunks_from_html_snapshot(
         # content. failure_reason is the only trace of what was actually
         # discarded (2026-07-29).
         return [], {**default_quality, "failure_reason": "html_read_failed"}
+
+    if not reached_eof:
+        # A prefix can contain enough valid DOM to produce chunks, but indexing
+        # it would silently certify a truncated snapshot as complete.
+        return [], {
+            **default_quality,
+            "failure_reason": "html_size_truncated",
+            "source_read_complete": False,
+        }
 
     blocks = extract_dom_blocks(raw_html)
     if not blocks:
@@ -811,19 +833,64 @@ def extract_chunks_from_epub_snapshot(
         "corrupted_pages": [],
         "total_pages": 1,
     }
-    if ebooklib_epub is None or ITEM_DOCUMENT is None:
-        if os.environ.get("DEBUG_HTML") == "1":
-            print("[DEBUG] EbookLib not installed; skipping EPUB.", file=os.sys.__stderr__)
-        return [], {**default_quality, "failure_reason": "ebooklib_not_installed"}
-
+    # The OPF spine, not EbookLib's all-document iterator, defines the source
+    # we promise to cover.  The latter includes navigation and other manifest
+    # documents in some books and can omit the evidence needed to detect a
+    # skipped spine item.
     try:
-        book = ebooklib_epub.read_epub(str(epub_path))
+        try:
+            from .epub_fallback import profile_epub
+        except ImportError:  # pragma: no cover - direct src entrypoint
+            from epub_fallback import profile_epub
+        profile = profile_epub(epub_path)
     except Exception as e:
         print(
-            f"[WARN] Failed to read EPUB: attachment={attachment_key} file={epub_path} err={e}",
+            f"[WARN] Failed to profile EPUB: attachment={attachment_key} file={epub_path} err={e}",
             file=os.sys.__stderr__,
         )
-        return [], {**default_quality, "failure_reason": "epub_read_failed"}
+        return [], {
+            **default_quality,
+            "failure_reason": "epub_profile_failed",
+            "source_coverage": make_source_coverage(
+                unit_kind="spine", expected_units=[], attempted_units=[], text_units=[],
+                failed_units=[], expected_known=False,
+            ),
+        }
+
+    pages = list(profile.get("pages") or [])
+    expected_spines = list(range(1, len(pages) + 1))
+    default_quality.update({
+        "total_pages": len(expected_spines),
+        "spine_document_count": len(expected_spines),
+        "expected_spines": expected_spines,
+        "epub_profile": profile,
+        "attempted_spines": [],
+        "text_spines": [],
+        "blank_spines": [],
+        "ignored_image_spines": [],
+        "failed_spines": [],
+    })
+
+    # A fixed-layout EPUB can have a tiny amount of wrapper/alt text.  That
+    # text is not canonical source text: return no DOM chunks so the existing
+    # fixed-layout OCR fallback below the extractor can run.
+    if profile.get("classification") == "fixed_layout_image":
+        default_quality.update({
+            "is_scanned": True,
+            "scanned_pages": expected_spines,
+            "attempted_spines": expected_spines,
+            # No wrapper DOM text is canonical in this classification.  OCR
+            # must therefore account for every OPF spine, including a wrapper
+            # that happens to contain a comparatively long caption/alt value.
+            "failed_spines": expected_spines,
+            "failure_reason": "fixed_layout_epub_requires_ocr",
+            "source_coverage": make_source_coverage(
+                unit_kind="spine", expected_units=expected_spines,
+                attempted_units=expected_spines, text_units=[],
+                failed_units=expected_spines,
+            ),
+        })
+        return [], default_quality
 
     # 章タイトルマップ（失敗しても処理続行）
     _epub_toc_path_map: Dict[int, List[str]] = {}
@@ -834,54 +901,104 @@ def extract_chunks_from_epub_snapshot(
             pass
 
     all_blocks: List[Dict[str, Any]] = []
-    chap_idx = 0
-    for item in book.get_items_of_type(ITEM_DOCUMENT):
-        try:
-            raw = item.get_content()  # bytes
-            html = _decode_html_bytes(raw)
-            document_blocks = _extract_epub_document_blocks(
-                html, initial_path=_epub_toc_path_map.get(int(chap_idx), []),
-            )
-            for block_index, block in enumerate(document_blocks):
-                block.update({
-                    "chapter_index": chap_idx,
-                    "block_index": block_index,
-                    "spine_path": posixpath.normpath(str(item.get_name() or "")),
-                })
-                all_blocks.append(block)
-        except Exception as e:
-            if os.environ.get("DEBUG_HTML") == "1":
-                print(
-                    f"[DEBUG] EPUB chapter parse failed; continuing: attachment={attachment_key} file={epub_path} err={e}",
-                    file=os.sys.__stderr__,
-                )
-        finally:
-            chap_idx += 1
+    block_spines: set[int] = set()
+    attempted_spines: list[int] = []
+    blank_spines: list[int] = []
+    ignored_image_spines: list[int] = []
+    failed_spines: list[int] = []
+    image_primary = {
+        int(index) + 1 for index in profile.get("image_primary_spine_indices") or []
+    }
+    try:
+        with zipfile.ZipFile(epub_path, "r") as archive:
+            names = set(archive.namelist())
+            for chap_idx, page in enumerate(pages):
+                spine_unit = chap_idx + 1
+                attempted_spines.append(spine_unit)
+                document_path = str(page.get("document_href") or "")
+                try:
+                    if not document_path or document_path not in names:
+                        raise FileNotFoundError(document_path or "missing OPF spine href")
+                    raw = archive.read(document_path)
+                    html = _decode_html_bytes(raw)
+                    document_blocks = _extract_epub_document_blocks(
+                        html, initial_path=_epub_toc_path_map.get(chap_idx, []),
+                    )
+                    if not document_blocks:
+                        # Blank is a positive finding only for a document with
+                        # neither visible text nor an image wrapper.  Navigation
+                        # and image-only spine documents otherwise remain an
+                        # explicit failure for the coverage gate to handle.
+                        if (
+                            profile.get("classification") == "html_or_mixed"
+                            and bool(page.get("has_image_content"))
+                        ):
+                            # For structured EPUBs the DOM is canonical.
+                            # Image-only cover/logo/illustration spines are
+                            # intentionally non-searchable and never OCRed.
+                            blank_spines.append(spine_unit)
+                            ignored_image_spines.append(spine_unit)
+                        elif (
+                            spine_unit not in image_primary
+                            and int(page.get("visible_text_chars") or 0) == 0
+                            and not bool(page.get("has_nontext_content"))
+                        ):
+                            blank_spines.append(spine_unit)
+                        else:
+                            failed_spines.append(spine_unit)
+                        continue
+                    for block_index, block in enumerate(document_blocks):
+                        block.update({
+                            "chapter_index": chap_idx,
+                            "block_index": block_index,
+                            "spine_path": posixpath.normpath(document_path),
+                        })
+                        all_blocks.append(block)
+                        block_spines.add(spine_unit)
+                except Exception as e:
+                    failed_spines.append(spine_unit)
+                    if os.environ.get("DEBUG_HTML") == "1":
+                        print(
+                            f"[DEBUG] EPUB chapter parse failed; continuing: attachment={attachment_key} file={epub_path} err={e}",
+                            file=os.sys.__stderr__,
+                        )
+    except Exception as e:
+        # An archive-level failure leaves all expected spines unaccounted; do
+        # not turn any partial DOM output into a successful extraction.
+        failed_spines = expected_spines
+        if os.environ.get("DEBUG_HTML") == "1":
+            print(f"[DEBUG] EPUB archive read failed: {e}", file=os.sys.__stderr__)
 
     if not all_blocks:
-        try:
-            from .epub_fallback import profile_epub
-        except ImportError:  # pragma: no cover - direct src entrypoint
-            from epub_fallback import profile_epub
-        try:
-            profile = profile_epub(epub_path)
-            default_quality.update({
-                "total_pages": int(profile["spine_document_count"]),
-                "epub_profile": profile,
-                "is_scanned": bool(profile["classification"] == "fixed_layout_image"),
-                "scanned_pages": (
-                    list(range(1, int(profile["spine_document_count"]) + 1))
-                    if profile["classification"] == "fixed_layout_image" else []
-                ),
-            })
-        except Exception as e:
-            if os.environ.get("DEBUG_HTML") == "1":
-                print(f"[DEBUG] EPUB profiling failed: {e}", file=os.sys.__stderr__)
-        return [], {**default_quality, "failure_reason": "no_epub_blocks"}
+        default_quality.update({
+            "attempted_spines": sorted(set(attempted_spines)),
+            "blank_spines": sorted(set(blank_spines)),
+            "ignored_image_spines": sorted(set(ignored_image_spines)),
+            "failed_spines": sorted(set(failed_spines)),
+            "failure_reason": "no_epub_blocks",
+            "source_coverage": make_source_coverage(
+                unit_kind="spine", expected_units=expected_spines,
+                attempted_units=attempted_spines, text_units=[],
+                blank_units=blank_spines, failed_units=failed_spines,
+            ),
+        })
+        return [], default_quality
 
     sample = "\n\n".join(str(block["text"]) for block in all_blocks[:20])[:5000]
     if looks_like_gibberish(sample):
-        return [], {**default_quality, "failure_reason": "gibberish_sample"}
+        default_quality.update({
+            "attempted_spines": sorted(set(attempted_spines)),
+            "blank_spines": sorted(set(blank_spines)),
+            "ignored_image_spines": sorted(set(ignored_image_spines)),
+            "failed_spines": sorted(set(failed_spines) | set(expected_spines)),
+            "failure_reason": "gibberish_sample",
+            "source_coverage": make_source_coverage(
+                unit_kind="spine", expected_units=expected_spines,
+                attempted_units=attempted_spines, text_units=[],
+                blank_units=blank_spines, failed_units=set(failed_spines) | set(expected_spines),
+            ),
+        })
+        return [], default_quality
     is_cjk = is_no_space_language_document(sample)
     local_min_chunk = MIN_CHUNK_CHARS_NO_SPACE if is_cjk else MIN_CHUNK_CHARS
     local_max_chars = MAX_CHARS_CJK if is_cjk else MAX_CHARS
@@ -936,17 +1053,72 @@ def extract_chunks_from_epub_snapshot(
             md["_spine_path"] = str(block.get("spine_path") or "")
             chunks.append((chunk_id, part, md))
 
+    premerge_chunks = list(chunks)
     chunks = merge_short_chunk_records(
-        chunks, min_chars=local_min_chunk, max_chars=local_max_chars,
+        premerge_chunks, min_chars=local_min_chunk, max_chars=local_max_chars,
         boundary_key=lambda _cid, _text, md: (
-            tuple(md.get("structure_path") or []), md.get("zone"), md.get("block_type"),
+            md.get("chapter_index"), tuple(md.get("structure_path") or []),
+            md.get("zone"), md.get("block_type"),
         ),
         union_keys=(_ELEMENT_IDS_TEMP_KEY, _NOTEREF_TEMP_KEY, _NOTEREF_HREFS_TEMP_KEY),
         hard_min_chars=HARD_MIN_CHARS_CJK if is_cjk else HARD_MIN_CHARS,
     )
+    # Chunk-size policy must not erase an entire OPF spine. Preserve its
+    # original short records only when merging would otherwise remove every
+    # searchable trace of that source unit. This commonly covers title and
+    # colophon pages without weakening the normal chunk-size policy.
+    merged_spines = {
+        int(metadata["chapter_index"])
+        for _chunk_id, text, metadata in chunks
+        if str(text or "").strip() and isinstance(metadata.get("chapter_index"), int)
+    }
+    premerge_spines = {
+        int(metadata["chapter_index"])
+        for _chunk_id, text, metadata in premerge_chunks
+        if str(text or "").strip() and isinstance(metadata.get("chapter_index"), int)
+    }
+    missing_spines = premerge_spines - merged_spines
+    if missing_spines:
+        chunks.extend(
+            row for row in premerge_chunks
+            if row[2].get("chapter_index") in missing_spines
+        )
+        chunks.sort(key=lambda row: (
+            int(row[2].get("chapter_index") or 0),
+            int(row[2].get("block_index") or 0),
+            int(row[2].get("part_index") or 0),
+            row[0],
+        ))
     chunks = _resolve_note_citations(chunks)
     ids = [cid for (cid, _, _) in chunks]
     if len(ids) != len(set(ids)):
         dup = len(ids) - len(set(ids))
         raise RuntimeError(f"Duplicate chunk ids generated for EPUB ({dup}).")
+    text_spines = sorted({
+        int(metadata["chapter_index"]) + 1
+        for _chunk_id, text, metadata in chunks
+        if str(text or "").strip() and isinstance(metadata.get("chapter_index"), int)
+    })
+    # An image-primary wrapper's short DOM text is normally a caption, alt
+    # value, folio label, or accessibility description.  Preserve it as a
+    # useful chunk, but never let it stand in for OCR of the page image.
+    failed_spines = sorted(
+        set(failed_spines)
+        | (block_spines - set(text_spines))
+        | image_primary
+    )
+    default_quality.update({
+        "attempted_spines": sorted(set(attempted_spines)),
+        "text_spines": text_spines,
+        "blank_spines": sorted(set(blank_spines)),
+        "ignored_image_spines": sorted(set(ignored_image_spines)),
+        "failed_spines": sorted(set(failed_spines)),
+        "source_coverage": make_source_coverage(
+            unit_kind="spine", expected_units=expected_spines,
+            attempted_units=attempted_spines, text_units=text_spines,
+            blank_units=blank_spines, failed_units=failed_spines,
+        ),
+    })
+    if failed_spines:
+        default_quality["failure_reason"] = "epub_spine_coverage_incomplete"
     return chunks, default_quality

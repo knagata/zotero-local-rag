@@ -303,7 +303,12 @@ def _column_boundary(blocks: List[Dict[str, Any]], page_width: float) -> Optiona
     for left in candidates:
         for right in candidates:
             gap = right["bbox"][0] - left["bbox"][2]
-            if gap < max(12.0, page_width * 0.025):
+            # Journal layouts commonly use a narrow gutter (about 14 pt on a
+            # Letter/A4 page).  Requiring 2.5% of the page width misclassified
+            # those pages as single-column and interleaved the two columns by
+            # y-coordinate.  The populated-side checks below are the stronger
+            # guard against treating ordinary paragraph indents as a gutter.
+            if gap < max(8.0, page_width * 0.015):
                 continue
             boundary = (left["bbox"][2] + right["bbox"][0]) / 2
             if not page_width * 0.28 <= boundary <= page_width * 0.72:
@@ -311,7 +316,22 @@ def _column_boundary(blocks: List[Dict[str, Any]], page_width: float) -> Optiona
             left_count = sum(block["bbox"][2] <= boundary for block in candidates)
             right_count = sum(block["bbox"][0] >= boundary for block in candidates)
             if min(left_count, right_count) < 2:
-                continue
+                left_side = [block for block in candidates if block["bbox"][2] <= boundary]
+                right_side = [block for block in candidates if block["bbox"][0] >= boundary]
+                # A transition page can contain one long continuation block in
+                # the left column and several short terminal-section blocks in
+                # the right. Requiring two blocks on both sides made such pages
+                # single-column and put right-column headings before the left
+                # continuation. Accept the singleton only when it is clearly a
+                # substantive column, not an ordinary indent or page label.
+                singleton_side = left_side if len(left_side) == 1 else right_side
+                other_side = right_side if len(left_side) == 1 else left_side
+                singleton_height = (
+                    singleton_side[0]["bbox"][3] - singleton_side[0]["bbox"][1]
+                    if len(singleton_side) == 1 else 0.0
+                )
+                if len(other_side) < 2 or singleton_height < page_width * 0.35:
+                    continue
             score = (float(min(left_count, right_count)), gap, -boundary)
             if best is None or score > best:
                 best = score
@@ -400,9 +420,82 @@ def _merge_layout_blocks(blocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return merged
 
 
+def _outline_events_by_page(
+    toc: List[Tuple[int, str, int]],
+) -> Dict[int, List[Dict[str, Any]]]:
+    """Expand same-page TOC entries into full-path transition events."""
+    events: Dict[int, List[Dict[str, Any]]] = {}
+    active: List[str] = []
+    for level, title, page in toc:
+        level = max(1, int(level))
+        active = active[: level - 1]
+        active.append(str(title).strip())
+        events.setdefault(max(1, int(page)), []).append({
+            "title": str(title).strip(),
+            "path": list(active),
+        })
+    return events
+
+
+def _record_matches_outline_title(text: str, title: str) -> bool:
+    record = " ".join(clean_extracted_text(str(text or "")).split()).casefold()
+    heading = " ".join(clean_extracted_text(str(title or "")).split()).casefold()
+    if not record or not heading:
+        return False
+    if record == heading or re.match(rf"^{re.escape(heading)}(?:\s|[.:：—–-])", record):
+        return True
+    # PDF generators sometimes prepend "Appendix A." to an outline title.
+    # Restrict infix matching to genuinely short heading records so a mention
+    # in ordinary prose cannot move the document structure.
+    return len(record) <= 160 and bool(
+        re.search(rf"(?:^|\s){re.escape(heading)}(?:$|\s|[.:：—–-])", record)
+    )
+
+
+def _resolve_record_structure_paths(
+    records: List[Dict[str, Any]], *, previous_path: List[str],
+    page_events: List[Dict[str, Any]],
+) -> List[List[str]]:
+    """Resolve TOC transitions at the matching record, not page start."""
+    if not page_events:
+        return []
+    anchors: List[Tuple[int, List[str]]] = []
+    search_from = 0
+    for event in page_events:
+        for index in range(search_from, len(records)):
+            if _record_matches_outline_title(records[index].get("text", ""), event["title"]):
+                anchors.append((index, list(event["path"])))
+                search_from = index + 1
+                break
+    if not anchors:
+        # Some outlines point to a page whose visible heading is absent from
+        # the text layer. Preserve the established page-level behavior in that
+        # case; the record-level correction is only justified by an observed
+        # same-page heading anchor.
+        return [list(page_events[-1]["path"]) for _record in records]
+    # Failing to locate a heading must not retroactively relabel the page.
+    active = list(previous_path)
+    by_index = {index: path for index, path in anchors}
+    output: List[List[str]] = []
+    for index in range(len(records)):
+        if index in by_index:
+            active = list(by_index[index])
+        output.append(list(active))
+    return output
+
+
 def extract_layout_blocks_from_pdf_page(page: Any) -> List[Dict[str, Any]]:
     """Extract text blocks with real PyMuPDF geometry and deterministic reading order."""
     raw_blocks = page.get_text("blocks", sort=False) or []
+    # Keep the page extent with each record.  Header/footer filtering must not
+    # infer position from reading order: a repeated phrase in the middle of a
+    # page is body text, even when it happens to be a short paragraph.
+    page_rect = getattr(page, "rect", None)
+    try:
+        page_y0 = float(page_rect.y0)
+        page_y1 = float(page_rect.y1)
+    except (AttributeError, TypeError, ValueError):
+        page_y0 = page_y1 = 0.0
     blocks: List[Dict[str, Any]] = []
     for source_index, raw in enumerate(raw_blocks):
         if not raw or len(raw) < 5:
@@ -416,15 +509,28 @@ def extract_layout_blocks_from_pdf_page(page: Any) -> List[Dict[str, Any]]:
         bbox = [float(raw[0]), float(raw[1]), float(raw[2]), float(raw[3])]
         if bbox[2] <= bbox[0] or bbox[3] <= bbox[1]:
             continue
-        blocks.append({
+        record = {
             "text": text, "bbox": [round(value, 3) for value in bbox],
             "block_type": "text", "source_block_index": source_index,
             "source_block_indices": [source_index],
-        })
+        }
+        if page_y1 > page_y0:
+            record["page_y0"] = round(page_y0, 3)
+            record["page_y1"] = round(page_y1, 3)
+        blocks.append(record)
     return _merge_layout_blocks(_order_layout_blocks(blocks, float(page.rect.width)))
 
 
-def extract_paragraphs_from_pdf_page(page: Any) -> List[str]:
+def extract_paragraphs_from_pdf_page(
+    page: Any, *, raise_on_text_failure: bool = False,
+) -> List[str]:
+    """Extract paragraphs from one PDF page.
+
+    ``raise_on_text_failure`` is used by the document-level extractor, where
+    silently treating an unreadable page as a genuine blank would hide a
+    coverage gap.  The default preserves this helper's historic best-effort
+    behavior for callers that only need a paragraph list.
+    """
     try:
         records = extract_layout_blocks_from_pdf_page(page)
         if records:
@@ -444,23 +550,107 @@ def extract_paragraphs_from_pdf_page(page: Any) -> List[str]:
     except TimeoutError:
         raise
     except Exception:
+        if raise_on_text_failure:
+            raise
         return []
 
 
-def detect_repeated_lines(paras_by_page: List[List[str]]) -> set[str]:
+def _rendered_page_is_visually_blank(page: Any) -> bool:
+    """Confirm textless input is blank from pixels, not extractor absence."""
+    try:
+        pixmap = page.get_pixmap(
+            matrix=fitz.Matrix(0.5, 0.5), colorspace=fitz.csGRAY, alpha=False,
+        )
+        samples = pixmap.samples
+        # Text/vector/Form content produces at least some non-white pixels.
+        return bool(samples) and min(samples) >= 250
+    except Exception:
+        # Inability to render is not positive blank-page evidence.
+        return False
+
+
+_PAGE_MARGIN_FRACTION = 0.12
+_MAX_MARGIN_BLOCK_FRACTION = 0.20
+
+
+def _record_margin_position(record: Any) -> Optional[str]:
+    """Return ``top``/``bottom`` only when real geometry proves a margin.
+
+    Text-only fallback records deliberately have no usable margin position.
+    Treating a repeated string as a header without that proof was the source
+    of body-text loss in documents with refrains and boilerplate paragraphs.
     """
-    Detect repeated lines across many pages (typical header/footer artefacts).
-    Conservative heuristic: count exact paragraph strings that are short-ish.
+    if not isinstance(record, dict):
+        return None
+    bbox = record.get("bbox")
+    try:
+        y0, y1 = float(bbox[1]), float(bbox[3])
+        page_y0 = float(record["page_y0"])
+        page_y1 = float(record["page_y1"])
+    except (KeyError, IndexError, TypeError, ValueError):
+        return None
+    page_height = page_y1 - page_y0
+    if page_height <= 0 or y1 <= y0:
+        return None
+    # A full-page fallback paragraph may touch both edges but is never a
+    # header/footer.  Margin artefacts are small relative to their page.
+    if y1 - y0 > page_height * _MAX_MARGIN_BLOCK_FRACTION:
+        return None
+    margin = page_height * _PAGE_MARGIN_FRACTION
+    if y0 - page_y0 <= margin:
+        return "top"
+    if page_y1 - y1 <= margin:
+        return "bottom"
+    return None
+
+
+def _record_text(record: Any) -> str:
+    return str(record.get("text") or "").strip() if isinstance(record, dict) else ""
+
+
+def _repeated_margin_key(record: Any) -> str:
+    """Canonical text used to compare geometrically proven margin records."""
+    text = re.sub(r"\s+", " ", _record_text(record)).strip()
+    if not text:
+        return ""
+    # Page labels are often emitted in the same PDF block as a running footer,
+    # making the otherwise identical block differ on every page.
+    if _record_margin_position(record) == "bottom":
+        without_page_label = re.sub(
+            r"^(?:(?:\d+)|(?:[ivxlcdm]+))[.)]?\s+",
+            "",
+            text,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+        if without_page_label:
+            text = without_page_label
+    return text
+
+
+def detect_repeated_lines(records_by_page: List[List[Any]]) -> set[str]:
+    """
+    Detect repeated margin lines across many pages (typical headers/footers).
+
+    A string is a candidate only if its bbox places it in a narrow page margin.
+    Legacy text-only inputs have no position evidence and therefore produce no
+    candidates; failing closed is preferable to deleting real body prose.
     """
     from collections import Counter
 
     cnt: Counter[str] = Counter()
     pages_with_any = 0
-    for paras in paras_by_page:
-        if not paras:
+    for records in records_by_page:
+        if not records:
             continue
         pages_with_any += 1
-        uniq = set([p.strip() for p in paras if p and len(p.strip()) <= 180])
+        uniq = {
+            text
+            for record in records
+            if _record_margin_position(record)
+            for text in [_repeated_margin_key(record)]
+            if text and len(text) <= 180
+        }
         for p in uniq:
             cnt[p] += 1
 
@@ -473,17 +663,11 @@ def detect_repeated_lines(paras_by_page: List[List[str]]) -> set[str]:
 
 
 def drop_repeated_lines_from_paras(paras: List[str], repeated_lines: set[str]) -> List[str]:
-    out: List[str] = []
-    for p in paras:
-        if not p:
-            continue
-        if p.strip() in repeated_lines:
-            continue
-        out.append(p)
-    return out
+    """Legacy text-only helper: retain text when no bbox evidence is present."""
+    return [p for p in paras if p]
 
 
-def detect_repeated_prefixes(paras_by_page: List[List[str]]) -> set[str]:
+def detect_repeated_prefixes(records_by_page: List[List[Any]]) -> set[str]:
     """
     Detect repeated prefixes on the first paragraph (e.g., journal title + page number).
     Returns small prefix strings to strip if they reoccur frequently.
@@ -492,11 +676,16 @@ def detect_repeated_prefixes(paras_by_page: List[List[str]]) -> set[str]:
 
     cnt: Counter[str] = Counter()
     pages_with_any = 0
-    for paras in paras_by_page:
-        if not paras:
+    for records in records_by_page:
+        if not records:
             continue
         pages_with_any += 1
-        first = (paras[0] or "").strip()
+        # Prefix stripping is even more destructive than dropping a complete
+        # block, so require both first-block status and top-margin geometry.
+        first_record = records[0]
+        if _record_margin_position(first_record) != "top":
+            continue
+        first = _record_text(first_record)
         if not first:
             continue
         # Take first 40 chars as a candidate prefix (after collapsing spaces).
@@ -512,23 +701,27 @@ def detect_repeated_prefixes(paras_by_page: List[List[str]]) -> set[str]:
 
 
 def strip_repeated_prefix_from_first_para(paras: List[str], repeated_prefixes: set[str]) -> List[str]:
-    if not paras:
-        return paras
-    first = paras[0]
-    if not first:
-        return paras
-    norm_first = re.sub(r"\s+", " ", first).strip()
+    """Legacy text-only helper: do not mutate content without bbox evidence."""
+    return list(paras)
+
+
+def _strip_repeated_prefix_from_first_record(
+    records: List[Dict[str, Any]], repeated_prefixes: set[str],
+) -> List[Dict[str, Any]]:
+    """Strip a proven running prefix from the geometrically top first block."""
+    if not records or _record_margin_position(records[0]) != "top":
+        return records
+    first = records[0]
+    norm_first = re.sub(r"\s+", " ", _record_text(first)).strip()
+    if not norm_first:
+        return records
     for pref in sorted(repeated_prefixes, key=len, reverse=True):
         if norm_first.startswith(pref):
-            # remove prefix from original string in a forgiving way
-            cut = len(pref)
-            new_first = norm_first[cut:].lstrip(" -–—:：\t")
+            new_first = norm_first[len(pref):].lstrip(" -–—:：\t")
             if new_first:
-                paras = [new_first] + paras[1:]
-            else:
-                paras = paras[1:]
-            break
-    return paras
+                return [{**first, "text": new_first}, *records[1:]]
+            return records[1:]
+    return records
 
 
 @contextmanager
@@ -703,6 +896,7 @@ def extract_chunks_from_pdf(
         _chapter_lookup = None
         _structure_path_lookup = None
     quality_info["has_outline"] = bool(_toc)
+    _outline_events = _outline_events_by_page(_toc or [])
 
     # Text-layer provenance.  A scan that has been OCRed also has a text layer,
     # so this is not "does it have text?" but "can the text be trusted?" -- and
@@ -732,7 +926,11 @@ def extract_chunks_from_pdf(
                 page_labels: Dict[int, str] = {}
                 scanned_pages = []          # image-only pages (needs Docling)
                 corrupted_pages = []        # above corruption threshold
-                extraction_failure_pages = []  # font-encoding mismatch → Tesseract fallback
+                # Pages whose content could not be read at all (for example a
+                # load_page/get_text failure) as well as text-layer decoding
+                # failures.  These are neither genuine blanks nor scans: a
+                # later engine must explicitly retry them.
+                extraction_failure_pages = []
                 content_corruption_pages = []  # OCR / linguistic corruption
                 poppler_fallback_pages = []  # pages recovered through pdftotext
                 ocr_fallback_pages = []     # pages where Tesseract fallback was used
@@ -740,7 +938,8 @@ def extract_chunks_from_pdf(
                 poppler_attempted = False
                 ocr_notified = False        # one-time "OCR started" message
                 low_text_pages = []         # very little text but not image-only
-                empty_pages = []            # no text, no images
+                empty_pages = []            # raster-confirmed white pages
+                unresolved_nontext_pages = []  # rendered/vector content with no text layer
                 gibberish_pages = []        # unusable text, retained as zone=corrupted (U3)
                 page_scores: Dict[int, Dict[str, Any]] = {}  # per-page scores
                 total_pages = doc.page_count
@@ -752,6 +951,11 @@ def extract_chunks_from_pdf(
                 CORRUPTION_THRESHOLD = corrupted_ratio_threshold()
 
                 for pi in range(doc.page_count):
+                    # Keep a failed load from reusing the previous iteration's
+                    # page object in the exception handler.  In particular, an
+                    # unreadable page after an image-bearing page used to be
+                    # misreported as scanned rather than as an extraction gap.
+                    page = None
                     try:
                         with _page_timeout(PAGE_TIMEOUT_SEC):
                             page = doc.load_page(pi)
@@ -771,7 +975,9 @@ def extract_chunks_from_pdf(
                             if layout_records:
                                 paras = [record["text"] for record in layout_records]
                             else:
-                                paras = extract_paragraphs_from_pdf_page(page)
+                                paras = extract_paragraphs_from_pdf_page(
+                                    page, raise_on_text_failure=True,
+                                )
                                 page_bbox = [
                                     round(float(page.rect.x0), 3), round(float(page.rect.y0), 3),
                                     round(float(page.rect.x1), 3), round(float(page.rect.y1), 3),
@@ -780,6 +986,7 @@ def extract_chunks_from_pdf(
                                     "text": text, "bbox": page_bbox,
                                     "block_type": "text_fallback", "reading_order": index,
                                     "column": "single", "source_block_indices": [],
+                                    "page_y0": page_bbox[1], "page_y1": page_bbox[3],
                                 } for index, text in enumerate(paras)]
                     except Exception as e:
                         print(
@@ -788,14 +995,7 @@ def extract_chunks_from_pdf(
                         )
                         paras_by_page.append([])
                         layout_by_page.append([])
-                        try:
-                            has_images = len(page.get_images()) > 0
-                        except Exception:
-                            has_images = False
-                        if has_images:
-                            scanned_pages.append(pi + 1)
-                        else:
-                            empty_pages.append(pi + 1)
+                        extraction_failure_pages.append(pi + 1)
                         continue
 
                     if not paras:
@@ -807,8 +1007,11 @@ def extract_chunks_from_pdf(
                             has_images = False
                         if has_images:
                             scanned_pages.append(pi + 1)
-                        else:
+                        elif _rendered_page_is_visually_blank(page):
                             empty_pages.append(pi + 1)
+                        else:
+                            unresolved_nontext_pages.append(pi + 1)
+                            scanned_pages.append(pi + 1)
                         continue
 
                     joined = "\n\n".join(paras)
@@ -856,6 +1059,7 @@ def extract_chunks_from_pdf(
                                             "reading_order": index,
                                             "column": "unknown",
                                             "source_block_indices": [],
+                                            "page_y0": page_bbox[1], "page_y1": page_bbox[3],
                                         } for index, text in enumerate(paras)]
                                         joined = "\n\n".join(paras)
                                         quality = analyze_text_quality(joined)
@@ -891,6 +1095,7 @@ def extract_chunks_from_pdf(
                                 "text": text, "bbox": page_bbox, "block_type": "ocr_text",
                                 "reading_order": index, "column": "unknown",
                                 "source_block_indices": [],
+                                "page_y0": page_bbox[1], "page_y1": page_bbox[3],
                             } for index, text in enumerate(paras)]
                             joined = "\n\n".join(paras)
                             quality = analyze_text_quality(joined)
@@ -991,6 +1196,7 @@ def extract_chunks_from_pdf(
                     "ocr_fallback_pages": ocr_fallback_pages,
                     "low_text_pages": low_text_pages,
                     "empty_pages": empty_pages,
+                    "unresolved_nontext_pages": unresolved_nontext_pages,
                     "gibberish_pages": gibberish_pages,
                     "total_pages": total_pages,
                     "scanned_ratio": round(scanned_ratio, 3),
@@ -1005,13 +1211,11 @@ def extract_chunks_from_pdf(
                     "avg_extraction_failure_score": round(avg_extraction_failure_score, 3),
                     "page_scores": page_scores,
                     "has_outline": bool(_toc),
-                    # Populated below when repeated-header/footer removal empties
-                    # a page entirely. Without this, such a page shows up in
-                    # neither empty_pages nor low_text_pages -- it simply never
-                    # existed as far as quality reporting is concerned, and no
-                    # audit can distinguish "genuinely blank page" from "every
-                    # line on this page matched a running header" (2026-07-29).
+                    # A repeat filter must never erase an entire page.  These
+                    # pages retain their source blocks and remain auditable.
                     "repeated_header_dropped_pages": [],
+                    "repeated_margin_lines_removed_pages": [],
+                    "repeated_header_restored_pages": [],
                 }
                 # This dict replaces the safe-default one wholesale, so the
                 # source-class fields have to be re-applied here too.
@@ -1020,7 +1224,7 @@ def extract_chunks_from_pdf(
 
                 repeated_lines: set[str] = set()
                 if PDF_DROP_REPEATED_LINES:
-                    repeated_lines = detect_repeated_lines(paras_by_page)
+                    repeated_lines = detect_repeated_lines(layout_by_page)
                     if repeated_lines and os.environ.get("DEBUG_PDF_REPEAT") == "1":
                         ex = list(sorted(repeated_lines))[:10]
                         print(
@@ -1030,7 +1234,7 @@ def extract_chunks_from_pdf(
 
                 repeated_prefixes: set[str] = set()
                 if PDF_STRIP_REPEATED_PREFIX:
-                    repeated_prefixes = detect_repeated_prefixes(paras_by_page)
+                    repeated_prefixes = detect_repeated_prefixes(layout_by_page)
                     if repeated_prefixes and os.environ.get("DEBUG_PDF_REPEAT") == "1":
                         ex = list(sorted(repeated_prefixes))[:10]
                         print(
@@ -1042,28 +1246,50 @@ def extract_chunks_from_pdf(
                     if not layout_records:
                         continue
 
+                    original_layout_records = layout_records
                     if repeated_lines:
+                        before_repeated_line_count = len(layout_records)
                         layout_records = [
                             record for record in layout_records
-                            if record["text"].strip() not in repeated_lines
+                            if not (
+                                _repeated_margin_key(record) in repeated_lines
+                                and _record_margin_position(record) is not None
+                            )
                         ]
                         if not layout_records:
-                            quality_info["repeated_header_dropped_pages"].append(pi + 1)
-                            continue
+                            # A page consisting only of a proven running line
+                            # is unusual but still source text.  Preserve it
+                            # rather than silently converting it into a gap.
+                            quality_info["repeated_header_restored_pages"].append(pi + 1)
+                            layout_records = original_layout_records
+                        elif len(layout_records) < before_repeated_line_count:
+                            # ``repeated_header_dropped_pages`` is part of the
+                            # source-coverage failure contract and means the
+                            # page itself was lost. Here only a proven running
+                            # margin line was removed; record that separately.
+                            quality_info["repeated_margin_lines_removed_pages"].append(pi + 1)
 
                     if repeated_prefixes:
-                        first = dict(layout_records[0])
-                        stripped = strip_repeated_prefix_from_first_para(
-                            [first["text"]], repeated_prefixes,
+                        stripped_records = _strip_repeated_prefix_from_first_record(
+                            layout_records, repeated_prefixes,
                         )
-                        if stripped:
-                            first["text"] = stripped[0]
-                            layout_records = [first, *layout_records[1:]]
-                        else:
-                            layout_records = layout_records[1:]
+                        if stripped_records:
+                            layout_records = stripped_records
                         if not layout_records:
-                            quality_info["repeated_header_dropped_pages"].append(pi + 1)
-                            continue
+                            quality_info["repeated_header_restored_pages"].append(pi + 1)
+                            layout_records = original_layout_records
+
+                    record_structure_paths: List[List[str]] = []
+                    page_events = _outline_events.get(pi + 1) or []
+                    if page_events and _structure_path_lookup is not None:
+                        previous_path = (
+                            _structure_path_lookup(pi) if pi > 0 else []
+                        )
+                        record_structure_paths = _resolve_record_structure_paths(
+                            layout_records,
+                            previous_path=previous_path,
+                            page_events=page_events,
+                        )
 
                     paras = [record["text"] for record in layout_records]
                     joined = "\n\n".join(paras)
@@ -1087,7 +1313,18 @@ def extract_chunks_from_pdf(
                             chunk_id = f"{attachment_key}:p{pi+1}:para{para_index}:part{part_index}"
                             md = dict(meta_base)
                             chapter_info: Dict[str, Any] = {}
-                            if _chapter_lookup is not None:
+                            resolved_path = (
+                                record_structure_paths[para_index]
+                                if para_index < len(record_structure_paths)
+                                else None
+                            )
+                            if resolved_path:
+                                chapter_info["structure_path"] = resolved_path
+                                if resolved_path:
+                                    chapter_info["chapter"] = resolved_path[0]
+                                if len(resolved_path) > 1:
+                                    chapter_info["section"] = resolved_path[1]
+                            elif _chapter_lookup is not None:
                                 try:
                                     _ch, _sec = _chapter_lookup(pi + 1)
                                     if _ch:
@@ -1096,7 +1333,7 @@ def extract_chunks_from_pdf(
                                         chapter_info["section"] = _sec
                                 except Exception:
                                     pass
-                            if _structure_path_lookup is not None:
+                            if resolved_path is None and _structure_path_lookup is not None:
                                 try:
                                     structure_path = _structure_path_lookup(pi + 1)
                                     if structure_path:
@@ -1173,6 +1410,13 @@ def extract_chunks_from_pdf(
                             ),
                             hard_min_chars=local_hard_min,
                         )
+                    if before_merge and not page_chunks:
+                        # A short title, dedication, running line, or other
+                        # standalone source fragment is still source content.
+                        # Search can suppress it through MIN_RETURN_CHARS, but
+                        # canonical ingestion must retain it so page coverage
+                        # never depends on a length threshold.
+                        page_chunks = before_merge
                     chunks.extend(page_chunks)
 
             finally:

@@ -13,9 +13,13 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from src.env_utils import load_dotenv_native
+load_dotenv_native(ROOT)
+
 from src.build_structure_summaries import build_structure_summaries, embed_structure_summaries
 from src.chunk_store import list_item_keys
 from src.db_relations import get_item_processing_status, mark_artifact_status
+from src.database_gate import validate_database_gate
 
 
 def main() -> None:
@@ -28,6 +32,11 @@ def main() -> None:
     parser.add_argument("--force", action="store_true", help="Regenerate summaries even if the source fingerprint and prompt already match")
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--dry-run", action="store_true", help="Report selected items without generating summaries")
+    parser.add_argument(
+        "--database-gate", type=Path,
+        help="Passing --new-only database audit bound to the current DB generation. "
+             "Required for non-dry-run LLM summaries.",
+    )
     parser.add_argument("--retry-failed", action="store_true", help="Select retryable failed summary items only")
     parser.add_argument(
         "--collection",
@@ -42,6 +51,19 @@ def main() -> None:
     args = parser.parse_args()
     if args.workers < 1:
         parser.error("--workers must be at least 1")
+    if args.mode == "llm" and not args.dry_run:
+        if not args.database_gate:
+            parser.error("--mode llm requires --database-gate from audit_v3_cutover.py --new-only")
+        try:
+            database_report = validate_database_gate(
+                args.database_gate, collection_name=args.collection,
+            )
+        except RuntimeError as exc:
+            parser.error(str(exc))
+        if not args.collection:
+            # The audited collection, rather than whichever collection happens
+            # to be active in this shell, owns both summary inputs and index.
+            args.collection = str(database_report["new_collection"])
     keys = list(dict.fromkeys(args.item or list_item_keys(collection_name=args.collection)))
     if args.retry_failed:
         keys = [

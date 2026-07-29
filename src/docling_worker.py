@@ -21,9 +21,36 @@ and is plausibly part of why the leak/crash happens at all.
 """
 from __future__ import annotations
 
+import gc
 import multiprocessing
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
+
+
+def _relieve_worker_memory_pressure() -> None:
+    """Release safe caches without touching the macOS MPS allocator.
+
+    Calling ``torch.mps.empty_cache()`` after Docling/RapidOCR extraction can
+    segfault inside ``MPSAllocator/MPSStream`` on macOS.  A hard crash here
+    discards an otherwise complete OCR result before it crosses the worker
+    pipe.  The isolated worker is short-lived and the OS reclaims its MPS
+    allocations at exit, so stability takes precedence over eager MPS cache
+    release. CUDA cleanup remains useful and has no bearing on that crash.
+    """
+    try:
+        gc.collect()
+    except Exception:
+        pass
+    if (os.environ.get("TORCH_EMPTY_CACHE") or "1") != "1":
+        return
+    try:
+        import torch  # type: ignore
+
+        if getattr(torch, "cuda", None) is not None and torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
 
 
 def _worker_loop(conn) -> None:
@@ -72,14 +99,13 @@ def _worker_loop(conn) -> None:
                 # load happens on the first actual extract() call, inside
                 # this child process, and is paid once per worker lifetime.
                 from docling_extract import extract_chunks_from_pdf_with_docling
-                from index_from_zotero import relieve_memory_pressure
 
                 chunks, quality_info = extract_chunks_from_pdf_with_docling(
                     Path(pdf_path_str), attachment_key, meta_base,
                 )
                 # The worker (not the parent) now holds the torch/MPS state,
                 # so the cache-clearing cleanup belongs here.
-                relieve_memory_pressure()
+                _relieve_worker_memory_pressure()
                 conn.send(("ok", chunks, quality_info))
             except Exception as exc:  # noqa: BLE001 - report, don't crash the worker
                 try:

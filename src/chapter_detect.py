@@ -14,6 +14,7 @@ EPUB:
 from __future__ import annotations
 
 from pathlib import Path
+import unicodedata
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 try:
@@ -57,6 +58,10 @@ def get_pdf_toc(pdf_path: str) -> List[Tuple[int, str, int]]:
         if len(entry) < 3:
             continue
         level, title, page = int(entry[0]), str(entry[1]).strip(), int(entry[2])
+        title = "".join(
+            character for character in unicodedata.normalize("NFKC", title)
+            if unicodedata.category(character) != "Cf"
+        ).strip()
         if page < 1:
             page = 1
         if title:

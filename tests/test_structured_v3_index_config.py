@@ -143,7 +143,15 @@ class StructuredV3IndexConfigTests(unittest.TestCase):
             pipeline_config.write_text("{}")
             lexical = root / "lexical_v3.sqlite3"
             lexical.write_text("x")
-            fake_client = SimpleNamespace(delete_collection=lambda _name: None)
+            deleted = []
+            fake_client = SimpleNamespace(
+                list_collections=lambda: [
+                    SimpleNamespace(name="zotero_paragraphs_v3"),
+                    SimpleNamespace(name="zotero_paragraphs_v3__sum_node"),
+                    SimpleNamespace(name="zotero_paragraphs"),
+                ],
+                delete_collection=deleted.append,
+            )
             with (
                 patch.object(module, "STRUCTURED_V3_ENABLE", True),
                 patch.object(module, "CHROMA_DIR", chroma),
@@ -151,12 +159,64 @@ class StructuredV3IndexConfigTests(unittest.TestCase):
                 patch.object(module, "V3_PIPELINE_CONFIG_PATH", pipeline_config),
                 patch.dict(os.environ, {"LEXICAL_DB_PATH": str(lexical)}),
                 patch("chromadb.PersistentClient", return_value=fake_client),
+                patch.object(module, "reset_ingestion_derived_state") as reset_derived,
             ):
                 module._reset_rebuild_target()
+            self.assertEqual(deleted, [
+                "zotero_paragraphs_v3",
+                "zotero_paragraphs_v3__sum_node",
+            ])
+            reset_derived.assert_called_once_with()
             self.assertTrue(legacy_marker.exists())
             self.assertFalse(manifest.exists())
             self.assertFalse(pipeline_config.exists())
             self.assertFalse(lexical.exists())
+
+    def test_v3_rebuild_delete_failure_keeps_sidecar_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            chroma = root / "chroma"
+            chroma.mkdir()
+            manifest = root / "manifest_v3.json"
+            manifest.write_text("{}")
+            pipeline_config = chroma / "embedder_config_v3.json"
+            pipeline_config.write_text("{}")
+            lexical = root / "lexical_v3.sqlite3"
+            lexical.write_text("x")
+
+            def fail_delete(_name):
+                raise RuntimeError("delete failed")
+
+            fake_client = SimpleNamespace(
+                list_collections=lambda: [SimpleNamespace(name="zotero_paragraphs_v3")],
+                delete_collection=fail_delete,
+            )
+            with (
+                patch.object(module, "STRUCTURED_V3_ENABLE", True),
+                patch.object(module, "CHROMA_DIR", chroma),
+                patch.object(module, "MANIFEST_PATH", manifest),
+                patch.object(module, "V3_PIPELINE_CONFIG_PATH", pipeline_config),
+                patch.dict(os.environ, {"LEXICAL_DB_PATH": str(lexical)}),
+                patch("chromadb.PersistentClient", return_value=fake_client),
+                patch.object(module, "reset_ingestion_derived_state"),
+                self.assertRaisesRegex(RuntimeError, "delete failed"),
+            ):
+                module._reset_rebuild_target()
+            self.assertTrue(manifest.exists())
+            self.assertTrue(pipeline_config.exists())
+            self.assertTrue(lexical.exists())
+
+    def test_rebuild_rejects_scoped_options(self):
+        for scoped in (
+            ["--rebuild", "--item", "ITEM"],
+            ["--rebuild", "--attachment", "ATTACH"],
+            ["--rebuild", "--limit", "1"],
+            ["--rebuild", "--source-type", "pdf"],
+            ["--rebuild", "--retry-failed"],
+        ):
+            with patch.object(sys, "argv", ["index_from_zotero.py", *scoped]):
+                with self.assertRaises(SystemExit):
+                    module.parse_args()
 
 
 if __name__ == "__main__":

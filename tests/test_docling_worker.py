@@ -3,7 +3,9 @@ from __future__ import annotations
 import sys
 import tempfile
 import time
+import types
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 
@@ -12,7 +14,7 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from docling_worker import DoclingWorker  # noqa: E402
+from docling_worker import DoclingWorker, _relieve_worker_memory_pressure  # noqa: E402
 
 
 # Fake stand-ins for docling_extract.extract_chunks_from_pdf_with_docling and
@@ -134,6 +136,21 @@ class DoclingWorkerTests(unittest.TestCase):
             worker.extract(Path("/fake/doc.pdf"), "CRASH", {})
         worker.shutdown()
         worker.shutdown()
+
+    def test_worker_cleanup_never_calls_mps_empty_cache(self):
+        calls: list[str] = []
+        fake_torch = types.SimpleNamespace(
+            cuda=types.SimpleNamespace(
+                is_available=lambda: True,
+                empty_cache=lambda: calls.append("cuda"),
+            ),
+            mps=types.SimpleNamespace(
+                empty_cache=lambda: calls.append("mps"),
+            ),
+        )
+        with patch.dict(sys.modules, {"torch": fake_torch}):
+            _relieve_worker_memory_pressure()
+        self.assertEqual(calls, ["cuda"])
 
 
 if __name__ == "__main__":

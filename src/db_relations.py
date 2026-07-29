@@ -109,6 +109,101 @@ def _init_db(conn: sqlite3.Connection) -> None:
             cursor.execute(sql)
         except sqlite3.OperationalError:
             pass
+
+    # SQLite considers every NULL distinct in a UNIQUE constraint.  The
+    # original table-level constraints therefore let retries accumulate rows
+    # whenever S2 did not provide a context or a paper id.  These expression
+    # indexes make the intended relation identity explicit: absent optional
+    # values are a stable empty value, rather than a new relation on each run.
+    #
+    # A pre-existing database can already contain such duplicates.  Compact
+    # only exact logical duplicates before adding the index (keep the oldest
+    # row, rather than rebuilding or dropping either table).  This migration is
+    # deliberately narrow and is safe to run repeatedly.
+    citation_work = """
+        COALESCE(
+            NULLIF(citing_paper_id, ''), NULLIF(citing_doi, ''),
+            CASE WHEN NULLIF(TRIM(citing_title), '') IS NOT NULL THEN
+                'title:' || LOWER(TRIM(citing_title)) || ':' ||
+                COALESCE(CAST(citing_year AS TEXT), '') || ':' ||
+                LOWER(COALESCE(citing_authors, ''))
+            END, ''
+        )
+    """
+    reference_work = """
+        COALESCE(
+            NULLIF(cited_paper_id, ''), NULLIF(cited_doi, ''),
+            CASE WHEN NULLIF(TRIM(cited_title), '') IS NOT NULL THEN
+                'title:' || LOWER(TRIM(cited_title)) || ':' ||
+                COALESCE(CAST(cited_year AS TEXT), '') || ':' ||
+                LOWER(COALESCE(cited_authors, ''))
+            END, ''
+        )
+    """
+    citation_identity = (
+        citation_work, "COALESCE(cited_item_key, '')",
+        "COALESCE(context_snippet, '')",
+    )
+    reference_identity = (
+        reference_work, "COALESCE(citing_item_key, '')",
+        "COALESCE(context_snippet, '')", "COALESCE(raw_reference_text, '')",
+    )
+    citation_eligible = (
+        f"(({citation_work}) <> '' OR COALESCE(context_snippet, '') <> '')"
+    )
+    reference_eligible = (
+        f"(({reference_work}) <> '' OR COALESCE(context_snippet, '') <> '' "
+        "OR COALESCE(raw_reference_text, '') <> '')"
+    )
+    _deduplicate_relation_rows(
+        cursor, "global_citations", citation_identity, citation_eligible,
+    )
+    _deduplicate_relation_rows(
+        cursor, "global_references", reference_identity, reference_eligible,
+    )
+    # Replace the uncommitted first-generation expression indexes if a process
+    # initialized the database before this stronger bibliographic identity was
+    # installed.
+    cursor.execute("DROP INDEX IF EXISTS uq_global_citations_identity")
+    cursor.execute("DROP INDEX IF EXISTS uq_global_references_identity")
+    cursor.execute('''
+        CREATE UNIQUE INDEX uq_global_citations_identity
+        ON global_citations (
+            COALESCE(
+                NULLIF(citing_paper_id, ''), NULLIF(citing_doi, ''),
+                CASE WHEN NULLIF(TRIM(citing_title), '') IS NOT NULL THEN
+                    'title:' || LOWER(TRIM(citing_title)) || ':' ||
+                    COALESCE(CAST(citing_year AS TEXT), '') || ':' ||
+                    LOWER(COALESCE(citing_authors, ''))
+                END, ''
+            ),
+            COALESCE(cited_item_key, ''),
+            COALESCE(context_snippet, '')
+        )
+        WHERE COALESCE(NULLIF(citing_paper_id, ''), NULLIF(citing_doi, ''),
+                      NULLIF(TRIM(citing_title), ''), '') <> ''
+           OR COALESCE(context_snippet, '') <> ''
+    ''')
+    cursor.execute('''
+        CREATE UNIQUE INDEX uq_global_references_identity
+        ON global_references (
+            COALESCE(
+                NULLIF(cited_paper_id, ''), NULLIF(cited_doi, ''),
+                CASE WHEN NULLIF(TRIM(cited_title), '') IS NOT NULL THEN
+                    'title:' || LOWER(TRIM(cited_title)) || ':' ||
+                    COALESCE(CAST(cited_year AS TEXT), '') || ':' ||
+                    LOWER(COALESCE(cited_authors, ''))
+                END, ''
+            ),
+            COALESCE(citing_item_key, ''),
+            COALESCE(context_snippet, ''),
+            COALESCE(raw_reference_text, '')
+        )
+        WHERE COALESCE(NULLIF(cited_paper_id, ''), NULLIF(cited_doi, ''),
+                      NULLIF(TRIM(cited_title), ''), '') <> ''
+           OR COALESCE(context_snippet, '') <> ''
+           OR COALESCE(raw_reference_text, '') <> ''
+    ''')
         
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_citing_chunk_id ON global_references(citing_chunk_id)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_citing_item_key ON global_references(citing_item_key)')
@@ -635,6 +730,29 @@ def _init_db(conn: sqlite3.Connection) -> None:
     )
 
     conn.commit()
+
+
+def _deduplicate_relation_rows(
+    cursor: sqlite3.Cursor, table: str, identity_expressions: tuple[str, ...],
+    eligible_sql: str,
+) -> None:
+    """Keep one row per NULL-safe relation identity during schema migration.
+
+    Inputs are module constants, never user input.
+    Retaining the smallest id also makes a second initialization a no-op.
+    """
+    identity = ", ".join(identity_expressions)
+    cursor.execute(f'''
+        DELETE FROM {table}
+        WHERE ({eligible_sql}) AND id NOT IN (
+            SELECT retained_id FROM (
+                SELECT MIN(id) AS retained_id
+                FROM {table}
+                WHERE {eligible_sql}
+                GROUP BY {identity}
+            )
+        )
+    ''')
 
 
 def _normalize_identifier(value: Optional[str], kind: str) -> Optional[str]:
@@ -1683,6 +1801,53 @@ def invalidate_item_summaries(item_key: str) -> Dict[str, int]:
         conn.close()
 
 
+def reset_ingestion_derived_state() -> Dict[str, int]:
+    """Remove corpus-derived structure/summary state for an explicit rebuild.
+
+    Chunk-linked citation/reference mappings are included because their chunk
+    IDs belong to the old corpus. Bibliographic work metadata and human
+    relation reports remain; they do not point at canonical chunks.
+    """
+    conn = get_db_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        counts: Dict[str, int] = {}
+        statements = (
+            ("global_citations", "DELETE FROM global_citations", ()),
+            ("global_references", "DELETE FROM global_references", ()),
+            ("item_citation_status", "DELETE FROM item_citation_status", ()),
+            ("document_node_summary_reuse_cache",
+             "DELETE FROM document_node_summary_reuse_cache", ()),
+            ("document_nodes", "DELETE FROM document_nodes", ()),
+            ("document_structures", "DELETE FROM document_structures", ()),
+            ("section_summaries", "DELETE FROM section_summaries", ()),
+            ("item_summaries", "DELETE FROM item_summaries", ()),
+            ("insight_generation_status", "DELETE FROM insight_generation_status", ()),
+            (
+                "artifact_processing_status",
+                "DELETE FROM artifact_processing_status "
+                "WHERE artifact_type IN ('extraction','structure','summary','embeddings','summary_index')",
+                (),
+            ),
+            (
+                "artifact_processing_events",
+                "DELETE FROM artifact_processing_events "
+                "WHERE artifact_type IN ('extraction','structure','summary','embeddings','summary_index')",
+                (),
+            ),
+        )
+        for name, sql, params in statements:
+            cursor = conn.execute(sql, params)
+            counts[name] = max(0, int(cursor.rowcount))
+        conn.commit()
+        return counts
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def get_insight_generation_status(item_key: str, kind: str) -> Optional[Dict[str, Any]]:
     if kind != "sections":
         raise ValueError("kind must be sections.")
@@ -1786,12 +1951,23 @@ def insert_citation(
     cursor = conn.cursor()
     try:
         cursor.execute('''
-            INSERT OR REPLACE INTO global_citations
+            INSERT INTO global_citations
             (citing_paper_id, citing_title, citing_year, context_snippet, cited_item_key,
              cited_chunk_id, similarity_distance, page_hint,
              citing_citation_count, citing_influential_count, chunk_status, citing_doi,
              citing_authors)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT DO UPDATE SET
+                citing_title = excluded.citing_title,
+                citing_year = excluded.citing_year,
+                cited_chunk_id = excluded.cited_chunk_id,
+                similarity_distance = excluded.similarity_distance,
+                page_hint = excluded.page_hint,
+                citing_citation_count = excluded.citing_citation_count,
+                citing_influential_count = excluded.citing_influential_count,
+                chunk_status = excluded.chunk_status,
+                citing_doi = excluded.citing_doi,
+                citing_authors = excluded.citing_authors
         ''', (citing_paper_id, citing_title, citing_year, context_snippet, cited_item_key,
               cited_chunk_id, similarity_distance, page_hint,
               citing_citation_count, citing_influential_count, chunk_status, citing_doi,
@@ -1853,11 +2029,23 @@ def insert_reference(cited_paper_id: Optional[str], cited_title: Optional[str], 
     try:
         cursor = conn.cursor()
         cursor.execute('''
-            INSERT OR REPLACE INTO global_references
+            INSERT INTO global_references
             (cited_paper_id, cited_title, cited_year, context_snippet, citing_item_key, citing_chunk_id,
              similarity_distance, page_hint, source, raw_reference_text, s2_status,
              cited_citation_count, cited_influential_count, cited_doi, cited_authors)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT DO UPDATE SET
+                cited_title = excluded.cited_title,
+                cited_year = excluded.cited_year,
+                citing_chunk_id = excluded.citing_chunk_id,
+                similarity_distance = excluded.similarity_distance,
+                page_hint = excluded.page_hint,
+                source = excluded.source,
+                s2_status = excluded.s2_status,
+                cited_citation_count = excluded.cited_citation_count,
+                cited_influential_count = excluded.cited_influential_count,
+                cited_doi = excluded.cited_doi,
+                cited_authors = excluded.cited_authors
         ''', (cited_paper_id, cited_title, cited_year, context_snippet, citing_item_key, citing_chunk_id,
               similarity_distance, page_hint, source, raw_reference_text, s2_status,
               cited_citation_count, cited_influential_count, cited_doi, cited_authors))

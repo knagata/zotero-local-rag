@@ -92,6 +92,7 @@ _S2_RATE_FILE = str(ROOT / "data" / "s2_rate.lock")
 _EMB_FN_CACHE = None
 _SEGMENT_META: Optional[Dict[str, Any]] = None  # cached segment info
 _ITEM_CHUNKS_CACHE: Dict[str, List[Tuple[str, np.ndarray]]] = {}  # item_key → [(emb_id, vec)]
+_CONFIGURED_COLLECTION_CACHE: Optional[Tuple[Tuple[Any, ...], str]] = None
 
 # Path for debug logs (relative to project root, not CWD)
 _DEBUG_LOG = str(ROOT / "data" / "mapping_debug.log")
@@ -121,57 +122,168 @@ def _get_emb_fn():
     return _EMB_FN_CACHE
 
 
+def _configured_collection_name() -> str:
+    """Return the one Chroma collection citation mapping is allowed to read.
+
+    Citation matching must never infer the active collection from the largest
+    SQLite segment: a previous rebuild can leave a larger legacy collection in
+    the same Chroma directory.  Match the indexer's configuration instead.
+    """
+    global _CONFIGURED_COLLECTION_CACHE
+    explicit = (os.environ.get("CHROMA_COLLECTION") or "").strip()
+    if explicit:
+        return explicit
+
+    v3_enabled = os.environ.get("INGEST_STRUCTURED_V3_ENABLE", "0") == "1"
+    # V3 has its own active-pipeline config.  Do not fall back to the legacy
+    # config in V3 mode: immediately after a V3 rebuild it can still describe
+    # a populated legacy collection while the V3 target is intentionally empty.
+    config_names = ("embedder_config_v3.json",) if v3_enabled else ("embedder_config.json",)
+    config_path = CHROMA_DIR / config_names[0]
+    try:
+        config_file_stat = config_path.stat()
+        config_stat: Optional[Tuple[int, int]] = (
+            int(config_file_stat.st_mtime_ns), int(config_file_stat.st_size),
+        )
+    except OSError:
+        config_stat = None
+    cache_key: Tuple[Any, ...] = (str(CHROMA_DIR), v3_enabled, config_stat)
+    if (
+        _CONFIGURED_COLLECTION_CACHE is not None
+        and _CONFIGURED_COLLECTION_CACHE[0] == cache_key
+    ):
+        return _CONFIGURED_COLLECTION_CACHE[1]
+    for config_name in config_names:
+        try:
+            payload = json.loads((CHROMA_DIR / config_name).read_text(encoding="utf-8"))
+            configured = str(payload.get("collection") or "").strip()
+            if configured:
+                _CONFIGURED_COLLECTION_CACHE = (cache_key, configured)
+                return configured
+        except (OSError, ValueError, TypeError):
+            continue
+
+    # Structured V3 intentionally uses an unsuffixed fixed collection name.
+    if v3_enabled:
+        configured = "zotero_paragraphs_v3"
+        _CONFIGURED_COLLECTION_CACHE = (cache_key, configured)
+        return configured
+
+    # Legacy indexing resolves its default from the active embedder dimension.
+    # Do the same rather than guessing from collections already on disk.
+    from embedder import resolve_collection_name
+    configured = resolve_collection_name(_get_emb_fn(), default="zotero_paragraphs")
+    _CONFIGURED_COLLECTION_CACHE = (cache_key, configured)
+    return configured
+
+
+def _chroma_db_stat() -> tuple[tuple[int, int, int, int], ...]:
+    """Return a cheap generation hint including SQLite's WAL sidecar.
+
+    Chroma commonly writes in WAL mode, where ``chroma.sqlite3`` itself can
+    remain unchanged while collection rows are replaced.  Looking only at the
+    main file would therefore keep item-vector caches from an old generation.
+    """
+    stats: list[tuple[int, int, int, int]] = []
+    for path in (CHROMA_DIR / "chroma.sqlite3", CHROMA_DIR / "chroma.sqlite3-wal"):
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        stats.append((
+            int(stat.st_dev), int(stat.st_ino), int(stat.st_mtime_ns), int(stat.st_size),
+        ))
+    return tuple(stats)
+
+
+def _segment_snapshot(collection_name: str) -> Dict[str, Any]:
+    """Read an exact collection's segment identity and current row count.
+
+    The collection UUID and count form a generation token.  The SQLite stat is
+    included so a delete/recreate with the same name (or a database replacement)
+    cannot reuse vectors embedded from the old collection.
+    """
+    db_file = CHROMA_DIR / "chroma.sqlite3"
+    if not db_file.exists():
+        raise RuntimeError(f"ChromaDB database is missing: {db_file}")
+    db_stat = _chroma_db_stat()
+    conn = sqlite3.connect(str(db_file), timeout=10)
+    try:
+        rows = conn.execute("""
+            SELECT c.id, s.id, COUNT(e.id) AS cnt
+            FROM collections c
+            JOIN segments s ON s.collection = c.id AND s.scope = 'METADATA'
+            LEFT JOIN embeddings e ON e.segment_id = s.id
+            WHERE c.name = ?
+            GROUP BY c.id, s.id
+        """, (collection_name,)).fetchall()
+        if len(rows) != 1:
+            if not rows:
+                raise RuntimeError(
+                    f"Configured Chroma collection '{collection_name}' was not found or has no metadata segment."
+                )
+            raise RuntimeError(
+                f"Configured Chroma collection '{collection_name}' is ambiguous ({len(rows)} metadata segments)."
+            )
+        collection_id, meta_seg_id, chunk_count = rows[0]
+        if int(chunk_count) <= 0:
+            raise RuntimeError(
+                f"Configured Chroma collection '{collection_name}' has no embeddings."
+            )
+        vector_rows = conn.execute("""
+            SELECT s.id
+            FROM segments s
+            WHERE s.collection = ? AND s.scope = 'VECTOR'
+        """, (collection_id,)).fetchall()
+        if len(vector_rows) != 1:
+            if not vector_rows:
+                raise RuntimeError(f"No vector segment found for collection '{collection_name}'")
+            raise RuntimeError(
+                f"Configured Chroma collection '{collection_name}' is ambiguous ({len(vector_rows)} vector segments)."
+            )
+    finally:
+        conn.close()
+
+    return {
+        "metadata_segment_id": meta_seg_id,
+        "vector_segment_id": vector_rows[0][0],
+        "collection_id": collection_id,
+        "collection_name": collection_name,
+        "chunk_count": int(chunk_count),
+        "db_stat": db_stat,
+        "generation": (
+            str(collection_id), int(chunk_count), *db_stat,
+        ),
+    }
+
+
 def _get_segment_meta() -> Dict[str, Any]:
     """
     Discover the correct metadata segment and vector segment from ChromaDB's SQLite.
     Returns dict with keys: metadata_segment_id, vector_segment_id, collection_name, chunk_count.
     """
     global _SEGMENT_META
-    if _SEGMENT_META is not None:
+    configured_name = _configured_collection_name()
+    db_file = CHROMA_DIR / "chroma.sqlite3"
+    if _SEGMENT_META is not None and db_file.exists():
+        db_stat = _chroma_db_stat()
+        if (
+            _SEGMENT_META.get("collection_name") == configured_name
+            and _SEGMENT_META.get("db_stat") == db_stat
+        ):
+            return _SEGMENT_META
+    snapshot = _segment_snapshot(configured_name)
+    if _SEGMENT_META is not None and _SEGMENT_META.get("generation") == snapshot["generation"]:
         return _SEGMENT_META
 
-    db_path = str(CHROMA_DIR / "chroma.sqlite3")
-    conn = sqlite3.connect(db_path, timeout=10)
-
-    # Find all metadata segments and their embedding counts
-    cursor = conn.execute("""
-        SELECT s.id, c.name, COUNT(e.id) as cnt
-        FROM segments s
-        JOIN collections c ON s.collection = c.id
-        LEFT JOIN embeddings e ON e.segment_id = s.id
-        WHERE s.scope = 'METADATA'
-        GROUP BY s.id
-        ORDER BY cnt DESC
-    """)
-    rows = cursor.fetchall()
-    if not rows or rows[0][2] == 0:
-        conn.close()
-        raise RuntimeError("No embeddings found in ChromaDB. Run the indexer first.")
-
-    meta_seg_id = rows[0][0]
-    col_name = rows[0][1]
-    chunk_count = rows[0][2]
-
-    # Find the corresponding vector segment
-    cursor = conn.execute("""
-        SELECT s2.id
-        FROM segments s2
-        JOIN segments s1 ON s1.collection = s2.collection
-        WHERE s1.id = ? AND s2.scope = 'VECTOR'
-    """, (meta_seg_id,))
-    vec_row = cursor.fetchone()
-    conn.close()
-
-    if not vec_row:
-        raise RuntimeError(f"No vector segment found for collection '{col_name}'")
-
-    _SEGMENT_META = {
-        "metadata_segment_id": meta_seg_id,
-        "vector_segment_id": vec_row[0],
-        "collection_name": col_name,
-        "chunk_count": chunk_count,
-    }
-    print(f"[citation_mapper] Using collection '{col_name}' ({chunk_count} chunks)", file=sys.stderr)
+    # Item vectors are tied to both the collection UUID and the exact set of
+    # chunks.  Clear them before accepting a changed generation.
+    _ITEM_CHUNKS_CACHE.clear()
+    _SEGMENT_META = snapshot
+    print(
+        f"[citation_mapper] Using collection '{snapshot['collection_name']}' "
+        f"({snapshot['chunk_count']} chunks)", file=sys.stderr,
+    )
     return _SEGMENT_META
 
 
@@ -184,10 +296,9 @@ def _load_chunks_for_item(item_key: str) -> List[Tuple[str, np.ndarray]]:
     embed them with the cached model.  Results are cached per item_key so repeated
     calls from search_chunks() within the same process incur no extra embedding cost.
     """
+    seg = _get_segment_meta()
     if item_key in _ITEM_CHUNKS_CACHE:
         return _ITEM_CHUNKS_CACHE[item_key]
-
-    seg = _get_segment_meta()
     db_path = str(CHROMA_DIR / "chroma.sqlite3")
     conn = sqlite3.connect(db_path, timeout=10)
     try:
@@ -576,6 +687,8 @@ def map_item_global_citations(item_key: str, title: str = "", year: str = "", cr
     # 3. Fetch citations
     data_items = []
     offset = 0
+    citation_pages_incomplete = False
+    citation_limit_reached = False
     while True:
         citations_url = (
             f"https://api.semanticscholar.org/graph/v1/paper/{paper_id}/citations"
@@ -591,6 +704,9 @@ def map_item_global_citations(item_key: str, title: str = "", year: str = "", cr
             if not data_items:
                 update_item_citation_status(item_key, "error")
                 return {"status": "error", "message": "S2 API Error while fetching citations.", "mapped_count": 0, "s2_paper": s2_paper}
+            # Keep the rows already fetched below, but never treat a partial
+            # pagination run as complete.  The next run must retry it.
+            citation_pages_incomplete = True
             break
 
         page_data = citations_res.get("data", [])
@@ -601,6 +717,7 @@ def map_item_global_citations(item_key: str, title: str = "", year: str = "", cr
 
         if len(data_items) >= max_citations:
             data_items = data_items[:max_citations]
+            citation_limit_reached = bool(citations_res.get("next"))
             break
 
         next_offset = citations_res.get("next")
@@ -608,15 +725,14 @@ def map_item_global_citations(item_key: str, title: str = "", year: str = "", cr
             break
         offset = next_offset
 
-    if not data_items:
-        update_item_citation_status(item_key, "s2_done")
-        return {"status": "success", "message": "No citations with context found.", "mapped_count": 0, "s2_paper": s2_paper}
-
     mapped_count = 0
     total_contexts = 0
 
     n_cit = len(data_items)
-    print(f"        -> Found {n_cit} citing papers on Semantic Scholar. Mapping to local chunks...", file=sys.stderr)
+    if n_cit:
+        print(f"        -> Found {n_cit} citing papers on Semantic Scholar. Mapping to local chunks...", file=sys.stderr)
+    else:
+        print("        -> No citing papers found on Semantic Scholar.", file=sys.stderr)
 
     for i, item in enumerate(data_items):
         _pbar(i + 1, n_cit, "  citing  ", file=sys.stderr)
@@ -683,6 +799,8 @@ def map_item_global_citations(item_key: str, title: str = "", year: str = "", cr
     from db_relations import insert_reference
     r_data_items = []
     offset = 0
+    reference_pages_incomplete = False
+    reference_limit_reached = False
     while True:
         references_url = (
             f"https://api.semanticscholar.org/graph/v1/paper/{paper_id}/references"
@@ -695,6 +813,9 @@ def map_item_global_citations(item_key: str, title: str = "", year: str = "", cr
             r_res = None
 
         if r_res is None:
+            # As for incoming citations, partial reference rows are useful,
+            # but status must remain retryable instead of claiming s2_done.
+            reference_pages_incomplete = True
             break
 
         page_data = r_res.get("data", [])
@@ -705,6 +826,7 @@ def map_item_global_citations(item_key: str, title: str = "", year: str = "", cr
 
         if len(r_data_items) >= max_citations:
             r_data_items = r_data_items[:max_citations]
+            reference_limit_reached = bool(r_res.get("next"))
             break
 
         next_offset = r_res.get("next")
@@ -802,11 +924,53 @@ def map_item_global_citations(item_key: str, title: str = "", year: str = "", cr
                     cited_authors=c_authors or None,
                 )
 
-    update_item_citation_status(item_key, "s2_done")
-
     msg = f"Global Citations: {mapped_count}/{total_contexts} contexts mapped. Local References: {ref_mapped_count}/{ref_total_contexts} contexts mapped."
     with open(_DEBUG_LOG, "a") as f:
         f.write(f"Result for {item_key}: {msg}\n")
+
+    incomplete_parts = []
+    if citation_pages_incomplete:
+        incomplete_parts.append("citations")
+    if reference_pages_incomplete:
+        incomplete_parts.append("references")
+    if incomplete_parts:
+        incomplete = ", ".join(incomplete_parts)
+        update_item_citation_status(item_key, "error")
+        return {
+            "status": "error",
+            "message": f"S2 pagination incomplete for {incomplete}; partial relations were saved and will be retried.",
+            "retryable": True,
+            "incomplete_parts": incomplete_parts,
+            "s2_paper": s2_paper,
+            "total_contexts_analyzed": total_contexts,
+            "mapped_count": mapped_count,
+            "references_contexts_analyzed": ref_total_contexts,
+            "references_mapped_count": ref_mapped_count,
+        }
+
+    limited_parts = []
+    if citation_limit_reached:
+        limited_parts.append("citations")
+    if reference_limit_reached:
+        limited_parts.append("references")
+    if limited_parts:
+        update_item_citation_status(item_key, "limited")
+        return {
+            "status": "error",
+            "message": (
+                "S2 pagination reached max_citations for "
+                f"{', '.join(limited_parts)}; increase the limit before retrying."
+            ),
+            "retryable": False,
+            "incomplete_parts": limited_parts,
+            "s2_paper": s2_paper,
+            "total_contexts_analyzed": total_contexts,
+            "mapped_count": mapped_count,
+            "references_contexts_analyzed": ref_total_contexts,
+            "references_mapped_count": ref_mapped_count,
+        }
+
+    update_item_citation_status(item_key, "s2_done")
         
     return {
         "status": "success",

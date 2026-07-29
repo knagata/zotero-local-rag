@@ -101,6 +101,11 @@ def evaluate_ocr_result(result: dict[str, Any], pdf_path: Path) -> dict[str, Any
         character_count += len(text)
         page_no = indices[-1] + 1
         page_reasons: list[str] = []
+        if not text:
+            # The API returned the page object but recovered no searchable
+            # text. Keep the document eligible for a terminal non-text marker,
+            # but make the page-level uncertainty explicit for adoption.
+            page_reasons.append("empty_ocr_output")
         if looks_like_gibberish(text):
             gibberish_pages += 1
             page_reasons.append("gibberish_detected")

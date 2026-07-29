@@ -123,6 +123,9 @@ def candidate_assessment(
         thresholds.update({normalize_language(k): int(v) for k, v in min_chars_per_page.items()})
     min_chars = thresholds.get(lang, thresholds["unknown"])
     scanned_ratio = float(quality.get("scanned_ratio") or 0.0)
+    scan_source_without_native_text = (
+        str(quality.get("source_class") or "") == "scanned_no_text"
+    )
     reported_gibberish = quality.get("gibberish_rate")
     gibberish_rate = (
         float(reported_gibberish) if reported_gibberish is not None
@@ -132,6 +135,8 @@ def candidate_assessment(
     reasons: list[str] = []
     if scanned_ratio > 0:
         reasons.append("scanned_pages")
+    if scan_source_without_native_text:
+        reasons.append("scan_source_without_native_text")
     if gibberish_rate > 0:
         reasons.append("gibberish")
     if metrics["characters_per_page"] < min_chars:
@@ -158,6 +163,7 @@ def candidate_assessment(
     )
     score = (
         5 * int(scanned_ratio > 0)
+        + 5 * int(scan_source_without_native_text)
         + 5 * int(gibberish_rate > 0)
         + 3 * int(metrics["characters_per_page"] < min_chars)
         + 4 * int(metrics["repeat_artifacts"] > 0)
@@ -179,6 +185,7 @@ def candidate_assessment(
         "summary_quality_text_disorder_reports": report_count,
         "quality": {
             "scanned_ratio": round(scanned_ratio, 6),
+            "scan_source_without_native_text": scan_source_without_native_text,
             "gibberish_rate": round(gibberish_rate, 6),
             "min_characters_per_page": min_chars,
             **metrics,

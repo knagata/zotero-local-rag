@@ -12,7 +12,12 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.chunk_store import active_collection_name, get_item_chunks, list_item_keys
+from src.env_utils import load_dotenv_native
+load_dotenv_native(ROOT)
+
+from src.chunk_store import (
+    DEFAULT_CHROMA_DIR, active_collection_name, get_item_chunks, list_item_keys,
+)
 from src.db_relations import (
     get_document_structure, get_item_processing_status,
     mark_artifact_status,
@@ -43,7 +48,7 @@ def _resync_chunk_metadata(item_key: str, collection_name: str | None) -> int:
     if not desired:
         return 0
     name = collection_name or active_collection_name()
-    collection = chromadb.PersistentClient(path=str(ROOT / "data" / "chroma")).get_collection(name)
+    collection = chromadb.PersistentClient(path=str(DEFAULT_CHROMA_DIR)).get_collection(name)
     ids = list(desired)
     current: dict[str, dict] = {}
     for start in range(0, len(ids), 500):

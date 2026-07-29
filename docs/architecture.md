@@ -1,9 +1,8 @@
 # Zotero Local RAG — アーキテクチャ図
 
-> 現行の正本仕様は `dev-notes/current/64_ingestion_redesign_audit_and_plan.md`、
-> カットオーバー記録は `dev-notes/current/75_v3_cutover_20260723.md`、
-> 参照・注の境界保持は `dev-notes/current/77_reference_note_boundary_preservation.md`、
-> 実装状況は `TASKS.md` を参照してください。本文はV3（構造化取り込み）を前提に記述しています。
+> 現行の実装契約は [SPEC.md](../SPEC.md)、移行・品質gateの記録は
+> [TASKS.md](../TASKS.md) と `evaluations/` 配下の追跡済み監査結果を参照してください。
+> 本文はV3（構造化取り込み）を前提に記述しています。
 
 ---
 
@@ -253,6 +252,8 @@ flowchart LR
   CHUNKS[("V3チャンク\nzone/structure_path")] --> TREE["rebuild_document_structure.py\ncanonical tree\n(node/zone/policy)"]
   TREE --> RELS3[("relations.db\ndocument_nodes / document_structures")]
   RELS3 --> SUMB["build_structure_summaries.py\nbottom-up要約"]
+  RELS3 --> GATE["audit_v3_cutover.py --new-only\nDB世代に結び付いた合格gate"]
+  GATE --> SUMB
   SUMB -- "leaf=cheap役" --> LLM["DeepSeek 等"]
   SUMB -- "親還元=standard役" --> LLM
   SUMB -- "source_fingerprint/prompt_version一致\n→LLM呼び出しゼロでskip" --> SKIP["差分スキップ"]
@@ -267,8 +268,9 @@ flowchart LR
   `standard`役（DeepSeek）です。`source_fingerprint`/`prompt_version`が現行構造と
   一致すればLLMを呼ばずにskipします（`--force`で再生成）。
 - 検索索引 `__sum_node` にはLLM要約のみ格納し、extractive要約は索引しません。
-  全件LLM backfillはpilot→承認後に実行する運用です（`data/quality/summary_backfill_approved`
-  マーカーで保護）。
+  全件LLM backfillはDB完全監査後に別フェーズで実行します。監査後にmanifest、
+  Chroma/FTSのchunk ID、または文書構造が変化するとgate fingerprintが一致せず、
+  要約開始前にfail-closedで停止します。
 
 ---
 

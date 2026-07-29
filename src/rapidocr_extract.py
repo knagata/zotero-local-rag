@@ -215,6 +215,13 @@ def extract_chunks_from_pdf_with_rapidocr(
         "parser": "rapidocr", "is_scanned": True, "is_corrupted": False,
         "total_pages": total_pages, "ocr_pages": attempted_pages,
         "pages_with_text": pages_with_text,
+        # An attempted raster page with no accepted OCR text is unresolved,
+        # not a confirmed blank page. Reporting it explicitly makes the local
+        # gate reject partial fixed-layout EPUB output and try the layout-aware
+        # fallback instead of postponing the failure until final adoption.
+        "missing_pages": sorted(
+            set(range(1, total_pages + 1)) - set(pages_with_text)
+        ),
         "scanned_pages": list(range(1, total_pages + 1)),
         "corrupted_pages": [],
         "mean_confidence": (

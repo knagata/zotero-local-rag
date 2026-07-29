@@ -4,6 +4,61 @@
 
 ## Active
 
+### Phase 0: ゼロ再構築前の取り込み完全性修正
+
+依存順: `Z0` → (`Z1`, `Z2`, `Z3`) → `Z4` → `Z5` → `Z6`。相互に独立する
+extractor修正は並行実装する。修正完了まで埋め込み・正本DB再構築は行わない。
+
+- [x] **Z0: source coverageの共通契約と回帰fixtureを定義する**（2026-07-29）
+  - PDF page / EPUB spine / HTML EOFを
+    `expected_units / attempted_units / text_units / blank_units / failed_units / truncated`
+    で表現する。
+  - 説明不能な欠落を含む部分成功をcanonicalへ渡さない純粋validatorを追加する。
+- [x] **Z1: PDFページ例外・反復ヘッダ除去の欠落経路を閉じる**（2026-07-29）
+  - `load_page`/text抽出例外を真正な空ページと分離し、再試行またはfail-closedにする。
+  - `page`の前ページ参照を防ぎ、除去で全滅したページを成功扱いしない。
+- [x] **Z2: NDLOCRの実出力ページcoverageを正しく報告する**（2026-07-29）
+  - render済み、JSON出力済み、本文あり、missingを別々に記録する。
+  - 欠落JSONを全ページ処理済みと偽装せずlocal OCR gateで拒否する。
+- [x] **Z3: HTML/EPUBの部分欠落を検出・拒否する**（2026-07-29）
+  - HTMLのサイズ打切りとcase-insensitiveなstyle/script閉じタグを修正する。
+  - EPUBをOPF spine期待集合と照合し、章例外・image-only/mixed spineを記録する。
+  - 少量DOMテキストだけでfixed-layout OCR fallbackを回避できないようにする。
+- [x] **Z4: インジェスト成功判定をcoverage validatorへ一本化する**（2026-07-29）
+  - `pages_without_chunks`を記録するだけで`success`になる経路を廃止する。
+  - extractor固有のqualityを共通coverageへ正規化し、不完全結果は書き込まない。
+- [x] **Z5: clean rebuildを旧成果物から独立させ、保存境界を整理する**（2026-07-29）
+  - `--rebuild`ではlegacy OCR/chunk/manifest/summaryを再利用しない。
+  - `extract → validate → prepare → write → verify`へ限定的に分割する。
+  - 書込み前後のID集合・attachment/item identity不変条件を一箇所へ集約する。
+- [x] **Z6: 構造・検索・citationの到達性と構築前gateを完成する**（2026-07-29）
+  - node/zone/policy同期、複数添付item、検索後段filterのunderfillを修正する。
+  - citation mapperをactive collectionへ固定し、世代変更時にcacheを破棄する。
+  - Zotero/manifest/Chroma/FTS/source coverage/node到達性の全gate合格を再構築条件にする。
+- [x] **Z7: 実資料の非書込みスモークテストを行う**（2026-07-29）
+  - PDF 2件・HTML 2件・EPUB 2件を、埋め込み・DB更新なしで抽出する。
+  - 構造化EPUBはDOM本文が取れた時点で直行し、表紙・ロゴ・挿絵をOCRしない正本workflowを
+    再確認。短いtitle/colophon spineをchunk下限で全損させず、画像のみのspineは
+    `ignored_image_spines`として明示する。OCRは全ページ画像の固定レイアウトEPUBだけに限定。
+  - PDF 1件・HTML 2件は直接抽出合格。234ページPDFは表紙1ページだけを未回収として
+    fail-closedに検出し、部分抽出を成功扱いしないことを確認。
+  - 埋め込み・canonical DB再構築は未実施。
+- [x] **Z8: AI・OCR外部経路を実資料で非書込み検証する**（2026-07-29）
+  - AI目次: outlineなし312ページPDFでaccepted、本文coverage 100%、構造化率99.34%。
+    p9/p25/p261のIntroduction/Chapter 1/References見出し位置を原画像と照合。
+  - AI構造要約: 英語2節は全8文のevidence検証を通過（discard 0）。日本語資料は3 nodeを
+    実LLMで生成し、主題・日韓差・階級/政治・復讐/管理の論点を目視確認。DB保存関数は隔離。
+  - Mistral Batch: 実スキャン1ページで1/1頁、7,595文字、12 chunks、原画像5箇所と読順一致。
+    固定レイアウトEPUB `CAXCWCQB` 130頁も実Batch完走（job
+    `b4d15390-6b6b-4d17-9da1-38e95f0c65c1`）。短いOCR頁の全損を修正し、空応答の図版頁は
+    `quality_uncertain`なnon-text markerにして、309 chunks・130/130 spine coverage合格。
+  - スキャンPDF Docling: 抽出後の`torch.mps.empty_cache()`がSIGSEGVする実バグを修正。
+    同一persistent workerで2回連続、各13 chunks・1/1頁coverage合格。
+  - 固定レイアウトEPUBのRapidOCR/Docling部分出力を文字数だけで採用しないstrict page-text
+    gateを追加。Rapid空10頁のうち9頁に可読文字があることを目視し、Mistral fallbackへ送る。
+  - 最終目視QA後の全テスト `870 passed, 2 subtests passed`。外部成果物はscratchのみで、埋め込み・
+    canonical DB・manifestへの書込みは未実施。
+
 ### Phase 3: V3並行再取込とカットオーバー監査を完走する
 
 - [x] ~~**V3全件再取込を小分けで実行する**~~ (2026-07-28)
@@ -169,10 +224,31 @@
     `evaluations/v3_cutover_audit_current.json`は2026-07-23生成の別物である。
     再現するには`--exclude-item`5件付きで再実行すること。
   - **未了分は下の2項目へ分離した**（監査の実行と、その結果の目視レビューは別作業）。
-- [ ] **EPUB・outline PDF・無構造PDF・論文を各3件以上目視確認する**
-  - 章節欠落・並置誤りを記録する。2026-07-28時点で未実施。
-  - 動機づけ: 同日、`<main class="Index">`ひとつで65,000字の資料が検索から完全に消えていた
-    （U8）。集計値はすべて正常に見えていたので、**目視でしか見つからない類の障害が現に存在する**。
+- [x] **EPUB・outline PDF・無構造PDF・論文を各3件以上目視確認する**（2026-07-29）
+  - EPUB: `5PND4GEQ`（通常DOM）、`4CTI73FQ`（縦組leaf fallback）、
+    `CAXCWCQB`（固定レイアウト130頁）を開始・中間・終端で照合。前2件の旧DBのspine順/
+    見出し欠落は現コードで解消済み。固定レイアウトのRapidOCRに単語連結・読順・誤読を確認し、
+    Latin単語境界欠落gateを追加してRapidOCR→Docling→Mistral queueへfail-closedにした。
+  - outline PDF: `BPCMHQ66`、`X2CBUIHI`、`AA6WGTQU`を計20頁以上目視。狭い段間と片側1 block
+    の二段組順、同一頁内TOC遷移、BOM/節番号付きReferences、zero-width文字による文字化け誤判定、
+    頁番号と結合した反復footerを修正。再抽出で全件page coverage合格。
+  - 無構造PDF: `AHPZ6SCS`、`AE28ZUN8`、`IMBFR28G`を確認。前2件はAI/metadata見出しと
+    本文・References・Indexが一致。スキャン`IMBFR28G`の旧OCR破損を確認し、`scanned_no_text`
+    provenanceを再OCR候補に残すgateを追加。
+  - 論文: `FRIZY8BS`、`BPCMHQ66`、`XHMT88V7`の各3頁（先頭・中間・終端）を原画像と照合。
+    全頁coverageは合格し、二段組修正後は左右列順・References遷移・日本語本文/図版captionが一致。
+  - 目視QAで見つけた修正を含む全テスト: `870 passed, 6 warnings, 2 subtests passed`。
+    埋め込み・canonical DB・manifestへの書込みは未実施。
+- [x] **サーバー再構築と有料階層要約を段階実行に分離する**（2026-07-29）
+  - `Server-Database-Workflow.command`を追加し、DBゼロ再構築、DB完全監査、階層AI要約、
+    要約・要約索引監査を同一runでは選べない4フェーズに分離。
+  - `audit_v3_cutover.py --new-only`の合格レポートをmanifest、pipeline config、
+    Chroma/FTS chunk ID、全文書構造のfingerprintへ結び付けた。監査後にDBが変わると
+    `build_structure_summaries.py --mode llm`はAPI呼出し前に停止する。
+  - `audit_structure_summaries.py`でsummary status、source/prompt fingerprint、空/meta要約、
+    DBのsearchable要約IDと`__sum_node` IDの完全一致を検証。
+  - 日常MaintenanceでもDeepSeek要約とMistral Batchをauto-approve対象外に変更。
+  - 全テスト `878 passed, 6 warnings, 2 subtests passed`。
 - [x] ~~**active collection切替の実行手順を確定する**~~ (2026-07-23)
   - 全件監査pass後に、active Chroma / FTS / manifestをV3へ同時切替した。
   - `.env`で`CHROMA_COLLECTION=zotero_paragraphs_v3`、`MANIFEST_PATH=data/manifest_v3.json`、

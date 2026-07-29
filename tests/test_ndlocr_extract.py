@@ -146,6 +146,41 @@ class NdlocrExtractTests(unittest.TestCase):
         self.assertEqual(body_md["zone"], "body")
         self.assertEqual(quality["blocks"], 2)
         self.assertEqual(quality["heading_blocks"], 1)
+        self.assertEqual(quality["ocr_pages"], [1])
+        self.assertEqual(quality["pages_with_text"], [1])
+        self.assertEqual(quality["missing_pages"], [])
+
+    def test_extractor_reports_missing_json_and_empty_json_output(self):
+        payload = {"contents": [[
+            {"id": 0, "text": "本文です。", "confidence": 0.8,
+             "boundingBox": [[0, 0], [100, 0], [100, 10], [0, 10]]},
+        ]]}
+
+        def fake_run(command, **_kwargs):
+            output = Path(command[command.index("--output") + 1])
+            (output / "page-00001.json").write_text(
+                json.dumps(payload, ensure_ascii=False), encoding="utf-8",
+            )
+            # Page 2 is missing entirely; page 3 has a valid but empty result.
+            (output / "page-00003.json").write_text(
+                json.dumps({"contents": []}), encoding="utf-8",
+            )
+            return SimpleNamespace(returncode=0, stderr="", stdout="")
+
+        with (
+            patch("src.ndlocr_extract.find_ndlocr", return_value="ndlocr-lite"),
+            patch("src.ndlocr_extract._render_pages", return_value=(3, {1: "1", 2: "2", 3: "3"})),
+            patch("src.ndlocr_extract.get_pdf_toc", return_value=[]),
+            patch("src.ndlocr_extract.subprocess.run", side_effect=fake_run),
+        ):
+            _chunks, quality = extract_chunks_from_pdf_with_ndlocr(
+                Path("dummy.pdf"), "ATT", {"itemKey": "ITEM", "lang": "ja"},
+            )
+
+        self.assertEqual(quality["ocr_pages"], [1, 3])
+        self.assertEqual(quality["pages_with_text"], [1])
+        self.assertEqual(quality["missing_pages"], [2, 3])
+        self.assertEqual(quality["empty_output_pages"], [3])
 
 
 if __name__ == "__main__":

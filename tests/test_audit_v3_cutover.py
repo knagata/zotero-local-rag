@@ -6,6 +6,13 @@ from scripts.audit_v3_cutover import (
     compare_item, global_gate_failures, item_metrics, structure_failures,
 )
 from src.document_structure import STRUCTURE_VERSION, source_fingerprint
+from src.source_coverage import make_source_coverage
+
+
+def _complete_coverage():
+    return make_source_coverage(
+        unit_kind="document", expected_units=[1], attempted_units=[1], text_units=[1],
+    )
 
 
 class CutoverAuditTests(unittest.TestCase):
@@ -51,10 +58,28 @@ class CutoverAuditTests(unittest.TestCase):
         bad = {**good, "source_fingerprint": "sha256:stale"}
         self.assertEqual(structure_failures(bad, rows), ["stale_structure_fingerprint"])
 
+    def test_structure_requires_every_attachment_root(self):
+        rows = [
+            {"id": "A:p1", "text": "one", "metadata": {"source_type": "pdf", "attachmentKey": "A"}},
+            {"id": "B:p1", "text": "two", "metadata": {"source_type": "pdf", "attachmentKey": "B"}},
+        ]
+        structure = {
+            "structure_version": STRUCTURE_VERSION,
+            "source_fingerprint": source_fingerprint(rows),
+            "status": "exact",
+            "nodes": [
+                {"node_type": "attachment_root", "attachment_key": "A"},
+            ],
+        }
+        self.assertIn(
+            "structure_attachment_coverage_mismatch",
+            structure_failures(structure, rows),
+        )
+
     def test_global_gate_requires_exact_indexes_and_completed_checkpoints(self):
         manifest = {
             "pipeline_fingerprint": "sha256:p", "hnsw_validated": True,
-            "files": {"A": {"quality": {}}},
+            "files": {"A": {"quality": {"source_coverage": _complete_coverage()}}},
         }
         self.assertEqual(global_gate_failures(
             manifest=manifest, manifest_attachment_keys={"A"}, chroma_attachment_keys={"A"},
@@ -73,7 +98,7 @@ class CutoverAuditTests(unittest.TestCase):
         # looks at the whole collection instead of one item at a time.
         manifest = {
             "pipeline_fingerprint": "sha256:p", "hnsw_validated": True,
-            "files": {"A": {"quality": {}}},
+            "files": {"A": {"quality": {"source_coverage": _complete_coverage()}}},
         }
         self.assertEqual(global_gate_failures(
             manifest=manifest, manifest_attachment_keys={"A"}, chroma_attachment_keys={"A"},
@@ -84,6 +109,26 @@ class CutoverAuditTests(unittest.TestCase):
             manifest=manifest, manifest_attachment_keys={"A"}, chroma_attachment_keys={"A"},
             chroma_ids={"c"}, lexical_ids={"c"}, pipeline_config_exists=True,
             chunks_without_item_count=17,
+        ))
+        self.assertIn("chunks_without_attachment", global_gate_failures(
+            manifest=manifest, manifest_attachment_keys={"A"}, chroma_attachment_keys={"A"},
+            chroma_ids={"c"}, lexical_ids={"c"}, pipeline_config_exists=True,
+            chunks_without_attachment_count=1,
+        ))
+
+    def test_global_gate_revalidates_manifest_source_coverage(self):
+        manifest = {
+            "pipeline_fingerprint": "sha256:p", "hnsw_validated": True,
+            "files": {"A": {"quality": {
+                "source_coverage": make_source_coverage(
+                    unit_kind="page", expected_units=[1, 2],
+                    attempted_units=[1, 2], text_units=[1],
+                ),
+            }}},
+        }
+        self.assertIn("incomplete_source_coverage", global_gate_failures(
+            manifest=manifest, manifest_attachment_keys={"A"}, chroma_attachment_keys={"A"},
+            chroma_ids={"c"}, lexical_ids={"c"}, pipeline_config_exists=True,
         ))
 
 

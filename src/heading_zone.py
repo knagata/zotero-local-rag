@@ -22,6 +22,7 @@ were affected by exactly this in the EPUB/HTML path alone.
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import Sequence
 
 #: Trailing "to X" / "for X" is as important as the bare word: a document that
@@ -48,7 +49,8 @@ INDEX_RE = re.compile(
 COLOPHON_RE = re.compile(r"^(?:奥付|colophon|copyright)$", re.IGNORECASE)
 FRONT_MATTER_RE = re.compile(r"^(?:凡例|謝辞|序文|まえがき|acknowledg(?:e)?ments?)$", re.IGNORECASE)
 BACK_MATTER_RE = re.compile(
-    r"^(?:あとがき|後書き|付録|付表|appendix|appendices|afterword|glossary|用語集)$",
+    r"^(?:あとがき|後書き|付録|付表|appendix|appendices|supplementary\s+materials?|"
+    r"afterword|glossary|用語集)$",
     re.IGNORECASE,
 )
 
@@ -68,12 +70,30 @@ _ORDERED_PATTERNS = (
 
 def classify_heading(title: str) -> str:
     """Zone implied by a single heading's text, or "body" if none matches."""
-    normalized = " ".join(str(title or "").split())
+    # PDF outlines frequently carry a BOM/zero-width formatting character,
+    # and generated outlines commonly prefix terminal sections with a section
+    # number ("6 References").  Neither changes the heading's semantics.
+    normalized = "".join(
+        character
+        for character in unicodedata.normalize("NFKC", str(title or ""))
+        if unicodedata.category(character) != "Cf"
+    )
+    normalized = " ".join(normalized.split())
     if not normalized:
         return "body"
-    for pattern, zone in _ORDERED_PATTERNS:
-        if pattern.match(normalized):
-            return zone
+    candidates = [normalized]
+    unnumbered = re.sub(
+        r"^(?:(?:\d+(?:\.\d+)*)|(?:[IVXLCDM]+))[.)、:：]?\s+",
+        "",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if unnumbered and unnumbered != normalized:
+        candidates.append(unnumbered)
+    for candidate in candidates:
+        for pattern, zone in _ORDERED_PATTERNS:
+            if pattern.match(candidate):
+                return zone
     return "body"
 
 

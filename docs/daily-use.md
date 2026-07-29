@@ -10,16 +10,33 @@ macOSでは `Maintenance-Widget.command` をダブルクリックします。
 bash Maintenance-Widget.command
 ```
 
-`MAINTENANCE_AUTO_APPROVE=1` が既定のため、五項目すべて（クラウド送信を伴うMistral OCR Batchを含む）が
-自動許可されます。確認式に戻すには `MAINTENANCE_AUTO_APPROVE=0` を指定します。
+`MAINTENANCE_AUTO_APPROVE=1`でも、有料APIを使う階層要約とMistral OCR Batchは自動許可されません。
 
 1. ライブラリ差分更新（＋文書構造V3の差分更新）
-2. 要約の差分更新（DeepSeek AI要約。未承認時は限定pilotバッチ）
+2. 要約の差分更新（DeepSeek AI要約。DB監査合格後のみ、既定off）
 3. Citation Network更新
 4. 報告された品質・引用関係の確認
 5. Mistral OCR Batchの送信、または完了済み結果の回収・品質確認・採用（任意）
 
-通常はEnterを6回押すだけで開始できます。実行しない項目だけ `n` を入力します。Mistral Batchを実行する場合だけ5番目で`y`を入力してください。初回はBatchを送信して完了後の再起動を案内します。次回、完了済みなら結果を回収し、品質gate合格分だけをV3へ採用します。未確認レポートがある場合は、その後に個別にDisable、Keep、保留を選びます。Enterは安全側の保留です。前段が失敗した場合は、古いデータで後続処理をしないよう自動停止します。実行後に未解決の処理状態サマリ（Mistral queue候補・失敗・truncated等）が表示されます。
+階層要約とMistral Batchは、該当質問で`y`を入力した場合だけ実行します。前段が失敗した場合は、
+古いデータで後続処理をしないよう自動停止します。
+
+## サーバーでDBをゼロから構築する
+
+`Server-Database-Workflow.command`を使い、次のフェーズを別々に起動します。
+
+1. DBをゼロから構築（階層要約なし）
+2. DB完全監査と、現在のDB世代に結び付いた合格gateの作成
+3. 階層AI要約と要約索引の構築（明示的な課金確認あり）
+4. 要約本文・fingerprint・処理状態・要約索引IDの完全監査
+
+フェーズ3はフェーズ2の合格gateがなければ開始できません。監査後にmanifest、チャンクID、
+FTS IDまたは文書構造が変わった場合も、古いgateを拒否して停止します。
+
+ここで分離するのは「階層要約」です。DB構築時のAI目次推定を有効にしている場合は、
+構造復元のためDeepSeekを呼ぶことがあります。DB構築を完全に外部APIなしで試す場合は
+`PDF_AI_TOC_FAST_PATH_ENABLE=0`にしますが、その結果はAI目次なしの別仕様になるため、
+最終DBでは通常設定に戻して再構築・再監査してください。
 
 ## 個別にCLI実行する
 
@@ -31,7 +48,8 @@ uv run src/index_from_zotero.py --progress
 uv run python scripts/rebuild_document_structure.py --all
 
 # 要約（LLM）。全件backfillは承認後、通常は --limit で限定実行
-uv run python scripts/build_structure_summaries.py --all --mode llm --limit 10 --embed
+uv run python scripts/build_structure_summaries.py --all --mode llm --limit 10 --embed \
+  --database-gate data/quality/server_database_gate.json
 
 # Citation Network
 uv run src/update_citations.py --all

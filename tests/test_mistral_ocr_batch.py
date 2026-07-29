@@ -66,6 +66,18 @@ def test_quality_gate_keeps_complete_document_and_marks_problem_page(tmp_path: P
     assert report["problem_pages"] == {2: ["gibberish_detected", "repeat_artifacts"]}
 
 
+def test_quality_gate_marks_returned_page_with_empty_ocr_output(tmp_path: Path) -> None:
+    pdf = tmp_path / "sample.pdf"
+    make_pdf(pdf, 2)
+    result = {"pages": [
+        {"index": 0, "markdown": "Readable document content. " * 10},
+        {"index": 1, "markdown": "", "blocks": []},
+    ]}
+    report = evaluate_ocr_result(result, pdf)
+    assert report["passed"] is True
+    assert report["problem_pages"] == {2: ["empty_ocr_output"]}
+
+
 def test_source_fingerprint_rejects_changed_pdf(tmp_path: Path) -> None:
     pdf = tmp_path / "sample.pdf"
     make_pdf(pdf, 1)

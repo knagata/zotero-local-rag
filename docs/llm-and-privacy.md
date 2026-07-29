@@ -58,7 +58,8 @@ Mistral OCRだけで、Semantic Scholarの鍵は無料です（ただし鍵な�
 文書構造V3の葉からbottom-upにAI要約を生成し、`__sum_node` 検索索引を更新します。
 
 ```bash
-uv run python scripts/build_structure_summaries.py --all --mode llm --embed
+uv run python scripts/build_structure_summaries.py --all --mode llm --embed \
+  --database-gate data/quality/server_database_gate.json
 ```
 
 既定のローカル抽出型要約は外部送信しません。

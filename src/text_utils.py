@@ -100,6 +100,11 @@ CONTROL_CHARS = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]")
 def clean_extracted_text(s: str) -> str:
     s = CONTROL_CHARS.sub("", s)
     s = unicodedata.normalize("NFKC", s)
+    # BOM, zero-width space/joiners and bidi controls are layout metadata, not
+    # searchable document content.  Some PDF text layers insert one between
+    # nearly every glyph; retaining them both pollutes embeddings and makes a
+    # readable page fail the printable-character quality gate.
+    s = "".join(ch for ch in s if unicodedata.category(ch) != "Cf")
     s = s.replace("\uFFFD", "")
     return s
 
@@ -141,7 +146,11 @@ def normalize_paragraphs(raw: str, joiner: str = " ") -> List[str]:
 
 
 def looks_like_gibberish(text: str) -> bool:
-    s = re.sub(r"\s+", "", text)
+    s = "".join(
+        ch for ch in unicodedata.normalize("NFKC", str(text or ""))
+        if unicodedata.category(ch) != "Cf"
+    )
+    s = re.sub(r"\s+", "", s)
 
     # Short excerpts (e.g., titles, headers, short notes) should not be auto-rejected.
     if len(s) < 50:

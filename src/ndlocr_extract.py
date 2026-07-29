@@ -350,6 +350,12 @@ def extract_chunks_from_pdf_with_ndlocr(
     structure_path_lookup = build_pdf_page_structure_path_lookup(toc)
     chunks: List[Tuple[str, str, Dict[str, Any]]] = []
     page_confidences: dict[str, float] = {}
+    # Rendering is only an input to NDLOCR, not evidence that NDLOCR produced
+    # a result.  Keep output-file coverage separate from useful-text coverage
+    # so a crashed/skipped page cannot be reported as successfully OCRed.
+    json_output_pages: set[int] = set()
+    pages_with_text: set[int] = set()
+    invalid_json_pages: set[int] = set()
     total_blocks = 0
     heading_blocks = 0
     inferred_path: list[str] = []
@@ -374,7 +380,14 @@ def extract_chunks_from_pdf_with_ndlocr(
             result_path = output / f"page-{page_no:05d}.json"
             if not result_path.exists():
                 continue
-            payload = json.loads(result_path.read_text(encoding="utf-8"))
+            try:
+                payload = json.loads(result_path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                # Treat an unreadable result exactly like an omitted output:
+                # retain any other pages, but do not claim this page as OCRed.
+                invalid_json_pages.add(page_no)
+                continue
+            json_output_pages.add(page_no)
             page_blocks = blocks_from_ndlocr_payload(payload)
             confidences = [
                 float(line["confidence"])
@@ -446,13 +459,26 @@ def extract_chunks_from_pdf_with_ndlocr(
             # Blocks are already source regions.  Do not merge them: doing so
             # would erase exact line provenance, bbox, and semantic block type.
             chunks.extend(page_chunks)
+            if page_chunks:
+                pages_with_text.add(page_no)
             if not outline_path and active_path:
                 inferred_path = list(active_path)
+    # ``ocr_pages`` is the set of parseable NDLOCR JSON outputs.  It must not
+    # be inferred from rendered input images.  ``missing_pages`` deliberately
+    # measures usable text, while callers can distinguish a missing JSON file
+    # through ``ocr_pages`` and ``invalid_json_pages``.
+    ocr_pages = sorted(json_output_pages)
+    pages_with_text_list = sorted(pages_with_text)
+    missing_pages = sorted(set(range(1, page_count + 1)) - pages_with_text)
     return chunks, {
         "is_scanned": False, "is_corrupted": False,
         "scanned_pages": [], "corrupted_pages": [],
         "total_pages": page_count, "parser": "ndlocr-lite",
-        "ocr_pages": list(range(1, page_count + 1)),
+        "ocr_pages": ocr_pages,
+        "pages_with_text": pages_with_text_list,
+        "missing_pages": missing_pages,
+        "empty_output_pages": sorted(json_output_pages - pages_with_text),
+        "invalid_json_pages": sorted(invalid_json_pages),
         "page_confidences": page_confidences,
         "blocks": total_blocks, "heading_blocks": heading_blocks,
         "dpi": dpi,

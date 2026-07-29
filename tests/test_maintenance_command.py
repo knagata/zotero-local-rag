@@ -42,16 +42,12 @@ class MaintenanceCommandTests(unittest.TestCase):
             calls = log_path.read_text(encoding="utf-8").splitlines() if log_path.exists() else []
             return result, calls
 
-    def test_enter_defaults_run_all_maintenance_steps(self):
+    def test_enter_defaults_skip_paid_summary_step(self):
         result, calls = self.run_command("\n\n\n\n\n")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        # No data/quality/summary_backfill_approved marker exists, so the summary
-        # step runs a bounded batch (default 10 items, 10 workers) rather than the
-        # full backfill (R17). A read-only artifact-status summary runs last (R19).
         self.assertEqual(calls, [
             "run src/index_from_zotero.py --progress",
             "run python scripts/rebuild_document_structure.py --all",
-            "run python scripts/build_structure_summaries.py --all --mode llm --limit 10 --workers 10 --embed",
             "run src/update_citations.py --all",
             "run python scripts/triage_quality_reports.py",
             "run python scripts/review_relation_reports.py",
@@ -73,18 +69,16 @@ class MaintenanceCommandTests(unittest.TestCase):
         ])
         self.assertIn("処理完了後にMaintenance-Widget.commandを再度起動", result.stdout)
 
-    def test_summary_batch_size_and_workers_are_configurable(self):
+    def test_summary_requires_database_gate(self):
         result, calls = self.run_command(
-            "\n\n\n\n\n",
-            extra_env={"SUMMARY_BACKFILL_BATCH_SIZE": "25", "SUMMARY_BACKFILL_WORKERS": "8"},
+            "\ny\nn\nn\nn\n\n",
+            extra_env={"SUMMARY_DATABASE_GATE": "tmp/nonexistent-database-gate.json"},
         )
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn(
-            "run python scripts/build_structure_summaries.py --all --mode llm --limit 25 --workers 8 --embed",
-            calls,
-        )
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertFalse(any("build_structure_summaries.py" in call for call in calls))
+        self.assertIn("DB監査gateがありません", result.stdout)
 
-    def test_auto_approval_runs_cloud_batch_without_prompt(self):
+    def test_auto_approval_never_runs_paid_cloud_steps(self):
         result, calls = self.run_command(
             "",
             extra_env={
@@ -93,11 +87,9 @@ class MaintenanceCommandTests(unittest.TestCase):
             },
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("すべての選択と開始確認を自動許可", result.stdout)
-        self.assertIn(
-            "run python scripts/run_mistral_ocr_batch.py --submit --state tmp/test_widget_auto_state.json",
-            calls,
-        )
+        self.assertIn("ローカル更新を自動許可", result.stdout)
+        self.assertFalse(any("build_structure_summaries.py" in call for call in calls))
+        self.assertFalse(any("run_mistral_ocr_batch.py" in call for call in calls))
 
     def test_user_can_skip_one_update(self):
         result, calls = self.run_command("\nn\n\n\n\n")

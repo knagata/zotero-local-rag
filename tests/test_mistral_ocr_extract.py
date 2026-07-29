@@ -199,6 +199,22 @@ class ExtractChunksMergeTests(unittest.TestCase):
         block_types = [md.get("block_type") for _cid, _text, md in chunks]
         self.assertIn("heading", block_types)
 
+    def test_short_ocr_page_is_not_erased_by_chunk_floor(self):
+        import tempfile
+        from src.mistral_ocr_extract import extract_chunks_from_mistral_ocr_result
+
+        with tempfile.TemporaryDirectory() as directory:
+            pdf_path = self._pdf(directory)
+            chunks, quality = extract_chunks_from_mistral_ocr_result(
+                Path(pdf_path), "ATT", {},
+                {"pages": [{"index": 0, "markdown": "* PING *", "blocks": []}]},
+            )
+
+        self.assertEqual([text for _cid, text, _md in chunks], ["* PING *"])
+        self.assertTrue(chunks[0][2]["quality_uncertain"])
+        self.assertEqual(chunks[0][2]["quality_uncertain_reason"], "short_ocr_page")
+        self.assertEqual(quality["missing_pages"], [])
+
 
 class OcrPageCoverageTests(unittest.TestCase):
     """P2-04 (2026-07-28): ocr_pages claimed every page of the source PDF

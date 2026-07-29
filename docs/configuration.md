@@ -93,7 +93,7 @@ LLMロールはプロバイダ接頭辞つきで指定します（例: `deepseek
 | `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` | ロールが `anthropic:` / `gemini:` の場合に必須 |
 | `LLM_OPENAI_BASE_URL` / `LLM_OPENAI_API_KEY` | ロールが `openai_compat:` の場合に必須 |
 | `SUMMARY_BATCH_MAX_ITEMS` / `SUMMARY_BATCH_WORKERS` | メンテナンス要約バッチの規模・並列度 |
-| `MAINTENANCE_AUTO_APPROVE` | `1`ならWidgetの全確認を自動許可、`0`なら対話確認 | `1` |
+| `MAINTENANCE_AUTO_APPROVE` | `1`ならローカル更新を自動許可。有料要約・Mistralは常に明示許可 | `1` |
 
 ### クラウド送信ポリシー
 
@@ -141,8 +141,8 @@ AIの印刷ページ番号は採用せず、本文で再発見した見出しの
 | `MISTRAL_OCR_BATCH_MAX_INPUT_BYTES` | Batch入力のbase64 JSONL概算上限。大容量PDFを一括uploadせず、残りは次回Batchへ回す | `104857600`（100 MiB） |
 | `MISTRAL_OCR_BATCH_UPLOAD_WORKERS` | 分割したBatch入力を並列uploadする最大数 | `3` |
 
-`Maintenance-Widget.command` は既定でMistral Batchを含む全ステップを自動許可します。
-`MAINTENANCE_AUTO_APPROVE=0` の場合は、5番目の質問で`y`を明示したときだけ候補キューを送信します。
+`Maintenance-Widget.command` は有料API処理をauto-approveしません。階層要約とMistral Batchは、
+`MAINTENANCE_AUTO_APPROVE`の値にかかわらず該当質問で`y`を明示した場合だけ実行します。
 Batch完了後にWidgetを再起動すると、
 保存済み結果を回収し、ページcoverage・文字量・言語・構造などの品質gateを通過した資料だけを
 V3へ採用します。採用済みBatchは状態ファイルに記録され、再実行しても二重採用しません。
@@ -162,7 +162,10 @@ active collectionへ切り替え済みの環境では通常 `Maintenance-Widget.
 
 ```bash
 uv run python scripts/rebuild_document_structure.py --all --collection zotero_paragraphs_v3
-uv run python scripts/build_structure_summaries.py --all --collection zotero_paragraphs_v3 --mode llm --limit 10 --embed
+uv run python scripts/audit_v3_cutover.py --new-only --new-collection zotero_paragraphs_v3 \
+  --output data/quality/server_database_gate.json
+uv run python scripts/build_structure_summaries.py --all --collection zotero_paragraphs_v3 \
+  --mode llm --limit 10 --embed --database-gate data/quality/server_database_gate.json
 ```
 
 いずれも`--limit N`で分割でき、`--dry-run`で対象確認、`--retry-failed`で再開、
@@ -176,9 +179,9 @@ SUMMARY_BATCH_WORKERS=10
 ```
 
 `Maintenance-Widget.command` の要約更新は、文書構造V3の葉からbottom-upに要約を生成し、
-LLM要約は `__sum_node` 検索索引へ反映します。全件LLM backfillはpilot→ユーザー承認後の
-運用で、承認マーカー `data/quality/summary_backfill_approved` が無い間は10件pilotのみ
-実行します（承認後は差分スキップにより現行fingerprint一致分をLLM呼び出しゼロでskip）。
+LLM要約は `__sum_node` 検索索引へ反映します。有料要約は
+`audit_v3_cutover.py --new-only`の合格レポートが現在のDB世代と一致するときだけ実行できます。
+現行fingerprint一致分はLLM呼び出しゼロでskipします。
 
 構造化事例DBは廃止済みのため、事例生成・品質確認は実行しません。事例を探す用途は原文を
 直接検索する `rag_search(search_mode="case")` が担います。
