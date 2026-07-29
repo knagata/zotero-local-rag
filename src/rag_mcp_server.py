@@ -22,8 +22,14 @@ from typing_extensions import TypedDict
 from pathlib import Path
 
 from env_utils import load_dotenv_native
+from v3_data_plane import (
+    V3_COLLECTION, enforce_environment as enforce_v3_environment,
+    manifest_path as v3_manifest_path,
+)
 
-load_dotenv_native()
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+load_dotenv_native(PROJECT_ROOT)
+enforce_v3_environment(PROJECT_ROOT)
 
 import chromadb
 from fastmcp import FastMCP
@@ -35,12 +41,15 @@ from search_fusion import language_balanced_order
 from hierarchical_retrieval import (
     explicit_note_intent, fuse_retrieval_paths, partition_leaf_ids, retrieval_policy_allowed,
 )
-from db_relations import get_disabled_summary_keys, get_item_summary as load_item_summary, get_node_descendant_chunks, get_node_descendant_leaf_ids
+from db_relations import (
+    get_document_node_summaries, get_node_descendant_chunks,
+    get_node_descendant_leaf_ids,
+)
 
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT = str(PROJECT_ROOT)
 CHROMA_DIR = os.environ.get("CHROMA_DIR", os.path.join(ROOT, "data", "chroma"))
-MANIFEST_PATH = os.environ.get("MANIFEST_PATH", os.path.join(ROOT, "data", "manifest.json"))
+MANIFEST_PATH = str(v3_manifest_path(PROJECT_ROOT))
 INDEXING_LOCK_PATH = os.path.join(ROOT, "data", "indexing.lock")
 _LOCK_STALE_HOURS = 4
 _LOG_PATH = os.path.join(ROOT, "data", "zotero-rag.log")
@@ -127,7 +136,7 @@ def _check_indexing_lock() -> tuple:
 # Collection name is intentionally configurable.
 # IMPORTANT: Chroma collections are dimension-fixed. If you switch embedding models
 # (e.g., 384-d MiniLM <-> 1024-d bge-m3), use a different collection name or rebuild.
-COLLECTION_NAME_DEFAULT = "zotero_paragraphs"
+COLLECTION_NAME_DEFAULT = V3_COLLECTION
 
 # Embedding model selection — delegated to embedder module (single source of truth).
 from embedder import (
@@ -241,7 +250,7 @@ def _db_mtimes() -> tuple[float, float]:
     """Return separate ``(chroma_db, manifest)`` mtimes.
 
     Opening a read-only Chroma client can touch only ``chroma.sqlite3``. The
-    indexer commits ``manifest.json`` after vector writes, including same-size
+    indexer commits ``manifest_v3.json`` after vector writes, including same-size
     replacements whose collection row count does not change.
     """
     db_mtime = 0.0
@@ -1261,8 +1270,17 @@ def rag_search(
 @mcp.tool()
 def get_item_summary(item_key: str) -> Dict[str, Any]:
     """Return a local search-index summary; verify research claims against source chunks."""
-    summary = load_item_summary((item_key or "").strip())
+    summary = _load_item_root_summary((item_key or "").strip())
     return {"item_key": item_key, "summary": summary}
+
+
+def _load_item_root_summary(item_key: str) -> Optional[Dict[str, Any]]:
+    if not item_key:
+        return None
+    for summary in get_document_node_summaries(item_key):
+        if summary.get("node_type") == "item_root":
+            return summary
+    return None
 
 
 def _hierarchical_search_v2(
@@ -1374,11 +1392,9 @@ def _hierarchical_search_v2(
         hit["hierarchical_rrf_score"] = hit.pop("rrf_score")
         if return_summaries:
             item_key = (hit.get("meta") or {}).get("itemKey")
-            summary = load_item_summary(item_key) if item_key else None
+            summary = _load_item_root_summary(item_key) if item_key else None
             hit["item_summary_snippet"] = (summary.get("summary") or "")[:120] if summary else ""
-            # Snippet is still sourced from the legacy item_summaries table until
-            # backfill replaces it with the item_root node summary (R8-2).
-            hit["item_summary_provenance"] = "legacy" if summary else "none"
+            hit["item_summary_provenance"] = "v3_item_root" if summary else "none"
         results.append(hit)
     response: Dict[str, Any] = {
         "results": results, "candidate_nodes": candidate_nodes,
@@ -1429,98 +1445,12 @@ def hierarchical_search(
         queries = expand_queries(queries, mode="default", timeout=5.0, logger=_log)
 
     paragraph_collection = _col()
-    # V3 is the active data plane after cutover.  Keep an explicit ``0`` as a
-    # rollback switch for the retained legacy route, but do not make a missing
-    # setting silently select that deprecated path.
-    if os.environ.get("HIERARCHICAL_SEARCH_V2_ENABLE", "1") == "1":
-        return _hierarchical_search_v2(
-            queries, k=k, k_items=k_items, where=where, include_direct=include_direct,
-            return_summaries=return_summaries, paragraph_collection=paragraph_collection,
-        )
-    embeddings = paragraph_collection._embedding_function(queries)
-    candidate_scores: dict[str, float] = {}
-    candidate_meta: dict[str, dict[str, Any]] = {}
-    warnings: list[str] = []
-    disabled_summaries = get_disabled_summary_keys()
-    client = getattr(paragraph_collection, "_chroma_client", None)
-    base_name = _EMB_COLLECTION_NAME or COLLECTION_NAME_DEFAULT
-    for suffix, result_count in (("sum_item", k_items), ("sum_section", max(k_items * 2, 20))):
-        try:
-            summary_collection = client.get_collection(f"{base_name}__{suffix}")
-            response = summary_collection.query(
-                query_embeddings=embeddings, n_results=result_count,
-                where={"summary_kind": "llm"},
-                include=["metadatas", "documents", "distances"],
-            )
-        except Exception as exc:
-            warnings.append(f"{suffix} collection unavailable: {exc}")
-            continue
-        for ranking in response.get("metadatas") or []:
-            for rank, metadata in enumerate(ranking, start=1):
-                if not isinstance(metadata, dict) or not metadata.get("itemKey"):
-                    continue
-                item_key = str(metadata["itemKey"])
-                section_id = str(metadata.get("section_id") or "")
-                disabled_key = (item_key, section_id if suffix == "sum_section" else "")
-                if disabled_key in disabled_summaries:
-                    continue
-                candidate_scores[item_key] = candidate_scores.get(item_key, 0.0) + 1.0 / (RRF_K + rank)
-                candidate_meta[item_key] = metadata
-
-    candidate_keys = sorted(candidate_scores, key=lambda key: (-candidate_scores[key], key))[:k_items]
-    candidate_response = rag_search(
-        queries, k=max(k * 3, k), where=where, include_item_keys=candidate_keys or None,
-        auto_expand=False, hybrid=True,
-    ) if candidate_keys else {"results": []}
-    direct_response = rag_search(
-        queries, k=max(k * 3, k), where=where, auto_expand=False, hybrid=True,
-    ) if include_direct else {"results": []}
-
-    fused: dict[str, dict[str, Any]] = {}
-    scores: dict[str, float] = {}
-    for weight, response in ((1.5, candidate_response), (1.0, direct_response)):
-        for rank, hit in enumerate(response.get("results") or [], start=1):
-            chunk_id = hit.get("id")
-            if not chunk_id:
-                continue
-            fused[chunk_id] = hit
-            scores[chunk_id] = scores.get(chunk_id, 0.0) + weight / (RRF_K + rank)
-    ordered_ids = sorted(scores, key=lambda chunk_id: (-scores[chunk_id], chunk_id))[:k]
-    results = []
-    for chunk_id in ordered_ids:
-        hit = dict(fused[chunk_id])
-        hit["hierarchical_rrf_score"] = scores[chunk_id]
-        if return_summaries:
-            item_key = (hit.get("meta") or {}).get("itemKey")
-            summary = (
-                load_item_summary(item_key)
-                if item_key and (str(item_key), "") not in disabled_summaries else None
-            )
-            hit["item_summary_snippet"] = (summary.get("summary") or "")[:120] if summary else ""
-        results.append(hit)
-
-    candidate_items = []
-    for item_key in candidate_keys:
-        metadata = candidate_meta.get(item_key, {})
-        summary = (
-            load_item_summary(item_key)
-            if return_summaries and (item_key, "") not in disabled_summaries else None
-        )
-        candidate_items.append({
-            "item_key": item_key, "title": metadata.get("title"), "year": metadata.get("year"),
-            "score": candidate_scores[item_key],
-            "summary_snippet": (summary.get("summary") or "")[:120] if summary else "",
-        })
-    response: Dict[str, Any] = {
-        "results": results, "candidate_items": candidate_items,
-        "reporting_obligation": (
-            "Verify claims against result chunks. If a summary concretely contradicts "
-            "them, call report_summary_quality before completing the answer."
-        ),
-    }
-    if warnings:
-        response["warnings"] = warnings
-    return response
+    # V3 is the only production retrieval route. The former environment rollback
+    # switch is intentionally ignored/overwritten by v3_data_plane.
+    return _hierarchical_search_v2(
+        queries, k=k, k_items=k_items, where=where, include_direct=include_direct,
+        return_summaries=return_summaries, paragraph_collection=paragraph_collection,
+    )
 
 
 @mcp.tool()

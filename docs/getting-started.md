@@ -72,19 +72,33 @@ Claude Desktopの設定例:
 
 このプロジェクトはPyPI未公開なので、`uvx zotero-local-rag`ではなくローカルディレクトリから実行します。
 
-## 4. 初回インデックスを作る
+## 4. サーバー用の設定だけを行う
 
-ウィザードの最後で実行できます。手動の場合:
+サーバーへ配置する場合は、Claude Desktop登録を行わない `--server` を使います。
 
 ```bash
-uv run src/index_from_zotero.py --progress
+uv run scripts/setup_wizard.py --server
 ```
 
-初回は埋め込みモデルの取得と全資料の処理があるため時間がかかります。二回目以降は差分だけ更新されます。
+Setupは`.env`と接続設定を作るだけで、DB構築・埋め込み・AI目次・OCR・階層AI要約を実行しません。
+これらは料金や長時間処理を伴い得るため、サーバー上で次のworkflowを順番に実行します。
+
+```bash
+bash Server-Database-Workflow.command
+```
+
+1. V3 DBをゼロから構築する（階層要約は生成しない）
+2. Zoteroの対象・原本coverage・DB整合性を監査する
+3. 合格したDB世代に対してのみ、有料の階層AI要約を生成・索引化する
+4. 階層要約と要約索引を監査する
+
+フェーズ2が成功しない限りフェーズ3は開始できません。`PDF_AI_TOC_FAST_PATH_ENABLE=1` の
+Full構成では、フェーズ1中にAI目次推定がAPIを使用し得る点にも注意してください。
 
 ## 5. 動作を確認する
 
-Claude Desktopを再起動し、`server_status`を呼び出します。`status: ok`とコレクション件数が確認できれば完了です。
+フェーズ2まで完了した後にClaude Desktopを再起動し、`server_status`を呼び出します。
+`status: ok`とコレクション件数が確認できれば完了です。
 
 設定状態だけを秘密値なしで確認する場合:
 

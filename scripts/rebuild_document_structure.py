@@ -23,6 +23,7 @@ from src.db_relations import (
     mark_artifact_status,
     replace_document_structure,
 )
+from src.v3_data_plane import V3_COLLECTION
 from src.document_structure import STRUCTURE_VERSION, build_document_structure
 from src.orphan_cleanup import note_only_item
 
@@ -165,9 +166,12 @@ def main() -> None:
     parser.add_argument("--limit", type=int, default=0, help="Maximum number of selected items (0 = all)")
     parser.add_argument("--retry-failed", action="store_true", help="Select retryable failed structure items only")
     parser.add_argument(
-        "--collection", help="Source Chroma collection; use zotero_paragraphs_v3 during parallel migration.",
+        "--collection", default=V3_COLLECTION,
+        help="Source Chroma collection (V3 only).",
     )
     args = parser.parse_args()
+    if args.collection != V3_COLLECTION:
+        parser.error(f"--collection must be {V3_COLLECTION!r}; the legacy data plane is retired")
     keys = list(dict.fromkeys(args.item or list_item_keys(collection_name=args.collection))) if args.all or args.item else []
     if args.retry_failed:
         keys = [

@@ -6,17 +6,37 @@ export PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$HOME/.local/bin:$HOME
 
 gate_path="${SERVER_DB_GATE_PATH:-data/quality/server_database_gate.json}"
 summary_audit_path="${SERVER_SUMMARY_AUDIT_PATH:-data/quality/server_summary_audit.json}"
+zotero_audit_path="${SERVER_ZOTERO_AUDIT_PATH:-data/quality/server_zotero_reconciliation.json}"
+source_audit_path="${SERVER_SOURCE_AUDIT_PATH:-data/quality/server_source_verification.json}"
 collection="${CHROMA_COLLECTION:-zotero_paragraphs_v3}"
 manifest="${MANIFEST_PATH:-data/manifest_v3.json}"
 lexical_db="${LEXICAL_DB_PATH:-data/lexical_v3.sqlite3}"
-pipeline_config="${PIPELINE_CONFIG_PATH:-data/chroma/embedder_config_v3.json}"
+chroma_dir="${CHROMA_DIR:-data/chroma}"
+pipeline_config="${PIPELINE_CONFIG_PATH:-$chroma_dir/embedder_config_v3.json}"
 
 # This workflow is deliberately V3-only. Never let a missing server flag turn
 # its destructive rebuild phase into the legacy reset path.
+if [[ "$collection" != "zotero_paragraphs_v3" ]]; then
+    echo "[停止] 旧collectionまたは任意collectionは使用できません: $collection"
+    exit 2
+fi
+if [[ "$(basename "$manifest")" != "manifest_v3.json" ]]; then
+    echo "[停止] 旧manifestは使用できません: $manifest"
+    exit 2
+fi
+if [[ "$(basename "$lexical_db")" != "lexical_v3.sqlite3" ]]; then
+    echo "[停止] 旧FTSは使用できません: $lexical_db"
+    exit 2
+fi
+if [[ "$pipeline_config" != "$chroma_dir/embedder_config_v3.json" ]]; then
+    echo "[停止] pipeline configはV3 Chromaディレクトリ内に固定されています。"
+    exit 2
+fi
 export INGEST_STRUCTURED_V3_ENABLE=1
 export CHROMA_COLLECTION="$collection"
 export MANIFEST_PATH="$manifest"
 export LEXICAL_DB_PATH="$lexical_db"
+export CHROMA_DIR="$chroma_dir"
 
 echo "============================================================"
 echo " Zotero Local RAG - Server Database Workflow"
@@ -59,9 +79,21 @@ case "$phase" in
         echo "[次] フェーズ2を別に実行してDBを監査してください。"
         ;;
     2)
+        # A failed re-audit must never leave a previous passing gate available
+        # for phase 3.  The gate is recreated only after every phase-2 check.
+        if [[ -e "$gate_path" ]]; then
+            echo "[情報] 前回のDB監査gateを無効化します: $gate_path"
+            rm -f -- "$gate_path"
+        fi
+        run_step "Zotero実在庫とmanifestの完全照合" uv run python scripts/verify_zotero_reconciliation.py \
+            --manifest "$manifest" --output "$zotero_audit_path"
+        run_step "原PDFと索引の照合" uv run python scripts/verify_against_source.py \
+            --collection "$collection" --manifest "$manifest" --chroma-dir "$chroma_dir" \
+            --output "$source_audit_path"
         run_step "V3 DB完全監査" uv run python scripts/audit_v3_cutover.py \
             --new-only --new-collection "$collection" --manifest "$manifest" \
             --lexical-db "$lexical_db" --pipeline-config "$pipeline_config" \
+            --zotero-report "$zotero_audit_path" --source-report "$source_audit_path" \
             --output "$gate_path"
         echo ""
         echo "[合格] 現在のDB世代に結び付いた要約実行gateを作成しました: $gate_path"

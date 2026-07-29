@@ -9,6 +9,10 @@ from typing import Any
 
 import numpy as np
 
+try:
+    from .v3_data_plane import collection_name as v3_collection_name
+except ImportError:
+    from v3_data_plane import collection_name as v3_collection_name
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CACHE_PATH = PROJECT_ROOT / "data" / "item_vectors_cache.json"
@@ -20,18 +24,7 @@ def _open_collection():
 
     chroma_dir = Path(os.environ.get("CHROMA_DIR", PROJECT_ROOT / "data" / "chroma"))
     client = chromadb.PersistentClient(path=str(chroma_dir))
-    requested = os.environ.get("CHROMA_COLLECTION", "").strip()
-    if requested:
-        return client, client.get_collection(requested)
-
-    names = [entry.name for entry in client.list_collections()]
-    preferred = [name for name in names if name.startswith("zotero_paragraphs")]
-    if not preferred:
-        client.close()
-        raise RuntimeError("No zotero_paragraphs Chroma collection was found.")
-    # Prefer the unsuffixed legacy name, otherwise the only/current suffixed collection.
-    name = "zotero_paragraphs" if "zotero_paragraphs" in preferred else sorted(preferred)[-1]
-    return client, client.get_collection(name)
+    return client, client.get_collection(v3_collection_name())
 
 
 def get_item_vectors(
@@ -143,12 +136,16 @@ def get_item_meta(
                        MAX(CASE WHEN em.key = 'year' THEN em.int_value END),
                        MAX(CASE WHEN em.key = 'year' THEN em.string_value END)
                    ) AS year
-            FROM embedding_metadata ikey
+            FROM collections c
+            JOIN segments s ON s.collection = c.id AND s.scope = 'METADATA'
+            JOIN embeddings e ON e.segment_id = s.id
+            JOIN embedding_metadata ikey ON ikey.id = e.id
             JOIN embedding_metadata em ON em.id = ikey.id
-            WHERE ikey.key = 'itemKey' AND ikey.string_value IN ({placeholders})
+            WHERE c.name = ? AND ikey.key = 'itemKey'
+              AND ikey.string_value IN ({placeholders})
             GROUP BY ikey.string_value
             """,
-            requested,
+            [v3_collection_name(), *requested],
         ).fetchall()
         connection.close()
         return {

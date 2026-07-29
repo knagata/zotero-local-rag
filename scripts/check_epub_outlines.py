@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-manifest.json 内の EPUB ファイルから目次（章構造）を取得して表示するスクリプト。
+manifest_v3.json 内の EPUB ファイルから目次（章構造）を取得して表示するスクリプト。
 EPubは toc.ncx (epub2) または nav.xhtml (epub3) に必ず目次が入っている。
 """
 
@@ -11,7 +11,7 @@ import zipfile
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
-MANIFEST_PATH = Path(__file__).parent.parent / "data" / "manifest.json"
+MANIFEST_PATH = Path(__file__).parent.parent / "data" / "manifest_v3.json"
 
 # XML namespace
 NS_NCX = "http://www.daisy.org/z3986/2005/ncx/"

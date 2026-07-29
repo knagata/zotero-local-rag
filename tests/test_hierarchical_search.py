@@ -133,59 +133,18 @@ class HierarchicalSearchTests(unittest.TestCase):
             [10, 20],
         )
 
-    def test_summary_routing_only_queries_llm_summaries(self):
-        summary_collection = Mock()
-        summary_collection.query.return_value = {
-            "metadatas": [[{"itemKey": "LLM", "title": "LLM summary"}]],
-        }
-        client = Mock()
-        client.get_collection.return_value = summary_collection
+    def test_retired_route_flag_cannot_disable_v3_routing(self):
         paragraphs = Mock()
-        paragraphs._embedding_function.return_value = [[0.1, 0.2]]
-        paragraphs._chroma_client = client
-        # This exercises the legacy (non-v2) summary routing path, so pin the
-        # flag off — the repo .env enables v2 globally after cutover.
+        expected = {"results": [], "candidate_nodes": []}
         with patch.dict(os.environ, {"HIERARCHICAL_SEARCH_V2_ENABLE": "0"}), patch.object(
             rag_mcp_server, "_col", return_value=paragraphs
         ), patch.object(
-            rag_mcp_server, "rag_search", return_value={"results": []}
-        ), patch.object(
-            rag_mcp_server, "load_item_summary", return_value=None
-        ), patch.object(
-            rag_mcp_server, "get_disabled_summary_keys", return_value=set()
-        ):
+            rag_mcp_server, "_hierarchical_search_v2", return_value=expected,
+        ) as v3_search:
             response = rag_mcp_server.hierarchical_search("gift exchange", auto_expand=False)
 
-        self.assertEqual(response["candidate_items"][0]["item_key"], "LLM")
-        self.assertEqual(summary_collection.query.call_count, 2)
-        for call in summary_collection.query.call_args_list:
-            self.assertEqual(call.kwargs["where"], {"summary_kind": "llm"})
-        self.assertIn("report_summary_quality", response["reporting_obligation"])
-
-    def test_disabled_summary_is_not_used_for_routing(self):
-        item_collection = Mock()
-        item_collection.query.return_value = {
-            "metadatas": [[{"itemKey": "ITEM", "title": "item"}]],
-        }
-        section_collection = Mock()
-        section_collection.query.return_value = {
-            "metadatas": [[{
-                "itemKey": "ITEM", "section_id": "w0", "title": "section",
-            }]],
-        }
-        client = Mock()
-        client.get_collection.side_effect = [item_collection, section_collection]
-        paragraphs = Mock()
-        paragraphs._embedding_function.return_value = [[0.1, 0.2]]
-        paragraphs._chroma_client = client
-        with patch.object(rag_mcp_server, "_col", return_value=paragraphs), patch.object(
-            rag_mcp_server, "rag_search", return_value={"results": []}
-        ), patch.object(
-            rag_mcp_server, "get_disabled_summary_keys",
-            return_value={("ITEM", ""), ("ITEM", "w0")},
-        ):
-            response = rag_mcp_server.hierarchical_search("query", auto_expand=False)
-        self.assertEqual(response["candidate_items"], [])
+        self.assertIs(response, expected)
+        v3_search.assert_called_once()
 
     def test_v2_routes_node_hit_to_descendant_chunks_and_keeps_direct_search(self):
         summary_collection = Mock()
@@ -215,7 +174,7 @@ class HierarchicalSearchTests(unittest.TestCase):
                 {"results": [item_hit]}, {"results": [item_hit]}, {"results": [direct_hit]},
             ]
         ) as mock_search, patch.object(
-            rag_mcp_server, "load_item_summary", return_value=None
+            rag_mcp_server, "get_document_node_summaries", return_value=[]
         ):
             response = rag_mcp_server.hierarchical_search("query", auto_expand=False)
         self.assertEqual(response["candidate_nodes"][0]["node_id"], "dn:chapter")
@@ -229,6 +188,17 @@ class HierarchicalSearchTests(unittest.TestCase):
         item_candidate = next(c for c in response["candidate_items"] if c["item_key"] == "ITEM")
         self.assertEqual(item_candidate["title"], "Real Book Title")
         self.assertEqual(item_candidate["year"], 1990)
+
+    def test_item_summary_uses_v3_item_root(self):
+        summaries = [
+            {"node_type": "chapter", "summary": "chapter"},
+            {"node_type": "item_root", "summary": "whole item"},
+        ]
+        with patch.object(
+            rag_mcp_server, "get_document_node_summaries", return_value=summaries,
+        ):
+            result = rag_mcp_server.get_item_summary("ITEM")
+        self.assertEqual(result["summary"]["summary"], "whole item")
 
     def test_v2_routes_same_item_search_by_aggregated_node_rrf(self):
         """Two lower-ranked nodes for B beat A's first single node."""

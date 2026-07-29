@@ -51,7 +51,6 @@ ask_disabled() {
 run_library=0
 run_summaries=0
 run_citations=0
-review_relations=0
 run_mistral_batch=0
 mistral_state_path="${MISTRAL_BATCH_STATE_PATH:-data/mistral_ocr_batch_state.json}"
 
@@ -68,9 +67,7 @@ fi
 if ask_enabled "3. Citation Networkの未処理・エラー分を更新する"; then
     run_citations=1
 fi
-if ask_enabled "4. 品質報告をAI判定し、曖昧な例だけ確認する"; then
-    review_relations=1
-fi
+echo "4. 品質報告のAI判定 [退役: 旧要約DBを参照するため実行不可]"
 if ask_disabled "5. Mistral OCR Batchを送信・回収・品質確認・採用する（クラウド送信を含む）"; then
     run_mistral_batch=1
 fi
@@ -80,10 +77,9 @@ echo "実行予定:"
 if [[ "$run_library" == "1" ]]; then echo "  ✓ ライブラリ更新"; fi
 if [[ "$run_summaries" == "1" ]]; then echo "  ✓ 文書構造要約・検索索引の更新"; fi
 if [[ "$run_citations" == "1" ]]; then echo "  ✓ Citation Network更新"; fi
-if [[ "$review_relations" == "1" ]]; then echo "  ✓ 品質報告の自動判定・例外確認"; fi
 if [[ "$run_mistral_batch" == "1" ]]; then echo "  ✓ Mistral OCR Batch処理"; fi
 
-if [[ "$run_library" == "0" && "$run_summaries" == "0" && "$run_citations" == "0" && "$review_relations" == "0" && "$run_mistral_batch" == "0" ]]; then
+if [[ "$run_library" == "0" && "$run_summaries" == "0" && "$run_citations" == "0" && "$run_mistral_batch" == "0" ]]; then
     echo "  （選択なし）"
     echo ""
     echo "更新を行わず終了します。"
@@ -260,12 +256,6 @@ fi
 
 if [[ "$run_citations" == "1" ]]; then
     run_step "Citation Network更新" uv run src/update_citations.py --all
-fi
-
-if [[ "$review_relations" == "1" ]]; then
-    run_step "品質報告のAI自動判定" uv run python scripts/triage_quality_reports.py
-    run_step "曖昧な引用関係レポート確認" uv run python scripts/review_relation_reports.py
-    run_step "曖昧な要約品質レポート確認" uv run python scripts/review_summary_quality_reports.py
 fi
 
 # 仕様§8: メンテナンス末尾に状態台帳サマリを表示する（read-only）。

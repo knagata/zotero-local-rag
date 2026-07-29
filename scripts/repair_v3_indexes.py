@@ -82,6 +82,8 @@ def main() -> int:
     parser.add_argument("--lexical-db", type=Path, default=ROOT / "data" / "lexical_v3.sqlite3")
     parser.add_argument("--manifest", type=Path, default=ROOT / "data" / "manifest_v3.json")
     args = parser.parse_args()
+    if args.collection != "zotero_paragraphs_v3":
+        parser.error("--collection must be 'zotero_paragraphs_v3'; the legacy data plane is retired")
 
     manifest = load_manifest(args.manifest)
     manifest_files = manifest.get("files") if isinstance(manifest.get("files"), dict) else {}

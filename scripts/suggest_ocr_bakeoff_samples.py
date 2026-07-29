@@ -111,7 +111,7 @@ def profile_pdf(path: Path, quality: Mapping[str, Any]) -> dict[str, Any]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--manifest", type=Path, default=ROOT / "data" / "manifest.json")
+    parser.add_argument("--manifest", type=Path, default=ROOT / "data" / "manifest_v3.json")
     parser.add_argument("--top", type=int, default=5)
     parser.add_argument("--max-files", type=int, default=0)
     parser.add_argument("--output", type=Path, required=True)

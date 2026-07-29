@@ -30,6 +30,39 @@ class StructuredV3IndexConfigTests(unittest.TestCase):
         )
         self.assertEqual(result.stdout.strip(), "manifest_v3.json zotero_paragraphs_v3 lexical_v3.sqlite3")
 
+    def test_empty_data_plane_environment_still_defaults_to_v3(self):
+        env = os.environ.copy()
+        for name in (
+            "INGEST_STRUCTURED_V3_ENABLE", "MANIFEST_PATH",
+            "CHROMA_COLLECTION", "LEXICAL_DB_PATH",
+        ):
+            env.pop(name, None)
+        result = subprocess.run(
+            [sys.executable, "-c", (
+                "import sys; sys.path.insert(0, 'src'); import index_from_zotero as m; "
+                "import os; print(m.STRUCTURED_V3_ENABLE, m.MANIFEST_PATH.name, "
+                "m.CHROMA_COLLECTION_ENV, os.environ['LEXICAL_DB_PATH'].split('/')[-1])"
+            )], cwd=ROOT, env=env, text=True, capture_output=True, check=True,
+        )
+        self.assertEqual(
+            result.stdout.strip(),
+            "True manifest_v3.json zotero_paragraphs_v3 lexical_v3.sqlite3",
+        )
+
+    def test_explicit_legacy_collection_stops_import(self):
+        env = os.environ.copy()
+        env.update({
+            "INGEST_STRUCTURED_V3_ENABLE": "1",
+            "CHROMA_COLLECTION": "zotero_paragraphs",
+        })
+        result = subprocess.run(
+            [sys.executable, "-c", (
+                "import sys; sys.path.insert(0, 'src'); import index_from_zotero"
+            )], cwd=ROOT, env=env, text=True, capture_output=True,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("only production collection", result.stderr)
+
     def test_item_limit_keeps_all_attachments_of_selected_item(self):
         from index_from_zotero import _select_item_scope
 

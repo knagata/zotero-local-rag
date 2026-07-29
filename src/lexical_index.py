@@ -7,13 +7,19 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Iterable
 
+try:
+    from .v3_data_plane import lexical_path as v3_lexical_path
+except ImportError:
+    from v3_data_plane import lexical_path as v3_lexical_path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_DB_PATH = PROJECT_ROOT / "data" / "lexical.sqlite3"
+DEFAULT_DB_PATH = PROJECT_ROOT / "data" / "lexical_v3.sqlite3"
 
 
 def _path(path: Path | None = None) -> Path:
-    return path or Path(os.environ.get("LEXICAL_DB_PATH", DEFAULT_DB_PATH))
+    if path is not None:
+        return path
+    return v3_lexical_path(PROJECT_ROOT)
 
 
 def _connect(path: Path | None = None) -> sqlite3.Connection:

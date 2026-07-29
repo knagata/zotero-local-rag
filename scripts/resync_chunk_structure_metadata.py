@@ -29,14 +29,17 @@ from src.db_relations import get_db_connection  # noqa: E402
 from src.structure_metadata_sync import (  # noqa: E402
     desired_chunk_metadata, orphaned_chunk_ids, stale_chunk_updates,
 )
+from src.v3_data_plane import V3_COLLECTION  # noqa: E402
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--item", action="append", help="Limit to item keys; repeatable.")
     parser.add_argument("--apply", action="store_true", help="Write. Without it, report only.")
-    parser.add_argument("--collection", default=None)
+    parser.add_argument("--collection", default=V3_COLLECTION)
     args = parser.parse_args()
+    if args.collection != V3_COLLECTION:
+        parser.error(f"--collection must be {V3_COLLECTION!r}; the legacy data plane is retired")
 
     import chromadb
 

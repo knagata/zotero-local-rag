@@ -37,7 +37,9 @@ except ImportError:  # direct execution with src/ on sys.path
 #: Provider prefixes that mean "a real, reachable model is configured".
 #: ``codex_cli`` is deliberately included: it is a local CLI agent rather than
 #: a metered API, but it is still an LLM the features can call.
-_LLM_PROVIDERS = ("deepseek", "anthropic", "gemini", "openai_compat", "codex_cli")
+_LLM_PROVIDERS = (
+    "deepseek", "anthropic", "gemini", "openai_compat", "codex_cli", "claude_cli",
+)
 
 _TRUE = {"1", "true", "yes", "on"}
 _FALSE = {"0", "false", "no", "off"}
@@ -61,7 +63,20 @@ def llm_configured() -> bool:
     _ensure_env_loaded()
     for role in ("LLM_CHEAP", "LLM_STANDARD", "LLM_REVIEW"):
         spec = _env(role).casefold()
-        if any(spec.startswith(f"{provider}:") for provider in _LLM_PROVIDERS):
+        if ":" not in spec:
+            continue
+        provider = spec.partition(":")[0]
+        if provider not in _LLM_PROVIDERS:
+            continue
+        if provider == "deepseek" and not _env("DEEPSEEK_API_KEY"):
+            continue
+        if provider == "anthropic" and not _env("ANTHROPIC_API_KEY"):
+            continue
+        if provider == "gemini" and not _env("GEMINI_API_KEY"):
+            continue
+        if provider == "openai_compat" and not _env("LLM_OPENAI_BASE_URL"):
+            continue
+        if spec:
             return True
     return False
 

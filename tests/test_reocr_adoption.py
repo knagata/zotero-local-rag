@@ -71,7 +71,6 @@ class ReocrAdoptionTests(unittest.TestCase):
             with (
                 patch("src.reocr_adoption.replace_document_structure") as replace_structure,
                 patch("src.reocr_adoption.delete_document_node_summaries"),
-                patch("src.reocr_adoption.invalidate_item_summaries"),
             ):
                 result = adopt_prepared_reocr(
                     item_key="ITEM", attachment_key="ATT", prepared=prepared(),

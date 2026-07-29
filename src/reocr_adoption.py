@@ -12,7 +12,6 @@ from typing import Any, Callable, Mapping, Sequence
 
 from .db_relations import (
     delete_document_node_summaries,
-    invalidate_item_summaries,
     mark_artifact_status,
     replace_document_structure,
 )
@@ -176,7 +175,6 @@ def adopt_prepared_reocr(
             confidence=built["confidence"],
         )
         delete_document_node_summaries(item_key)
-        invalidate_item_summaries(item_key)
         status_writer(
             item_key, "extraction", "success", attachment_key=attachment_key,
             source_fingerprint=built["source_fingerprint"],

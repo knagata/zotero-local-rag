@@ -72,7 +72,7 @@ def candidate_rows(
 def main() -> None:
     output = ROOT / "evaluations" / "outline_gold_v1"
     output.mkdir(parents=True, exist_ok=True)
-    manifest_data = json.loads((ROOT / "data" / "manifest.json").read_text(encoding="utf-8"))
+    manifest_data = json.loads((ROOT / "data" / "manifest_v3.json").read_text(encoding="utf-8"))
     files = manifest_data["files"]
     package: list[dict[str, Any]] = []
     for key, role, ai_filename in SELECTION:

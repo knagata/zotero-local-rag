@@ -43,23 +43,20 @@ class MaintenanceCommandTests(unittest.TestCase):
             return result, calls
 
     def test_enter_defaults_skip_paid_summary_step(self):
-        result, calls = self.run_command("\n\n\n\n\n")
+        result, calls = self.run_command("\n\n\n\n")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(calls, [
             "run src/index_from_zotero.py --progress",
             "run python scripts/rebuild_document_structure.py --all",
             "run src/update_citations.py --all",
-            "run python scripts/triage_quality_reports.py",
-            "run python scripts/review_relation_reports.py",
-            "run python scripts/review_summary_quality_reports.py",
             "run python scripts/list_artifact_status.py --unresolved-only",
         ])
 
     def test_explicit_mistral_permission_submits_new_batch_and_explains_followup(self):
-        # The fifth response explicitly permits the cloud Batch submission;
-        # the sixth confirms the planned work.
+        # The fourth response explicitly permits the cloud Batch submission;
+        # the fifth confirms the planned work.
         result, calls = self.run_command(
-            "n\nn\nn\nn\ny\n\n",
+            "n\nn\nn\ny\n\n",
             extra_env={"MISTRAL_BATCH_STATE_PATH": "tmp/test_widget_mistral_state.json"},
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -71,7 +68,7 @@ class MaintenanceCommandTests(unittest.TestCase):
 
     def test_summary_requires_database_gate(self):
         result, calls = self.run_command(
-            "\ny\nn\nn\nn\n\n",
+            "\ny\nn\nn\n\n",
             extra_env={"SUMMARY_DATABASE_GATE": "tmp/nonexistent-database-gate.json"},
         )
         self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
@@ -90,22 +87,20 @@ class MaintenanceCommandTests(unittest.TestCase):
         self.assertIn("ローカル更新を自動許可", result.stdout)
         self.assertFalse(any("build_structure_summaries.py" in call for call in calls))
         self.assertFalse(any("run_mistral_ocr_batch.py" in call for call in calls))
+        self.assertFalse(any("triage_quality_reports.py" in call for call in calls))
 
     def test_user_can_skip_one_update(self):
-        result, calls = self.run_command("\nn\n\n\n\n")
+        result, calls = self.run_command("\nn\n\n\n")
         self.assertEqual(result.returncode, 0)
         self.assertEqual(calls, [
             "run src/index_from_zotero.py --progress",
             "run python scripts/rebuild_document_structure.py --all",
             "run src/update_citations.py --all",
-            "run python scripts/triage_quality_reports.py",
-            "run python scripts/review_relation_reports.py",
-            "run python scripts/review_summary_quality_reports.py",
             "run python scripts/list_artifact_status.py --unresolved-only",
         ])
 
     def test_failure_stops_later_updates(self):
-        result, calls = self.run_command("\n\n\n\n\n", fail_first=True)
+        result, calls = self.run_command("\n\n\n\n", fail_first=True)
         self.assertEqual(result.returncode, 7)
         self.assertEqual(calls, ["run src/index_from_zotero.py --progress"])
         self.assertIn("後続処理を実行せず終了", result.stdout)

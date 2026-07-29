@@ -18,8 +18,10 @@ from pathlib import Path
 
 try:
     from .reference_text import is_short_form_reference, s2_candidate_is_supported
+    from .v3_data_plane import collection_name as v3_collection_name
 except ImportError:  # pragma: no cover - direct script imports
     from reference_text import is_short_form_reference, s2_candidate_is_supported
+    from v3_data_plane import collection_name as v3_collection_name
 
 
 class S2RetryExhaustedError(Exception):
@@ -130,49 +132,8 @@ def _configured_collection_name() -> str:
     the same Chroma directory.  Match the indexer's configuration instead.
     """
     global _CONFIGURED_COLLECTION_CACHE
-    explicit = (os.environ.get("CHROMA_COLLECTION") or "").strip()
-    if explicit:
-        return explicit
-
-    v3_enabled = os.environ.get("INGEST_STRUCTURED_V3_ENABLE", "0") == "1"
-    # V3 has its own active-pipeline config.  Do not fall back to the legacy
-    # config in V3 mode: immediately after a V3 rebuild it can still describe
-    # a populated legacy collection while the V3 target is intentionally empty.
-    config_names = ("embedder_config_v3.json",) if v3_enabled else ("embedder_config.json",)
-    config_path = CHROMA_DIR / config_names[0]
-    try:
-        config_file_stat = config_path.stat()
-        config_stat: Optional[Tuple[int, int]] = (
-            int(config_file_stat.st_mtime_ns), int(config_file_stat.st_size),
-        )
-    except OSError:
-        config_stat = None
-    cache_key: Tuple[Any, ...] = (str(CHROMA_DIR), v3_enabled, config_stat)
-    if (
-        _CONFIGURED_COLLECTION_CACHE is not None
-        and _CONFIGURED_COLLECTION_CACHE[0] == cache_key
-    ):
-        return _CONFIGURED_COLLECTION_CACHE[1]
-    for config_name in config_names:
-        try:
-            payload = json.loads((CHROMA_DIR / config_name).read_text(encoding="utf-8"))
-            configured = str(payload.get("collection") or "").strip()
-            if configured:
-                _CONFIGURED_COLLECTION_CACHE = (cache_key, configured)
-                return configured
-        except (OSError, ValueError, TypeError):
-            continue
-
-    # Structured V3 intentionally uses an unsuffixed fixed collection name.
-    if v3_enabled:
-        configured = "zotero_paragraphs_v3"
-        _CONFIGURED_COLLECTION_CACHE = (cache_key, configured)
-        return configured
-
-    # Legacy indexing resolves its default from the active embedder dimension.
-    # Do the same rather than guessing from collections already on disk.
-    from embedder import resolve_collection_name
-    configured = resolve_collection_name(_get_emb_fn(), default="zotero_paragraphs")
+    configured = v3_collection_name()
+    cache_key: Tuple[Any, ...] = (str(CHROMA_DIR), configured)
     _CONFIGURED_COLLECTION_CACHE = (cache_key, configured)
     return configured
 

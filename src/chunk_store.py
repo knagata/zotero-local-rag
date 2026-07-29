@@ -1,13 +1,16 @@
 """Read paragraph chunks from Chroma's SQLite metadata store without loading HNSW."""
 from __future__ import annotations
 
-import json
 import os
 import re
 import sqlite3
 from pathlib import Path
 from typing import Any
 
+try:
+    from .v3_data_plane import collection_name as v3_collection_name
+except ImportError:
+    from v3_data_plane import collection_name as v3_collection_name
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CHROMA_DIR = Path(os.environ.get("CHROMA_DIR", ROOT / "data" / "chroma"))
@@ -18,32 +21,8 @@ def natural_chunk_key(chunk_id: str) -> list[Any]:
 
 
 def active_collection_name(chroma_dir: Path = DEFAULT_CHROMA_DIR) -> str | None:
-    explicit = (os.environ.get("CHROMA_COLLECTION") or "").strip()
-    if explicit:
-        return explicit
-    try:
-        config = json.loads((chroma_dir / "embedder_config.json").read_text(encoding="utf-8"))
-        name = str(config.get("collection") or "").strip()
-        if name:
-            return name
-    except (OSError, ValueError, TypeError):
-        pass
-    db_path = chroma_dir / "chroma.sqlite3"
-    if not db_path.exists():
-        return None
-    connection = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5)
-    try:
-        row = connection.execute(r'''
-            SELECT c.name, COUNT(e.id) AS n FROM collections c
-            LEFT JOIN segments s ON s.collection = c.id AND s.scope = 'METADATA'
-            LEFT JOIN embeddings e ON e.segment_id = s.id
-            WHERE c.name NOT LIKE '%\_\_sum\_%' ESCAPE '\'
-              AND c.name NOT LIKE '%\_\_cases' ESCAPE '\'
-            GROUP BY c.id ORDER BY n DESC, c.name LIMIT 1
-        ''').fetchone()
-        return str(row[0]) if row else None
-    finally:
-        connection.close()
+    del chroma_dir  # the active collection is no longer inferred from database contents
+    return v3_collection_name()
 
 
 def _db_path(chroma_dir: Path) -> Path:

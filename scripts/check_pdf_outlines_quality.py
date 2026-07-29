@@ -21,7 +21,7 @@ except ImportError:
     print("ERROR: PyMuPDF がインストールされていません。")
     sys.exit(1)
 
-MANIFEST_PATH = Path(__file__).parent.parent / "data" / "manifest.json"
+MANIFEST_PATH = Path(__file__).parent.parent / "data" / "manifest_v3.json"
 
 # ファイル名パターン（スキャンPDF結合の目次エントリによく見られる）
 RE_FILENAME_LIKE = re.compile(

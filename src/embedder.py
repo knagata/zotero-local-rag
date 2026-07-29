@@ -257,14 +257,14 @@ def resolve_collection_name(
     ef,
     *,
     env_value: str | None = None,
-    default: str = "zotero_paragraphs",
+    default: str = "zotero_paragraphs_v3",
     suffix: str | None = None,
 ) -> str:
     """Resolve a ChromaDB collection name.
 
     If *env_value* is provided and non-empty, it is used verbatim.
     Otherwise the embedding dimension is probed and the *default* name
-    is suffixed with ``_<dim>`` (e.g. ``zotero_paragraphs_384``) to prevent
+    is suffixed with ``_<dim>`` (e.g. ``zotero_paragraphs_v3_384``) to prevent
     dimension mismatch when switching embedding models.
 
     Args:

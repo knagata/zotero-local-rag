@@ -75,9 +75,10 @@ uv run python scripts/eval_retrieval.py data/quality/gold_qa.jsonl --k 10 --incl
 - `data/lexical_v3.sqlite3`
 - `data/manifest_v3.json`
 
-旧（legacy）の `manifest.json` / `lexical.sqlite3` / 旧collectionはrollback用に1世代保持しています。
+旧collection・`manifest.json`・`lexical.sqlite3`は本番経路では使用しません。復旧が必要な場合は、
+現在のV3データ面をバックアップから復元するか、原本からServer workflowのフェーズ1を再実行します。
 
-大規模修復前だけ `data/backups/` にスナップショットを作成します。修復後にDB整合性と回帰テストを確認し、古い中間バックアップを削除します。`data/`はGitやSoftware Updateでは同期されないため、必要なら利用者側の暗号化バックアップへ保存してください。
+大規模修復前だけ `data/backups/` にV3スナップショットを作成します。修復後にDB整合性と回帰テストを確認し、古い中間バックアップを削除します。`data/`はGitやSoftware Updateでは同期されないため、必要なら利用者側の暗号化バックアップへ保存してください。
 
 ## ドキュメント方針
 

@@ -27,7 +27,8 @@ from src.document_structure import STRUCTURE_VERSION, source_fingerprint
 from src.lexical_index import list_chunk_ids as list_lexical_chunk_ids
 from src.manifest import load_manifest
 from src.source_coverage import validate_source_coverage
-from src.database_gate import database_state_fingerprint
+from src.database_gate import database_state_fingerprint, external_audit_attestation
+from src.v3_data_plane import V3_COLLECTION
 
 
 def source_rows(rows: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
@@ -201,6 +202,14 @@ def main() -> None:
         "--pipeline-config", type=Path,
         default=ROOT / "data" / "chroma" / "embedder_config_v3.json",
     )
+    parser.add_argument(
+        "--zotero-report", type=Path,
+        help="Passing full Zotero-to-manifest reconciliation report (required with --new-only).",
+    )
+    parser.add_argument(
+        "--source-report", type=Path,
+        help="Passing original-source verification report (required with --new-only).",
+    )
     parser.add_argument("--item", action="append")
     parser.add_argument(
         "--new-only", action="store_true",
@@ -213,6 +222,32 @@ def main() -> None:
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    if args.new_collection != V3_COLLECTION:
+        parser.error(
+            f"--new-collection must be {V3_COLLECTION!r}; the legacy data plane is retired"
+        )
+    external_audits: dict[str, dict[str, str]] = {}
+    if args.new_only:
+        if not args.zotero_report or not args.source_report:
+            parser.error("--new-only requires --zotero-report and --source-report")
+        try:
+            zotero_report = json.loads(args.zotero_report.read_text(encoding="utf-8"))
+            source_report = json.loads(args.source_report.read_text(encoding="utf-8"))
+            if not isinstance(zotero_report, Mapping) or not isinstance(source_report, Mapping):
+                raise RuntimeError("External audit reports must be JSON objects")
+            expected_manifest = str(args.manifest.resolve())
+            if str(zotero_report.get("manifest_path") or "") != expected_manifest:
+                raise RuntimeError("Zotero reconciliation report targets a different manifest")
+            if str(source_report.get("manifest_path") or "") != expected_manifest:
+                raise RuntimeError("Source verification report targets a different manifest")
+            if str(source_report.get("collection") or "") != args.new_collection:
+                raise RuntimeError("Source verification report targets a different collection")
+            external_audits = {
+                "zotero_reconciliation": external_audit_attestation(args.zotero_report),
+                "source_verification": external_audit_attestation(args.source_report),
+            }
+        except (OSError, ValueError, RuntimeError) as exc:
+            parser.error(str(exc))
     excluded = {str(value) for value in args.exclude_item if value}
     old_keys = [] if args.new_only else [
         key for key in list_item_keys(collection_name=args.old_collection)
@@ -328,6 +363,7 @@ def main() -> None:
         "structure_statuses": dict(sorted(structure_statuses.items())),
         "v3_zones": dict(sorted(zones.items())),
         "items": comparisons,
+        "external_audits": external_audits,
         "database_state": {
             "fingerprint": database_state_fingerprint(
                 manifest_path=args.manifest,

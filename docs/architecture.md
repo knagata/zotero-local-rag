@@ -8,7 +8,7 @@
 
 ## 0. V3データプレーン（現行本番）
 
-2026-07-23に、検索・取り込みの本番データプレーンをV3へ切り替えました（`.env`で有効化）。
+検索・取り込みの本番データプレーンはV3のみです。
 
 | 対象 | 現行の値 |
 |---|---|
@@ -18,8 +18,13 @@
 | 構造化取り込み | `INGEST_STRUCTURED_V3_ENABLE=1` |
 | 階層検索 | `HIERARCHICAL_SEARCH_V2_ENABLE=1` |
 
-旧（legacy）collection・manifest・FTSはrollback用に1世代保持しています。ロールバックは
-設定のみで、上記5値を旧値へ戻してMCPサーバーを再起動すれば元に戻ります。
+旧（legacy）collection・manifest・FTSへの設定rollbackはサポートしません。障害時はV3の
+バックアップを復元するか、原本からDBを再構築します。
+
+サーバーでの確定手順は [Server-Database-Workflow.command](../Server-Database-Workflow.command)
+の4フェーズです。フェーズ1でV3 DBをゼロから構築し、フェーズ2でZotero・原本coverage・
+DB整合性を監査します。合格したDB世代だけが、フェーズ3の有料階層AI要約を実行でき、
+フェーズ4で要約と`__sum_node`索引を監査します。
 
 **要約の現況**: 文書構造からのbottom-upなAI（LLM）要約パイプラインは実装済みですが、
 全件生成はpilot→ユーザー承認待ちの段階です。検索索引（`__sum_node`）に載るのはLLM要約
@@ -395,8 +400,8 @@ flowchart TD
 | `s2_rate.lock` | `data/` | テキスト | Semantic Scholar APIレート管理（`fcntl.flock`） |
 | `models/` | `data/models/` | バイナリ | キャッシュした埋め込みモデル |
 
-legacy stores（旧 `chroma` collection・`manifest.json`・`lexical.sqlite3`）はrollback用に
-1世代保持しています。
+旧 `chroma` collection・`manifest.json`・`lexical.sqlite3`は本番データ面ではありません。
+復旧に使うのはV3スナップショットまたは原本からの再構築です。
 
 ---
 

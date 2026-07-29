@@ -70,13 +70,15 @@ from lexical_index import upsert_chunks as upsert_lexical_chunks
 
 from manifest import content_signature, load_manifest, save_manifest
 from db_relations import (
-    drop_stale_identity_rows, get_item_processing_status, invalidate_item_summaries,
-    mark_artifact_status, purge_removed_items, replace_document_structure,
-    reset_ingestion_derived_state,
+    drop_stale_identity_rows, get_item_processing_status, mark_artifact_status,
+    purge_removed_items, replace_document_structure, reset_ingestion_derived_state,
 )
 from document_structure import attach_structure_metadata, build_document_structure
 from chunk_store import get_item_chunks, list_chunk_ids, list_item_keys
-from v3_migration import is_ocr_derived, reuse_ocr_chunks_for_v3
+from v3_data_plane import (
+    V3_COLLECTION, collection_name as v3_collection_name,
+    enforce_environment as enforce_v3_environment, manifest_path as v3_manifest_path,
+)
 from v3_runtime import (
     assert_code_unchanged, bind_manifest_pipeline, code_fingerprint,
     ensure_pipeline_config, pipeline_payload,
@@ -94,24 +96,19 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 from env_utils import load_dotenv_native
 
 load_dotenv_native(PROJECT_ROOT)
+enforce_v3_environment(PROJECT_ROOT)
 
 DATA_DIR = PROJECT_ROOT / "data"
 CHROMA_DIR = Path(os.environ.get("CHROMA_DIR", str(DATA_DIR / "chroma")))
 PDF_CACHE_DIR = Path(os.environ.get("PDF_CACHE_DIR", str(DATA_DIR / "pdf_cache")))
-STRUCTURED_V3_ENABLE = os.environ.get("INGEST_STRUCTURED_V3_ENABLE", "0") == "1"
-MANIFEST_PATH = Path(os.environ.get(
-    "MANIFEST_PATH", str(DATA_DIR / ("manifest_v3.json" if STRUCTURED_V3_ENABLE else "manifest.json")),
-))
+STRUCTURED_V3_ENABLE = True
+MANIFEST_PATH = v3_manifest_path(PROJECT_ROOT)
 INDEXING_LOCK_PATH = DATA_DIR / "indexing.lock"
 V3_PIPELINE_CONFIG_PATH = CHROMA_DIR / "embedder_config_v3.json"
 
 ZOTERO_DATA_DIR = os.environ.get("ZOTERO_DATA_DIR")  # required for local storage resolution in your pipeline
-CHROMA_COLLECTION_ENV = os.environ.get("CHROMA_COLLECTION") or (
-    "zotero_paragraphs_v3" if STRUCTURED_V3_ENABLE else None
-)
-CHROMA_COLLECTION_DEFAULT = "zotero_paragraphs"
-if STRUCTURED_V3_ENABLE:
-    os.environ.setdefault("LEXICAL_DB_PATH", str(DATA_DIR / "lexical_v3.sqlite3"))
+CHROMA_COLLECTION_ENV = v3_collection_name()
+CHROMA_COLLECTION_DEFAULT = V3_COLLECTION
 
 #: Guards the stale-attachment deletion below. A sync that would retire more
 #: than this is reporting on a failed enumeration, not on the library.
@@ -1264,13 +1261,7 @@ def _epub_ocr_quality_from_mapping(
 
 
 def _reset_rebuild_target() -> None:
-    """Reset only the isolated V3 target; legacy rebuild keeps old behavior."""
-    if not STRUCTURED_V3_ENABLE:
-        if CHROMA_DIR.exists():
-            shutil.rmtree(CHROMA_DIR)
-        if MANIFEST_PATH.exists():
-            MANIFEST_PATH.unlink()
-        return
+    """Reset only the isolated V3 target; the retired data plane is untouched."""
     import chromadb
 
     client = chromadb.PersistentClient(path=str(CHROMA_DIR))
@@ -1308,18 +1299,6 @@ def _reset_rebuild_target() -> None:
     lexical_v3 = Path(os.environ.get("LEXICAL_DB_PATH", DATA_DIR / "lexical_v3.sqlite3"))
     if lexical_v3.exists():
         lexical_v3.unlink()
-
-
-def _legacy_source_collection() -> str | None:
-    explicit = (os.environ.get("V3_REUSE_SOURCE_COLLECTION") or "").strip()
-    if explicit:
-        return explicit
-    try:
-        payload = json.loads((CHROMA_DIR / "embedder_config.json").read_text(encoding="utf-8"))
-        return str(payload.get("collection") or "").strip() or None
-    except (OSError, ValueError, TypeError):
-        return None
-
 
 def _load_reocr_routes(path: Path | None, limit: int | None) -> dict[str, dict[str, Any]]:
     if path is None:
@@ -1389,10 +1368,6 @@ async def main_async(args: argparse.Namespace) -> None:
     manifest["files"] = files_manifest
     manifest["notes"] = notes_manifest
     reocr_routes = _load_reocr_routes(args.reocr_candidates, args.reocr_limit)
-    legacy_manifest = load_manifest(DATA_DIR / "manifest.json") if STRUCTURED_V3_ENABLE else {"files": {}}
-    legacy_files = legacy_manifest.get("files") if isinstance(legacy_manifest.get("files"), dict) else {}
-    legacy_collection = _legacy_source_collection() if STRUCTURED_V3_ENABLE else None
-
     api = ZoteroLocalAPI()
     show_progress = bool(args.progress) or (os.environ.get("PROGRESS") == "1")
     if show_progress and not structure_recovery:
@@ -1548,15 +1523,10 @@ async def main_async(args: argparse.Namespace) -> None:
     if args.dry_run:
         attachments = _select_item_scope(attachments, None, args.limit)
         source_types: dict[str, int] = {}
-        reuse_candidates = 0
         for attachment in attachments:
             suffix = Path(str(attachment.pdf_path)).suffix.casefold()
             source_type = "epub" if suffix == ".epub" else ("html" if suffix in {".html", ".htm"} else "pdf")
             source_types[source_type] = source_types.get(source_type, 0) + 1
-            legacy_entry = legacy_files.get(attachment.attachmentKey, {}) if isinstance(legacy_files, dict) else {}
-            quality = legacy_entry.get("quality", {}) if isinstance(legacy_entry, dict) else {}
-            if source_type == "pdf" and is_ocr_derived(quality):
-                reuse_candidates += 1
         print(json.dumps({
             "dry_run": True,
             "rebuild": bool(args.rebuild),
@@ -1565,7 +1535,7 @@ async def main_async(args: argparse.Namespace) -> None:
             "items": len({str(a.parentItemKey or a.attachmentKey) for a in attachments}),
             "attachments": len(attachments),
             "source_types": dict(sorted(source_types.items())),
-            "legacy_ocr_reuse_candidates": reuse_candidates,
+            "legacy_ocr_reuse_candidates": 0,
             "canonical_data_modified": False,
         }, ensure_ascii=False, indent=2))
         return
@@ -1581,7 +1551,7 @@ async def main_async(args: argparse.Namespace) -> None:
         project_root=PROJECT_ROOT,
         chroma_collection_env=CHROMA_COLLECTION_ENV,
         chroma_collection_default=CHROMA_COLLECTION_DEFAULT,
-        persist_active_config=not STRUCTURED_V3_ENABLE,
+        persist_active_config=False,
     )
     atexit.register(_close_chroma_collection, col)
 
@@ -1733,7 +1703,6 @@ async def main_async(args: argparse.Namespace) -> None:
 
     pending_manifest_updates: dict[str, dict[str, Any]] = {}
     pending_extraction_statuses: dict[str, tuple[str, str, dict[str, Any]]] = {}
-    pending_summary_invalidations: set[str] = set()
     pending_delete_attachment_keys: set[str] = set()
     pending_source_types: dict[str, str] = {}
     pending_item_keys: dict[str, str] = {}
@@ -1978,39 +1947,8 @@ async def main_async(args: argparse.Namespace) -> None:
             )
 
         t_pdf = time.perf_counter()
-        reused_ocr = False
         attempted_mistral = False
-        legacy_entry = legacy_files.get(a.attachmentKey, {}) if isinstance(legacy_files, dict) else {}
-        legacy_quality = legacy_entry.get("quality", {}) if isinstance(legacy_entry, dict) else {}
-        if (
-            stype == "pdf" and STRUCTURED_V3_ENABLE and not args.rebuild and not reocr_route
-            and not args.use_docling and not args.reparse_corrupted and not args.force_reparse
-            and legacy_collection and is_ocr_derived(legacy_quality)
-        ):
-            legacy_chunks = get_item_chunks(
-                a.parentItemKey or a.attachmentKey,
-                chroma_dir=CHROMA_DIR, collection_name=legacy_collection,
-            )
-            chunks, quality_info = reuse_ocr_chunks_for_v3(
-                legacy_chunks, a.attachmentKey, meta_base, original_quality=legacy_quality,
-            )
-            reused_ocr = bool(chunks)
-            if reused_ocr:
-                # Reused text is OCR output by definition, so it is exactly what
-                # the stage-1/stage-2 checks exist for -- and it would otherwise
-                # skip them entirely, since this branch bypasses the V3 PDF
-                # routing block below (note 79). Reusing text that measures
-                # degraded would carry the damage forward into V3 for free,
-                # which is the opposite of the point of reuse.
-                chunks, quality_info, reused_ocr = _audit_reused_ocr_chunks(
-                    chunks, quality_info, file_path,
-                    item_key=scope_item_key, prev=prev, mtime=mtime, size=size,
-                    show_progress=show_progress,
-                )
-        if reused_ocr:
-            if show_progress:
-                print("[PROGRESS]   ↳ reusing legacy OCR text under V3 boundaries...", file=sys.__stderr__)
-        elif force_mistral:
+        if force_mistral:
             # A staged Batch result is already local, has been through the
             # Batch quality gate, and is being explicitly adopted.  Applying
             # the *cloud-send* policy here would incorrectly block adoption
@@ -3082,8 +3020,6 @@ async def main_async(args: argparse.Namespace) -> None:
 
         pending_delete_attachment_keys.add(a.attachmentKey)
         pending_extraction_statuses[a.attachmentKey] = extraction_status
-        if reocr_route and a.parentItemKey:
-            pending_summary_invalidations.add(str(a.parentItemKey))
 
         for cid, text, md in chunks:
             pending_ids.append(cid)
@@ -3146,14 +3082,6 @@ async def main_async(args: argparse.Namespace) -> None:
                 mark_artifact_status(
                     item_key, "extraction", status, **status_kwargs,
                 )
-            for item_key in sorted(pending_summary_invalidations):
-                counts = invalidate_item_summaries(item_key)
-                if show_progress:
-                    print(
-                        f"[PROGRESS]   ↳ invalidated derived summaries for item={item_key}: "
-                        f"sections={counts['section_summaries']}",
-                        file=sys.__stderr__,
-                    )
             for ak, entry in pending_manifest_updates.items():
                 files_manifest[ak] = entry
             if STRUCTURED_V3_ENABLE:
@@ -3182,7 +3110,6 @@ async def main_async(args: argparse.Namespace) -> None:
 
             pending_manifest_updates.clear()
             pending_extraction_statuses.clear()
-            pending_summary_invalidations.clear()
             pending_delete_attachment_keys.clear()
             pending_source_types.clear()
             pending_item_keys.clear()
@@ -3232,14 +3159,6 @@ async def main_async(args: argparse.Namespace) -> None:
             mark_artifact_status(
                 item_key, "extraction", status, **status_kwargs,
             )
-        for item_key in sorted(pending_summary_invalidations):
-            counts = invalidate_item_summaries(item_key)
-            if show_progress:
-                print(
-                    f"[PROGRESS]   ↳ invalidated derived summaries for item={item_key}: "
-                    f"sections={counts['section_summaries']}",
-                    file=sys.__stderr__,
-                )
         for ak, entry in pending_manifest_updates.items():
             files_manifest[ak] = entry
         for t in pending_source_types.values():
@@ -3266,7 +3185,6 @@ async def main_async(args: argparse.Namespace) -> None:
             )
         pending_manifest_updates.clear()
         pending_extraction_statuses.clear()
-        pending_summary_invalidations.clear()
         pending_delete_attachment_keys.clear()
         pending_source_types.clear()
         pending_item_keys.clear()

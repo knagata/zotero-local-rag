@@ -58,6 +58,12 @@ class EligibleZoteroAttachmentsTests(unittest.TestCase):
         self.assertIn("A2", eligible)
         self.assertEqual(eligible["A2"]["linkMode"], "linked_url")
 
+    def test_reconciliation_requires_a_complete_zotero_inventory(self):
+        api = ZoteroLocalAPI()
+        with patch.object(api, "list_pdf_attachments", return_value=[]) as listed:
+            asyncio.run(MODULE.eligible_zotero_attachments(api))
+        listed.assert_called_once_with(require_complete=True)
+
     def test_a_non_attachment_item_is_excluded(self):
         raw = [_attachment("A3", item_type="journalArticle")]
         self.assertEqual(self._eligible(raw), {})
@@ -83,6 +89,15 @@ class ReconciliationReportTests(unittest.TestCase):
         raw = [_attachment("A1")]
         with patch.object(api, "list_pdf_attachments", return_value=raw), \
              patch.object(MODULE, "load_manifest", return_value={"files": {"A1": {}}}):
+            exit_code = asyncio.run(MODULE.main_async(args, api=api))
+        self.assertEqual(exit_code, 0)
+
+    def test_linked_url_is_reported_but_does_not_block_a_local_rebuild(self):
+        args = type("Args", (), {"output": None})()
+        api = ZoteroLocalAPI()
+        raw = [_attachment("LINK", link_mode="linked_url")]
+        with patch.object(api, "list_pdf_attachments", return_value=raw), \
+             patch.object(MODULE, "load_manifest", return_value={"files": {}}):
             exit_code = asyncio.run(MODULE.main_async(args, api=api))
         self.assertEqual(exit_code, 0)
 

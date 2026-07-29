@@ -27,6 +27,8 @@ ALL_GATES = (
 
 _CLEARED = {
     "LLM_CHEAP": "", "LLM_STANDARD": "", "LLM_REVIEW": "",
+    "DEEPSEEK_API_KEY": "", "ANTHROPIC_API_KEY": "", "GEMINI_API_KEY": "",
+    "LLM_OPENAI_BASE_URL": "", "LLM_OPENAI_API_KEY": "",
     "MISTRAL_OCR_API_KEY": "", "S2_API_KEY": "",
     "PDF_AI_TOC_FAST_PATH_ENABLE": "", "OCR_LAYER_AUDIT_ENABLE": "",
     "QUERY_EXPANSION_ENABLE": "", "LLM_SUMMARIES_ENABLE": "",
@@ -70,7 +72,7 @@ class DefaultOffTests(unittest.TestCase):
     def test_a_configured_key_alone_does_not_switch_anything_on(self):
         env, dotenv = _env(
             LLM_CHEAP="deepseek:deepseek-v4-flash", MISTRAL_OCR_API_KEY="sk-test",
-            S2_API_KEY="s2-test",
+            S2_API_KEY="s2-test", DEEPSEEK_API_KEY="deepseek-test",
         )
         with env, dotenv:
             self.assertTrue(fg.llm_configured())
@@ -95,7 +97,9 @@ class DefaultOffTests(unittest.TestCase):
 
 class ResourceDetectionTests(unittest.TestCase):
     def test_llm_roles_are_recognised_by_provider_prefix(self):
-        env, dotenv = _env(LLM_CHEAP="deepseek:deepseek-v4-flash")
+        env, dotenv = _env(
+            LLM_CHEAP="deepseek:deepseek-v4-flash", DEEPSEEK_API_KEY="secret",
+        )
         with env, dotenv:
             self.assertTrue(fg.llm_configured())
 
@@ -110,6 +114,16 @@ class ResourceDetectionTests(unittest.TestCase):
         with env, dotenv:
             self.assertTrue(fg.llm_configured())
 
+    def test_claude_cli_agent_counts_as_an_llm(self):
+        env, dotenv = _env(LLM_STANDARD="claude_cli:auto")
+        with env, dotenv:
+            self.assertTrue(fg.llm_configured())
+
+    def test_deepseek_role_without_api_key_is_not_configured(self):
+        env, dotenv = _env(LLM_STANDARD="deepseek:model")
+        with env, dotenv:
+            self.assertFalse(fg.llm_configured())
+
 
 class VerifyEnabledFeaturesTests(unittest.TestCase):
     """A feature on without its resource is an error, not a silent downgrade."""
@@ -117,6 +131,7 @@ class VerifyEnabledFeaturesTests(unittest.TestCase):
     def test_coherent_configuration_reports_nothing(self):
         env, dotenv = _env(
             LLM_CHEAP="deepseek:deepseek-v4-flash", PDF_AI_TOC_FAST_PATH_ENABLE="1",
+            DEEPSEEK_API_KEY="secret",
         )
         with env, dotenv:
             self.assertEqual(fg.verify_enabled_features(), [])

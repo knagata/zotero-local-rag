@@ -20,19 +20,18 @@ export ZOTERO_DATA_DIR="${ZOTERO_DATA_DIR:-$HOME/Zotero}"
 # Chroma persistence
 export CHROMA_DIR="${CHROMA_DIR:-${SCRIPT_DIR}/data/chroma}"
 
-# Optional: Pin a specific Chroma collection name.
-# If you leave CHROMA_COLLECTION unset, the code will auto-suffix the default
-# name by embedding dimension (e.g., zotero_paragraphs_384 / zotero_paragraphs_1024)
-# to avoid dimension-mismatch when switching embedding models.
-if [[ -n "${CHROMA_COLLECTION:-}" ]]; then
-  export CHROMA_COLLECTION="${CHROMA_COLLECTION}"
-fi
+# V3 is the only supported production data plane. Never inherit an old target.
+export INGEST_STRUCTURED_V3_ENABLE=1
+export HIERARCHICAL_SEARCH_V2_ENABLE=1
+export CHROMA_COLLECTION=zotero_paragraphs_v3
 
 # Local cache for PDFs downloaded via Local API fallback
 export PDF_CACHE_DIR="${PDF_CACHE_DIR:-${SCRIPT_DIR}/data/pdf_cache}"
 
-# Manifest path (indexer state)
-export MANIFEST_PATH="${MANIFEST_PATH:-${SCRIPT_DIR}/data/manifest.json}"
+# V3 sidecars. Their names are deliberately fixed so old stores cannot be
+# selected by an inherited shell variable.
+export MANIFEST_PATH="${SCRIPT_DIR}/data/manifest_v3.json"
+export LEXICAL_DB_PATH="${SCRIPT_DIR}/data/lexical_v3.sqlite3"
 
 # Chunking / overlap tuning (optional)
 # MAX_CHARS controls the maximum chunk size after splitting.

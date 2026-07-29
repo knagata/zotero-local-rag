@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+from .v3_data_plane import V3_COLLECTION
 
 def _file_digest(path: Path) -> str:
     digest = hashlib.sha256()
@@ -13,6 +14,39 @@ def _file_digest(path: Path) -> str:
         for block in iter(lambda: source.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def external_audit_attestation(path: Path) -> dict[str, str]:
+    """Require a passing external audit and bind its exact bytes to the DB gate."""
+    try:
+        report = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(f"External audit report is unreadable: {path}") from exc
+    if not isinstance(report, Mapping) or report.get("passed") is not True:
+        raise RuntimeError(f"External audit did not pass: {path}")
+    return {"path": str(path.resolve()), "sha256": _file_digest(path)}
+
+
+def _validate_external_audits(value: Any) -> None:
+    if not isinstance(value, Mapping):
+        raise RuntimeError("Database audit lacks required Zotero/source attestations.")
+    for name in ("zotero_reconciliation", "source_verification"):
+        attestation = value.get(name)
+        if not isinstance(attestation, Mapping):
+            raise RuntimeError(f"Database audit lacks required {name} attestation.")
+        path_value = str(attestation.get("path") or "")
+        expected_digest = str(attestation.get("sha256") or "")
+        if not path_value or not expected_digest:
+            raise RuntimeError(f"Database audit has an incomplete {name} attestation.")
+        path = Path(path_value)
+        try:
+            report = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise RuntimeError(f"Attested external audit is unreadable: {path}") from exc
+        if not isinstance(report, Mapping) or report.get("passed") is not True:
+            raise RuntimeError(f"Attested external audit no longer passes: {path}")
+        if _file_digest(path) != expected_digest:
+            raise RuntimeError(f"Attested external audit changed after gate creation: {path}")
 
 
 def database_state_fingerprint(
@@ -115,10 +149,16 @@ def validate_database_gate(report_path: Path, *, collection_name: str | None = N
     if report.get("new_only") is not True:
         raise RuntimeError("Database audit is not a server rebuild gate (--new-only required).")
     audited_collection = str(report.get("new_collection") or "")
+    if audited_collection != V3_COLLECTION:
+        raise RuntimeError(
+            f"Database audit targets retired/unsupported collection {audited_collection!r}; "
+            f"expected {V3_COLLECTION!r}."
+        )
     if collection_name and audited_collection != collection_name:
         raise RuntimeError(
             f"Database audit collection mismatch: audited={audited_collection}, requested={collection_name}"
         )
+    _validate_external_audits(report.get("external_audits"))
     required = ("fingerprint", "manifest_path", "lexical_db_path", "pipeline_config_path")
     if any(not state.get(key) for key in required):
         raise RuntimeError("Database audit lacks a complete state attestation.")
@@ -136,6 +176,7 @@ def validate_database_gate(report_path: Path, *, collection_name: str | None = N
 
 
 __all__ = [
-    "database_state_fingerprint", "live_database_state_fingerprint",
+    "database_state_fingerprint", "external_audit_attestation",
+    "live_database_state_fingerprint",
     "validate_database_gate",
 ]

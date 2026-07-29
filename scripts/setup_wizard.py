@@ -7,13 +7,23 @@ import platform
 from contextlib import contextmanager
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from src.v3_data_plane import (
+    V3_COLLECTION, V3_LEXICAL_NAME, V3_MANIFEST_NAME,
+)
 
 ENV_GROUPS = (
     ("Core: local search and indexing", (
         "FEATURE_LEVEL", "ZOTERO_DATA_DIR", "CHROMA_DIR", "EMB_PROFILE",
         "EMB_MODEL", "EMB_DEVICE", "HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE",
+        "INGEST_STRUCTURED_V3_ENABLE", "HIERARCHICAL_SEARCH_V2_ENABLE",
+        "CHROMA_COLLECTION", "MANIFEST_PATH", "LEXICAL_DB_PATH",
     )),
     ("Citation network and bibliographic metadata", (
         "S2_API_KEY", "ZOTERO_USER_ID", "ZOTERO_API_KEY", "CINII_APP_ID",
@@ -60,7 +70,14 @@ def write_env_file(path: Path, values: dict[str, str]) -> None:
     if extras:
         rendered.extend(["", "# Other existing settings"])
         rendered.extend(f"{key}={values[key]}" for key in extras)
-    path.write_text("\n".join(rendered) + "\n", encoding="utf-8")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_text("\n".join(rendered) + "\n", encoding="utf-8")
+    try:
+        temporary.chmod(0o600)
+    except OSError:
+        pass
+    temporary.replace(path)
 
 
 def _set_optional_secret(config: dict[str, str], key: str, prompt: str) -> None:
@@ -84,13 +101,23 @@ def _set_required_secret(config: dict[str, str], key: str, prompt: str) -> None:
             return
         if current:
             return
-        print(f"{key} is required for Citation Network. Please enter a key.")
+        print(f"{key} is required for the selected feature. Please enter a value.")
 
 
 #: The three axes of note 80 are independent, so a preset is only a set of
 #: defaults for them -- not a mode the rest of the system knows about.
+V3_DATA_PLANE = {
+    "INGEST_STRUCTURED_V3_ENABLE": "1",
+    "HIERARCHICAL_SEARCH_V2_ENABLE": "1",
+    "CHROMA_COLLECTION": V3_COLLECTION,
+    "MANIFEST_PATH": f"data/{V3_MANIFEST_NAME}",
+    "LEXICAL_DB_PATH": f"data/{V3_LEXICAL_NAME}",
+}
+
+
 PRESETS: dict[str, dict[str, str]] = {
     "minimal": {
+        **V3_DATA_PLANE,
         "FEATURE_LEVEL": "core",
         "PDF_STRUCTURE_RECOVERY_ENABLE": "0",
         "PDF_AI_TOC_FAST_PATH_ENABLE": "0",
@@ -102,6 +129,7 @@ PRESETS: dict[str, dict[str, str]] = {
         "CITATION_NETWORK_ENABLE": "0",
     },
     "local": {
+        **V3_DATA_PLANE,
         "FEATURE_LEVEL": "citation",
         "PDF_STRUCTURE_RECOVERY_ENABLE": "1",
         "PDF_STRUCTURE_ENGINE_SHORT": "docling",
@@ -115,6 +143,7 @@ PRESETS: dict[str, dict[str, str]] = {
         "CITATION_NETWORK_ENABLE": "1",
     },
     "full": {
+        **V3_DATA_PLANE,
         "FEATURE_LEVEL": "llm",
         "PDF_STRUCTURE_RECOVERY_ENABLE": "1",
         "PDF_STRUCTURE_ENGINE_SHORT": "docling",
@@ -147,6 +176,11 @@ def apply_preset(config: dict[str, str], name: str) -> None:
     config.update(PRESETS[name])
 
 
+def enforce_v3_configuration(config: dict[str, str]) -> None:
+    """Migrate edited configuration to the sole supported production data plane."""
+    config.update(V3_DATA_PLANE)
+
+
 def _granite_selectable() -> bool:
     try:
         from src.feature_gates import granite_configured
@@ -162,21 +196,24 @@ def _choose_engine(label: str, current: str) -> str:
     recommendation, because which one is right depends on what the library
     holds and whether the owner will pay per page.
     """
-    options = ["docling", "mistral"]
-    print(f"\n  {label}")
-    print("     [1] Docling — free, fast, best on tables and formulas")
-    print("     [2] Mistral OCR — paid per page, fast, strongest on long scans")
+    options = [
+        ("docling", "Docling — free, fast, best on tables and formulas"),
+        ("mistral", "Mistral OCR — paid per page, fast, strongest on long scans"),
+    ]
     if _granite_selectable():
-        options.insert(1, "granite")
-        print("     [3] Granite — free, ~2.3x slower, more accurate overall")
-    else:
+        options.insert(1, ("granite", "Granite — free, ~2.3x slower, more accurate overall"))
+    print(f"\n  {label}")
+    for number, (_name, description) in enumerate(options, start=1):
+        print(f"     [{number}] {description}")
+    if not any(name == "granite" for name, _description in options):
         print("     (Granite needs its own virtualenv; see dev-notes 68 to enable it)")
-    default = str(options.index(current) + 1) if current in options else "1"
+    names = [name for name, _description in options]
+    default = str(names.index(current) + 1) if current in names else "1"
     choice = input(f"  Select [1-{len(options)}, default is {default}]: ").strip() or default
     try:
-        return options[int(choice) - 1]
+        return options[int(choice) - 1][0]
     except (ValueError, IndexError):
-        return options[0]
+        return options[0][0]
 
 
 def configure_pdf_engines(config: dict[str, str]) -> None:
@@ -191,9 +228,12 @@ def configure_pdf_engines(config: dict[str, str]) -> None:
     entered = input(f"\n  Page boundary [{boundary}]: ").strip()
     if entered.isdigit() and int(entered) > 0:
         config["PDF_STRUCTURE_ENGINE_PAGE_BOUNDARY"] = entered
-    if "mistral" in {config["PDF_STRUCTURE_ENGINE_SHORT"], config["PDF_STRUCTURE_ENGINE_LONG"]}:
-        config["PDF_MISTRAL_TOC_QUEUE_ENABLE"] = "1"
-        _set_optional_secret(config, "MISTRAL_OCR_API_KEY", "Mistral OCR API key")
+    uses_mistral = "mistral" in {
+        config["PDF_STRUCTURE_ENGINE_SHORT"], config["PDF_STRUCTURE_ENGINE_LONG"],
+    }
+    config["PDF_MISTRAL_TOC_QUEUE_ENABLE"] = "1" if uses_mistral else "0"
+    if uses_mistral:
+        _set_required_secret(config, "MISTRAL_OCR_API_KEY", "Mistral OCR API key")
 
 
 def configure_llm_provider(config: dict[str, str]) -> None:
@@ -223,7 +263,7 @@ def configure_llm_provider(config: dict[str, str]) -> None:
             "LLM_STANDARD": "deepseek:deepseek-v4-pro",
             "LLM_REVIEW": "deepseek:deepseek-v4-pro",
         })
-        _set_optional_secret(config, "DEEPSEEK_API_KEY", "DeepSeek API key")
+        _set_required_secret(config, "DEEPSEEK_API_KEY", "DeepSeek API key")
 
 
 def configure_feature_level(config: dict[str, str]) -> None:
@@ -243,9 +283,12 @@ def configure_feature_level(config: dict[str, str]) -> None:
     print("   [1] Minimal — nothing to obtain, no charges. PDFs indexed as plain text")
     print("   [2] Local — no charges. PDF structuring with Docling; free S2 key recommended")
     print("   [3] Full — charged. Adds AI TOC, hierarchical summaries, Mistral OCR for long scans")
-    if existing != "custom" or any(config.get(flag) for flag in LLM_FLAGS):
+    can_keep = "FEATURE_LEVEL" in config or any(flag in config for flag in LLM_FLAGS)
+    if can_keep:
         print(f"   [0] Keep the current settings (currently: {existing})")
-    default = {"minimal": "1", "local": "2", "full": "3"}.get(existing, "1")
+    default = "0" if can_keep and existing == "custom" else {
+        "minimal": "1", "local": "2", "full": "3",
+    }.get(existing, "1")
     choice = input(f"Select [0-3, default is {default}]: ").strip() or default
     if choice == "0":
         return
@@ -284,6 +327,7 @@ def print_configuration_status(config: dict[str, str]) -> None:
     print(f"  standard LLM   : {config.get('LLM_STANDARD', 'not configured')}")
     print(f"  review LLM     : {config.get('LLM_REVIEW', 'not configured')}")
     print(f"  preset         : {describe_preset(config)}")
+    print(f"  data plane     : {config.get('CHROMA_COLLECTION', 'not configured')}")
     if config.get("PDF_STRUCTURE_RECOVERY_ENABLE") == "1":
         boundary = config.get("PDF_STRUCTURE_ENGINE_PAGE_BOUNDARY", "30")
         print(
@@ -309,17 +353,26 @@ def _configuration_problems(config: dict[str, str]) -> list[str]:
     would show a key the user has not saved yet -- or hide one they just
     removed.
     """
+    problems = _v3_configuration_problems(config)
     try:
         from src import feature_gates
     except ImportError:  # pragma: no cover - src not importable in odd layouts
-        return []
+        return problems
     original_loader = feature_gates.load_dotenv_native
     feature_gates.load_dotenv_native = lambda *_a, **_k: None
     try:
         with mock_environment(config):
-            return feature_gates.verify_enabled_features()
+            return problems + feature_gates.verify_enabled_features()
     finally:
         feature_gates.load_dotenv_native = original_loader
+
+
+def _v3_configuration_problems(config: dict[str, str]) -> list[str]:
+    return [
+        f"{key} must be {expected!r}; the legacy data plane is retired."
+        for key, expected in V3_DATA_PLANE.items()
+        if str(config.get(key) or "") != expected
+    ]
 
 
 @contextmanager
@@ -400,8 +453,10 @@ def configure_claude_mcp(root_dir: Path, chroma_dir: Path, emb_profile: str,
 
     config["mcpServers"]["zotero-rag"] = new_entry
 
-    with open(config_path, "w", encoding="utf-8") as f:
+    temporary = config_path.with_name(config_path.name + ".tmp")
+    with open(temporary, "w", encoding="utf-8") as f:
         json.dump(config, f, indent=2, ensure_ascii=False)
+    temporary.replace(config_path)
 
     print(f"\n[+] Claude MCP config updated: {config_path}")
     print(f"    command : {uv_path}")
@@ -415,6 +470,10 @@ def main(argv: list[str] | None = None):
         "--status", action="store_true",
         help="show the effective feature configuration without revealing secrets",
     )
+    parser.add_argument(
+        "--server", action="store_true",
+        help="configure a server without offering local Claude Desktop registration",
+    )
     args = parser.parse_args(argv)
     root_dir = Path(__file__).resolve().parents[1]
     env_path = root_dir / ".env"
@@ -426,7 +485,7 @@ def main(argv: list[str] | None = None):
         return
 
     print("=" * 60)
-    print("   Zotero Local RAG - Setup & Indexer")
+    print("   Zotero Local RAG - V3 Setup")
     print("=" * 60)
 
     modify = True
@@ -442,22 +501,47 @@ def main(argv: list[str] | None = None):
         if ans != "y":
             modify = False
 
+    if not modify:
+        retired = _v3_configuration_problems(existing_config)
+        if retired:
+            rendered = "\n".join(f"  - {problem}" for problem in retired)
+            raise SystemExit(
+                "Existing settings still target the retired data plane. "
+                "Run the wizard again and choose to change them:\n" + rendered
+            )
+
     if modify:
         default_zotero = os.path.expanduser("~/Zotero")
         if os.name == "nt":
             default_zotero = os.path.expanduser(r"~\Zotero")
+        current_zotero = existing_config.get("ZOTERO_DATA_DIR", default_zotero)
 
         zotero_dir = input(
-            f"\n1. Where is your Zotero data directory?\n   (Press Enter for default: {default_zotero})\n> "
+            f"\n1. Where is your Zotero data directory?\n"
+            f"   (Press Enter to keep: {current_zotero})\n> "
         ).strip()
         if not zotero_dir:
-            zotero_dir = default_zotero
+            zotero_dir = current_zotero
+        expanded_zotero = Path(zotero_dir).expanduser()
+        if not (
+            expanded_zotero.is_dir()
+            and (expanded_zotero / "zotero.sqlite").is_file()
+            and (expanded_zotero / "storage").is_dir()
+        ):
+            raise SystemExit(
+                f"Invalid Zotero data directory: {expanded_zotero}\n"
+                "Expected zotero.sqlite and storage/. No settings were changed."
+            )
         existing_config["ZOTERO_DATA_DIR"] = zotero_dir
 
         print("\n2. Which Embedding Model Profile do you want to use?")
         print("   [1] fast (Default, smaller/faster, good for standard text)")
         print("   [2] bge  (BGE-M3, heavier, supports extensive multilingual text)")
-        emb_choice = input("Select [1 or 2, default is 1]: ").strip()
+        current_emb = existing_config.get("EMB_PROFILE", "fast")
+        emb_default = "2" if current_emb == "bge" else "1"
+        emb_choice = input(
+            f"Select [1 or 2, Enter keeps {current_emb}]: "
+        ).strip() or emb_default
 
         if emb_choice == "2":
             existing_config["EMB_PROFILE"] = "bge"
@@ -465,6 +549,13 @@ def main(argv: list[str] | None = None):
             existing_config["EMB_PROFILE"] = "fast"
 
         configure_feature_level(existing_config)
+        enforce_v3_configuration(existing_config)
+        problems = _configuration_problems(existing_config)
+        if problems:
+            rendered = "\n".join(f"  - {problem}" for problem in problems)
+            raise SystemExit(
+                "Configuration is incomplete; no settings were saved:\n" + rendered
+            )
         write_env_file(env_path, existing_config)
         print("\n[+] Configuration successfully saved to .env")
 
@@ -472,34 +563,40 @@ def main(argv: list[str] | None = None):
     profile_changed = modify and emb_profile != prev_emb_profile
     chroma_dir = Path(existing_config.get("CHROMA_DIR", str(root_dir / "data" / "chroma")))
 
-    print("\n" + "=" * 60)
-    print("4. Configure Claude Desktop MCP server")
-    ans = input("Register zotero-rag in Claude Desktop's MCP config? [y/N]: ").strip().lower()
-    if ans == "y":
-        configure_claude_mcp(root_dir, chroma_dir, emb_profile)
+    if args.server:
+        print("\n4. Server mode: skipped local Claude Desktop registration.")
     else:
-        print("\nSkipped MCP config.")
-        print("To set up manually, add the following to claude_desktop_config.json:")
-        uv_path = shutil.which("uv") or "uv"
-        manual_env = {
-            "CHROMA_DIR": str(chroma_dir),
-            "EMB_PROFILE": emb_profile,
-        }
-        manual = {
-            "zotero-rag": {
-                "command": uv_path,
-                "args": [
-                    "--directory",
-                    str(root_dir),
-                    "run",
-                    "python",
-                    "-u",
-                    "src/rag_mcp_server.py",
-                ],
-                "env": manual_env,
+        print("\n" + "=" * 60)
+        print("4. Configure Claude Desktop MCP server")
+        ans = input("Register zotero-rag in Claude Desktop's MCP config? [y/N]: ").strip().lower()
+        if ans == "y":
+            configure_claude_mcp(
+                root_dir, chroma_dir, emb_profile, env_overrides=V3_DATA_PLANE,
+            )
+        else:
+            print("\nSkipped MCP config.")
+            print("To set up manually, add the following to claude_desktop_config.json:")
+            uv_path = shutil.which("uv") or "uv"
+            manual_env = {
+                "CHROMA_DIR": str(chroma_dir),
+                "EMB_PROFILE": emb_profile,
+                **V3_DATA_PLANE,
             }
-        }
-        print(json.dumps(manual, indent=2))
+            manual = {
+                "zotero-rag": {
+                    "command": uv_path,
+                    "args": [
+                        "--directory",
+                        str(root_dir),
+                        "run",
+                        "python",
+                        "-u",
+                        "src/rag_mcp_server.py",
+                    ],
+                    "env": manual_env,
+                }
+            }
+            print(json.dumps(manual, indent=2))
 
     # Check for Tesseract OCR (optional, improves Japanese PDF extraction)
     print("\n" + "=" * 60)
@@ -544,50 +641,17 @@ def main(argv: list[str] | None = None):
         print("      Japanese PDFs with custom fonts may produce garbled text.")
         print("      Install: brew install tesseract tesseract-lang")
 
-    do_rebuild = False
     if profile_changed:
         print("\n" + "=" * 60)
         print("   ⚠️  Embedding model profile changed!")
         print(f"   Previous: {prev_emb_profile} → Current: {emb_profile}")
         print()
-        print("   Different embedding models produce vectors of different")
-        print("   dimensions. A new ChromaDB collection will be created")
-        print("   automatically (e.g., zotero_paragraphs_384 → zotero_paragraphs_1024).")
-        print()
-        print("   The OLD collection will remain on disk and consume space.")
-        ans = input("   Delete old ChromaDB and rebuild from scratch? [y/N]: ").strip().lower()
-        if ans == "y":
-            do_rebuild = True
-
-    print("\n" + "=" * 60)
-    if do_rebuild:
-        run_idx = "y"
-        print("Will rebuild ChromaDB from scratch.")
-    else:
-        run_idx = input("Do you want to run the Embedding Indexer now? (Y/n): ").strip().lower()
-
-    if run_idx != "n":
-        print("\n[+] Starting Embedding process (this may download models if first time)...")
-        print("[+] This process reads your Zotero local database and vectorizes PDFs/HTMLs.\n")
-
-        env = os.environ.copy()
-        env.update(existing_config)
-
-        args = ["uv", "run", "src/index_from_zotero.py", "--progress"]
-        if do_rebuild:
-            args.append("--rebuild")
-
-        process = subprocess.run(args, env=env, cwd=root_dir)
-
-        if process.returncode == 0:
-            print("\n[+] Indexing completed successfully!")
-        else:
-            print(f"\n[!] Indexing failed with exit code {process.returncode}.")
-    else:
-        print("\nSkipped indexing.")
+        print("   The V3 collection must be rebuilt before this profile can be used.")
 
     print("\nSetup wizard finished.")
     print(f"Configured level: {existing_config.get('FEATURE_LEVEL', 'legacy/custom')}")
+    print("No database build or paid API operation was started by this wizard.")
+    print("Next: run Server-Database-Workflow.command and complete phases 1 through 4.")
     print("Run Setup.command again at any time to change or extend the configuration.")
     print("You can close this window.")
 

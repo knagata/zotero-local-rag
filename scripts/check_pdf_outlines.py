@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Zoteroライブラリ内のPDFのうち、PDFアウトライン（目次）を持つものを調査するスクリプト。
-manifest.json を読み込み、各PDFに対して fitz.get_toc() を実行する。
+manifest_v3.json を読み込み、各PDFに対して fitz.get_toc() を実行する。
 """
 
 import json
@@ -15,7 +15,7 @@ except ImportError:
     print("ERROR: PyMuPDF がインストールされていません。`pip install pymupdf` を実行してください。")
     sys.exit(1)
 
-MANIFEST_PATH = Path(__file__).parent.parent / "data" / "manifest.json"
+MANIFEST_PATH = Path(__file__).parent.parent / "data" / "manifest_v3.json"
 
 def check_outlines(manifest_path: Path):
     with open(manifest_path, encoding="utf-8") as f:

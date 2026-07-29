@@ -35,8 +35,7 @@ PDF routing is evidence- and policy-based:
    enabled.
 2. A scanned PDF without an OCR layer goes straight to Docling below 30 pages.
    At 30 pages or more it is deferred to the Mistral OCR Batch queue when the
-   cloud policy permits; no-cloud material and failed tag checks use Docling
-   regardless of length. A scanned PDF with an OCR layer is adopted only when
+   feature is explicitly enabled. A scanned PDF with an OCR layer is adopted only when
    the stage-2 quality gate accepts it; every other verdict follows the same
    30-page rule.
 3. RapidOCR is not an ordinary PDF route (it remains available for fixed-layout
@@ -64,7 +63,8 @@ DeepSeek is the standard hosted summarization provider: `LLM_CHEAP` uses
 unless an explicitly configured compatible provider overrides them.  Summary
 workers may run concurrently by item because each item has an independent DB
 transaction; rate limits and failed work are recorded in the artifact ledger.
-Cloud-excluded material is never sent.
+LLM and OCR calls occur only when their feature is enabled and the corresponding
+paid step is explicitly approved.
 
 ## Retrieval
 
@@ -90,21 +90,9 @@ enrichment remain separate from ingestion commits.  GROBID is optional
 review-only enrichment for qualifying English scholarly PDFs and never blocks
 canonical indexing.
 
-The structured-case generation/database/MCP/UI pipeline has been retired.  Its
+The structured-case generation/database/MCP/UI pipeline has been retired. Its
 historical evaluation material (including Gold Case QA) is retained only as
-evaluation evidence; it is not a production quality gate.  The legacy item and
-section summary stores are rollback artifacts.  A few transitional read/write
-compatibility paths remain while the V3 summary/index/search final audit is in
-progress; they are not an authorized normal V3 generation route and must be
-removed before physical retirement.  Physical removal requires the Phase 6
-write-zero audit, backup verification, and final V3 summary/index/search pass.
-
-## Phase 6 rollback guard
-
-Legacy deletion is deliberately separate from cutover.  Before deletion,
-`scripts/audit_legacy_retirement.py` must compare a baseline and a post-
-maintenance snapshot (no legacy table/collection/FTS/manifest mutations) and
-verify the existing Chroma rollback snapshot.  `data/backups/legacy-retirement-
-20260727/RESTORE.md` records the restore procedure.  Physical deletion requires
-an explicit operator decision after those checks; it is never performed by a
-normal ingestion or maintenance run.
+evaluation evidence; it is not a production quality gate. V3 node summaries
+and the V3 summary index are the only supported summary data plane. There is
+no supported runtime rollback to a legacy collection, manifest, FTS, or summary
+store; recovery uses a V3 backup or a clean rebuild from source files.

@@ -18,6 +18,7 @@ from src.build_structure_summaries import (
 )
 from src.db_relations import get_all_document_node_summaries, get_db_connection
 from src.summary_core import is_meta_summary
+from src.v3_data_plane import V3_COLLECTION
 
 
 def build_report(*, collection_name: str) -> dict:
@@ -174,6 +175,10 @@ def main() -> None:
     parser.add_argument("--collection", default="zotero_paragraphs_v3")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    if args.collection != V3_COLLECTION:
+        parser.error(
+            f"--collection must be {V3_COLLECTION!r}; the legacy data plane is retired"
+        )
     report = build_report(collection_name=args.collection)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

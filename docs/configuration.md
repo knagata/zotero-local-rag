@@ -10,6 +10,8 @@ uv run scripts/setup_wizard.py --status
 ```
 
 手動設定のひな形は [`.env.example`](../.env.example) です。`.env`と`.env.policy`はGitに追加されません。
+`Setup.command` と `setup_wizard.py --server` は設定のみを行い、DB構築・埋め込み・クラウドAPIを
+実行しません。
 
 ## セットアップのプリセット
 
@@ -59,8 +61,8 @@ uv run scripts/setup_wizard.py --status
 
 ## V3データプレーン（現行本番）
 
-本番の検索・取り込みはV3へ切り替え済みです。次の5値はカットオーバー後に設定されており、
-旧値へ戻せば設定のみでロールバックできます。
+本番の検索・取り込みはV3のみです。次の5値は一組の不変条件であり、旧collection、
+`manifest.json`、`lexical.sqlite3`を指定するrollbackはサポートしません。
 
 | 変数 | 用途 | 現行の値 |
 |---|---|---|
@@ -102,13 +104,15 @@ LLMロールはプロバイダ接頭辞つきで指定します（例: `deepseek
 有効なのに必要な鍵が無ければ起動時に停止します。
 
 資料単位の除外タグ・`*_ALLOW_CLOUD_ALL`・`MISTRAL_OCR_FALLBACK_ENABLE`は2026-07-27に
-撤去しました。**Zoteroライブラリの資料はRAGで使う時点でチャンクがクラウドへ送られる**ため、
-資料単位で「クラウド不可」を表明する仕組みは実態と噛み合っていませんでした。
+撤去しました。クラウド利用の有無は、資料タグではなく機能フラグと実行時の明示承認で管理します。
 
 詳細は
 [LLMとプライバシー](llm-and-privacy.md) を参照してください。
 
 ### PDFルーティング
+
+`PDF_AI_TOC_FAST_PATH_ENABLE=1` はFull構成の有料機能です。AI目次推定はDB構築フェーズでも
+本文を送信し得るため、DBだけを先に検証するサーバー構築では課金方針を確認してから有効にします。
 
 | 変数 | 用途 | 既定 |
 |---|---|---|
@@ -122,10 +126,10 @@ LLMロールはプロバイダ接頭辞つきで指定します（例: `deepseek
 | `PYMUPDF_NATIVE_OUTLINE_ANOMALY_RATIO_MAX` | 内蔵outlineがある場合に偽陽性として許容するscanned/corruptedページの上限割合 | `0.02` |
 | `PDF_POPPLER_TEXT_FALLBACK` | `1`で、custom fontをUnicode復号できないページをローカル`pdftotext`で再抽出し品質改善時だけ採用 | `1` |
 
-`.env` には現行本番として `PDF_AI_TOC_FAST_PATH_ENABLE=1` / `PDF_AI_TOC_MIN_PAGES=30` /
-`PDF_MISTRAL_TOC_QUEUE_ENABLE=1` / `PDF_AI_TOC_DOCLING_REFERENCES_ENABLE=1` が常設されています。
-AI目次fast pathは`PDF_AI_TOC_FAST_PATH_ENABLE`が唯一のゲートです（資料単位の除外タグは
-2026-07-27に撤去）。
+Full構成で `PDF_AI_TOC_FAST_PATH_ENABLE=1` を有効にすると、AI目次fast pathが資料本文を
+LLMへ送り、フェーズ1のDB構築中にも課金が発生し得ます。料金を発生させずDBだけを検証したい
+場合は、フェーズ1の間このフラグを`0`にしておき、フェーズ2の監査後に必要な資料だけを
+明示的に再処理してください。AI目次fast pathは`PDF_AI_TOC_FAST_PATH_ENABLE`が唯一のゲートです。
 deferし、30頁未満・queue無効時はDoclingへ戻ります。AI目次の見出しcoverage不合格は
 既存のqueue/Docling policyに従います。
 AIの印刷ページ番号は採用せず、本文で再発見した見出しのページとreading orderだけを構造境界に
@@ -155,15 +159,22 @@ V3へ採用します。採用済みBatchは状態ファイルに記録され、�
 | `GROBID_URL` | ローカルGROBID REST serviceのbase URL | `http://127.0.0.1:8070` |
 | `GROBID_TIMEOUT_SEC` | 1資料あたりのHTTP timeout秒 | `120` |
 
+### サーバーDB構築と階層要約
+
+サーバーでは `Server-Database-Workflow.command` を使用し、必ず `1 → 2 → 3 → 4` の順に
+別実行します。フェーズ1はV3 DB構築、フェーズ2はZotero/原本/DB監査、フェーズ3は有料の
+階層AI要約、フェーズ4は要約監査です。フェーズ2の監査レポートはDB世代に結び付き、DBが
+変わった場合はフェーズ3がAPI呼出し前に停止します。
+
 ### 構造・要約を手動で構築する場合
 
-active collectionへ切り替え済みの環境では通常 `Maintenance-Widget.command` に任せますが、
-別collectionへ明示構築する場合は両CLIへ同じcollectionを渡します。
+本番collectionはV3固定です。構造の再構築は手動実行できますが、要約用gateは必ず
+`Server-Database-Workflow.command` のフェーズ2でZotero・原本・DBの3監査を通して作成します。
+`audit_v3_cutover.py --new-only` 単独ではgateを作れません。
 
 ```bash
 uv run python scripts/rebuild_document_structure.py --all --collection zotero_paragraphs_v3
-uv run python scripts/audit_v3_cutover.py --new-only --new-collection zotero_paragraphs_v3 \
-  --output data/quality/server_database_gate.json
+# Server-Database-Workflow.command のフェーズ2を実行
 uv run python scripts/build_structure_summaries.py --all --collection zotero_paragraphs_v3 \
   --mode llm --limit 10 --embed --database-gate data/quality/server_database_gate.json
 ```

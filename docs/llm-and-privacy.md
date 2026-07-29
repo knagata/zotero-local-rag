@@ -53,6 +53,11 @@ Mistral OCRだけで、Semantic Scholarの鍵は無料です（ただし鍵な�
 | `PDF_AI_TOC_FAST_PATH_ENABLE` | AI目次（冒頭20頁を送信） |
 | `PDF_MISTRAL_TOC_QUEUE_ENABLE` | Mistral OCR Batch（ファイル全体を送信） |
 
+Full構成では `PDF_AI_TOC_FAST_PATH_ENABLE=1` によるAI目次推定も有料です。これは階層要約とは
+別の処理で、DB構築フェーズ中にも実行され得ます。サーバーでは
+`Server-Database-Workflow.command` のフェーズ1（DB構築）を始める前に、この機能を有効にするか
+決めてください。DB整合性の確認後にのみ階層AI要約へ進む場合は、フェーズ1では`0`にします。
+
 ## LLM要約
 
 文書構造V3の葉からbottom-upにAI要約を生成し、`__sum_node` 検索索引を更新します。
@@ -69,6 +74,8 @@ uv run python scripts/build_structure_summaries.py --all --mode extractive --emb
 ```
 
 全件AI要約の生成はpilot→ユーザー承認後に有効化する運用です（[環境設定](configuration.md#メンテナンス時のai要約) 参照）。
+サーバーではさらに、フェーズ2のZotero・原本・DB監査が現在のDB世代に対して合格していなければ、
+フェーズ3のAI要約CLIはAPIを呼び出さず停止します。
 
 ## 参考文献抽出
 

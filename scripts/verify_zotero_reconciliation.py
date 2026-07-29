@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -33,7 +34,7 @@ from src.zotero_source_localapi import (  # noqa: E402
     ZoteroLocalAPI, classify_attachment_source_type,
 )
 
-MANIFEST_PATH = ROOT / "data" / "manifest_v3.json"
+MANIFEST_PATH = Path(os.environ.get("MANIFEST_PATH", ROOT / "data" / "manifest_v3.json"))
 
 
 async def eligible_zotero_attachments(api: ZoteroLocalAPI) -> dict[str, dict]:
@@ -44,7 +45,10 @@ async def eligible_zotero_attachments(api: ZoteroLocalAPI) -> dict[str, dict]:
     resolved, which is exactly the population a reconciliation check needs to
     see, not the population it should take for granted.
     """
-    raw_attachments = await api.list_pdf_attachments()
+    # A partial inventory can agree with a partial manifest.  This script is
+    # used as a rebuild gate, so accepting an unproven listing would defeat
+    # the only comparison with Zotero itself.
+    raw_attachments = await api.list_pdf_attachments(require_complete=True)
     eligible: dict[str, dict] = {}
     for raw in raw_attachments:
         key, data = ZoteroLocalAPI._unwrap_item(raw)
@@ -66,14 +70,31 @@ async def eligible_zotero_attachments(api: ZoteroLocalAPI) -> dict[str, dict]:
 async def main_async(args: argparse.Namespace, api: ZoteroLocalAPI | None = None) -> int:
     api = api or ZoteroLocalAPI()
     eligible = await eligible_zotero_attachments(api)
-    manifest_keys = set((load_manifest(MANIFEST_PATH).get("files") or {}).keys())
+    manifest_path = Path(getattr(args, "manifest", MANIFEST_PATH))
+    manifest_keys = set((load_manifest(manifest_path).get("files") or {}).keys())
 
-    missing = sorted(set(eligible) - manifest_keys)
+    # ``linked_url`` is intentionally not indexed: Zotero stores no local
+    # file for it and the Local API's /file endpoint cannot supply one.  Keep
+    # it visible in the report, but do not make an otherwise complete local
+    # corpus impossible to approve.  Any other eligible attachment is a
+    # required local source and its absence must fail closed.
+    unindexable = {
+        key: value for key, value in eligible.items()
+        if str(value.get("linkMode") or "").casefold() == "linked_url"
+    }
+    required = {key: value for key, value in eligible.items() if key not in unindexable}
+    missing = sorted(set(required) - manifest_keys)
     report = {
+        "manifest_path": str(manifest_path.resolve()),
         "zotero_eligible_attachments": len(eligible),
+        "required_attachments": len(required),
+        "unindexable_linked_url_attachments": [
+            {"attachment_key": key, "reason_code": "linked_url_no_local_file", **unindexable[key]}
+            for key in sorted(unindexable)
+        ],
         "manifest_attachments": len(manifest_keys),
-        "missing_from_manifest": [
-            {"attachment_key": key, **eligible[key]} for key in missing
+        "missing_required_from_manifest": [
+            {"attachment_key": key, **required[key]} for key in missing
         ],
     }
     report["passed"] = not missing
@@ -82,7 +103,8 @@ async def main_async(args: argparse.Namespace, api: ZoteroLocalAPI | None = None
         args.output.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(
         {"passed": report["passed"], "zotero_eligible_attachments": len(eligible),
-         "manifest_attachments": len(manifest_keys), "missing_count": len(missing)},
+         "required_attachments": len(required), "manifest_attachments": len(manifest_keys),
+         "missing_required_count": len(missing), "unindexable_linked_url_count": len(unindexable)},
         ensure_ascii=False,
     ))
     return 0 if report["passed"] else 2
@@ -90,6 +112,10 @@ async def main_async(args: argparse.Namespace, api: ZoteroLocalAPI | None = None
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--manifest", type=Path, default=MANIFEST_PATH,
+        help="V3 manifest to reconcile (defaults to MANIFEST_PATH or data/manifest_v3.json).",
+    )
     parser.add_argument("--output", type=Path, help="Write the full report as JSON.")
     args = parser.parse_args()
     return asyncio.run(main_async(args))

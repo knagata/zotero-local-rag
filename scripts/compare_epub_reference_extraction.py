@@ -79,6 +79,8 @@ def main() -> None:
     parser.add_argument("--item", action="append", required=True, help="Item key; repeatable")
     parser.add_argument("--collection", default=None, help="Source collection (default: active)")
     args = parser.parse_args()
+    if args.collection not in (None, "zotero_paragraphs_v3"):
+        parser.error("--collection must be 'zotero_paragraphs_v3'; the legacy data plane is retired")
     zotero_data_dir = os.environ.get("ZOTERO_DATA_DIR", os.path.expanduser("~/Zotero"))
     report = [compare_item(key, zotero_data_dir, args.collection) for key in args.item]
     print(json.dumps({"items": report, "canonical_data_modified": False}, ensure_ascii=False, indent=2))

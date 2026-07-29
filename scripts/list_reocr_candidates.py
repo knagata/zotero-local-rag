@@ -131,7 +131,7 @@ def render_markdown(rows: list[dict[str, Any]]) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--manifest", type=Path, default=ROOT / "data" / "manifest.json")
+    parser.add_argument("--manifest", type=Path, default=ROOT / "data" / "manifest_v3.json")
     parser.add_argument("--engine", default=os.environ.get("PDF_EXTRACTION_ENGINE", "docling"))
     parser.add_argument("--engine-version")
     parser.add_argument("--item", action="append", help="Limit to itemKey; repeatable")

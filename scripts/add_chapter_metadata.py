@@ -28,8 +28,9 @@ from chapter_detect import (
     get_epub_chapter_index_to_title,
     get_pdf_toc,
 )
+from v3_data_plane import V3_COLLECTION
 
-MANIFEST_PATH = Path(__file__).parent.parent / "data" / "manifest.json"
+MANIFEST_PATH = Path(__file__).parent.parent / "data" / "manifest_v3.json"
 CHROMA_DIR = Path(__file__).parent.parent / "data" / "chroma"
 
 UPDATE_BATCH = 500  # ChromaDB への一括 update サイズ
@@ -59,10 +60,7 @@ def main() -> None:
     files: dict = manifest.get("files", {})
 
     # ── ChromaDB 接続 ──
-    cfg_path = CHROMA_DIR / "embedder_config.json"
-    with open(cfg_path, encoding="utf-8") as f:
-        cfg = json.load(f)
-    collection_name = cfg["collection"]
+    collection_name = V3_COLLECTION
 
     client = chromadb.PersistentClient(path=str(CHROMA_DIR))
     col = client.get_collection(collection_name)

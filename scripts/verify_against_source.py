@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -38,15 +39,17 @@ from src.source_verification import (  # noqa: E402
     chunks_without_item, compare_document, dangling_node_ids, indexed_page_chars,
     source_page_chars, unretrievable_documents,
 )
+from src.v3_data_plane import V3_COLLECTION  # noqa: E402
 
-MANIFEST = ROOT / "data" / "manifest_v3.json"
+MANIFEST = Path(os.environ.get("MANIFEST_PATH", ROOT / "data" / "manifest_v3.json"))
+CHROMA_DIR = Path(os.environ.get("CHROMA_DIR", ROOT / "data" / "chroma"))
 
 
-def _collection_rows(collection_name: str) -> list[dict[str, Any]]:
+def _collection_rows(collection_name: str, *, chroma_dir: Path = CHROMA_DIR) -> list[dict[str, Any]]:
     """Every chunk in one collection, as {"id", "text", "metadata"}."""
     import chromadb
 
-    client = chromadb.PersistentClient(path=str(ROOT / "data" / "chroma"))
+    client = chromadb.PersistentClient(path=str(chroma_dir))
     collection = client.get_collection(collection_name)
     rows: list[dict[str, Any]] = []
     offset = 0
@@ -70,18 +73,28 @@ def _collection_rows(collection_name: str) -> list[dict[str, Any]]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--collection", default=None, help="Defaults to the active collection.")
+    parser.add_argument(
+        "--manifest", type=Path, default=MANIFEST,
+        help="V3 manifest to inspect (defaults to MANIFEST_PATH or data/manifest_v3.json).",
+    )
+    parser.add_argument(
+        "--chroma-dir", type=Path, default=CHROMA_DIR,
+        help="Chroma persistence directory (defaults to CHROMA_DIR or data/chroma).",
+    )
     parser.add_argument("--attachment", action="append", help="Limit the page check; repeatable.")
     parser.add_argument("--limit", type=int, default=0, help="Check at most N attachments (0 = all).")
     parser.add_argument("--skip-pages", action="store_true", help="Companion invariants only.")
     parser.add_argument("--output", type=Path, help="Write the full report as JSON.")
     args = parser.parse_args()
 
-    collection_name = args.collection or active_collection_name()
+    collection_name = args.collection or active_collection_name(chroma_dir=args.chroma_dir)
+    if collection_name != V3_COLLECTION:
+        parser.error(f"--collection must be {V3_COLLECTION!r}; the legacy data plane is retired")
     if not collection_name:
         print("No active collection.", file=sys.stderr)
         return 2
 
-    rows = _collection_rows(collection_name)
+    rows = _collection_rows(collection_name, chroma_dir=args.chroma_dir)
     by_attachment: dict[str, list[dict[str, Any]]] = defaultdict(list)
     by_item: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
@@ -98,6 +111,8 @@ def main() -> int:
 
     report: dict[str, Any] = {
         "collection": collection_name,
+        "manifest_path": str(args.manifest.resolve()),
+        "chroma_dir": str(args.chroma_dir.resolve()),
         "chunks": len(rows),
         "orphan_chunks": chunks_without_item(rows),
         "dangling_node_chunks": dangling_node_ids(rows, live_nodes),
@@ -106,7 +121,7 @@ def main() -> int:
     }
 
     if not args.skip_pages:
-        files = (load_manifest(MANIFEST).get("files") or {})
+        files = (load_manifest(args.manifest).get("files") or {})
         selected = args.attachment or sorted(files)
         if args.limit > 0:
             selected = selected[: args.limit]

@@ -1,6 +1,6 @@
 # Tasks
 
-正本: `dev-notes/current/64_ingestion_redesign_audit_and_plan.md`
+正本: `SPEC.md`。実装・検証の履歴はこのファイルと`evaluations/`の追跡済みレポートに残す。
 
 ## Active
 
@@ -59,6 +59,16 @@ extractor修正は並行実装する。修正完了まで埋め込み・正本DB
   - 最終目視QA後の全テスト `870 passed, 2 subtests passed`。外部成果物はscratchのみで、埋め込み・
     canonical DB・manifestへの書込みは未実施。
 
+### サーバー再構築の確定手順
+
+- [ ] **V3唯一化とサーバーDB構築を完了する**
+  - 旧collection・旧manifest・旧FTSへのruntime rollbackを廃止し、V3以外の設定をfail-closedにする。
+  - `Setup.command` / `setup_wizard.py --server` は設定だけを行い、DB構築・埋め込み・有料APIを実行しない。
+  - `Server-Database-Workflow.command` を `1) DB再構築 → 2) Zotero/原本/DB監査 →
+    3) 有料階層要約 → 4) 要約監査` の順に別実行する。
+  - フェーズ2のDB世代gateがなければフェーズ3のAPI呼出しを開始しない。Full設定の
+    AI目次fast pathはフェーズ1でも課金し得るため、必要に応じて明示的に無効化する。
+
 ### Phase 3: V3並行再取込とカットオーバー監査を完走する
 
 - [x] ~~**V3全件再取込を小分けで実行する**~~ (2026-07-28)
@@ -85,8 +95,8 @@ extractor修正は並行実装する。修正完了まで埋め込み・正本DB
     永続的な候補状態へ記録し、通常再開時に同じPDFを無限再試行しない。
   - 候補状態からMistral OCR用JSON queueを決定的に生成し、item指定・limit・dry-run・再開を
     サポートする。通常の`--reocr-candidates`と混同しないreason/provenanceを保持する。
-  - `EXTRACT_EXCLUDE_TAGS` / cloud許可をfail-closedで再確認し、許可不能・除外タグ資料は
-    Mistralへ送信せずblocked理由を保存する。
+  - （当時の仕様）資料単位の除外タグを確認した。現在このタグ機構は撤去済みで、クラウド利用は
+    機能フラグと明示承認で管理する。
   - Mistral結果は既存canonicalへ即時上書きせず、ページcoverage・文字量・言語・構造・
     hallucination gateを比較してからitem単位で明示採用する。
   - 候補生成、通常batchでのskip、再実行時skip、cloud policy拒否、Mistral失敗、品質gate不合格、
@@ -111,9 +121,9 @@ extractor修正は並行実装する。修正完了まで埋め込み・正本DB
     canonical書込み失敗時のrollback fixtureも追加する。
     詳細: `dev-notes/current/72_pdf_routing_mistral_queue.md`
   - 2026-07-27: 通常PDFのRapidOCR/NDLOCR先行routeを廃止。スキャンPDFはOCR層なし、または
-    stage-2品質gate不合格なら、30頁未満／no-cloud／タグ照会失敗はDocling、30頁以上の
-    cloud許可資料は既存Batch queueへ直接deferする。混在レイアウトとRapidOCRの短行
-    チャンク爆発を避けるため。固定レイアウトEPUBと明示re-OCRは変更しない。
+    stage-2品質gate不合格なら、30頁未満はDocling、30頁以上は明示有効なBatch queueへ
+    deferする。混在レイアウトとRapidOCRの短行チャンク爆発を避けるため。固定レイアウトEPUBと
+    明示re-OCRは変更しない。
 - [x] ~~**GROBIDを学術論文PDF向け構造・引用抽出器としてpilot評価する**~~ (2026-07-23)
   - 対象はZotero `itemType`が`journalArticle` / `conferencePaper` / `preprint`のPDFに限定し、
     書籍・既存処理済みPDFの再埋め込み条件にはしない。
@@ -248,13 +258,14 @@ extractor修正は並行実装する。修正完了まで埋め込み・正本DB
   - `audit_structure_summaries.py`でsummary status、source/prompt fingerprint、空/meta要約、
     DBのsearchable要約IDと`__sum_node` IDの完全一致を検証。
   - 日常MaintenanceでもDeepSeek要約とMistral Batchをauto-approve対象外に変更。
-  - 全テスト `878 passed, 6 warnings, 2 subtests passed`。
+  - V3唯一化・セットアップ再設計・外部監査gate封印後の全テスト
+    `906 passed, 6 warnings, 2 subtests passed`。
 - [x] ~~**active collection切替の実行手順を確定する**~~ (2026-07-23)
   - 全件監査pass後に、active Chroma / FTS / manifestをV3へ同時切替した。
   - `.env`で`CHROMA_COLLECTION=zotero_paragraphs_v3`、`MANIFEST_PATH=data/manifest_v3.json`、
     `LEXICAL_DB_PATH=data/lexical_v3.sqlite3`、V3 ingestion/hierarchical retrievalを有効化。
-  - legacy collection / manifest / FTSはrollback用に1世代保持する。詳細:
-    `dev-notes/current/75_v3_cutover_20260723.md`。
+  - 当時はlegacy collection / manifest / FTSを一世代保持した。このrollback方針は撤回し、
+    現在はV3バックアップまたは原本からの再構築を用いる。
 
 ### 削除item・孤児レコードの整理（2026-07-27 完了）
 
@@ -529,9 +540,8 @@ A（PDF構造化）・B（課金LLM）は独立、C（構造抽出エンジン�
     `PDF_MISTRAL_TOC_QUEUE_ENABLE=1`を常設（section 4b）。これでwidgetのライブラリ差分更新で
     追加される30ページ以上の無構造PDFはAI目次fast pathを既定ルートにし、gate不合格分は
     Mistral OCR専用queueへ退避する（queue生成のみ）。
-  - `MISTRAL_OCR_FALLBACK_ENABLE`（同期クラウド送信の別機能）は0のまま維持
-    （[[Waiting On Human Decision]]の本番有効化判断は別途）。fail-closedは
-    `EXTRACT_EXCLUDE_TAGS`/`EXTRACT_ALLOW_CLOUD_ALL`が担保。
+  - `MISTRAL_OCR_FALLBACK_ENABLE`（同期クラウド送信の別機能）は0のまま維持した。
+    資料単位タグによる許可機構は後に撤去し、現在は機能フラグと明示承認を使う。
 - [x] ~~**R19（P3）: widget末尾に状態台帳サマリ表示stepを追加（仕様§8）**~~ (2026-07-23)
   - widget末尾にread-onlyの`list_artifact_status.py --unresolved-only`を追加。step 1/2の
     「文書構造v2」ラベルをV3へ修正。Mistral queue候補件数の表示は
@@ -946,25 +956,16 @@ A（PDF構造化）・B（課金LLM）は独立、C（構造抽出エンジン�
   - 注意（R9）: この前提は解消した。`__sum_node`は12,280件で埋まっており(2026-07-28)、
     **summary routing経路を含む本試験が実施可能**になった。手動クエリ2本
     （英語・日本語）で要約レイヤーが応答することは確認済みだが、統合試験は未実施。
-- [~] **`HIERARCHICAL_SEARCH_V2_ENABLE=1`を既定化する** — コード側は既定済み、試験待ち
-  - `rag_mcp_server.py`の既定値は既に`"1"`で、`.env`でも明示有効。つまり**実質的には
-    既定化されている**。残るのは上の検索統合試験を通してこの状態を追認することだけ。
-  - UI/MCP/maintenance一巡を確認し、問題時はflagで旧経路へ戻せる状態を維持する。
+- [x] **階層検索V2を唯一の本番検索経路にする** (2026-07-29)
+  - `rag_mcp_server.py`から旧検索へのflag rollbackを撤去し、V3階層検索へ固定した。
+  - 障害時も旧経路へは戻さず、V3バックアップまたは原本から復旧する。
 
-### Phase 6: rollback期間後にlegacyを撤去する
+### Phase 6: legacyデータ面の物理撤去
 
-- [ ] **legacyへの新規書込みが0件であることを監査する**
-  - maintenance一巡後に旧summary/事例table・旧summary collectionの件数が増えていないことを確認する。
-  - 2026-07-27: `scripts/audit_legacy_retirement.py`でbaselineを採取。旧summary行は
-    `item_summaries=0` / `section_summaries=0`、旧statusは30行、旧collectionは
-    306,597 / 526 / 6,922、旧FTSは306,691行。直後の比較はpassしたが、最終maintenance後に
-    同じbaselineとの比較を再実行するまで未完了とする。
-- [ ] **rollback期間満了後にlegacyを物理削除する**
-  - 旧chunk/FTS、`__sum_item`、`__sum_section`、legacy summary table、`insight_generation_status`、attic互換コードを撤去する。
-  - 退避物から復元できることを削除前に確認する。
-  - 2026-07-27: 既存`data/chroma.bak_20260724_103049`は旧3 collectionの件数・metadata fingerprintが
-    現行と一致。`data/backups/legacy-retirement-20260727/`へ旧manifest/FTSをSHA-256検証済みで退避し、
-    `RESTORE.md`へ復元手順を記録。空き容量保全のため追加の全量Chroma backupは作成しない。
+- [ ] **legacy runtime routeを物理削除する**
+  - 旧chunk/FTS、`__sum_item`、`__sum_section`、legacy summary table、`insight_generation_status`、
+    rollback設定、互換コードを撤去する。
+  - 復旧は旧面への切替ではなく、V3バックアップまたは原本からの再構築とする。
 - [x] ~~**`SPEC.md`を実装結果へ更新する**~~ (2026-07-27)
   - V3構造、DeepSeek要約、事例機能廃止、Gold QAの位置付け、採用したPDFルーティングを反映した。
 
@@ -1009,8 +1010,6 @@ A（PDF構造化）・B（課金LLM）は独立、C（構造抽出エンジン�
   - 承認を得て実行済み。ただし提示した規模の見積もりは実測と乖離した（当初7,006要約と伝え、
     着地は23,020呼び出し）。小さい資料5件からの外挿だったのが原因で、ノード数の分布は
     中央値39・平均84と大きく偏っている。**この種の外挿は中央値と分布を見てから出すこと。**
-- [ ] **legacy物理削除のrollback期間満了確認**
-  - V3 cutover後に旧正本を1世代保持し、削除直前に確認する。
 - [x] ~~**Mistral OCRフォールバックの本番有効化判断**~~ (2026-07-27)
   - 判断不要になった。`MISTRAL_OCR_FALLBACK_ENABLE`はフラグごと撤去済み。Mistral OCRへ至る
     経路はすべて明示的な操作（`--reocr-candidates`への投入、`--submit`）の後ろにあるか、

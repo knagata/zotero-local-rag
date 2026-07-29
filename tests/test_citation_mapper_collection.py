@@ -83,26 +83,26 @@ class CitationMapperCollectionTests(unittest.TestCase):
         self.assertEqual(segment["collection_name"], "zotero_paragraphs_v3")
         self.assertEqual(segment["metadata_segment_id"], "v3-meta")
 
-    def test_v3_active_config_is_used_when_collection_is_not_explicit(self):
+    def test_legacy_active_config_is_ignored_when_collection_is_not_explicit(self):
         connection = _create_db(self.chroma_dir)
         _add_collection(
             connection, collection_id="legacy-id", name="legacy", segment_id="legacy-meta",
             vector_id="legacy-vector", chunks=[("legacy-1", "ITEM", "old")],
         )
         _add_collection(
-            connection, collection_id="active-id", name="active-v3", segment_id="active-meta",
+            connection, collection_id="active-id", name="zotero_paragraphs_v3", segment_id="active-meta",
             vector_id="active-vector", chunks=[("active-1", "ITEM", "new")],
         )
         connection.commit()
         connection.close()
         (self.chroma_dir / "embedder_config_v3.json").write_text(
-            json.dumps({"collection": "active-v3"}), encoding="utf-8",
+            json.dumps({"collection": "legacy"}), encoding="utf-8",
         )
 
         with patch.dict(os.environ, {"INGEST_STRUCTURED_V3_ENABLE": "1"}, clear=True):
             segment = citation_mapper._get_segment_meta()
 
-        self.assertEqual(segment["collection_name"], "active-v3")
+        self.assertEqual(segment["collection_name"], "zotero_paragraphs_v3")
 
     def test_missing_or_ambiguous_configured_collection_fails_closed(self):
         connection = _create_db(self.chroma_dir)
@@ -114,25 +114,25 @@ class CitationMapperCollectionTests(unittest.TestCase):
         connection.close()
 
         with patch.dict(os.environ, {"CHROMA_COLLECTION": "missing"}, clear=False):
-            with self.assertRaisesRegex(RuntimeError, "missing.*not found"):
+            with self.assertRaisesRegex(RuntimeError, "Unsupported Chroma collection"):
                 citation_mapper._get_segment_meta()
 
         connection = sqlite3.connect(self.chroma_dir / "chroma.sqlite3")
-        connection.execute("INSERT INTO collections VALUES ('ambiguous-id', 'ambiguous')")
+        connection.execute("INSERT INTO collections VALUES ('ambiguous-id', 'zotero_paragraphs_v3')")
         connection.execute("INSERT INTO segments VALUES ('ambiguous-meta-1', 'ambiguous-id', 'METADATA')")
         connection.execute("INSERT INTO segments VALUES ('ambiguous-meta-2', 'ambiguous-id', 'METADATA')")
         connection.execute("INSERT INTO segments VALUES ('ambiguous-vector', 'ambiguous-id', 'VECTOR')")
         connection.execute("INSERT INTO embeddings VALUES (999, 'ambiguous-meta-1', 'x')")
         connection.commit()
         connection.close()
-        with patch.dict(os.environ, {"CHROMA_COLLECTION": "ambiguous"}, clear=False):
+        with patch.dict(os.environ, {"CHROMA_COLLECTION": "zotero_paragraphs_v3"}, clear=False):
             with self.assertRaisesRegex(RuntimeError, "ambiguous"):
                 citation_mapper._get_segment_meta()
 
     def test_rebuild_generation_change_invalidates_item_chunk_cache(self):
         connection = _create_db(self.chroma_dir)
         _add_collection(
-            connection, collection_id="before-id", name="active", segment_id="before-meta",
+            connection, collection_id="before-id", name="zotero_paragraphs_v3", segment_id="before-meta",
             vector_id="before-vector", chunks=[("old-chunk", "ITEM", "old text")],
         )
         connection.commit()
@@ -141,7 +141,7 @@ class CitationMapperCollectionTests(unittest.TestCase):
         def fake_embed(texts):
             return [[float(index + 1)] for index, _ in enumerate(texts)]
 
-        with patch.dict(os.environ, {"CHROMA_COLLECTION": "active"}, clear=False), \
+        with patch.dict(os.environ, {"CHROMA_COLLECTION": "zotero_paragraphs_v3"}, clear=False), \
              patch.object(citation_mapper, "_get_emb_fn", return_value=fake_embed):
             first = citation_mapper._load_chunks_for_item("ITEM")
             self.assertEqual([row[0] for row in first], ["old-chunk"])
@@ -157,7 +157,7 @@ class CitationMapperCollectionTests(unittest.TestCase):
                 DELETE FROM collections;
             """)
             _add_collection(
-                connection, collection_id="after-id", name="active", segment_id="after-meta",
+                connection, collection_id="after-id", name="zotero_paragraphs_v3", segment_id="after-meta",
                 vector_id="after-vector", chunks=[("new-chunk", "ITEM", "new text")],
             )
             connection.commit()

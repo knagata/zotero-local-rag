@@ -20,6 +20,7 @@ from src.build_structure_summaries import build_structure_summaries, embed_struc
 from src.chunk_store import list_item_keys
 from src.db_relations import get_item_processing_status, mark_artifact_status
 from src.database_gate import validate_database_gate
+from src.v3_data_plane import V3_COLLECTION
 
 
 def main() -> None:
@@ -39,8 +40,8 @@ def main() -> None:
     )
     parser.add_argument("--retry-failed", action="store_true", help="Select retryable failed summary items only")
     parser.add_argument(
-        "--collection",
-        help="Source collection, e.g. zotero_paragraphs_v3 during parallel migration.",
+        "--collection", default=V3_COLLECTION,
+        help="Source collection (V3 only).",
     )
     parser.add_argument(
         "--workers", type=int, default=1,
@@ -49,6 +50,8 @@ def main() -> None:
              "(sequential, unchanged behavior).",
     )
     args = parser.parse_args()
+    if args.collection != V3_COLLECTION:
+        parser.error(f"--collection must be {V3_COLLECTION!r}; the legacy data plane is retired")
     if args.workers < 1:
         parser.error("--workers must be at least 1")
     if args.mode == "llm" and not args.dry_run:
