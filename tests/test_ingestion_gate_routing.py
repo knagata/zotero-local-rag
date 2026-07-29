@@ -444,3 +444,47 @@ class SourceContentUnchangedTests(unittest.TestCase):
     def test_no_prior_entry_means_changed(self):
         self.assertFalse(module._source_content_unchanged(
             None, mtime=100.0, size=2048, signature=None))
+
+
+class QualityUncertainAdoptionTests(unittest.TestCase):
+    # U5 (2026-07-30): a partially recovered document is indexed with a tag
+    # instead of being dropped, and the tag must accumulate rather than
+    # overwrite -- a page-level OCR caveat and a document-level coverage gap
+    # answer different questions.
+    def test_existing_chunk_reason_is_preserved_alongside_the_new_one(self):
+        chunks = [
+            ("A:p1", "text", {"page": 1, "quality_uncertain": True,
+                              "quality_uncertain_reason": "short_ocr_page"}),
+            ("A:p2", "text", {"page": 2}),
+        ]
+        tagged, quality = module._adopt_with_quality_uncertain(
+            chunks, {"parser": "mistral_ocr"},
+            reason="incomplete_source_coverage:source_units_unaccounted",
+        )
+        self.assertEqual(
+            tagged[0][2]["quality_uncertain_reason"],
+            "short_ocr_page,incomplete_source_coverage:source_units_unaccounted",
+        )
+        self.assertEqual(
+            tagged[1][2]["quality_uncertain_reason"],
+            "incomplete_source_coverage:source_units_unaccounted",
+        )
+        self.assertTrue(all(row[2]["quality_uncertain"] for row in tagged))
+        self.assertTrue(quality["quality_uncertain"])
+        self.assertEqual(quality["parser"], "mistral_ocr")
+
+    def test_repeating_the_same_reason_does_not_duplicate_it(self):
+        chunks = [("A:p1", "text", {"quality_uncertain_reason": "docling_escalation_rejected"})]
+        tagged, _quality = module._adopt_with_quality_uncertain(
+            chunks, {}, reason="docling_escalation_rejected",
+        )
+        self.assertEqual(
+            tagged[0][2]["quality_uncertain_reason"], "docling_escalation_rejected",
+        )
+
+    def test_source_chunk_metadata_is_not_mutated_in_place(self):
+        metadata = {"page": 1}
+        module._adopt_with_quality_uncertain(
+            [("A:p1", "text", metadata)], {}, reason="incomplete_source_coverage",
+        )
+        self.assertNotIn("quality_uncertain", metadata)

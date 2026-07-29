@@ -26,7 +26,7 @@ from src.source_verification import dangling_node_ids, unretrievable_documents
 from src.document_structure import STRUCTURE_VERSION, source_fingerprint
 from src.lexical_index import list_chunk_ids as list_lexical_chunk_ids
 from src.manifest import load_manifest
-from src.source_coverage import validate_source_coverage
+from src.source_coverage import coverage_gap_is_adoptable, validate_source_coverage
 from src.database_gate import database_state_fingerprint, external_audit_attestation
 from src.v3_data_plane import V3_COLLECTION
 
@@ -139,6 +139,27 @@ def structure_failures(
     return failures
 
 
+def _coverage_unaccounted_for(entry: Any) -> bool:
+    """True when a manifest entry's coverage is neither complete nor accounted for.
+
+    Partial coverage stops being a cutover blocker once the ingest run recorded
+    it deliberately (``source_coverage_adopted``): those documents are indexed
+    with a quality-uncertain tag on purpose and stay queryable for reprocessing.
+    An unexplained coverage failure -- or a self-contradicting one that is not
+    adoptable at all -- still blocks the cutover.
+    """
+    if not isinstance(entry, Mapping) or not isinstance(entry.get("quality"), Mapping):
+        return True
+    quality = entry["quality"]
+    verdict = validate_source_coverage(quality.get("source_coverage"))
+    if verdict["passed"]:
+        return False
+    return not (
+        bool(quality.get("source_coverage_adopted"))
+        and coverage_gap_is_adoptable(verdict)
+    )
+
+
 def global_gate_failures(
     *, manifest: Mapping[str, Any], manifest_attachment_keys: set[str],
     chroma_attachment_keys: set[str], chroma_ids: set[str], lexical_ids: set[str],
@@ -168,22 +189,19 @@ def global_gate_failures(
     if manifest.get("inflight_attachments"):
         failures.append("inflight_attachments")
     files = manifest.get("files") if isinstance(manifest.get("files"), dict) else {}
-    if any(
-        not isinstance(entry, Mapping)
-        or not isinstance(entry.get("quality"), Mapping)
-        or not validate_source_coverage(entry["quality"].get("source_coverage"))["passed"]
-        for entry in files.values()
-    ):
+    if any(_coverage_unaccounted_for(entry) for entry in files.values()):
         failures.append("incomplete_source_coverage")
     # A worker may report its timeout guard as having fired after it has
     # nevertheless returned every expected page.  Full page coverage is not a
     # partial extraction and must not block cutover merely due to that stale
-    # diagnostic flag.
+    # diagnostic flag.  A recorded partial-coverage adoption is likewise a
+    # decision already taken at ingest time, not an unreviewed truncation.
     if any(
         isinstance(entry, dict)
         and isinstance(entry.get("quality"), dict)
         and bool(entry["quality"].get("truncated_by_timeout"))
         and not bool(entry["quality"].get("truncated_approved"))
+        and not bool(entry["quality"].get("source_coverage_adopted"))
         and int(entry["quality"].get("processed_pages") or 0)
             < int(entry["quality"].get("expected_pages") or entry["quality"].get("total_pages") or 0)
         for entry in files.values()

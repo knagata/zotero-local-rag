@@ -106,6 +106,64 @@ def validate_source_coverage(coverage: Mapping[str, Any] | None) -> dict[str, An
     }
 
 
+#: Coverage verdicts that describe a *degraded source*, not a broken extractor.
+#:
+#: A missing, failed, unattempted or unmeasurable unit means the document was
+#: only partially recovered -- the remaining text is still real text, and
+#: dropping the whole document over one bad page removes far more evidence than
+#: it protects (user decision 2026-07-30).  Callers may adopt such a document
+#: as quality-uncertain instead of failing it.
+ADOPTABLE_COVERAGE_REASONS = frozenset({
+    "expected_coverage_unknown",
+    "expected_units_empty",
+    "source_units_not_attempted",
+    "source_units_unaccounted",
+    "source_unit_failures",
+    "source_truncated",
+})
+
+#: The remaining verdicts (``missing_source_coverage``,
+#: ``source_units_outside_expected``, ``source_unit_text_blank_conflict``) say
+#: the extractor contradicted itself: its unit numbering cannot be trusted, so
+#: neither can the page/spine labels on its chunks.  Those stay fail-closed --
+#: they are code defects to fix, not damaged sources to tag.
+
+
+def coverage_gap_is_adoptable(verdict: Mapping[str, Any] | None) -> bool:
+    """True when a failing coverage verdict is only a partial-recovery gap."""
+    if not isinstance(verdict, Mapping) or verdict.get("passed"):
+        return False
+    reasons = {str(reason) for reason in verdict.get("reasons") or ()}
+    return bool(reasons) and reasons <= ADOPTABLE_COVERAGE_REASONS
+
+
+def coverage_shortfall(
+    coverage: Mapping[str, Any] | None, verdict: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Summarize how much of the source is missing, for triage and reingest.
+
+    Kept small and scalar-friendly on purpose: this is what a later, better
+    engine queries to find the documents worth reprocessing first.
+    """
+    coverage = coverage if isinstance(coverage, Mapping) else {}
+    verdict = verdict if isinstance(verdict, Mapping) else {}
+    expected = _positive_units(coverage.get("expected_units"))
+    unaccounted = _positive_units(verdict.get("unaccounted_units"))
+    accounted = max(0, len(expected) - len(unaccounted))
+    return {
+        "unit_kind": str(coverage.get("unit_kind") or "unit"),
+        "expected_units": len(expected),
+        "accounted_units": accounted,
+        "unaccounted_units": len(unaccounted),
+        "covered_ratio": (
+            round(accounted / len(expected), 4) if expected else None
+        ),
+        "reasons": [str(reason) for reason in verdict.get("reasons") or ()],
+        "unaccounted_sample": unaccounted[:50],
+        "missing_attempts_sample": _positive_units(verdict.get("missing_attempts"))[:50],
+    }
+
+
 def coverage_from_extraction(
     source_type: str,
     chunks: Iterable[tuple[str, str, Mapping[str, Any]]],
@@ -234,6 +292,7 @@ def coverage_from_extraction(
 
 
 __all__ = [
-    "COVERAGE_SCHEMA_VERSION", "coverage_from_extraction", "make_source_coverage",
-    "validate_source_coverage",
+    "ADOPTABLE_COVERAGE_REASONS", "COVERAGE_SCHEMA_VERSION",
+    "coverage_from_extraction", "coverage_gap_is_adoptable", "coverage_shortfall",
+    "make_source_coverage", "validate_source_coverage",
 ]

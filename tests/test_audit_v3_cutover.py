@@ -131,6 +131,40 @@ class CutoverAuditTests(unittest.TestCase):
             chroma_ids={"c"}, lexical_ids={"c"}, pipeline_config_exists=True,
         ))
 
+    def test_recorded_partial_coverage_adoption_does_not_block_cutover(self):
+        # U5 (2026-07-30): a document indexed on purpose with a partial-coverage
+        # tag is an accounted-for gap, not an unexplained one.
+        manifest = {
+            "pipeline_fingerprint": "sha256:p", "hnsw_validated": True,
+            "files": {"A": {"quality": {
+                "source_coverage": make_source_coverage(
+                    unit_kind="page", expected_units=[1, 2],
+                    attempted_units=[1, 2], text_units=[1],
+                ),
+                "source_coverage_adopted": True,
+            }}},
+        }
+        self.assertEqual(global_gate_failures(
+            manifest=manifest, manifest_attachment_keys={"A"}, chroma_attachment_keys={"A"},
+            chroma_ids={"c"}, lexical_ids={"c"}, pipeline_config_exists=True,
+        ), [])
+
+    def test_adoption_flag_cannot_excuse_a_self_contradicting_coverage_record(self):
+        manifest = {
+            "pipeline_fingerprint": "sha256:p", "hnsw_validated": True,
+            "files": {"A": {"quality": {
+                "source_coverage": make_source_coverage(
+                    unit_kind="page", expected_units=[1],
+                    attempted_units=[1], text_units=[1], blank_units=[1],
+                ),
+                "source_coverage_adopted": True,
+            }}},
+        }
+        self.assertIn("incomplete_source_coverage", global_gate_failures(
+            manifest=manifest, manifest_attachment_keys={"A"}, chroma_attachment_keys={"A"},
+            chroma_ids={"c"}, lexical_ids={"c"}, pipeline_config_exists=True,
+        ))
+
 
 if __name__ == "__main__":
     unittest.main()

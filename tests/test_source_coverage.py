@@ -1,5 +1,6 @@
 from src.source_coverage import (
-    coverage_from_extraction, make_source_coverage, validate_source_coverage,
+    coverage_from_extraction, coverage_gap_is_adoptable, coverage_shortfall,
+    make_source_coverage, validate_source_coverage,
 )
 
 
@@ -126,6 +127,81 @@ def test_epub_adapter_accepts_explicit_expected_spine_units() -> None:
         },
     )
     assert validate_source_coverage(coverage)["passed"] is True
+
+
+def test_partial_recovery_gaps_are_adoptable() -> None:
+    # U5 (2026-07-30): one unreadable page must not cost the document its
+    # embeddings -- these verdicts describe a damaged source, not a bug.
+    for coverage in (
+        make_source_coverage(
+            unit_kind="page", expected_units=[1, 2], attempted_units=[1, 2],
+            text_units=[1],
+        ),
+        make_source_coverage(
+            unit_kind="page", expected_units=[1, 2], attempted_units=[1],
+            text_units=[1], failed_units=[2],
+        ),
+        make_source_coverage(
+            unit_kind="page", expected_units=[1, 2], attempted_units=[1, 2],
+            text_units=[1, 2], truncated=True,
+        ),
+        make_source_coverage(
+            unit_kind="spine", expected_units=[], attempted_units=[1],
+            text_units=[1], expected_known=False,
+        ),
+    ):
+        verdict = validate_source_coverage(coverage)
+        assert verdict["passed"] is False
+        assert coverage_gap_is_adoptable(verdict) is True
+
+
+def test_self_contradicting_coverage_is_not_adoptable() -> None:
+    # Wrong unit numbering would attach wrong page citations to real text.
+    conflict = validate_source_coverage(make_source_coverage(
+        unit_kind="page", expected_units=[1], attempted_units=[1],
+        text_units=[1], blank_units=[1],
+    ))
+    assert coverage_gap_is_adoptable(conflict) is False
+    outside = validate_source_coverage(make_source_coverage(
+        unit_kind="page", expected_units=[1], attempted_units=[1, 7],
+        text_units=[1],
+    ))
+    assert coverage_gap_is_adoptable(outside) is False
+    assert coverage_gap_is_adoptable(None) is False
+
+
+def test_passing_coverage_is_never_reported_as_an_adoptable_gap() -> None:
+    verdict = validate_source_coverage(make_source_coverage(
+        unit_kind="page", expected_units=[1], attempted_units=[1], text_units=[1],
+    ))
+    assert verdict["passed"] is True
+    assert coverage_gap_is_adoptable(verdict) is False
+
+
+def test_shortfall_summarizes_what_a_later_engine_should_reprocess() -> None:
+    coverage = make_source_coverage(
+        unit_kind="page", expected_units=[1, 2, 3, 4],
+        attempted_units=[1, 2, 3, 4], text_units=[1, 2, 3],
+    )
+    gap = coverage_shortfall(coverage, validate_source_coverage(coverage))
+    assert gap["unit_kind"] == "page"
+    assert gap["expected_units"] == 4
+    assert gap["accounted_units"] == 3
+    assert gap["unaccounted_units"] == 1
+    assert gap["covered_ratio"] == 0.75
+    assert gap["unaccounted_sample"] == [4]
+    assert gap["reasons"] == ["source_units_unaccounted"]
+
+
+def test_shortfall_of_unknown_expected_coverage_reports_no_ratio() -> None:
+    coverage = make_source_coverage(
+        unit_kind="spine", expected_units=[], attempted_units=[1],
+        text_units=[1], expected_known=False,
+    )
+    gap = coverage_shortfall(coverage, validate_source_coverage(coverage))
+    assert gap["expected_units"] == 0
+    assert gap["covered_ratio"] is None
+    assert gap["reasons"] == ["expected_coverage_unknown"]
 
 
 def test_html_adapter_rejects_size_truncation() -> None:

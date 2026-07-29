@@ -439,6 +439,11 @@ _EXTRACTION_QUALITY_ALLOW_LIST = (
     "avg_corruption_score", "max_corruption_score", "total_pages", "fallback_engine",
     "model", "lite", "device", "dpi",
     "ai_toc_recovery_status", "ai_toc_body_coverage", "ai_toc_matched_count",
+    # Partial-coverage adoption: the chunk is real text from a document that
+    # was only partly recovered.  Carrying it here is what makes "reprocess
+    # everything that came out incomplete" a query rather than a re-scan.
+    "quality_uncertain", "quality_uncertain_reason",
+    "source_coverage_adopted", "source_coverage_covered_ratio",
 )
 
 

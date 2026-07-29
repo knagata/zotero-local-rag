@@ -82,7 +82,10 @@ from v3_runtime import (
     assert_code_unchanged, bind_manifest_pipeline, code_fingerprint,
     ensure_pipeline_config, pipeline_payload,
 )
-from source_coverage import coverage_from_extraction, validate_source_coverage
+from source_coverage import (
+    coverage_from_extraction, coverage_gap_is_adoptable, coverage_shortfall,
+    validate_source_coverage,
+)
 
 
 
@@ -1140,6 +1143,21 @@ def _structure_with_engine(
         return docling_worker.extract(file_path, attachment_key, meta_base)
 
 
+def _merge_uncertain_reason(existing: Any, reason: str) -> str:
+    """Append a reason without discarding one an earlier stage already set.
+
+    A page-level OCR caveat (``short_ocr_page``) and a document-level one
+    (``incomplete_source_coverage``) answer different questions, so the second
+    must not overwrite the first. Reasons are comma-separated; a single reason
+    keeps its own internal detail after ``:``.
+    """
+    tokens = [token for token in str(existing or "").split(",") if token]
+    for token in str(reason or "").split(","):
+        if token and token not in tokens:
+            tokens.append(token)
+    return ",".join(tokens)
+
+
 def _adopt_with_quality_uncertain(
     chunks: list[tuple[str, str, dict[str, Any]]],
     quality_info: dict[str, Any],
@@ -1157,13 +1175,19 @@ def _adopt_with_quality_uncertain(
     absent.
     """
     tagged = [
-        (chunk_id, text, {**metadata, "quality_uncertain": True,
-                          "quality_uncertain_reason": reason})
+        (chunk_id, text, {
+            **metadata, "quality_uncertain": True,
+            "quality_uncertain_reason": _merge_uncertain_reason(
+                metadata.get("quality_uncertain_reason"), reason,
+            ),
+        })
         for chunk_id, text, metadata in chunks
     ]
     updated = dict(quality_info)
     updated["quality_uncertain"] = True
-    updated["quality_uncertain_reason"] = reason
+    updated["quality_uncertain_reason"] = _merge_uncertain_reason(
+        quality_info.get("quality_uncertain_reason"), reason,
+    )
     return tagged, updated
 
 
@@ -1693,8 +1717,9 @@ async def main_async(args: argparse.Namespace) -> None:
 
     updated_pdf = updated_html = updated_epub = 0
     skipped_pdf = skipped_html = skipped_epub = 0
-    failed_extract = 0  # zero chunks or incomplete source coverage
+    failed_extract = 0  # zero chunks or inconsistent source coverage
     deferred_extract = 0
+    coverage_adopted_extract = 0  # indexed despite a partial-coverage gap
 
     pending_ids: list[str] = []
     pending_docs: list[str] = []
@@ -2877,31 +2902,63 @@ async def main_async(args: argparse.Namespace) -> None:
         quality_info = dict(quality_info)
         quality_info["source_coverage"] = source_coverage
         quality_info["source_coverage_verdict"] = coverage_verdict
+        coverage_adopted = False
+        coverage_gap = coverage_shortfall(source_coverage, coverage_verdict)
         if not coverage_verdict["passed"]:
-            failed_extract += 1
+            if not coverage_gap_is_adoptable(coverage_verdict):
+                # The extractor contradicted its own unit numbering (units
+                # outside the expected set, or a unit reported both blank and
+                # non-blank). Its page/spine labels cannot be trusted, so
+                # indexing it would attach wrong citations to real text.
+                failed_extract += 1
+                print(
+                    f"[WARN] Inconsistent source coverage; leaving existing index/manifest unchanged: "
+                    f"attachment={a.attachmentKey} type={stype} "
+                    f"reasons={coverage_verdict['reasons']} "
+                    f"unaccounted={coverage_verdict['unaccounted_units']}",
+                    file=sys.__stderr__,
+                )
+                mark_artifact_status(
+                    scope_item_key, "extraction", "failed",
+                    attachment_key=a.attachmentKey,
+                    reason_code="incomplete_source_coverage",
+                    message=(
+                        f"Source coverage failed: {coverage_verdict['reasons']}; "
+                        f"unaccounted={coverage_verdict['unaccounted_units']}"
+                    )[:1000],
+                    retryable=True,
+                    counts={
+                        "source_type": stype,
+                        "chunks": len(chunks),
+                        "coverage": source_coverage,
+                    },
+                )
+                continue
+            # U5 (user decision 2026-07-30): a partially recovered document is
+            # still indexed. One unreadable page used to cost the whole
+            # document its embeddings; now the recovered text is embedded with
+            # a quality-uncertain tag, and the shortfall is recorded so a
+            # better engine can be pointed at exactly these attachments later.
+            coverage_adopted = True
+            coverage_adopted_extract += 1
+            chunks, quality_info = _adopt_with_quality_uncertain(
+                chunks, quality_info,
+                reason="incomplete_source_coverage:" + "+".join(
+                    coverage_verdict["reasons"]
+                ),
+            )
+            quality_info["source_coverage_adopted"] = True
+            quality_info["source_coverage_shortfall"] = coverage_gap
+            quality_info["source_coverage_covered_ratio"] = coverage_gap["covered_ratio"]
             print(
-                f"[WARN] Incomplete source coverage; leaving existing index/manifest unchanged: "
+                f"[WARN] Incomplete source coverage; indexing with a quality-uncertain tag: "
                 f"attachment={a.attachmentKey} type={stype} "
                 f"reasons={coverage_verdict['reasons']} "
-                f"unaccounted={coverage_verdict['unaccounted_units']}",
+                f"unaccounted={coverage_verdict['unaccounted_units']} "
+                f"covered={coverage_gap['accounted_units']}/{coverage_gap['expected_units']} "
+                f"{coverage_gap['unit_kind']}s",
                 file=sys.__stderr__,
             )
-            mark_artifact_status(
-                scope_item_key, "extraction", "failed",
-                attachment_key=a.attachmentKey,
-                reason_code="incomplete_source_coverage",
-                message=(
-                    f"Source coverage failed: {coverage_verdict['reasons']}; "
-                    f"unaccounted={coverage_verdict['unaccounted_units']}"
-                )[:1000],
-                retryable=True,
-                counts={
-                    "source_type": stype,
-                    "chunks": len(chunks),
-                    "coverage": source_coverage,
-                },
-            )
-            continue
 
         truncated = bool(quality_info.get("truncated_by_timeout"))
         # P1 (note 78): an AI-TOC alignment failure (headings likely exist but
@@ -2915,7 +2972,20 @@ async def main_async(args: argparse.Namespace) -> None:
             str(quality_info.get("ai_toc_recovery_status") or "")
             in AI_TOC_ALIGNMENT_FAILURE_REASONS
         )
-        if truncated:
+        # An adopted coverage gap outranks the other two: it is the reason a
+        # re-extraction would be worth running, and its message carries the
+        # units a targeted rerun needs. Timeout truncation is one of its
+        # possible causes and stays visible in the recorded reasons.
+        if coverage_adopted:
+            degraded_reason = "incomplete_source_coverage"
+            degraded_message = (
+                f"Indexed with a quality-uncertain tag: "
+                f"{coverage_gap['accounted_units']}/{coverage_gap['expected_units']} "
+                f"{coverage_gap['unit_kind']}s accounted for; "
+                f"reasons={coverage_verdict['reasons']}; "
+                f"unaccounted={coverage_verdict['unaccounted_units'][:50]}"
+            )[:1000]
+        elif truncated:
             degraded_reason = "docling_timeout_partial"
             degraded_message = "Docling returned partial content after its document timeout."
         elif ai_toc_alignment_failed:
@@ -2929,12 +2999,16 @@ async def main_async(args: argparse.Namespace) -> None:
             degraded_message = None
         extraction_status = (
             scope_item_key,
-            "degraded" if (truncated or ai_toc_alignment_failed) else "success",
+            (
+                "degraded"
+                if (coverage_adopted or truncated or ai_toc_alignment_failed)
+                else "success"
+            ),
             {
                 "attachment_key": a.attachmentKey,
                 "reason_code": degraded_reason,
                 "message": degraded_message,
-                "retryable": truncated,
+                "retryable": truncated or coverage_adopted,
                 "processor_version": str(quality_info.get("parser") or stype),
                 "counts": {
                 "chunks": len(chunks), "source_type": stype,
@@ -2947,6 +3021,10 @@ async def main_async(args: argparse.Namespace) -> None:
                 **(
                     {"ai_toc_reason": quality_info.get("ai_toc_recovery_status")}
                     if ai_toc_alignment_failed else {}
+                ),
+                **(
+                    {"source_coverage_shortfall": coverage_gap}
+                    if coverage_adopted else {}
                 ),
                 },
             },
@@ -3263,7 +3341,8 @@ async def main_async(args: argparse.Namespace) -> None:
     print(
         f"Done. Updated PDFs={updated_pdf}, Updated HTML(WebClip)={updated_html}, Updated EPUB={updated_epub}, "
         f"Skipped PDFs={skipped_pdf}, Skipped HTML(WebClip)={skipped_html}, Skipped EPUB={skipped_epub}, "
-        f"Deleted stale={deleted_stale}, Failed extract/coverage={failed_extract}"
+        f"Deleted stale={deleted_stale}, Failed extract/coverage={failed_extract}, "
+        f"Partial coverage indexed={coverage_adopted_extract}"
         f" | Updated Notes={updated_notes}, Skipped Notes={skipped_notes}, Deleted stale Notes={deleted_stale_notes}"
     )
     print(json.dumps({
@@ -3273,6 +3352,7 @@ async def main_async(args: argparse.Namespace) -> None:
         "skipped_pdf": skipped_pdf,
         "failed_extract": failed_extract,
         "deferred_extract": deferred_extract,
+        "coverage_adopted_extract": coverage_adopted_extract,
         "inflight_attachments": list(manifest.get("inflight_attachments", [])),
         "hnsw_validated": bool(manifest.get("hnsw_validated")),
     }, ensure_ascii=False))
@@ -3296,7 +3376,16 @@ async def main_async(args: argparse.Namespace) -> None:
             is_corrupted = q.get("is_corrupted", False)
             residual_scanned_pages = q.get("scanned_pages") or []
             residual_corrupted_pages = q.get("corrupted_pages") or []
-            if is_scanned or is_corrupted or residual_scanned_pages or residual_corrupted_pages:
+            coverage_gap_entry = (
+                q.get("source_coverage_shortfall")
+                if q.get("source_coverage_adopted")
+                and isinstance(q.get("source_coverage_shortfall"), dict)
+                else None
+            )
+            if (
+                is_scanned or is_corrupted or residual_scanned_pages
+                or residual_corrupted_pages or coverage_gap_entry
+            ):
                 title = entry.get("title") or entry.get("pdf_path", "").split("/")[-1] or k
                 reasons = []
                 if is_scanned:
@@ -3307,6 +3396,13 @@ async def main_async(args: argparse.Namespace) -> None:
                     reasons.append("text layout/character encoding corruption")
                 elif residual_corrupted_pages:
                     reasons.append(f"{len(residual_corrupted_pages)} unresolved corrupted page(s) (within tolerance)")
+                if coverage_gap_entry:
+                    reasons.append(
+                        f"indexed with partial source coverage "
+                        f"({coverage_gap_entry.get('accounted_units')}/"
+                        f"{coverage_gap_entry.get('expected_units')} "
+                        f"{coverage_gap_entry.get('unit_kind')}s, tagged quality-uncertain)"
+                    )
                 problematic_files.append((k, title, reasons, q))
 
     if problematic_files:
