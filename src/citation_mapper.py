@@ -13,15 +13,26 @@ import difflib
 import numpy as np
 from typing import Dict, Any, Optional, List, Tuple
 
-from db_relations import get_s2_lookup_candidates, insert_citation, update_item_citation_status
 from pathlib import Path
 
-try:
+if __package__:
+    from .db_relations import (
+        get_s2_lookup_candidates,
+        insert_citation,
+        update_item_citation_status,
+    )
     from .reference_text import is_short_form_reference, s2_candidate_is_supported
     from .v3_data_plane import collection_name as v3_collection_name
-except ImportError:  # pragma: no cover - direct script imports
+    from .env_utils import load_dotenv_native as _load_dotenv
+else:  # pragma: no cover - direct script imports
+    from db_relations import (
+        get_s2_lookup_candidates,
+        insert_citation,
+        update_item_citation_status,
+    )
     from reference_text import is_short_form_reference, s2_candidate_is_supported
     from v3_data_plane import collection_name as v3_collection_name
+    from env_utils import load_dotenv_native as _load_dotenv
 
 
 class S2RetryExhaustedError(Exception):
@@ -31,8 +42,6 @@ class S2RetryExhaustedError(Exception):
 
 ROOT = Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 CHROMA_DIR = Path(os.environ.get("CHROMA_DIR", str(ROOT / "data" / "chroma")))
-
-from env_utils import load_dotenv_native as _load_dotenv
 
 _load_dotenv()
 _s2_key_at_import = os.environ.get("S2_API_KEY", "")
@@ -113,7 +122,10 @@ def _get_emb_fn():
     if _EMB_FN_CACHE is not None:
         return _EMB_FN_CACHE
 
-    from embedder import resolve_embedder_settings, create_embedding_function
+    if __package__:
+        from .embedder import resolve_embedder_settings, create_embedding_function
+    else:  # pragma: no cover - direct script imports
+        from embedder import resolve_embedder_settings, create_embedding_function
     cfg = resolve_embedder_settings(ROOT)
     provider_label = f"'{cfg.model_name}' on {cfg.device}"
     print(f"[citation_mapper] Loading embedding function: {provider_label} ...", file=sys.stderr)
@@ -613,7 +625,10 @@ def map_item_global_citations(item_key: str, title: str = "", year: str = "", cr
         cr_year = cr_cc = None
         if doi:
             try:
-                from crossref_client import fetch_crossref_by_doi
+                if __package__:
+                    from .crossref_client import fetch_crossref_by_doi
+                else:  # pragma: no cover - direct script imports
+                    from crossref_client import fetch_crossref_by_doi
                 meta = fetch_crossref_by_doi(doi)
             except Exception as exc:  # CrossrefError 含む。フォールバックは best-effort。
                 print(f"        -> Crossref fallback failed: {exc}", file=sys.stderr)
@@ -757,7 +772,10 @@ def map_item_global_citations(item_key: str, title: str = "", year: str = "", cr
             )
 
     # 4. Fetch References
-    from db_relations import insert_reference
+    if __package__:
+        from .db_relations import insert_reference
+    else:  # pragma: no cover - direct script imports
+        from db_relations import insert_reference
     r_data_items = []
     offset = 0
     reference_pages_incomplete = False
@@ -951,8 +969,12 @@ def map_item_local_references(item_key: str, epub_path: str = "", epub_budget: i
     no longer parsed: reference boundaries and body ``noteref`` links are already
     preserved at ingestion, so the second EPUB parse is retired (R6).
     """
-    from chunk_reference_extractor import extract_references_from_chunks
-    from db_relations import insert_reference
+    if __package__:
+        from .chunk_reference_extractor import extract_references_from_chunks
+        from .db_relations import insert_reference
+    else:  # pragma: no cover - direct script imports
+        from chunk_reference_extractor import extract_references_from_chunks
+        from db_relations import insert_reference
 
     print(f"        -> Extracting local references for {item_key} from V3 chunks...", file=sys.stderr)
     local_refs = extract_references_from_chunks(item_key)
@@ -1068,7 +1090,10 @@ def resolve_skipped_epub_refs(item_key: str, budget: int = 200, statuses: tuple 
     EPUB の再解析不要。DB 内の行を直接 UPDATE する。
     statuses=('error',) を渡すと 429 リトライ枯渇などで失敗した行を再試行できる。
     """
-    from db_relations import get_skipped_epub_refs, update_reference_s2_data
+    if __package__:
+        from .db_relations import get_skipped_epub_refs, update_reference_s2_data
+    else:  # pragma: no cover - direct script imports
+        from db_relations import get_skipped_epub_refs, update_reference_s2_data
 
     skipped = get_skipped_epub_refs(item_key, statuses=statuses)
     if not skipped:

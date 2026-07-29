@@ -2469,10 +2469,22 @@ fetch('/api/graph')
 
         var row = document.createElement('div');
         row.className = 'cl-row' + (c.id === _selectedClusterId ? ' active' : '');
-        row.innerHTML = '<span class="cl-dot" style="background:' + c.color + '"></span>' +
-                        '<span class="cl-label">' + c.label + '</span>' +
-                        '<span class="cl-count">' + c.item_keys.length + '</span>' +
-                        (kw ? '<span class="cl-keywords">' + kw + '</span>' : '');
+        var dot = document.createElement('span');
+        dot.className = 'cl-dot';
+        dot.style.background = c.color;
+        var label = document.createElement('span');
+        label.className = 'cl-label';
+        label.textContent = c.label;
+        var count = document.createElement('span');
+        count.className = 'cl-count';
+        count.textContent = String(c.item_keys.length);
+        row.append(dot, label, count);
+        if (kw) {
+          var keywords = document.createElement('span');
+          keywords.className = 'cl-keywords';
+          keywords.textContent = kw;
+          row.appendChild(keywords);
+        }
         row.addEventListener('click', function() {
           _selectCluster(c.id === _selectedClusterId ? -1 : c.id);
         });
@@ -6767,7 +6779,7 @@ def _route_external_abstract(paper_id: str = "", doi: str = "") -> JSONResponse:
 
     # 1) Crossref 優先（DOI 必須）
     if doi:
-        from crossref_client import fetch_crossref_by_doi, CrossrefError
+        from src.crossref_client import fetch_crossref_by_doi, CrossrefError
         try:
             meta = fetch_crossref_by_doi(doi)
             abstract = (meta or {}).get("abstract")
@@ -6776,7 +6788,7 @@ def _route_external_abstract(paper_id: str = "", doi: str = "") -> JSONResponse:
 
     # 2) Crossref で Abstract が得られなければ S2 にフォールバック（abstract + tldr）
     if not abstract:
-        from citation_mapper import s2_request
+        from src.citation_mapper import s2_request
         import urllib.parse as _up
         if paper_id:
             s2_url = f"https://api.semanticscholar.org/graph/v1/paper/{_up.quote(paper_id)}?fields=abstract,tldr"

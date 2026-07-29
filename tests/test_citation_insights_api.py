@@ -51,6 +51,30 @@ class CitationInsightsApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 503)
         self.assertIn("DEEPSEEK_API_KEY", _json(response)["error"])
 
+    @patch(
+        "src.crossref_client.fetch_crossref_by_doi",
+        return_value={"abstract": "Crossref abstract"},
+    )
+    def test_external_abstract_doi_route_uses_packaged_crossref(self, fetch):
+        response = show_citation_graph._route_external_abstract(
+            doi="10.1038/nphys1170",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(_json(response)["abstract"], "Crossref abstract")
+        fetch.assert_called_once_with("10.1038/nphys1170")
+
+    @patch(
+        "src.citation_mapper.s2_request",
+        return_value={"abstract": "S2 abstract", "tldr": {"text": "S2 TLDR"}},
+    )
+    def test_external_abstract_paper_route_uses_packaged_s2(self, request):
+        response = show_citation_graph._route_external_abstract(
+            paper_id="CorpusId:1",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(_json(response)["abstract"], "S2 abstract")
+        self.assertIn("CorpusId%3A1", request.call_args.args[0])
+
     def test_processing_status_distinguishes_degraded_and_blocked_work(self):
         db_relations.mark_artifact_status(
             "ITEM", "structure", "degraded", reason_code="flat_fallback",
@@ -97,6 +121,9 @@ class CitationInsightsApiTests(unittest.TestCase):
         self.assertIn('.replace(/"/g, \'&quot;\')', html)
         self.assertIn(".replace(/'/g, '&#39;')", html)
         self.assertIn("encodeURIComponent(doi)", html)
+        self.assertIn("label.textContent = c.label", html)
+        self.assertIn("keywords.textContent = kw", html)
+        self.assertNotIn("'<span class=\"cl-label\">' + c.label", html)
 
 
 if __name__ == "__main__":
