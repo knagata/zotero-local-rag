@@ -5,7 +5,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from src import citation_insights, db_relations
+from citation_graph import insights as citation_insights
+from src import db_relations
 
 
 class CitationInsightsTests(unittest.TestCase):

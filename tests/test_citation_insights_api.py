@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from scripts import show_citation_graph
+from citation_graph import server as show_citation_graph
 from src import db_relations
 
 

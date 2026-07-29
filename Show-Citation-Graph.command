@@ -14,7 +14,7 @@ echo "グラフを構築中です。ブラウザが自動的に開きます..."
 echo "終了するには Ctrl+C を押してください。"
 echo ""
 
-uv run scripts/show_citation_graph.py
+uv run citation_graph/server.py
 
 echo ""
 echo "サーバーを終了しました。"

@@ -3,8 +3,8 @@ from __future__ import annotations
 
 from typing import Any, Iterable
 
-from . import db_relations
-from .chunk_store import get_item_chunks, natural_chunk_key
+from src import db_relations
+from src.chunk_store import get_item_chunks, natural_chunk_key
 
 
 MAX_PAGE_SIZE = 100
@@ -187,7 +187,7 @@ def get_section_source(item_key: str, section_id: str) -> dict[str, Any]:
         raise ValueError("section_id is required.")
     # Use the same deterministic grouping routine as summary generation so IDs
     # cannot drift between the stored summary and its displayed source chunks.
-    from .build_summaries import split_sections
+    from src.build_summaries import split_sections
 
     sections = {
         str(section["section_id"]): section

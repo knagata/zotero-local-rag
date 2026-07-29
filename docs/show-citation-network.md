@@ -19,7 +19,7 @@ Show Citation Network自体は引用情報を更新しません。まず `Mainte
 macOSで [Show-Citation-Graph.command](../Show-Citation-Graph.command) をダブルクリックします。ターミナルからは次のように起動できます。
 
 ```bash
-uv run scripts/show_citation_graph.py
+uv run citation_graph/server.py
 ```
 
 グラフの計算中にブラウザが開きます。表示サーバーは自分のMac内の `127.0.0.1` だけで待ち受けます。通常のURLは `http://localhost:7234` で、使用中の場合は次の空きポートが選ばれます。
@@ -91,22 +91,22 @@ Zotero所蔵資料の編集ボタンはZoteroの対象アイテムを開きま�
 
 ```bash
 # 上位100件のZotero資料に絞る
-uv run scripts/show_citation_graph.py --top 100
+uv run citation_graph/server.py --top 100
 
 # 特定資料だけ表示
-uv run scripts/show_citation_graph.py --item ITEMKEY
+uv run citation_graph/server.py --item ITEMKEY
 
 # 参照先ノードを隠す
-uv run scripts/show_citation_graph.py --no-refs
+uv run citation_graph/server.py --no-refs
 
 # 自動でブラウザを開かない
-uv run scripts/show_citation_graph.py --no-open
+uv run citation_graph/server.py --no-open
 ```
 
 その他の選択肢は次で確認できます。
 
 ```bash
-uv run scripts/show_citation_graph.py --help
+uv run citation_graph/server.py --help
 ```
 
 `--min-cc` はサーバーが読み込む外部資料の最低被引用数で、既定値は10です。画面内のスライダーは、読み込み済みの資料をさらに絞り込みます。被引用数の小さい資料も見たい場合は `--min-cc 0` で起動してください。

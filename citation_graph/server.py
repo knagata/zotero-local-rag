@@ -18,12 +18,12 @@ Citation network visualizer for zotero-local-rag.
 Uses sigma.js (WebGL) + graphology for scalable rendering of 1000–10000+ nodes.
 
 Usage:
-  uv run scripts/show_citation_graph.py               # デフォルト（全件）
-  uv run scripts/show_citation_graph.py --top 100     # 上位100件
-  uv run scripts/show_citation_graph.py --item KEY    # 1アイテムに絞る
-  uv run scripts/show_citation_graph.py --no-refs     # 参照先を非表示
-  uv run scripts/show_citation_graph.py --no-open     # ブラウザを自動で開かない
-  uv run scripts/show_citation_graph.py --port 7234   # ポート指定（デフォルト: 7234）
+  uv run citation_graph/server.py               # デフォルト（全件）
+  uv run citation_graph/server.py --top 100     # 上位100件
+  uv run citation_graph/server.py --item KEY    # 1アイテムに絞る
+  uv run citation_graph/server.py --no-refs     # 参照先を非表示
+  uv run citation_graph/server.py --no-open     # ブラウザを自動で開かない
+  uv run citation_graph/server.py --port 7234   # ポート指定（デフォルト: 7234）
 
   グラフは http://localhost:PORT でリアルタイム配信されます。
   Ctrl+C でサーバーを停止します。
@@ -6594,7 +6594,7 @@ def _route_node_abstract(key: str) -> JSONResponse:
 @app.get("/api/node/insights")
 def _route_node_insights(key: str) -> JSONResponse:
     """Return the lightweight hierarchy overview for one Zotero item."""
-    from src.citation_insights import get_item_insights
+    from citation_graph.insights import get_item_insights
     try:
         return JSONResponse(get_item_insights(key))
     except ValueError as exc:
@@ -6606,7 +6606,7 @@ def _route_node_insights(key: str) -> JSONResponse:
 @app.get("/api/node/processing-status")
 def _route_node_processing_status(key: str) -> JSONResponse:
     """Return stage-by-stage status and available fallbacks for one item."""
-    from src.citation_insights import get_processing_overview
+    from citation_graph.insights import get_processing_overview
     try:
         return JSONResponse(get_processing_overview(key))
     except ValueError as exc:
@@ -6617,7 +6617,7 @@ def _route_node_processing_status(key: str) -> JSONResponse:
 
 @app.get("/api/node/outline")
 def _route_node_outline(key: str) -> JSONResponse:
-    from src.citation_insights import get_document_outline
+    from citation_graph.insights import get_document_outline
     try:
         return JSONResponse(get_document_outline(key))
     except ValueError as exc:
@@ -6636,7 +6636,7 @@ def _route_processing_status_summary() -> JSONResponse:
 def _route_node_sections(
     key: str, q: str = "", cursor: str = "", limit: int = 50,
 ) -> JSONResponse:
-    from src.citation_insights import list_sections
+    from citation_graph.insights import list_sections
     try:
         return JSONResponse(list_sections(
             key, query=q, cursor=cursor or None, limit=limit,
@@ -6649,7 +6649,7 @@ def _route_node_sections(
 
 @app.get("/api/node/section-source")
 def _route_node_section_source(key: str, section_id: str) -> JSONResponse:
-    from src.citation_insights import get_section_source
+    from citation_graph.insights import get_section_source
     try:
         return JSONResponse(get_section_source(key, section_id))
     except ValueError as exc:

@@ -92,7 +92,7 @@ class RelationReportTests(unittest.TestCase):
             )
 
     def test_citation_graph_queries_hide_disabled_relation(self):
-        from scripts import show_citation_graph
+        from citation_graph import server as show_citation_graph
 
         self._insert_reference()
         connection = db_relations.get_db_connection()

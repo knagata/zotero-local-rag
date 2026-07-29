@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 class CitationGraphEntrypointTests(unittest.TestCase):
     def test_direct_script_entrypoint_can_import_src(self):
         completed = subprocess.run(
-            [sys.executable, "scripts/show_citation_graph.py", "--help"],
+            [sys.executable, "citation_graph/server.py", "--help"],
             cwd=ROOT, capture_output=True, text=True, timeout=30,
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
