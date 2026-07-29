@@ -10,8 +10,8 @@ uv run scripts/setup_wizard.py --status
 ```
 
 手動設定のひな形は [`.env.example`](../.env.example) です。`.env`と`.env.policy`はGitに追加されません。
-`Setup.command` と `setup_wizard.py --server` は設定のみを行い、DB構築・埋め込み・クラウドAPIを
-実行しません。
+`Setup.command` と `setup_wizard.py --server` は設定と埋め込みモデルの初回ダウンロードを行います。
+DB構築・埋め込み処理・クラウドAPIは実行しません。
 
 ## セットアップ方式
 
@@ -55,7 +55,7 @@ APIキー入力には非表示入力を使い、入力直前にもその旨を�
 | `ZOTERO_DATA_DIR` | Zoteroデータフォルダ | `~/Zotero` |
 | `CHROMA_DIR` | ベクトル索引のディレクトリ | `data/chroma` |
 | `EMB_PROFILE` | `fast`または`bge` | `fast` |
-| `EMB_MODEL` | 埋め込みモデルのパスまたはID | プロファイルから選択 |
+| `EMB_MODEL` | ダウンロード済み埋め込みモデルのローカルパス（手動設定時はIDも可） | `data/models/` 配下 |
 | `EMB_DEVICE` | `cpu`、`mps`、`cuda` | 環境から選択 |
 | `HF_HUB_OFFLINE` | `1`でHugging Faceへの接続を禁止 | 任意 |
 | `CHROMA_HNSW_SYNC_THRESHOLD` | HNSW索引を永続化する頻度。大きくすると再取り込みが高速化する | `100` |

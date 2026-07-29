@@ -30,8 +30,9 @@ uv run scripts/setup_wizard.py
 3. 使いたい機能の段階
 4. Claude Desktopへの接続
 
-Setupは設定と接続登録だけを行います。DB構築、埋め込み、AI目次・OCR・階層要約などのAPI実行は
-開始しません。サーバーへ配置した後の構築手順は下記のServer workflowで明示的に行います。
+Setupは設定、埋め込みモデルの初回ダウンロード、接続登録を行います。DB構築、埋め込み処理、
+AI目次・OCR・階層要約などのAPI実行は開始しません。サーバーへ配置した後の構築手順は下記の
+Server workflowで明示的に行います。
 
 完了後、Claude Desktopを再起動し、次のように依頼できます。
 

@@ -22,7 +22,7 @@ uv run scripts/setup_wizard.py --status
 |---|---|
 | ChromaDBが見つからない | `CHROMA_DIR`を確認し、ライブラリ更新を実行 |
 | コレクションが空 | 初回インデックスを実行 |
-| 埋め込みモデルエラー | `EMB_PROFILE`、`EMB_MODEL`、オフライン設定を確認 |
+| 埋め込みモデルエラー | ウィザードをオンラインで再実行してモデルを取得。`EMB_MODEL`が別マシンの絶対パスなら削除して再実行 |
 | 更新後の検索結果が古い | MCPの `force_reload_index` を実行 |
 | S2の429 | 時間を置いてCitation更新を再実行。必要ならAPIキーを設定 |
 | LLM処理が停止する | APIキー/CLIログインと送信ポリシーを確認 |

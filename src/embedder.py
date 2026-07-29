@@ -21,6 +21,64 @@ except Exception:  # pragma: no cover
     snapshot_download = None
 
 
+EMBEDDING_MODEL_SPECS = {
+    "fast": (
+        "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+        "paraphrase-multilingual-MiniLM-L12-v2",
+    ),
+    "bge": ("BAAI/bge-m3", "bge-m3"),
+}
+
+
+def ensure_embedding_model(config: dict[str, str], project_root: Path) -> str:
+    """Download the selected embedding model into the project-local data dir.
+
+    The setup wizard calls this before writing ``.env`` so a profile never
+    points at a missing directory.  Existing local models are reused.
+    Returns the path that should be stored in ``EMB_MODEL``.
+    """
+    profile = (config.get("EMB_PROFILE") or "fast").strip().lower()
+    if profile not in EMBEDDING_MODEL_SPECS:
+        raise RuntimeError(f"未対応の埋め込みモデルプロファイルです: {profile}")
+
+    explicit = (config.get("EMB_MODEL") or "").strip()
+    if explicit:
+        explicit_path = Path(explicit).expanduser()
+        if explicit_path.is_dir():
+            return str(explicit_path)
+        # A project-local absolute path can become stale after moving the
+        # repository (for example, an .env copied from another machine).
+        # Fall back to the selected profile so setup can repair it.
+        if explicit_path.is_absolute():
+            explicit = ""
+        elif "/" not in explicit:
+            raise RuntimeError(f"指定された埋め込みモデルが見つかりません: {explicit}")
+    if explicit:
+        # An explicit Hugging Face ID is allowed; materialize it locally too.
+        repo_id, _ = explicit, ""
+        target = project_root / "data" / "models" / explicit.rsplit("/", 1)[-1]
+    else:
+        repo_id, dirname = EMBEDDING_MODEL_SPECS[profile]
+        target = project_root / "data" / "models" / dirname
+
+    if (target / "config.json").is_file() or (target / "modules.json").is_file():
+        return str(target)
+    if snapshot_download is None:
+        raise RuntimeError(
+            "Hugging Face Hubが利用できないため、埋め込みモデルを取得できません。"
+        )
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        snapshot_download(repo_id=repo_id, local_dir=str(target))
+    except Exception as exc:
+        raise RuntimeError(
+            f"埋め込みモデル {repo_id} のダウンロードに失敗しました: {exc}"
+        ) from exc
+    if not ((target / "config.json").is_file() or (target / "modules.json").is_file()):
+        raise RuntimeError(f"埋め込みモデルの配置を確認できません: {target}")
+    return str(target)
+
+
 @dataclass
 class EmbedderConfig:
     """Resolved embedder configuration."""

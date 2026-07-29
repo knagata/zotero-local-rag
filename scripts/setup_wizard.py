@@ -18,6 +18,7 @@ if str(ROOT) not in sys.path:
 from src.v3_data_plane import (
     V3_COLLECTION, V3_LEXICAL_NAME, V3_MANIFEST_NAME,
 )
+from src.embedder import ensure_embedding_model
 
 ENV_GROUPS = (
     ("基本設定: ローカル検索と索引", (
@@ -926,6 +927,17 @@ def main(argv: list[str] | None = None):
             existing_config["EMB_PROFILE"] = "bge"
         else:
             existing_config["EMB_PROFILE"] = "fast"
+
+        print("\n埋め込みモデルを確認しています（初回はダウンロードに時間がかかります）…")
+        try:
+            existing_config["EMB_MODEL"] = ensure_embedding_model(
+                existing_config, root_dir,
+            )
+        except RuntimeError as exc:
+            raise SystemExit(
+                f"埋め込みモデルを準備できませんでした: {exc}\n"
+                "ネットワーク接続を確認して、ウィザードを再実行してください。"
+            ) from exc
 
         configure_feature_level(existing_config)
         if existing_config.get("FEATURE_LEVEL") == "custom":

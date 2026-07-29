@@ -360,6 +360,9 @@ class SetupWizardTests(unittest.TestCase):
                 setup_wizard, "configure_ndlocr",
             ), patch.object(
                 setup_wizard, "configure_tesseract",
+            ), patch.object(
+                setup_wizard, "ensure_embedding_model",
+                return_value=str(Path(directory) / "models" / "bge-m3"),
             ), patch(
                 "builtins.input", side_effect=["y", "", ""],
             ), patch.object(

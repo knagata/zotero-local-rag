@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -8,6 +9,7 @@ from unittest.mock import patch
 from src.embedder import (
     EmbedderConfig,
     embedder_config_payload,
+    ensure_embedding_model,
     probe_embedding_dim,
     resolve_collection_name,
     resolve_embedder_settings,
@@ -15,6 +17,31 @@ from src.embedder import (
 
 
 class EmbedderSettingsTests(unittest.TestCase):
+    def test_ensure_embedding_model_downloads_selected_profile(self):
+        with patch("src.embedder.snapshot_download") as download:
+            def materialize(*, repo_id, local_dir):
+                target = Path(local_dir)
+                target.mkdir(parents=True)
+                (target / "config.json").write_text("{}", encoding="utf-8")
+                self.assertEqual(repo_id, "BAAI/bge-m3")
+
+            download.side_effect = materialize
+            with tempfile.TemporaryDirectory() as directory:
+                config = {"EMB_PROFILE": "bge"}
+                model = ensure_embedding_model(config, Path(directory))
+                self.assertTrue(Path(model).joinpath("config.json").is_file())
+                download.assert_called_once()
+
+    def test_ensure_embedding_model_reuses_existing_local_model(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "data" / "models" / "bge-m3"
+            target.mkdir(parents=True)
+            (target / "config.json").write_text("{}", encoding="utf-8")
+            with patch("src.embedder.snapshot_download") as download:
+                model = ensure_embedding_model({"EMB_PROFILE": "bge"}, Path(directory))
+            self.assertEqual(model, str(target))
+            download.assert_not_called()
+
     def test_default_collection_name_is_the_canonical_v3_name_without_probing(self):
         def should_not_run(_texts):
             raise AssertionError("collection-name resolution must not probe embeddings")
