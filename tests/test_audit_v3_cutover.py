@@ -3,7 +3,8 @@ from __future__ import annotations
 import unittest
 
 from scripts.audit_v3_cutover import (
-    compare_item, global_gate_failures, item_metrics, structure_failures,
+    compare_item, global_gate_failures, item_metrics, partial_coverage_adoptions,
+    structure_failures,
 )
 from src.document_structure import STRUCTURE_VERSION, source_fingerprint
 from src.source_coverage import make_source_coverage
@@ -164,6 +165,50 @@ class CutoverAuditTests(unittest.TestCase):
             manifest=manifest, manifest_attachment_keys={"A"}, chroma_attachment_keys={"A"},
             chroma_ids={"c"}, lexical_ids={"c"}, pipeline_config_exists=True,
         ))
+
+
+class PartialCoverageAdoptionListingTests(unittest.TestCase):
+    def _entry(self, ratio, *, adopted=True, expected=10, accounted=5):
+        return {"title": f"t{ratio}", "quality": {
+            "source_coverage": _complete_coverage(),
+            "source_coverage_adopted": adopted,
+            "source_coverage_shortfall": {
+                "unit_kind": "page", "expected_units": expected,
+                "accounted_units": accounted, "covered_ratio": ratio,
+                "reasons": ["source_units_unaccounted"], "unaccounted_sample": [7],
+            },
+        }}
+
+    def test_worst_recovered_documents_are_listed_first(self):
+        manifest = {"files": {
+            "B": self._entry(0.9), "A": self._entry(0.2), "C": self._entry(0.5),
+        }}
+        rows = partial_coverage_adoptions(manifest)
+        self.assertEqual([row["attachment_key"] for row in rows], ["A", "C", "B"])
+        self.assertEqual(rows[0]["reasons"], ["source_units_unaccounted"])
+        self.assertEqual(rows[0]["unaccounted_sample"], [7])
+
+    def test_unmeasurable_coverage_sorts_after_measured_gaps(self):
+        manifest = {"files": {"UNKNOWN": self._entry(None), "LOW": self._entry(0.1)}}
+        self.assertEqual(
+            [row["attachment_key"] for row in partial_coverage_adoptions(manifest)],
+            ["LOW", "UNKNOWN"],
+        )
+
+    def test_documents_without_an_adoption_are_not_listed(self):
+        manifest = {"files": {
+            "A": self._entry(0.5, adopted=False),
+            "B": {"quality": {"source_coverage": _complete_coverage()}},
+            "C": {"no_quality": True},
+        }}
+        self.assertEqual(partial_coverage_adoptions(manifest), [])
+
+    def test_missing_shortfall_still_lists_the_attachment(self):
+        manifest = {"files": {"A": {"quality": {"source_coverage_adopted": True}}}}
+        rows = partial_coverage_adoptions(manifest)
+        self.assertEqual(len(rows), 1)
+        self.assertIsNone(rows[0]["covered_ratio"])
+        self.assertEqual(rows[0]["reasons"], [])
 
 
 if __name__ == "__main__":

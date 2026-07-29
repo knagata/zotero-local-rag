@@ -160,6 +160,44 @@ def _coverage_unaccounted_for(entry: Any) -> bool:
     )
 
 
+def partial_coverage_adoptions(manifest: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Documents indexed with an accepted partial-coverage gap, worst first.
+
+    These deliberately do not fail the gate (see ``_coverage_unaccounted_for``),
+    but an audit that cannot even count them leaves nothing to review later.
+    Sorted by how little of the source was recovered, so the list doubles as the
+    reprocessing queue a better engine should be pointed at.
+    """
+    files = manifest.get("files") if isinstance(manifest.get("files"), dict) else {}
+    rows: list[dict[str, Any]] = []
+    for key, entry in files.items():
+        if not isinstance(entry, Mapping) or not isinstance(entry.get("quality"), Mapping):
+            continue
+        quality = entry["quality"]
+        if not quality.get("source_coverage_adopted"):
+            continue
+        shortfall = quality.get("source_coverage_shortfall")
+        shortfall = shortfall if isinstance(shortfall, Mapping) else {}
+        rows.append({
+            "attachment_key": str(key),
+            "title": str(entry.get("title") or ""),
+            "unit_kind": shortfall.get("unit_kind"),
+            "expected_units": shortfall.get("expected_units"),
+            "accounted_units": shortfall.get("accounted_units"),
+            "covered_ratio": shortfall.get("covered_ratio"),
+            "reasons": [str(reason) for reason in shortfall.get("reasons") or ()],
+            "unaccounted_sample": list(shortfall.get("unaccounted_sample") or ()),
+        })
+    # An unmeasurable expected set (covered_ratio None) cannot be ranked, so it
+    # sorts after everything with a number rather than masquerading as complete.
+    rows.sort(key=lambda row: (
+        row["covered_ratio"] is None,
+        row["covered_ratio"] if isinstance(row["covered_ratio"], (int, float)) else 0.0,
+        row["attachment_key"],
+    ))
+    return rows
+
+
 def global_gate_failures(
     *, manifest: Mapping[str, Any], manifest_attachment_keys: set[str],
     chroma_attachment_keys: set[str], chroma_ids: set[str], lexical_ids: set[str],
@@ -362,6 +400,7 @@ def main() -> None:
     )
     failed = [row for row in comparisons if not row["passed"]]
     outliers = [row for row in comparisons if row["delta"]["character_ratio_outlier"]]
+    adopted_coverage = partial_coverage_adoptions(manifest)
     report = {
         "schema_version": "v3-cutover-audit-1",
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -375,9 +414,13 @@ def main() -> None:
             "coverage_required": 1.0,
             "note": "Character-ratio outliers require review but do not alone fail the deterministic gate.",
             "global_failures": global_failures,
+            # Indexed on purpose with a quality-uncertain tag; non-blocking, but
+            # counted here so a silent pass is never the whole story.
+            "partial_coverage_adopted": len(adopted_coverage),
             "chunks_without_item": len(orphaned_chunk_ids),
             "chunks_without_attachment": len(attachmentless_chunk_ids),
         },
+        "partial_coverage_adopted": adopted_coverage,
         "structure_statuses": dict(sorted(structure_statuses.items())),
         "v3_zones": dict(sorted(zones.items())),
         "items": comparisons,
