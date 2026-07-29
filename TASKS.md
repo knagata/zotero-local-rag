@@ -513,6 +513,9 @@ A（PDF構造化）・B（課金LLM）は独立、C（構造抽出エンジン�
     `summary_core`から直接importしてlegacy依存を解消（Phase 6 attic化の前提が成立）。
   - プロンプト文字列は不変（移動のみ）。テストのDeepSeekClientパッチ対象を`summary_core`へ
     修正。全425テストが決定順・ランダム順ともにpass。
+  - 2026-07-29追記: Phase 6対応で`build_summaries.py`からDB writer・CLI・旧要約索引生成を
+    撤去した。現在はモデル比較用のread-only互換helperだけを公開し、V3要約の保存と索引化は
+    `build_structure_summaries.py`へ一本化している。
 - [x] ~~**R5（P2）: 親要約の還元モデル役を仕様通りstandardに統一**~~ (2026-07-24)
   - ユーザー判断: 仕様§5.1通り。`_parent_summary`に`reduce_role`パラメータを追加し、
     親ノード（章・item root）の還元を`standard`役に（単一グループも含め）。leaf segmentの
@@ -963,9 +966,20 @@ A（PDF構造化）・B（課金LLM）は独立、C（構造抽出エンジン�
 
 ### Phase 6: legacyデータ面の物理撤去
 
-- [ ] **legacy runtime routeを物理削除する**
-  - 旧chunk/FTS、`__sum_item`、`__sum_section`、legacy summary table、`insight_generation_status`、
-    rollback設定、互換コードを撤去する。
+- [~] **legacy runtime routeを物理削除する**
+  - [x] Citation Graphのブラウザ内要約生成・再生成・手動編集と
+    `POST/PUT /api/node/summary`を撤去。保存済みV3階層要約の閲覧・品質報告だけに限定した
+    （2026-07-29、`fcf11b6`）。
+  - [x] `src/build_summaries.py`のlegacy DB writer/CLI/旧要約索引生成、
+    `scripts/build_deepseek_summaries.py`、`scripts/run_grounding_gate.py`、
+    `db_relations`のlegacy summary writer公開関数を撤去した
+    （2026-07-29、`fcf11b6`）。
+  - [x] V3 node要約の空文字保存を拒否し、Citation Graph outlineのsummary parts取得を
+    node単位N+1から一括SQLへ変更。`setup_wizard.py`の`.env`更新を権限0600のランダム一時
+    ファイル＋atomic replaceへ変更した。全906テスト、Ruff、構文・差分検査に合格
+    （2026-07-29、`fcf11b6`）。
+  - [ ] 旧chunk/FTS、`__sum_item`、`__sum_section`、legacy summary table、
+    `insight_generation_status`の物理データ・残存read-only互換コードを撤去する。
   - 復旧は旧面への切替ではなく、V3バックアップまたは原本からの再構築とする。
 - [x] ~~**`SPEC.md`を実装結果へ更新する**~~ (2026-07-27)
   - V3構造、DeepSeek要約、事例機能廃止、Gold QAの位置付け、採用したPDFルーティングを反映した。
