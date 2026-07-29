@@ -205,6 +205,19 @@ class SetupWizardTests(unittest.TestCase):
         self.assertIn("--clear", run.call_args_list[0].args[0])
         self.assertEqual(config["GRANITE_VENV_PYTHON"], str(interpreter.absolute()))
 
+    def test_docling_installer_syncs_optional_project_extra(self):
+        completed = SimpleNamespace(returncode=0)
+        with patch.object(setup_wizard, "_docling_ready", side_effect=[False, True]), patch.object(
+            setup_wizard.shutil, "which", return_value="/usr/local/bin/uv",
+        ), patch.object(
+            setup_wizard.subprocess, "run", return_value=completed,
+        ) as run, patch("sys.stdout", StringIO()):
+            self.assertTrue(setup_wizard.install_docling())
+        run.assert_called_once_with(
+            ["/usr/local/bin/uv", "sync", "--extra", "pdf-docling"],
+            cwd=setup_wizard.ROOT,
+        )
+
     def test_ndlocr_detection_records_the_absolute_executable(self):
         config: dict[str, str] = {}
         with tempfile.TemporaryDirectory() as directory:

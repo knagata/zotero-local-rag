@@ -29,6 +29,7 @@ dependencies = [
 
 [project.optional-dependencies]
 llm-anthropic = ["anthropic>=0.75.0"]
+pdf-docling = ["docling>=2.0,<3"]
 
 [dependency-groups]
 dev = ["pytest>=8,<9"]

@@ -2,6 +2,7 @@
 import argparse
 import json
 import getpass
+import importlib.util
 import os
 import platform
 from contextlib import contextmanager
@@ -159,6 +160,7 @@ GRANITE_REQUIREMENTS = ("docling==2.102.1", "mlx-vlm==0.6.6")
 NDLOCR_REQUIREMENT = (
     "git+https://github.com/ndl-lab/ndlocr-lite.git@1.0.0"
 )
+DOCLING_EXTRA = "pdf-docling"
 
 
 def describe_preset(config: dict[str, str]) -> str:
@@ -269,6 +271,37 @@ def install_granite_environment(
         configured_path = str(interpreter)
     config["GRANITE_VENV_PYTHON"] = configured_path
     print("[+] Granite専用環境の準備が完了しました。")
+    return True
+
+
+def _docling_ready() -> bool:
+    """Return whether Docling can be imported by the setup environment."""
+    return importlib.util.find_spec("docling") is not None
+
+
+def install_docling() -> bool:
+    """Install Docling into the project's uv environment and verify it."""
+    if _docling_ready():
+        return True
+    uv_path = shutil.which("uv")
+    if not uv_path:
+        print("[!] uvが見つからないためDoclingをインストールできません。")
+        return False
+    print("\nDoclingをプロジェクト環境へインストールします。初回は時間がかかります。")
+    try:
+        completed = subprocess.run(
+            [uv_path, "sync", "--extra", DOCLING_EXTRA], cwd=ROOT,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        print(f"[!] Doclingのインストールに失敗しました: {exc}")
+        return False
+    if completed.returncode != 0:
+        print(f"[!] Doclingのインストールに失敗しました（終了コード: {completed.returncode}）。")
+        return False
+    if not _docling_ready():
+        print("[!] Doclingをインポートできません。")
+        return False
+    print("[+] Doclingのインストールが完了しました。")
     return True
 
 
@@ -517,6 +550,28 @@ def configure_pdf_engines(config: dict[str, str]) -> None:
     config["PDF_STRUCTURE_ENGINE_LONG"] = _choose_engine(
         f"{boundary}ページ以上:", config.get("PDF_STRUCTURE_ENGINE_LONG", "docling"),
     )
+    # Granite-Docling has its own isolated environment, but the ingestion
+    # router deliberately falls back to the regular Docling worker if Granite
+    # fails.  Install the fallback as well so that selecting Granite does not
+    # produce a misleading "Docling is not installed" warning later.
+    uses_docling = bool({
+        config["PDF_STRUCTURE_ENGINE_SHORT"], config["PDF_STRUCTURE_ENGINE_LONG"],
+    } & {"docling", "granite"})
+    if uses_docling and not _docling_ready():
+        print("\nDoclingが現在の環境にインストールされていません。")
+        if "granite" in {
+            config["PDF_STRUCTURE_ENGINE_SHORT"], config["PDF_STRUCTURE_ENGINE_LONG"],
+        }:
+            print("   Granite失敗時のフォールバックにもDoclingを使用します。")
+        install_now = _ask_yes_no(
+            "今すぐDoclingをプロジェクト環境へインストールしますか？",
+            current=True,
+        )
+        if not install_now or not install_docling():
+            raise SystemExit(
+                "Doclingを選択したため、セットアップを中止しました。"
+                "インストール後にウィザードを再実行するか、別のPDFエンジンを選択してください。"
+            )
     uses_granite = "granite" in {
         config["PDF_STRUCTURE_ENGINE_SHORT"], config["PDF_STRUCTURE_ENGINE_LONG"],
     }
