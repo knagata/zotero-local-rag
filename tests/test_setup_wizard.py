@@ -205,6 +205,102 @@ class SetupWizardTests(unittest.TestCase):
         self.assertIn("--clear", run.call_args_list[0].args[0])
         self.assertEqual(config["GRANITE_VENV_PYTHON"], str(interpreter.absolute()))
 
+    def test_ndlocr_detection_records_the_absolute_executable(self):
+        config: dict[str, str] = {}
+        with tempfile.TemporaryDirectory() as directory:
+            executable = Path(directory) / "ndlocr-lite"
+            executable.touch()
+            with patch.object(
+                setup_wizard.shutil, "which", return_value=str(executable),
+            ), patch.object(
+                setup_wizard, "_ndlocr_executable_ready", return_value=True,
+            ), patch("sys.stdout", StringIO()):
+                setup_wizard.configure_ndlocr(config)
+        self.assertEqual(config["NDLOCR_BIN"], str(executable.absolute()))
+
+    def test_ndlocr_missing_from_custom_setup_can_be_installed(self):
+        config: dict[str, str] = {}
+        with patch.object(
+            setup_wizard, "_find_ndlocr", return_value=None,
+        ), patch.object(
+            setup_wizard, "install_ndlocr", return_value=True,
+        ) as install, patch(
+            "builtins.input", return_value="",
+        ), patch("sys.stdout", StringIO()):
+            setup_wizard.configure_ndlocr(config)
+        install.assert_called_once_with(config)
+
+    def test_ndlocr_installer_uses_an_isolated_uv_tool(self):
+        config: dict[str, str] = {}
+        with tempfile.TemporaryDirectory() as directory:
+            bin_directory = Path(directory)
+            installed = SimpleNamespace(returncode=0, stdout="")
+            bin_result = SimpleNamespace(returncode=0, stdout=str(bin_directory))
+            with patch.object(
+                setup_wizard.shutil, "which",
+                side_effect=lambda name: "/usr/local/bin/uv" if name == "uv" else None,
+            ), patch.object(
+                setup_wizard.subprocess, "run",
+                side_effect=[installed, bin_result],
+            ) as run, patch.object(
+                setup_wizard, "_ndlocr_executable_ready", return_value=True,
+            ), patch("sys.stdout", StringIO()):
+                result = setup_wizard.install_ndlocr(config)
+        self.assertTrue(result)
+        self.assertEqual(run.call_count, 2)
+        self.assertEqual(
+            run.call_args_list[0].args[0],
+            [
+                "/usr/local/bin/uv", "tool", "install", "--force",
+                setup_wizard.NDLOCR_REQUIREMENT,
+            ],
+        )
+        self.assertEqual(
+            config["NDLOCR_BIN"],
+            str((bin_directory / "ndlocr-lite").absolute()),
+        )
+
+    def test_custom_setup_can_install_tesseract_and_japanese_data(self):
+        with patch.object(
+            setup_wizard, "_find_tesseract", return_value=None,
+        ), patch.object(
+            setup_wizard, "install_tesseract", return_value=True,
+        ) as install, patch(
+            "builtins.input", return_value="",
+        ), patch("sys.stdout", StringIO()):
+            setup_wizard.configure_tesseract(allow_install=True)
+        install.assert_called_once_with()
+
+    def test_minimal_setup_does_not_offer_to_install_tesseract(self):
+        with patch.object(
+            setup_wizard, "_find_tesseract", return_value=None,
+        ), patch("builtins.input") as prompt, patch("sys.stdout", StringIO()):
+            setup_wizard.configure_tesseract(allow_install=False)
+        prompt.assert_not_called()
+
+    def test_tesseract_installer_uses_homebrew_and_verifies_japanese(self):
+        executable = Path("/opt/homebrew/bin/tesseract")
+        completed = SimpleNamespace(returncode=0)
+        with patch.object(
+            setup_wizard, "_find_homebrew",
+            return_value=Path("/opt/homebrew/bin/brew"),
+        ), patch.object(
+            setup_wizard.subprocess, "run", return_value=completed,
+        ) as run, patch.object(
+            setup_wizard, "_find_tesseract", return_value=executable,
+        ), patch.object(
+            setup_wizard, "_tesseract_languages", return_value={"eng", "jpn"},
+        ), patch("sys.stdout", StringIO()):
+            installed = setup_wizard.install_tesseract()
+        self.assertTrue(installed)
+        self.assertEqual(
+            run.call_args.args[0],
+            [
+                "/opt/homebrew/bin/brew", "install",
+                "tesseract", "tesseract-lang",
+            ],
+        )
+
     def test_switching_engines_away_from_mistral_disables_queue(self):
         config = {
             "PDF_STRUCTURE_ENGINE_SHORT": "mistral",
@@ -260,6 +356,10 @@ class SetupWizardTests(unittest.TestCase):
                 side_effect=lambda _path, values: written.update(values),
             ), patch.object(
                 setup_wizard, "configure_feature_level",
+            ), patch.object(
+                setup_wizard, "configure_ndlocr",
+            ), patch.object(
+                setup_wizard, "configure_tesseract",
             ), patch(
                 "builtins.input", side_effect=["y", "", ""],
             ), patch.object(

@@ -38,6 +38,9 @@ ENV_GROUPS = (
         "SUMMARY_ALLOW_CLOUD_ALL", "EXTRACT_ALLOW_CLOUD_ALL",
         "SUMMARY_BATCH_MAX_ITEMS", "SUMMARY_BATCH_WORKERS",
     )),
+    ("ローカルOCR", (
+        "NDLOCR_BIN", "NDLOCR_DPI", "NDLOCR_TIMEOUT_SEC",
+    )),
 )
 
 
@@ -152,6 +155,7 @@ LLM_FLAGS = (
 
 GRANITE_VENV_PYTHON = "tmp/granite_docling_venv/bin/python"
 GRANITE_REQUIREMENTS = ("docling==2.102.1", "mlx-vlm==0.6.6")
+NDLOCR_REQUIREMENT = "ndlocr-lite==1.0.0"
 
 
 def describe_preset(config: dict[str, str]) -> str:
@@ -263,6 +267,210 @@ def install_granite_environment(
     config["GRANITE_VENV_PYTHON"] = configured_path
     print("[+] Granite専用環境の準備が完了しました。")
     return True
+
+
+def _find_ndlocr(config: dict[str, str]) -> Path | None:
+    configured = str(config.get("NDLOCR_BIN") or "").strip()
+    if configured:
+        path = Path(configured).expanduser()
+        if path.exists():
+            return path.absolute()
+    discovered = shutil.which("ndlocr-lite")
+    return Path(discovered).absolute() if discovered else None
+
+
+def _ndlocr_executable_ready(executable: Path) -> bool:
+    if not executable.exists():
+        return False
+    try:
+        completed = subprocess.run(
+            [str(executable), "--help"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return completed.returncode == 0
+
+
+def install_ndlocr(config: dict[str, str]) -> bool:
+    """Install NDLOCR-Lite as an isolated uv tool and record its executable."""
+    uv_path = shutil.which("uv")
+    if not uv_path:
+        print("[!] uvが見つからないためNDLOCR-Liteをインストールできません。")
+        return False
+    print("\nNDLOCR-Liteを専用環境へインストールします（使用容量の目安: 約450MB）。")
+    try:
+        installed = subprocess.run(
+            [uv_path, "tool", "install", "--force", NDLOCR_REQUIREMENT],
+            cwd=ROOT,
+        )
+    except OSError as exc:
+        print(f"[!] NDLOCR-Liteのインストールに失敗しました: {exc}")
+        return False
+    if installed.returncode != 0:
+        print(
+            "[!] NDLOCR-Liteのインストールに失敗しました"
+            f"（終了コード: {installed.returncode}）。"
+        )
+        return False
+
+    try:
+        bin_result = subprocess.run(
+            [uv_path, "tool", "dir", "--bin"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        bin_result = None
+    candidates: list[Path] = []
+    if bin_result is not None and bin_result.returncode == 0 and bin_result.stdout.strip():
+        candidates.append(Path(bin_result.stdout.strip()) / "ndlocr-lite")
+    discovered = shutil.which("ndlocr-lite")
+    if discovered:
+        candidates.append(Path(discovered))
+    executable = next(
+        (path.absolute() for path in candidates if _ndlocr_executable_ready(path)),
+        None,
+    )
+    if executable is None:
+        print("[!] NDLOCR-Liteの実行ファイルを検証できませんでした。")
+        return False
+    config["NDLOCR_BIN"] = str(executable)
+    print(f"[+] NDLOCR-Liteを利用できます: {executable}")
+    return True
+
+
+def configure_ndlocr(config: dict[str, str]) -> None:
+    """Detect or optionally install the local Japanese OCR tool."""
+    print("\n日本語ローカルOCR")
+    executable = _find_ndlocr(config)
+    if executable is not None and _ndlocr_executable_ready(executable):
+        config["NDLOCR_BIN"] = str(executable)
+        print(f"  ✅ NDLOCR-Liteを検出しました: {executable}")
+        return
+    config.pop("NDLOCR_BIN", None)
+    print("  NDLOCR-Liteは日本語の縦書き・旧字体を含む画像資料の再OCRに使用します。")
+    print("  無料・ローカル処理で、インストール後の使用容量は約450MBです。")
+    if _ask_yes_no("NDLOCR-Liteをインストールしますか？", current=True):
+        if not install_ndlocr(config):
+            print("[案内] NDLOCR-Liteなしで続行します。必要ならSetup.commandを再実行してください。")
+    else:
+        print("[案内] NDLOCR-Liteのインストールをスキップしました。")
+
+
+def _find_tesseract() -> Path | None:
+    discovered = shutil.which("tesseract")
+    if discovered:
+        return Path(discovered).absolute()
+    for candidate in (
+        Path("/opt/homebrew/bin/tesseract"),
+        Path("/usr/local/bin/tesseract"),
+    ):
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _tesseract_languages(executable: Path) -> set[str]:
+    try:
+        completed = subprocess.run(
+            [str(executable), "--list-langs"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return set()
+    if completed.returncode != 0:
+        return set()
+    return {
+        line.strip()
+        for line in completed.stdout.splitlines()
+        if line.strip() and not line.startswith("List")
+    }
+
+
+def _find_homebrew() -> Path | None:
+    discovered = shutil.which("brew")
+    if discovered:
+        return Path(discovered).absolute()
+    for candidate in (
+        Path("/opt/homebrew/bin/brew"),
+        Path("/usr/local/bin/brew"),
+    ):
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def install_tesseract(*, language_data_only: bool = False) -> bool:
+    """Install Tesseract and Japanese language data through Homebrew."""
+    brew = _find_homebrew()
+    if brew is None:
+        print("[!] Homebrewが見つからないためTesseractを自動インストールできません。")
+        return False
+    packages = ["tesseract-lang"] if language_data_only else [
+        "tesseract", "tesseract-lang",
+    ]
+    print(f"\nHomebrewで{'・'.join(packages)}をインストールします。")
+    try:
+        completed = subprocess.run(
+            [str(brew), "install", *packages],
+            cwd=ROOT,
+        )
+    except OSError as exc:
+        print(f"[!] Tesseractのインストールに失敗しました: {exc}")
+        return False
+    if completed.returncode != 0:
+        print(
+            "[!] Tesseractのインストールに失敗しました"
+            f"（終了コード: {completed.returncode}）。"
+        )
+        return False
+    executable = _find_tesseract()
+    languages = _tesseract_languages(executable) if executable else set()
+    if executable is None or "jpn" not in languages:
+        print("[!] Tesseract本体または日本語言語データを検証できませんでした。")
+        return False
+    print(f"[+] 日本語対応のTesseractを利用できます: {executable}")
+    return True
+
+
+def configure_tesseract(*, allow_install: bool) -> None:
+    """Detect Tesseract and optionally install it for a Custom setup."""
+    print("\n" + "=" * 60)
+    print("5. Tesseract OCR（任意・フォント復号に失敗したPDFページの補助）")
+    executable = _find_tesseract()
+    languages = _tesseract_languages(executable) if executable else set()
+    if executable is not None and "jpn" in languages:
+        print("   ✅ 日本語対応のTesseractを検出しました。")
+        print("      文字化けした日本語PDFページのOCRフォールバックを利用できます。")
+        return
+    if executable is not None:
+        print("   ⚠️  Tesseractはありますが日本語言語データがありません。")
+        if allow_install and _ask_yes_no(
+            "Homebrewで日本語言語データをインストールしますか？",
+            current=True,
+        ):
+            if install_tesseract(language_data_only=True):
+                return
+        print("      日本語ページは英語OCRとなり、文字化けする可能性があります。")
+        print("      手動インストール: brew install tesseract-lang")
+        return
+    print("   ℹ️  Tesseractが見つかりません。フォント復号失敗時の補助OCRは利用できません。")
+    if allow_install and _ask_yes_no(
+        "HomebrewでTesseractと日本語言語データをインストールしますか？",
+        current=True,
+    ):
+        if install_tesseract():
+            return
+    print("      手動インストール: brew install tesseract tesseract-lang")
 
 
 def _choose_engine(label: str, current: str) -> str:
@@ -717,6 +925,8 @@ def main(argv: list[str] | None = None):
             existing_config["EMB_PROFILE"] = "fast"
 
         configure_feature_level(existing_config)
+        if existing_config.get("FEATURE_LEVEL") == "custom":
+            configure_ndlocr(existing_config)
         enforce_v3_configuration(existing_config)
         problems = _configuration_problems(existing_config)
         if problems:
@@ -766,47 +976,9 @@ def main(argv: list[str] | None = None):
             }
             print(json.dumps(manual, indent=2))
 
-    # Check for Tesseract OCR (optional, improves Japanese PDF extraction)
-    print("\n" + "=" * 60)
-    print("5. Tesseract OCR（任意・日本語PDFのテキスト抽出を改善）")
-    tesseract_bin = shutil.which("tesseract")
-    if not tesseract_bin:
-        # Homebrew on Apple Silicon installs to /opt/homebrew/bin,
-        # which may not be on PATH when invoked via uv run.
-        for candidate in ["/opt/homebrew/bin/tesseract", "/usr/local/bin/tesseract"]:
-            if Path(candidate).exists():
-                tesseract_bin = candidate
-                break
-
-    tesseract_ok = False
-    tesseract_jpn = False
-    if tesseract_bin:
-        try:
-            result = subprocess.run(
-                [tesseract_bin, "--list-langs"], capture_output=True, text=True, timeout=5
-            )
-            installed = set(
-                line.strip() for line in result.stdout.splitlines()
-                if line.strip() and not line.startswith("List")
-            )
-            if "eng" in installed:
-                tesseract_ok = True
-            if "jpn" in installed:
-                tesseract_jpn = True
-        except Exception:
-            pass
-
-    if tesseract_jpn:
-        print("   ✅ 日本語対応のTesseractを検出しました。")
-        print("      日本語PDFのOCRフォールバックを利用できます。")
-    elif tesseract_ok:
-        print("   ⚠️  Tesseractはありますが日本語言語データがありません。")
-        print("      日本語PDFの抽出失敗時は英語OCRとなり、文字化けする可能性があります。")
-        print("      インストール: brew install tesseract-lang")
-    else:
-        print("   ℹ️  Tesseractが見つかりません。OCRフォールバックは利用できません。")
-        print("      特殊フォントの日本語PDFは文字化けする可能性があります。")
-        print("      インストール: brew install tesseract tesseract-lang")
+    configure_tesseract(
+        allow_install=existing_config.get("FEATURE_LEVEL") == "custom",
+    )
 
     if profile_changed:
         print("\n" + "=" * 60)

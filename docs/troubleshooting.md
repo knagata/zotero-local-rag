@@ -29,7 +29,11 @@ uv run scripts/setup_wizard.py --status
 
 ## 日本語PDFの文字が崩れる
 
-Tesseractを追加できます。
+フォント復号に失敗したページだけは、Tesseractを追加すると改善する場合があります。
+画像だけのPDF全体を処理する主OCRではありません。
+
+Customで`Setup.command`を実行すると、Tesseract本体と日本語言語データを検出し、
+不足していればHomebrewからインストールするか確認します。手動で導入する場合:
 
 ```bash
 # macOS

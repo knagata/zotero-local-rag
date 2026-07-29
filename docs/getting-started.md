@@ -47,6 +47,14 @@ Customではページ境界の前後それぞれにDocling、Granite、Mistral�
 未導入の場合は、Graniteを選んだ後の確認に同意するとウィザードが作成します
 （Apple Silicon搭載Macのみ）。
 
+CustomではNDLOCR-Liteも検出します。未導入の場合は、約450MBの無料ローカルツールとして
+インストールするか確認します。NDLOCR-Liteは日本語の明示的な再OCRと固定レイアウトEPUBに
+使われ、通常の画像PDFは構造化設定に応じてDocling／Granite／Mistralで処理されます。
+
+Tesseractと日本語言語データも検出します。Customで不足している場合は、Homebrewから
+インストールするか確認します。Tesseractは画像PDF全体の主OCRではなく、フォント復号に
+失敗したページだけを補助的に再読取します。
+
 APIキーは入力中に画面へ表示されません。後からウィザードを再実行して構成を変更できます。
 
 Citation Networkを使う場合は、事前に[Semantic Scholar APIページ](https://www.semanticscholar.org/product/api)の「Request an API Key」からキーを申請してください。キーなしの共有枠は実用上の制限が厳しいため、このプロジェクトでは必須として扱います。

@@ -42,9 +42,10 @@ APIキー入力には非表示入力を使い、入力直前にもその旨を�
 | Granite | 無料 | 約2.3倍遅い | 総合で最良 | 専用venv必須・Apple Silicon限定 |
 | Mistral OCR | **有料**（頁単位） | 早い | 長編スキャンで最良 | Batch queue経由。既存チャンクは採用時まで不変 |
 
-スキャンPDFは局所OCR（日本語=NDLOCR-Lite、他=RapidOCR）でテキスト化してから、
-上記エンジンで構造化します。**NDLOCR-Liteは日本語資料に強く推奨**しますが、外部バイナリ
-（`NDLOCR_BIN`）が必要なため任意です。未導入でもRapidOCRで動作します。
+通常の画像PDFは、構造化ONなら選択したDocling／Granite／Mistral、OFFならDoclingの
+平文OCR経路で文字抽出します。NDLOCR-LiteとRapidOCRは固定レイアウトEPUBと明示的な
+再OCRで使います。**NDLOCR-Liteは日本語資料に強く推奨**し、Customでは未導入時に
+ウィザードから無料のローカルツールとして導入できます。
 
 ## Core
 
@@ -133,6 +134,8 @@ DB構築フェーズでも本文を送信し得るため、DBだけを先に検�
 | `PDF_MISTRAL_TOC_QUEUE_ENABLE` | `1`で、短い／長いPDFのいずれかに`mistral`を指定した際のBatch queueを有効化。本フラグ無効時はDoclingへ退避 | `0` |
 | `PYMUPDF_NATIVE_OUTLINE_ANOMALY_RATIO_MAX` | 内蔵outlineがある場合に偽陽性として許容するscanned/corruptedページの上限割合 | `0.02` |
 | `PDF_POPPLER_TEXT_FALLBACK` | `1`で、custom fontをUnicode復号できないページをローカル`pdftotext`で再抽出し品質改善時だけ採用 | `1` |
+| `PDF_OCR_FALLBACK` | `1`で、フォント復号に失敗したページだけをTesseractで再読取する。画像PDF全体の主OCRではない | `1` |
+| `PDF_OCR_LANG` / `PDF_OCR_DPI` | Tesseractの言語と描画解像度。日本語データ検出時は`jpn+eng`を自動選択 | 自動 / `300` |
 
 Customで `PDF_AI_TOC_FAST_PATH_ENABLE=1` を有効にすると、AI目次fast pathが資料本文を
 LLMへ送り、フェーズ1のDB構築中にも課金が発生し得ます。料金を発生させずDBだけを検証したい
@@ -146,7 +149,7 @@ AIの印刷ページ番号は採用せず、本文で再発見した見出しの
 | 変数 | 用途 | 既定 |
 |---|---|---|
 | `RAPIDOCR_DPI` / `RAPIDOCR_MIN_CONFIDENCE` | 固定レイアウトEPUB・明示re-OCR向けの英/他言語OCR（通常PDFルートでは使わない） | `200` / `0.45` |
-| `NDLOCR_BIN` / `NDLOCR_DPI` / `NDLOCR_TIMEOUT_SEC` | 日本語ローカルOCR（NDLOCR-Lite） | — / `200` / `14400` |
+| `NDLOCR_BIN` / `NDLOCR_DPI` / `NDLOCR_TIMEOUT_SEC` | 日本語ローカルOCR（NDLOCR-Lite）。Customで検出または任意導入し、実行ファイルの絶対パスを保存 | — / `200` / `14400` |
 | `MISTRAL_OCR_API_KEY` / `MISTRAL_OCR_MODEL` / `MISTRAL_OCR_BASE_URL` | Mistral OCR（クラウド・Batch API）。専用queue採用に使用 | — |
 | `MISTRAL_OCR_BATCH_MAX_INPUT_BYTES` | Batch入力のbase64 JSONL概算上限。大容量PDFを一括uploadせず、残りは次回Batchへ回す | `104857600`（100 MiB） |
 | `MISTRAL_OCR_BATCH_UPLOAD_WORKERS` | 分割したBatch入力を並列uploadする最大数 | `3` |
@@ -156,6 +159,10 @@ AIの印刷ページ番号は採用せず、本文で再発見した見出しの
 Batch完了後にWidgetを再起動すると、
 保存済み結果を回収し、ページcoverage・文字量・言語・構造などの品質gateを通過した資料だけを
 V3へ採用します。採用済みBatchは状態ファイルに記録され、再実行しても二重採用しません。
+
+CustomセットアップではTesseract本体と日本語言語データを検出します。不足時に同意すると、
+Homebrewの`tesseract`／`tesseract-lang`をウィザードから導入します。Homebrewがない環境では
+自動導入せず、手動コマンドを案内します。
 
 ### GROBID enrichment（任意・英語学術論文）
 
