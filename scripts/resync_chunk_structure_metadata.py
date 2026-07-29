@@ -27,7 +27,7 @@ load_dotenv_native(ROOT)
 from src.chunk_store import active_collection_name  # noqa: E402
 from src.db_relations import get_db_connection  # noqa: E402
 from src.structure_metadata_sync import (  # noqa: E402
-    desired_chunk_metadata, orphaned_chunk_ids, stale_chunk_updates,
+    desired_chunk_metadata, stale_chunk_updates,
 )
 from src.v3_data_plane import V3_COLLECTION  # noqa: E402
 
@@ -75,7 +75,7 @@ def main() -> int:
     for start in range(0, len(ids), 500):
         batch = ids[start:start + 500]
         got = collection.get(ids=batch, include=["metadatas"])
-        for chunk_id, metadata in zip(got.get("ids") or [], got.get("metadatas") or []):
+        for chunk_id, metadata in zip(got.get("ids") or [], got.get("metadatas") or [], strict=False):
             current[str(chunk_id)] = dict(metadata or {})
 
     updates = stale_chunk_updates(current, desired)

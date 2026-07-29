@@ -27,12 +27,13 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Iterable
 
 try:
     from .env_utils import load_dotenv_native
+    from .llm_client import split_llm_specs
 except ImportError:  # direct execution with src/ on sys.path
     from env_utils import load_dotenv_native
+    from llm_client import split_llm_specs
 
 #: Provider prefixes that mean "a real, reachable model is configured".
 #: ``codex_cli`` is deliberately included: it is a local CLI agent rather than
@@ -62,21 +63,20 @@ def llm_configured() -> bool:
     """
     _ensure_env_loaded()
     for role in ("LLM_CHEAP", "LLM_STANDARD", "LLM_REVIEW"):
-        spec = _env(role).casefold()
-        if ":" not in spec:
-            continue
-        provider = spec.partition(":")[0]
-        if provider not in _LLM_PROVIDERS:
-            continue
-        if provider == "deepseek" and not _env("DEEPSEEK_API_KEY"):
-            continue
-        if provider == "anthropic" and not _env("ANTHROPIC_API_KEY"):
-            continue
-        if provider == "gemini" and not _env("GEMINI_API_KEY"):
-            continue
-        if provider == "openai_compat" and not _env("LLM_OPENAI_BASE_URL"):
-            continue
-        if spec:
+        for spec in split_llm_specs(_env(role).casefold()):
+            if ":" not in spec:
+                continue
+            provider = spec.partition(":")[0]
+            if provider not in _LLM_PROVIDERS:
+                continue
+            if provider == "deepseek" and not _env("DEEPSEEK_API_KEY"):
+                continue
+            if provider == "anthropic" and not _env("ANTHROPIC_API_KEY"):
+                continue
+            if provider == "gemini" and not _env("GEMINI_API_KEY"):
+                continue
+            if provider == "openai_compat" and not _env("LLM_OPENAI_BASE_URL"):
+                continue
             return True
     return False
 
@@ -302,7 +302,7 @@ def verify_enabled_features() -> list[str]:
     problems: list[str] = []
     # Choosing an engine that cannot run is the same class of mistake as
     # enabling a feature without its key, so it is reported the same way.
-    for setting, default in (
+    for setting, _default in (
         ("PDF_STRUCTURE_ENGINE_SHORT", DEFAULT_ENGINE_SHORT),
         ("PDF_STRUCTURE_ENGINE_LONG", DEFAULT_ENGINE_LONG),
     ):

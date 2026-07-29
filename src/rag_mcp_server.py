@@ -42,8 +42,8 @@ from hierarchical_retrieval import (
     explicit_note_intent, fuse_retrieval_paths, partition_leaf_ids, retrieval_policy_allowed,
 )
 from db_relations import (
-    get_document_node_summaries, get_node_descendant_chunks,
-    get_node_descendant_leaf_ids,
+    get_item_root_summary, get_item_root_summaries, get_node_descendant_chunks,
+    get_node_descendant_leaf_ids, get_searchable_document_node_ids,
 )
 
 
@@ -101,9 +101,13 @@ def _check_indexing_lock() -> tuple:
     if pid is not None:
         try:
             os.kill(pid, 0)  # signal 0 = existence check only
-        except OSError:
+        except ProcessLookupError:
             _log.info("Indexer PID %s is dead — treating lock as stale", pid)
             return False, None
+        except PermissionError:
+            # A process owned by another user is still alive even though it
+            # cannot be signalled by this process.
+            pass
     else:
         # No PID in lock file — treat as stale
         _log.warning("indexing.lock has no PID — treating as stale")
@@ -431,7 +435,7 @@ def _col():
                 "If you are running offline, ensure the model is already cached for this Python environment.\n"
                 "Try once online (example): python -c 'from sentence_transformers import SentenceTransformer; SentenceTransformer(\"sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2\")'\n"
                 f"Original error: {e}"
-            )
+            ) from e
 
     emb_fn = _EMB_FN
 
@@ -1230,7 +1234,7 @@ def rag_search(
         out.append(
             {
                 "id": ids0[i],
-                "distance": dists0[i],
+                "distance": dist,
                 "rrf_score": rrfs0[i],
                 "citation": citation,
                 "text": text,
@@ -1277,10 +1281,7 @@ def get_item_summary(item_key: str) -> Dict[str, Any]:
 def _load_item_root_summary(item_key: str) -> Optional[Dict[str, Any]]:
     if not item_key:
         return None
-    for summary in get_document_node_summaries(item_key):
-        if summary.get("node_type") == "item_root":
-            return summary
-    return None
+    return get_item_root_summary(item_key, searchable_only=True)
 
 
 def _hierarchical_search_v2(
@@ -1323,6 +1324,23 @@ def _hierarchical_search_v2(
         warnings.append(f"sum_node collection unavailable: {exc}")
 
     candidate_nodes.sort(key=lambda row: (-candidate_scores[row["node_id"]], row["node_id"]))
+    searchable_node_ids = get_searchable_document_node_ids([
+        str(node["node_id"]) for node in candidate_nodes
+    ])
+    candidate_nodes = [
+        node for node in candidate_nodes if str(node["node_id"]) in searchable_node_ids
+    ]
+    candidate_item_scores = {}
+    for node in candidate_nodes:
+        item_key = str(node["item_key"])
+        candidate_item_scores[item_key] = (
+            candidate_item_scores.get(item_key, 0.0)
+            + candidate_scores[str(node["node_id"])]
+        )
+    candidate_items = {
+        item_key: metadata for item_key, metadata in candidate_items.items()
+        if item_key in candidate_item_scores
+    }
     candidate_nodes = candidate_nodes[: max(k_items * 2, k_items)]
     descendant_by_node: Dict[str, set[str]] = {}
     for node in candidate_nodes:
@@ -1387,12 +1405,20 @@ def _hierarchical_search_v2(
         ("same_item", item_response.get("results") or []),
         ("direct", direct_response.get("results") or []),
     ], routed_nodes_by_chunk=routed_nodes_by_chunk)
+    root_summaries = get_item_root_summaries(
+        list(dict.fromkeys(
+            str((row.get("meta") or {}).get("itemKey") or "")
+            for row in fused_rows[:k]
+            if (row.get("meta") or {}).get("itemKey")
+        )),
+        searchable_only=True,
+    ) if return_summaries else {}
     for row in fused_rows[:k]:
         hit = dict(row)
         hit["hierarchical_rrf_score"] = hit.pop("rrf_score")
         if return_summaries:
             item_key = (hit.get("meta") or {}).get("itemKey")
-            summary = _load_item_root_summary(item_key) if item_key else None
+            summary = root_summaries.get(str(item_key)) if item_key else None
             hit["item_summary_snippet"] = (summary.get("summary") or "")[:120] if summary else ""
             hit["item_summary_provenance"] = "v3_item_root" if summary else "none"
         results.append(hit)
@@ -1775,7 +1801,7 @@ def get_chunk_context(chunk_id: str, window: int = 2) -> Dict[str, Any]:
     docs = res.get("documents") or []
     metas = res.get("metadatas") or []
     
-    for _, doc, meta in sorted(zip(found_ids, docs, metas), key=lambda x: _para_idx(x[0])):
+    for _, doc, _meta in sorted(zip(found_ids, docs, metas, strict=False), key=lambda x: _para_idx(x[0])):
         combined.append(doc)
 
     # Use the metadata of the requested chunk (or the first available if not found)

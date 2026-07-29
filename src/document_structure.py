@@ -11,7 +11,7 @@ import hashlib
 import json
 import re
 from collections import defaultdict
-from typing import Any, Dict, Iterable, List, Sequence
+from typing import Any, Dict, List, Sequence
 
 try:
     from .chunk_store import natural_chunk_key

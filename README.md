@@ -107,7 +107,7 @@ Core機能はローカルで処理できます。LLMへ本文を送る機能は�
 ## 開発者向け
 
 ```bash
-uv run python -m unittest discover -s tests -q
+uv run pytest -q
 ```
 
 詳細は [開発・保守](docs/development.md) を参照してください。

@@ -116,7 +116,7 @@ def build_report(*, collection_name: str) -> dict:
         for summary_id, document, metadata in zip(
             indexed.get("ids") or [],
             indexed.get("documents") or [],
-            indexed.get("metadatas") or [],
+            indexed.get("metadatas") or [], strict=False,
         ):
             actual_records[str(summary_id)] = {
                 "document": str(document or ""),

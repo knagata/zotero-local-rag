@@ -1,6 +1,7 @@
 # src/docling_extract.py
 from __future__ import annotations
 
+import importlib.util
 import json
 import re
 import sys
@@ -240,8 +241,10 @@ def extract_chunks_from_pdf_with_docling(
         (chunks, quality_info)
     """
     try:
-        from docling.document_converter import DocumentConverter
-    except ImportError:
+        docling_available = importlib.util.find_spec("docling.document_converter") is not None
+    except (ImportError, ModuleNotFoundError):
+        docling_available = False
+    if not docling_available:
         raise ImportError(
             "\n"
             + "=" * 80
@@ -251,7 +254,7 @@ def extract_chunks_from_pdf_with_docling(
             "Note: Docling is a heavy package containing PyTorch and layout models.\n"
             + "=" * 80
             + "\n"
-        )
+        ) from None
 
     # Get page count using PyMuPDF (which is very lightweight) to set expectation
     page_count = 0

@@ -10,10 +10,10 @@ from typing import Any, Iterable
 
 try:
     from .db_relations import get_query_expansion, save_query_expansion
-    from .llm_client import LLMError, get_llm
+    from .llm_client import get_llm
 except ImportError:  # pragma: no cover - direct script execution
     from db_relations import get_query_expansion, save_query_expansion
-    from llm_client import LLMError, get_llm
+    from llm_client import get_llm
 
 
 _PROMPT_VERSION = "query-expansion-v1"

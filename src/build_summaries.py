@@ -12,7 +12,6 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Callable
 
-import httpx
 
 try:
     from .chunk_store import active_collection_name, get_item_chunks, list_item_keys
@@ -21,18 +20,21 @@ try:
         mark_insight_generation_status, save_item_summary, save_section_summary,
     )
     from .embedder import create_embedding_function, open_chroma_collection, resolve_embedder_settings
-    from .llm_client import DeepSeekClient, InvalidLLMResponse, LLMError, RateLimitReached, get_llm
+    from .llm_client import LLMError, RateLimitReached, get_llm
     from .manifest import load_manifest
     from .env_utils import load_dotenv_native
     from .codex_quota import CodexQuotaError, CodexQuotaFloorReached, require_weekly_quota
-    from .summary_prompts import cited_item_summary_prompt, cited_section_summary_prompt
     # Shared primitives moved to summary_core (re-exported here for compatibility).
     from .summary_core import (
-        CHAPTER_MARKER_RE, DEFINITIVE_IDENTIFIER_RE, META_SUMMARY_RE, NON_CONTENT_HEADING_RE,
-        QUOTED_VALUE_RE, SPECIFIC_VALUE_RE, SUMMARY_ONLY_SCHEMA, TOC_ENTRY_RE,
-        _extractive_section, _llm_summary_only_item, _llm_summary_only_section,
-        _normalize_evidence, _note_values_supported, _section_evidence_units, _section_source_text,
-        _split_exact_units, _verify_summary_only_result, classify_section_content, is_meta_summary,
+        SUMMARY_ONLY_SCHEMA as SUMMARY_ONLY_SCHEMA,
+        _extractive_section,
+        _llm_summary_only_item as _llm_summary_only_item,
+        _llm_summary_only_section,
+        _section_evidence_units as _section_evidence_units,
+        _section_source_text as _section_source_text,
+        _verify_summary_only_result as _verify_summary_only_result,
+        classify_section_content,
+        is_meta_summary,
     )
 except ImportError:  # pragma: no cover
     from chunk_store import active_collection_name, get_item_chunks, list_item_keys
@@ -41,17 +43,20 @@ except ImportError:  # pragma: no cover
         mark_insight_generation_status, save_item_summary, save_section_summary,
     )
     from embedder import create_embedding_function, open_chroma_collection, resolve_embedder_settings
-    from llm_client import DeepSeekClient, InvalidLLMResponse, LLMError, RateLimitReached, get_llm
+    from llm_client import LLMError, RateLimitReached, get_llm
     from manifest import load_manifest
     from env_utils import load_dotenv_native
     from codex_quota import CodexQuotaError, CodexQuotaFloorReached, require_weekly_quota
-    from summary_prompts import cited_item_summary_prompt, cited_section_summary_prompt
     from summary_core import (
-        CHAPTER_MARKER_RE, DEFINITIVE_IDENTIFIER_RE, META_SUMMARY_RE, NON_CONTENT_HEADING_RE,
-        QUOTED_VALUE_RE, SPECIFIC_VALUE_RE, SUMMARY_ONLY_SCHEMA, TOC_ENTRY_RE,
-        _extractive_section, _llm_summary_only_item, _llm_summary_only_section,
-        _normalize_evidence, _note_values_supported, _section_evidence_units, _section_source_text,
-        _split_exact_units, _verify_summary_only_result, classify_section_content, is_meta_summary,
+        SUMMARY_ONLY_SCHEMA as SUMMARY_ONLY_SCHEMA,
+        _extractive_section,
+        _llm_summary_only_item as _llm_summary_only_item,
+        _llm_summary_only_section,
+        _section_evidence_units as _section_evidence_units,
+        _section_source_text as _section_source_text,
+        _verify_summary_only_result as _verify_summary_only_result,
+        classify_section_content,
+        is_meta_summary,
     )
 
 

@@ -189,7 +189,6 @@ def _candidate_spans(
     excluded_orders: set[int], threshold: float, printed_page: str = "",
 ) -> list[tuple[float, int, int]]:
     candidates: list[tuple[float, int, int]] = []
-    printed = ""
     for width in (1, 2, 3):
         for index in range(0, len(records) - width + 1):
             orders = [

@@ -39,9 +39,7 @@ Edge colors:
 """
 import argparse
 import json
-import math
 import os
-import random
 import re
 import sqlite3
 import sys
@@ -550,7 +548,7 @@ def compute_clusters(
 
     # ── Build cluster groups (same format as before) ──
     groups: dict[int, list[str]] = {}
-    for key, label in zip(keys, labels_arr):
+    for key, label in zip(keys, labels_arr, strict=False):
         groups.setdefault(int(label), []).append(key)
 
     # Sort by size descending (largest = A)
@@ -569,7 +567,7 @@ def compute_clusters(
     ]
 
     result = []
-    for idx, (gid, members) in enumerate(sorted_clusters):
+    for idx, (_gid, members) in enumerate(sorted_clusters):
         if len(result) >= len(palette):
             break
 
@@ -676,7 +674,7 @@ def compute_clusters(
         # Collect all (cluster_idx, term, score) globally, then assign each
         # term to only the highest-scoring cluster — no duplicates across clusters.
         global_scores: list[tuple[int, str, float]] = []
-        for i, c in enumerate(result):
+        for i, _c in enumerate(result):
             info = cluster_info[i]
             cent = info["centroid"]
             if len(cent) < 2:
@@ -694,7 +692,7 @@ def compute_clusters(
 
         assigned: dict[str, str] = {}  # term → assigned to which cluster (label)
         cluster_kw: dict[int, list[str]] = {i: [] for i in range(len(result))}
-        for ci, tok, score in global_scores:
+        for ci, tok, _score in global_scores:
             if tok in assigned:
                 continue  # already claimed by a higher-scoring cluster
             if len(cluster_kw[ci]) >= 3:
@@ -5805,7 +5803,6 @@ def build_graph_data(
     エッジコンテキストはオンデマンド取得のため埋め込まない。
     """
     import json as _json
-    import re  as _re
 
     meta      = item_meta or {}
     item_rcnt = item_ref_counts or {}
@@ -5817,12 +5814,10 @@ def build_graph_data(
 
     C_ZOTERO   = PALETTE["nodeZotero"]
     C_EXTERNAL = PALETTE["nodeExternal"]
-    C_CITER    = PALETTE["nodeCiter"]
-    C_REF      = PALETTE["nodeRef"]
     C_UNK      = PALETTE["nodeUnknown"]
 
     # ── Server-side layout (FA2 + sector placement) ─────────────────────────
-    import sys as _sys, time as _time, hashlib as _hashlib, json as _json
+    import sys as _sys, time as _time, hashlib as _hashlib
     _t0 = _time.time()
     _print = lambda *a, **kw: print(*a, file=_sys.stderr, **kw)
     item_keys_for_layout = [d["item_key"] for d in items]
@@ -6591,9 +6586,9 @@ SUMMARY_DEFAULT_MODEL = "deepseek-v4-pro"
 @app.get("/api/node/abstract")
 def _route_node_abstract(key: str) -> JSONResponse:
     """アイテムのアブストラクトとキャッシュ済み要約を返す。"""
-    from src.db_relations import get_item_abstract, get_item_summary
+    from src.db_relations import get_item_abstract, get_item_root_summary
     abstract = get_item_abstract(key)
-    summary  = get_item_summary(key)
+    summary = get_item_root_summary(key, searchable_only=True)
     return JSONResponse({
         "abstract": abstract,
         "summary":  summary,
@@ -6836,23 +6831,21 @@ def _natural_key(s: str) -> list:
 @app.post("/api/node/summary")
 def _route_generate_summary(body: _SummaryRequest) -> JSONResponse:
     """ChromaDB チャンクからDeepSeekで要約を生成してキャッシュする。"""
-    from src.db_relations import get_item_summary, save_item_summary
+    from src.db_relations import (
+        get_item_root_summary,
+        mark_artifact_status,
+        save_item_root_summary,
+    )
     from src.llm_client import DeepSeekClient, LLMError
 
     # キャッシュ済みで force=False なら即返す
     if not body.force:
-        cached = get_item_summary(body.item_key)
+        cached = get_item_root_summary(body.item_key, searchable_only=True)
         if cached:
             return JSONResponse({
                 "summary": cached["summary"], "model": cached["model"],
                 "updated_at": cached["updated_at"], "cached": True,
             })
-
-    excluded, exclusion_reason = False, None
-    if excluded:
-        return JSONResponse(
-            {"error": f"クラウド要約対象外です: {exclusion_reason}"}, status_code=403,
-        )
 
     api_key = os.environ.get("DEEPSEEK_API_KEY", "")
     if not api_key:
@@ -6888,11 +6881,24 @@ def _route_generate_summary(body: _SummaryRequest) -> JSONResponse:
         return JSONResponse({"error": f"DeepSeek API エラー: {e}"}, status_code=502)
 
     stored_model = f"deepseek:{model}"
-    save_item_summary(body.item_key, summary_text, stored_model)
-    saved = get_item_summary(body.item_key)
+    try:
+        saved = save_item_root_summary(
+            body.item_key, summary_text, model=stored_model,
+            prompt_version="citation-graph-item-v1",
+            source_chunk_count=len(chunks_text),
+            source_chars=sum(len(value) for value in chunks_text),
+            input_scope={"source": "citation_graph", "manual_force": bool(body.force)},
+        )
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=409)
+    mark_artifact_status(
+        body.item_key, "summary", "success",
+        processor_version="citation-graph-item-v1", model=stored_model,
+        counts={"nodes": 1, "llm": 1},
+    )
     return JSONResponse({
         "summary": summary_text, "model": stored_model,
-        "updated_at": saved["updated_at"] if saved else None, "cached": False,
+        "updated_at": saved["updated_at"], "cached": False,
     })
 
 
@@ -6904,8 +6910,18 @@ class _SummarySaveRequest(BaseModel):
 @app.put("/api/node/summary")
 def _route_save_summary(body: _SummarySaveRequest) -> JSONResponse:
     """手動編集した要約を保存する。"""
-    from src.db_relations import save_item_summary
-    save_item_summary(body.item_key, body.summary, "manual")
+    from src.db_relations import get_item_root_summary, save_item_root_summary
+    current = get_item_root_summary(body.item_key, searchable_only=False)
+    try:
+        save_item_root_summary(
+            body.item_key, body.summary, model="manual",
+            prompt_version="citation-graph-manual-v1",
+            source_chunk_count=int((current or {}).get("source_chunk_count") or 0),
+            source_chars=int((current or {}).get("source_chars") or 0),
+            input_scope={"source": "citation_graph", "manual": True},
+        )
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=409)
     return JSONResponse({"ok": True})
 
 

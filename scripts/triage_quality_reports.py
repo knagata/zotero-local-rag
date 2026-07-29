@@ -14,13 +14,13 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-import build_summaries  # noqa: E402
 from chunk_store import get_item_chunks  # noqa: E402
 from db_relations import (  # noqa: E402
     _summary_fingerprint,
-    get_item_summary,
+    get_document_node_summary,
+    get_item_root_summary,
+    get_node_descendant_chunks,
     get_relation_reports,
-    get_section_summaries,
     get_summary_quality_reports,
     mark_relation_report_uncertain,
     resolve_summary_quality_report,
@@ -102,23 +102,24 @@ def _summary_source(report: dict) -> tuple[str, str] | None:
             return "\n\n".join(str(row.get("text") or "") for row in selected)[:16000], "reported_chunks"
     section_id = str(report.get("section_id") or "")
     if section_id:
-        section = next(
-            (row for row in build_summaries.split_sections(chunks) if row["section_id"] == section_id),
-            None,
-        )
-        if section:
-            return build_summaries._section_source_text(section)[:16000], "section_source"
+        descendant_ids = set(get_node_descendant_chunks([section_id]))
+        selected = [
+            chunk for chunk in chunks
+            if str(chunk.get("id") or "") in descendant_ids
+        ]
+        if selected:
+            return "\n\n".join(
+                str(row.get("text") or "") for row in selected
+            )[:16000], "section_source"
     return None
 
 
 def _current_reported_summary(report: dict) -> dict | None:
     section_id = str(report.get("section_id") or "")
     if section_id:
-        return next(
-            (row for row in get_section_summaries(report["item_key"])
-             if row["section_id"] == section_id), None,
-        )
-    return get_item_summary(report["item_key"])
+        summary = get_document_node_summary(section_id, searchable_only=False)
+        return summary if summary and summary.get("item_key") == report["item_key"] else None
+    return get_item_root_summary(report["item_key"], searchable_only=False)
 
 
 def triage_summary_report(report: dict) -> str:

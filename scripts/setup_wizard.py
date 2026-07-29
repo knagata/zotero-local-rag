@@ -72,11 +72,12 @@ def write_env_file(path: Path, values: dict[str, str]) -> None:
         rendered.extend(f"{key}={values[key]}" for key in extras)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(path.name + ".tmp")
-    temporary.write_text("\n".join(rendered) + "\n", encoding="utf-8")
+    temporary.touch(mode=0o600, exist_ok=True)
     try:
         temporary.chmod(0o600)
     except OSError:
         pass
+    temporary.write_text("\n".join(rendered) + "\n", encoding="utf-8")
     temporary.replace(path)
 
 
@@ -443,7 +444,7 @@ def configure_claude_mcp(root_dir: Path, chroma_dir: Path, emb_profile: str,
 
     existing = config["mcpServers"].get("zotero-rag")
     if existing:
-        print(f"\n[Current MCP config for zotero-rag]")
+        print("\n[Current MCP config for zotero-rag]")
         print(f"  command : {existing.get('command')}")
         print(f"  args    : {existing.get('args')}")
         ans = input("MCP config already exists. Overwrite? [y/N]: ").strip().lower()

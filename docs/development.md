@@ -5,7 +5,7 @@
 ## テスト
 
 ```bash
-uv run python -m unittest discover -s tests -q
+uv run pytest -q
 uv run python -m compileall -q src scripts tests
 ```
 

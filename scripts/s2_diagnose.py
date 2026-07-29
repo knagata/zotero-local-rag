@@ -47,7 +47,7 @@ def s2_get(url: str, label: str) -> None:
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
             body = json.loads(resp.read().decode())
-            print(f"  Status: 200 OK")
+            print("  Status: 200 OK")
             # 成功レスポンスのヘッダーも表示
             interesting = ["X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset",
                            "Retry-After", "Content-Type"]
@@ -80,7 +80,7 @@ def s2_get(url: str, label: str) -> None:
         if e.headers:
             header_names = [h for h in interesting if e.headers.get(h)]
             if not header_names:
-                print(f"  (rate-limit headers: none returned)")
+                print("  (rate-limit headers: none returned)")
         try:
             body_text = e.read().decode()[:300]
             print(f"  Body: {body_text}")

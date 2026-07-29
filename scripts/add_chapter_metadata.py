@@ -122,7 +122,7 @@ def main() -> None:
             updated_ids: list[str] = []
             updated_metas: list[dict] = []
 
-            for chunk_id, md in zip(ids, metadatas):
+            for chunk_id, md in zip(ids, metadatas, strict=False):
                 page = md.get("page")
                 if page is None:
                     continue
@@ -164,7 +164,7 @@ def main() -> None:
             updated_ids = []
             updated_metas = []
 
-            for chunk_id, md in zip(ids, metadatas):
+            for chunk_id, md in zip(ids, metadatas, strict=False):
                 chap_idx = md.get("chapter_index")
                 if chap_idx is None:
                     continue

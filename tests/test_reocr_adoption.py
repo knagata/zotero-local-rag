@@ -21,7 +21,7 @@ class FakeCollection:
         }
 
     def upsert(self, *, ids, documents, metadatas):
-        for chunk_id, document, metadata in zip(ids, documents, metadatas):
+        for chunk_id, document, metadata in zip(ids, documents, metadatas, strict=False):
             self.rows[chunk_id] = (document, dict(metadata))
 
 

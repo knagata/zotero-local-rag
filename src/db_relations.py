@@ -5,7 +5,6 @@ import unicodedata
 import hashlib
 import json
 from difflib import SequenceMatcher
-from pathlib import Path
 from typing import List, Dict, Any, Optional
 
 try:
@@ -21,8 +20,10 @@ _db_initialized = False
 def get_db_connection():
     global _db_initialized
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=30)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout = 30000")
+    conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA foreign_keys = ON")
     if not _db_initialized:
         _init_db(conn)
@@ -674,6 +675,8 @@ def _init_db(conn: sqlite3.Connection) -> None:
             report_id INTEGER PRIMARY KEY AUTOINCREMENT,
             item_key TEXT NOT NULL,
             section_id TEXT NOT NULL DEFAULT '',
+            summary_node_id TEXT,
+            prior_quality_status TEXT,
             summary_hash TEXT NOT NULL,
             summary_model TEXT,
             reason TEXT NOT NULL,
@@ -698,6 +701,14 @@ def _init_db(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_summary_quality_reports_status "
         "ON summary_quality_reports(status, triage_status, item_key)"
     )
+    for sql in (
+        "ALTER TABLE summary_quality_reports ADD COLUMN summary_node_id TEXT",
+        "ALTER TABLE summary_quality_reports ADD COLUMN prior_quality_status TEXT",
+    ):
+        try:
+            cursor.execute(sql)
+        except sqlite3.OperationalError:
+            pass
 
     # Runtime quality reports for *source text* rather than summaries (note 79,
     # U0-b). Degraded OCR that reaches a reader is reported here and surfaces as
@@ -2213,13 +2224,26 @@ def _current_summary(
 ) -> Optional[Dict[str, Any]]:
     if section_id:
         row = conn.execute(
-            "SELECT summary, model, updated_at FROM section_summaries "
-            "WHERE item_key = ? AND section_id = ?",
+            """
+            SELECT s.node_id, s.summary, s.model, s.summary_kind,
+                   s.quality_status, s.searchable, s.updated_at
+            FROM document_node_summaries s
+            JOIN document_nodes n ON n.node_id = s.node_id
+            WHERE s.item_key = ? AND s.node_id = ?
+              AND n.node_type != 'item_root'
+            """,
             (item_key, section_id),
         ).fetchone()
     else:
         row = conn.execute(
-            "SELECT summary, model, updated_at FROM item_summaries WHERE item_key = ?",
+            """
+            SELECT s.node_id, s.summary, s.model, s.summary_kind,
+                   s.quality_status, s.searchable, s.updated_at
+            FROM document_node_summaries s
+            JOIN document_nodes n ON n.node_id = s.node_id
+            WHERE s.item_key = ? AND n.node_type = 'item_root'
+            ORDER BY s.updated_at DESC LIMIT 1
+            """,
             (item_key,),
         ).fetchone()
     return dict(row) if row else None
@@ -2254,10 +2278,12 @@ def submit_summary_quality_report(
         summary_hash = _summary_fingerprint(current["summary"], current.get("model"))
         conn.execute('''
             INSERT INTO summary_quality_reports
-                (item_key, section_id, summary_hash, summary_model, reason, details,
+                (item_key, section_id, summary_node_id, prior_quality_status,
+                 summary_hash, summary_model, reason, details,
                  evidence_chunk_ids_json, reporter, status, triage_status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'unreviewed')
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'unreviewed')
             ON CONFLICT(item_key, section_id, summary_hash) DO UPDATE SET
+                summary_node_id = excluded.summary_node_id,
                 reason = excluded.reason,
                 details = excluded.details,
                 evidence_chunk_ids_json = excluded.evidence_chunk_ids_json,
@@ -2269,7 +2295,8 @@ def submit_summary_quality_report(
                 report_count = summary_quality_reports.report_count + 1,
                 updated_at = CURRENT_TIMESTAMP
         ''', (
-            item_key, section_id, summary_hash, current.get("model"), reason, details,
+            item_key, section_id, current.get("node_id"),
+            current.get("quality_status"), summary_hash, current.get("model"), reason, details,
             json.dumps(chunk_ids, ensure_ascii=False), (reporter or "mcp:claude").strip(),
         ))
         conn.commit()
@@ -2339,6 +2366,39 @@ def resolve_summary_quality_report(
     status, triage_status = mapping[normalized]
     conn = get_db_connection()
     try:
+        report = conn.execute(
+            "SELECT * FROM summary_quality_reports WHERE report_id = ?",
+            (int(report_id),),
+        ).fetchone()
+        if report is None:
+            return False
+        current = _current_summary(conn, report["item_key"], report["section_id"])
+        is_current = bool(
+            current
+            and _summary_fingerprint(current["summary"], current.get("model"))
+            == report["summary_hash"]
+        )
+        if is_current and normalized == "disable":
+            conn.execute(
+                "UPDATE document_node_summaries "
+                "SET searchable = 0, quality_status = 'disabled', updated_at = CURRENT_TIMESTAMP "
+                "WHERE node_id = ?",
+                (current["node_id"],),
+            )
+        elif is_current and normalized == "keep" and current.get("quality_status") == "disabled":
+            restored = str(report["prior_quality_status"] or "accepted")
+            if restored not in {"accepted", "candidate", "degraded"}:
+                restored = "accepted"
+            searchable = int(
+                current.get("summary_kind") == "llm"
+                and restored in {"accepted", "candidate"}
+            )
+            conn.execute(
+                "UPDATE document_node_summaries "
+                "SET searchable = ?, quality_status = ?, updated_at = CURRENT_TIMESTAMP "
+                "WHERE node_id = ?",
+                (searchable, restored, current["node_id"]),
+            )
         cursor = conn.execute('''
             UPDATE summary_quality_reports
             SET status = ?, triage_status = ?, triage_model = ?,
@@ -3573,6 +3633,125 @@ def get_document_node_summaries(
         return result
     finally:
         conn.close()
+
+
+def get_item_root_summaries(
+    item_keys: List[str], *, searchable_only: bool = True,
+) -> Dict[str, Dict[str, Any]]:
+    """Return at most one V3 item-root summary per requested item."""
+    keys = list(dict.fromkeys(str(value or "").strip() for value in item_keys if value))
+    if not keys:
+        return {}
+    placeholders = ",".join("?" for _ in keys)
+    conn = get_db_connection()
+    try:
+        rows = conn.execute(f'''
+            SELECT s.*, n.parent_node_id, n.attachment_key, n.node_type, n.depth,
+                   n.title, n.first_chunk_id, n.last_chunk_id
+            FROM document_node_summaries s
+            JOIN document_nodes n ON n.node_id = s.node_id
+            WHERE s.item_key IN ({placeholders})
+              AND n.node_type = 'item_root'
+              AND (? = 0 OR s.searchable = 1)
+            ORDER BY s.item_key, s.updated_at DESC
+        ''', [*keys, int(searchable_only)]).fetchall()
+        result: Dict[str, Dict[str, Any]] = {}
+        for row in rows:
+            value = dict(row)
+            if value["item_key"] in result:
+                continue
+            try:
+                value["input_scope"] = json.loads(value.pop("input_scope_json") or "{}")
+            except (TypeError, ValueError):
+                value["input_scope"] = {}
+            result[str(value["item_key"])] = value
+        return result
+    finally:
+        conn.close()
+
+
+def get_item_root_summary(
+    item_key: str, *, searchable_only: bool = True,
+) -> Optional[Dict[str, Any]]:
+    """Return the current V3 item-root summary without loading child nodes."""
+    return get_item_root_summaries(
+        [item_key], searchable_only=searchable_only,
+    ).get(str(item_key or "").strip())
+
+
+def get_document_node_summary(
+    node_id: str, *, searchable_only: bool = False,
+) -> Optional[Dict[str, Any]]:
+    """Return one V3 node summary with its structure metadata."""
+    conn = get_db_connection()
+    try:
+        row = conn.execute('''
+            SELECT s.*, n.parent_node_id, n.attachment_key, n.node_type, n.depth,
+                   n.title, n.first_chunk_id, n.last_chunk_id
+            FROM document_node_summaries s
+            JOIN document_nodes n ON n.node_id = s.node_id
+            WHERE s.node_id = ? AND (? = 0 OR s.searchable = 1)
+        ''', ((node_id or "").strip(), int(searchable_only))).fetchone()
+        if row is None:
+            return None
+        value = dict(row)
+        try:
+            value["input_scope"] = json.loads(value.pop("input_scope_json") or "{}")
+        except (TypeError, ValueError):
+            value["input_scope"] = {}
+        return value
+    finally:
+        conn.close()
+
+
+def get_searchable_document_node_ids(node_ids: List[str]) -> set[str]:
+    """Return the requested node IDs still eligible for summary routing."""
+    ids = list(dict.fromkeys(str(value or "").strip() for value in node_ids if value))
+    if not ids:
+        return set()
+    placeholders = ",".join("?" for _ in ids)
+    conn = get_db_connection()
+    try:
+        rows = conn.execute(
+            f"SELECT node_id FROM document_node_summaries "
+            f"WHERE node_id IN ({placeholders}) AND searchable = 1",
+            ids,
+        ).fetchall()
+        return {str(row["node_id"]) for row in rows}
+    finally:
+        conn.close()
+
+
+def save_item_root_summary(
+    item_key: str, summary: str, *, model: str,
+    prompt_version: str, source_chunk_count: int, source_chars: int,
+    input_scope: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Save an accepted V3 item-root summary for an existing document tree."""
+    conn = get_db_connection()
+    try:
+        row = conn.execute('''
+            SELECT n.node_id, d.source_fingerprint
+            FROM document_nodes n
+            JOIN document_structures d ON d.item_key = n.item_key
+            WHERE n.item_key = ? AND n.node_type = 'item_root'
+            ORDER BY n.ordinal ASC LIMIT 1
+        ''', ((item_key or "").strip(),)).fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        raise ValueError("V3 document structure is required before saving an item summary.")
+    save_document_node_summary(
+        str(row["node_id"]), (item_key or "").strip(), summary,
+        summary_kind="llm", model=model, prompt_version=prompt_version,
+        source_fingerprint=str(row["source_fingerprint"]),
+        source_chunk_count=source_chunk_count, source_chars=source_chars,
+        quality_status="accepted", input_scope=input_scope,
+    )
+    saved = get_item_root_summary(item_key, searchable_only=False)
+    if saved is None:
+        raise RuntimeError("saved V3 item-root summary could not be reloaded")
+    return saved
 
 
 def get_all_document_node_summaries(

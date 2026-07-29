@@ -173,9 +173,11 @@ class DoclingWorker:
 
         try:
             self._parent_conn.send(("extract", str(pdf_path), attachment_key, meta_base))
-        except (BrokenPipeError, EOFError, OSError):
+        except (BrokenPipeError, EOFError, OSError) as exc:
             self._start()
-            raise RuntimeError(f"Docling worker crashed while processing: {pdf_path}")
+            raise RuntimeError(
+                f"Docling worker crashed while processing: {pdf_path}"
+            ) from exc
 
         if not self._parent_conn.poll(self.timeout_sec):
             # Hung. Kill the presumably-stuck worker and respawn for next time.
@@ -189,9 +191,11 @@ class DoclingWorker:
 
         try:
             response = self._parent_conn.recv()
-        except (EOFError, BrokenPipeError, OSError):
+        except (EOFError, BrokenPipeError, OSError) as exc:
             self._start()
-            raise RuntimeError(f"Docling worker crashed while processing: {pdf_path}")
+            raise RuntimeError(
+                f"Docling worker crashed while processing: {pdf_path}"
+            ) from exc
 
         if self._process.exitcode is not None:
             # The process ended (e.g. crashed right after/while replying).

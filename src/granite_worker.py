@@ -18,7 +18,6 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-import sys
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
@@ -83,10 +82,10 @@ class GraniteWorker:
                 input=request, capture_output=True, text=True,
                 timeout=self.timeout_sec, cwd=str(PROJECT_ROOT),
             )
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as exc:
             raise RuntimeError(
                 f"Granite worker timed out after {self.timeout_sec}s: {pdf_path}"
-            )
+            ) from exc
         if completed.returncode != 0 and not completed.stdout.strip():
             # No JSON came back at all: the interpreter itself failed to start,
             # or the process was killed. stderr is the only diagnostic.
@@ -95,7 +94,9 @@ class GraniteWorker:
         try:
             response = json.loads(completed.stdout or "{}")
         except ValueError as exc:
-            raise RuntimeError(f"Granite worker returned unparseable output: {exc}")
+            raise RuntimeError(
+                f"Granite worker returned unparseable output: {exc}"
+            ) from exc
         if response.get("status") != "ok":
             raise RuntimeError(
                 f"Granite extraction failed for {pdf_path}: "

@@ -54,7 +54,7 @@ def _resync_chunk_metadata(item_key: str, collection_name: str | None) -> int:
     current: dict[str, dict] = {}
     for start in range(0, len(ids), 500):
         got = collection.get(ids=ids[start:start + 500], include=["metadatas"])
-        for chunk_id, metadata in zip(got.get("ids") or [], got.get("metadatas") or []):
+        for chunk_id, metadata in zip(got.get("ids") or [], got.get("metadatas") or [], strict=False):
             current[str(chunk_id)] = dict(metadata or {})
     updates = stale_chunk_updates(current, desired)
     keys = list(updates)

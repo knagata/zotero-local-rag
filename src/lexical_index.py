@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import os
 import sqlite3
 from pathlib import Path
 from typing import Any, Iterable
@@ -51,7 +50,7 @@ def upsert_chunks(
 ) -> None:
     """Replace FTS rows for the supplied Chroma chunk IDs."""
     rows = []
-    for chunk_id, body, metadata in zip(ids, documents, metadatas):
+    for chunk_id, body, metadata in zip(ids, documents, metadatas, strict=False):
         md = metadata if isinstance(metadata, dict) else {}
         rows.append((
             chunk_id,

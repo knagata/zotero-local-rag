@@ -46,7 +46,7 @@ CHROMA_DIR = Path(os.environ.get("CHROMA_DIR", str(ROOT / "data" / "chroma")))
 _load_dotenv()
 _s2_key_at_import = os.environ.get("S2_API_KEY", "")
 print(
-    f"[citation_mapper] S2_API_KEY: "
+    "[citation_mapper] S2_API_KEY: "
     + ("SET (length=%d)" % len(_s2_key_at_import) if _s2_key_at_import else "NOT SET — Citation Network disabled"),
     file=sys.stderr,
 )
@@ -103,7 +103,6 @@ _S2_RATE_FILE = str(ROOT / "data" / "s2_rate.lock")
 _EMB_FN_CACHE = None
 _SEGMENT_META: Optional[Dict[str, Any]] = None  # cached segment info
 _ITEM_CHUNKS_CACHE: Dict[str, List[Tuple[str, np.ndarray]]] = {}  # item_key → [(emb_id, vec)]
-_CONFIGURED_COLLECTION_CACHE: Optional[Tuple[Tuple[Any, ...], str]] = None
 
 # Path for debug logs (relative to project root, not CWD)
 _DEBUG_LOG = str(ROOT / "data" / "mapping_debug.log")
@@ -132,7 +131,7 @@ def _get_emb_fn():
     _EMB_FN_CACHE = create_embedding_function(cfg)
     # Warmup
     _ = _EMB_FN_CACHE(["warmup"])
-    print(f"[citation_mapper] Embedding function ready.", file=sys.stderr)
+    print("[citation_mapper] Embedding function ready.", file=sys.stderr)
     return _EMB_FN_CACHE
 
 
@@ -143,11 +142,7 @@ def _configured_collection_name() -> str:
     SQLite segment: a previous rebuild can leave a larger legacy collection in
     the same Chroma directory.  Match the indexer's configuration instead.
     """
-    global _CONFIGURED_COLLECTION_CACHE
-    configured = v3_collection_name()
-    cache_key: Tuple[Any, ...] = (str(CHROMA_DIR), configured)
-    _CONFIGURED_COLLECTION_CACHE = (cache_key, configured)
-    return configured
+    return v3_collection_name()
 
 
 def _chroma_db_stat() -> tuple[tuple[int, int, int, int], ...]:
@@ -304,7 +299,7 @@ def _load_chunks_for_item(item_key: str) -> List[Tuple[str, np.ndarray]]:
 
     result = [
         (emb_id, np.array(vec, dtype=np.float32))
-        for emb_id, vec in zip(embedding_ids, vectors)
+        for emb_id, vec in zip(embedding_ids, vectors, strict=False)
     ]
     _ITEM_CHUNKS_CACHE[item_key] = result
     print(f"[citation_mapper] Embedded {len(result)} chunks for item {item_key}", file=sys.stderr)
@@ -522,7 +517,7 @@ def find_s2_paper_id(title: str, year: Optional[int] = None, creators: str = "",
         res = s2_request(url)
         if res and "paperId" in res:
             return res
-        print(f"        -> S2 exact lookup failed, falling back to title search...", file=sys.stderr)
+        print("        -> S2 exact lookup failed, falling back to title search...", file=sys.stderr)
 
     # 2. Fallback to Title + Author search
     import re
@@ -569,7 +564,7 @@ def find_s2_paper_id(title: str, year: Optional[int] = None, creators: str = "",
 
     similar = [p for p in results if _sim(p) >= 0.5]
     if not similar:
-        print(f"        -> No S2 results passed title similarity threshold; returning None.", file=sys.stderr)
+        print("        -> No S2 results passed title similarity threshold; returning None.", file=sys.stderr)
         return None
 
     best_match = max(similar, key=lambda x: x.get("citationCount", 0))

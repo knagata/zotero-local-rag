@@ -370,10 +370,7 @@ def build_structure_summaries(
         return {"item_key": item_key, "status": "blocked", "reason": "no_chunks"}
     reusable = _reuse_lookup(item_key, structure, chunks) if mode == "llm" and not force else {}
     requested_llm = mode == "llm"
-    # Per-item cloud tag gating removed 2026-07-27 (see note 79): anything
-    # indexed is returned by search and reaches the assistant regardless.
-    excluded, exclusion_reason = False, None
-    use_llm = requested_llm and not excluded
+    use_llm = requested_llm
     mark_artifact_status(
         item_key, "summary", "running", source_fingerprint=structure["source_fingerprint"],
         processor_version=PROMPT_VERSION,
@@ -555,7 +552,9 @@ def build_structure_summaries(
         artifact_status = "success" if llm_count else ("empty" if not generated else "degraded")
         mark_artifact_status(
             item_key, "summary", artifact_status,
-            reason_code=(exclusion_reason if excluded else ("no_summary_content" if not generated else "no_llm_summary")) if not llm_count else None,
+            reason_code=(
+                "no_summary_content" if not generated else "no_llm_summary"
+            ) if not llm_count else None,
             source_fingerprint=structure["source_fingerprint"], processor_version=PROMPT_VERSION,
             counts={"nodes": len(generated), "llm": llm_count, "extractive": len(generated) - llm_count, "skipped": skipped, "reused": reused},
             fallback_kind="extractive_outline" if not llm_count else None,

@@ -10,6 +10,7 @@ uv.lock
 
 # ── 環境設定 ─────────────────────────────────────────────
 .env
+.env.tmp
 .env.policy
 
 # ── macOS ────────────────────────────────────────────────
@@ -27,15 +28,32 @@ tmp/
 # data/ はすべて再生成可能なランタイム状態。Git追跡対象を置かない。
 /data/
 
-# ── ローカル評価・監査生成物 ──────────────────────────────
-# 個人のZoteroキー、所蔵資料名、絶対パスを含み得るため追跡しない。
-/evaluations/legacy_retirement_baseline_*.json
-/evaluations/source_verification_*.json
-/evaluations/v3_cutover/
-/evaluations/v3_cutover_audit*.json
-/evaluations/outline_gold_v1/
-/evaluations/ocr_bakeoff_v3/sample_suggestions.json
-/evaluations/ocr_bakeoff_v3/selected_samples.json
+# ── 公開評価fixture以外のローカル評価・監査生成物 ──────────
+# 個人のZoteroキー、所蔵資料名、絶対パスを含み得るため既定で全て追跡しない。
+/evaluations/*
+!/evaluations/ocr_bakeoff_v3/
+/evaluations/ocr_bakeoff_v3/*
+!/evaluations/ocr_bakeoff_v3/README.md
+!/evaluations/ocr_bakeoff_v3/annotation.example.json
+!/evaluations/ocr_bakeoff_v3/annotation.schema.json
+!/evaluations/ocr_bakeoff_v3/manifest.json
+!/evaluations/ocr_bakeoff_v3/manifest.schema.json
+!/evaluations/ocr_bakeoff_v3/annotations/
+/evaluations/ocr_bakeoff_v3/annotations/*
+!/evaluations/ocr_bakeoff_v3/annotations/embedded_text_pair.json
+!/evaluations/ocr_bakeoff_v3/annotations/en_two_column.json
+!/evaluations/ocr_bakeoff_v3/annotations/ja_horizontal.json
+!/evaluations/ocr_bakeoff_v3/annotations/ja_vertical.json
+!/evaluations/ocr_bakeoff_v3/annotations/no_outline.json
+!/evaluations/ocr_bakeoff_v3/annotations/notes_bibliography_book.json
+!/evaluations/ocr_bakeoff_v3/annotations/scanned_pair.json
+!/evaluations/ocr_bakeoff_v3/annotations/tables_math.json
+!/evaluations/ocr_bakeoff_v3/results/
+/evaluations/ocr_bakeoff_v3/results/*
+!/evaluations/ocr_bakeoff_v3/results/comparison.json
+!/evaluations/ocr_bakeoff_v3/results/comparison.md
+!/evaluations/ocr_bakeoff_v3/results/routing_proposal.md
+!/evaluations/v3_character_ratio_outlier_review_20260727.md
 
 # ── 設計メモ ─────────────────────────────────────────────
 LAYOUT_DESIGN_NOTES.md

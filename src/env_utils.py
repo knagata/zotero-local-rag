@@ -1,7 +1,30 @@
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
+
+
+_log = logging.getLogger(__name__)
+
+
+def _dotenv_value(raw: str) -> str:
+    """Parse the small dotenv value subset used by this project."""
+    value = raw.strip()
+    if value[:1] in {"'", '"'}:
+        quote = value[0]
+        escaped = False
+        for index, char in enumerate(value[1:], start=1):
+            if char == quote and not escaped:
+                return value[1:index]
+            escaped = char == "\\" and not escaped
+            if char != "\\":
+                escaped = False
+        return value
+    for index, char in enumerate(value):
+        if char == "#" and (index == 0 or value[index - 1].isspace()):
+            return value[:index].rstrip()
+    return value
 
 
 def load_dotenv_native(project_root: Path | None = None) -> None:
@@ -34,13 +57,8 @@ def load_dotenv_native(project_root: Path | None = None) -> None:
                         continue
                     k, v = line.split("=", 1)
                     k = k.strip()
-                    v = v.strip()
-                    if len(v) >= 2 and (
-                        (v.startswith('"') and v.endswith('"'))
-                        or (v.startswith("'") and v.endswith("'"))
-                    ):
-                        v = v[1:-1]
+                    v = _dotenv_value(v)
                     if k and k not in os.environ:
                         os.environ[k] = v
-        except Exception:
-            pass
+        except (OSError, UnicodeError) as exc:
+            _log.warning("Could not read dotenv file %s: %s", env_file, exc)

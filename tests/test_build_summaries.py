@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import io
 import unittest
-import os
 import sys
 import tempfile
 from contextlib import redirect_stdout

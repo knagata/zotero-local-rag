@@ -13,7 +13,6 @@ EPUB:
 """
 from __future__ import annotations
 
-from pathlib import Path
 import unicodedata
 from typing import Any, Callable, Dict, List, Optional, Tuple
 

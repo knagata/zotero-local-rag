@@ -154,12 +154,12 @@ def _extract_json(value: Any) -> dict[str, Any]:
         text = "\n".join(lines).strip()
     try:
         parsed = json.loads(text)
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as exc:
         start, end = text.find("{"), text.rfind("}")
         if start < 0 or end <= start:
             raise InvalidLLMResponse(
                 "The model response did not contain a JSON object.", raw=text,
-            )
+            ) from exc
         try:
             parsed = json.loads(text[start : end + 1])
         except json.JSONDecodeError as exc:
@@ -600,6 +600,11 @@ def _parse_spec(spec: str) -> tuple[str, str]:
     return provider, model.strip() if separator and model.strip() else DEFAULT_MODELS[provider]
 
 
+def split_llm_specs(configured: str) -> list[str]:
+    """Split a comma-separated provider fallback chain in declared order."""
+    return [part.strip() for part in str(configured or "").split(",") if part.strip()]
+
+
 def _create_client(provider: str, model: str) -> LLMClient:
     if provider == "gemini":
         return GeminiClient(model)
@@ -626,7 +631,7 @@ def get_llm(task: str) -> LLMClient:
     normalized = task.strip().lower()
     role = normalized if normalized in ROLE_DEFAULTS else TASK_ROLES.get(normalized, "standard")
     configured = get_llm_spec(role)
-    specs = [part.strip() for part in configured.split(",") if part.strip()] or [ROLE_DEFAULTS[role]]
+    specs = split_llm_specs(configured) or [ROLE_DEFAULTS[role]]
     clients = [_create_client(*_parse_spec(spec)) for spec in specs]
     if len(clients) == 1:
         return clients[0]
@@ -637,4 +642,5 @@ def get_llm(task: str) -> LLMClient:
 __all__ = [
     "LLMClient", "LLMError", "ProviderUnavailable", "RateLimitReached",
     "InvalidLLMResponse", "DeepSeekClient", "FallbackLLMClient", "get_llm", "get_llm_spec",
+    "split_llm_specs",
 ]

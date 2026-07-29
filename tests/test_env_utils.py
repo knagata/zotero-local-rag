@@ -22,6 +22,21 @@ class EnvUtilsTests(unittest.TestCase):
                 self.assertEqual(os.environ["EXISTING"], "process")
                 self.assertEqual(os.environ["EXTRACT_EXCLUDE_TAGS"], "no-cloud")
 
+    def test_inline_comments_are_removed_but_hashes_inside_values_are_kept(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / ".env").write_text(
+                "COMMENTED=value # explanation\n"
+                "HASHED=abc#123\n"
+                'QUOTED="value # retained" # explanation\n',
+                encoding="utf-8",
+            )
+            with patch.dict(os.environ, {}, clear=True):
+                load_dotenv_native(root)
+                self.assertEqual(os.environ["COMMENTED"], "value")
+                self.assertEqual(os.environ["HASHED"], "abc#123")
+                self.assertEqual(os.environ["QUOTED"], "value # retained")
+
 
 if __name__ == "__main__":
     unittest.main()

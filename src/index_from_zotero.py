@@ -6,7 +6,6 @@ import asyncio
 import atexit
 import json
 import os
-import shutil
 import sys
 import time
 import uuid
@@ -55,7 +54,7 @@ from ocr_layer_audit import (
     audit_was_transient_failure, replacement_required,
 )
 from feature_gates import (
-    ai_toc_enabled, mistral_batch_queue_enabled, ocr_layer_audit_enabled,
+    mistral_batch_queue_enabled, ocr_layer_audit_enabled,
     pdf_structure_recovery_enabled, structure_engine_for, verify_enabled_features,
 )
 from orphan_cleanup import live_item_keys, stale_identity_keys
@@ -217,7 +216,7 @@ def _dedupe_by_id(
 ) -> tuple[list[str], list[str], list[dict[str, Any]]]:
     """Dedupe records by id, keeping the last occurrence."""
     uniq: dict[str, tuple[str, dict[str, Any]]] = {}
-    for cid, doc, md in zip(ids, docs, metas):
+    for cid, doc, md in zip(ids, docs, metas, strict=False):
         uniq[cid] = (doc, md)
     out_ids = list(uniq.keys())
     out_docs = [uniq[i][0] for i in out_ids]
@@ -2054,7 +2053,7 @@ async def main_async(args: argparse.Namespace) -> None:
             if force_ndlocr:
                 if show_progress:
                     print(
-                        f"[PROGRESS]   ↳ parsing Japanese re-OCR candidate with NDLOCR-Lite...",
+                        "[PROGRESS]   ↳ parsing Japanese re-OCR candidate with NDLOCR-Lite...",
                         file=sys.__stderr__,
                     )
                 chunks, quality_info = extract_chunks_from_pdf_with_ndlocr(
@@ -2063,7 +2062,7 @@ async def main_async(args: argparse.Namespace) -> None:
             elif use_docling_for_this_file:
                 if show_progress:
                     print(
-                        f"[PROGRESS]   ↳ parsing with high-fidelity IBM Docling...",
+                        "[PROGRESS]   ↳ parsing with high-fidelity IBM Docling...",
                         file=sys.__stderr__,
                     )
                 try:
@@ -2628,8 +2627,8 @@ async def main_async(args: argparse.Namespace) -> None:
                         # existing index left untouched).
                         if show_progress:
                             print(
-                                f"[PROGRESS]   ↳ local OCR exhausted (Docling already "
-                                f"rejected); not re-running Docling ungated"
+                                "[PROGRESS]   ↳ local OCR exhausted (Docling already "
+                                "rejected); not re-running Docling ungated"
                                 + (
                                     f"; cloud policy requires local processing ({policy_reason})"
                                     if policy_reason else "; Mistral queue disabled"
@@ -2787,9 +2786,6 @@ async def main_async(args: argparse.Namespace) -> None:
                     ocr_quality["parser"] = (
                         f"{ocr_quality.get('parser') or 'local_ocr'}_epub"
                     )
-                    mapped_ocr_quality = _epub_ocr_quality_from_mapping(
-                        ocr_quality, ocr_chunks, derivative,
-                    )
                     chunks = ocr_chunks
                     quality_info = _epub_ocr_quality_from_mapping(
                         ocr_quality, chunks, derivative,
@@ -2826,8 +2822,8 @@ async def main_async(args: argparse.Namespace) -> None:
                         deferred_extract += 1
                         if show_progress:
                             print(
-                                f"[PROGRESS]   ↳ local OCR gates failed; deferred "
-                                f"EPUB image spines to Mistral OCR batch",
+                                "[PROGRESS]   ↳ local OCR gates failed; deferred "
+                                "EPUB image spines to Mistral OCR batch",
                                 file=sys.__stderr__,
                             )
                         continue
@@ -2967,7 +2963,7 @@ async def main_async(args: argparse.Namespace) -> None:
             # extraction_engine/extraction_version (EPUB/HTML DOM paths, adapter
             # engines) are preserved as-is.
             extraction_quality_json = summarize_extraction_quality(quality_info)
-            for _cid, text, md in chunks:
+            for _cid, _text, md in chunks:
                 md["extraction_engine"] = resolve_extraction_engine(
                     quality_info, md.get("extraction_engine"),
                 )
@@ -3043,7 +3039,7 @@ async def main_async(args: argparse.Namespace) -> None:
             expected_ids: dict[str, set[str]] = {
                 key: set() for key in pending_delete_attachment_keys
             }
-            for chunk_id, metadata in zip(ids, metas):
+            for chunk_id, metadata in zip(ids, metas, strict=False):
                 attachment_key = str(metadata.get("attachmentKey") or "")
                 if attachment_key in expected_ids:
                     expected_ids[attachment_key].add(str(chunk_id))
@@ -3122,7 +3118,7 @@ async def main_async(args: argparse.Namespace) -> None:
         ids, docs, metas = _dedupe_by_id(pending_ids, pending_docs, pending_metas)
         committed_item_keys = set(pending_item_keys.values())
         expected_ids = {key: set() for key in pending_delete_attachment_keys}
-        for chunk_id, metadata in zip(ids, metas):
+        for chunk_id, metadata in zip(ids, metas, strict=False):
             attachment_key = str(metadata.get("attachmentKey") or "")
             if attachment_key in expected_ids:
                 expected_ids[attachment_key].add(str(chunk_id))

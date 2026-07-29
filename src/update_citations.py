@@ -162,7 +162,7 @@ def _zotero_web_patch_doi(item_key: str, doi: str, version: object) -> None:
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
             if resp.status == 204:
-                print(f"    -> DOI saved to Zotero.", file=sys.stderr)
+                print("    -> DOI saved to Zotero.", file=sys.stderr)
             else:
                 print(f"    -> Zotero Web API returned {resp.status}.", file=sys.stderr)
     except urllib.error.HTTPError as e:
@@ -173,7 +173,7 @@ def _zotero_web_patch_doi(item_key: str, doi: str, version: object) -> None:
 
 def _run_epub_step(item_key: str, item_data: dict, zotero_data_dir: str, epub_budget: int = 50) -> None:
     """EPUB参照抽出ステップ（step 2）を実行する。"""
-    print(f"  [EPUB] Checking for EPUB attachment to extract outgoing references...", file=sys.stderr)
+    print("  [EPUB] Checking for EPUB attachment to extract outgoing references...", file=sys.stderr)
     try:
         children = _zotero_request(f"items/{item_key}/children")
         if not isinstance(children, list):
@@ -190,7 +190,7 @@ def _run_epub_step(item_key: str, item_data: dict, zotero_data_dir: str, epub_bu
                 break
 
         if not epub_key:
-            print(f"        -> Skip: No EPUB attachment found.", file=sys.stderr)
+            print("        -> Skip: No EPUB attachment found.", file=sys.stderr)
         else:
             epub_path = resolve_epub_path(epub_data, zotero_data_dir)
             if not epub_path or not os.path.exists(epub_path):
@@ -230,7 +230,7 @@ def process_item(item_key: str, item_data: dict, zotero_data_dir: str, skip_s2: 
     # ── Step 1: S2 API（被引用取得） ──────────────────────────
     s2_ok = True
     if skip_s2:
-        print(f"  [1/2] S2 step: skipped (already done).", file=sys.stderr)
+        print("  [1/2] S2 step: skipped (already done).", file=sys.stderr)
     else:
         # DOI Lookup & Write-back via Zotero Web API
         if not doi and not isbn and title:
@@ -247,7 +247,7 @@ def process_item(item_key: str, item_data: dict, zotero_data_dir: str, skip_s2: 
             from db_relations import update_item_citation_status
             update_item_citation_status(item_key, "pending", doi=doi or None, isbn=isbn or None)
 
-        print(f"  [1/2] Fetching citations from Semantic Scholar...", file=sys.stderr)
+        print("  [1/2] Fetching citations from Semantic Scholar...", file=sys.stderr)
         try:
             res1 = map_item_global_citations(
                 item_key, title=title, year=year, creators=creators,
@@ -265,7 +265,7 @@ def process_item(item_key: str, item_data: dict, zotero_data_dir: str, skip_s2: 
             s2_ok = False
 
     # ── Step 2: EPUB参照抽出 ─────────────────────────────────
-    print(f"  [2/2] Extracting references from EPUB...", file=sys.stderr)
+    print("  [2/2] Extracting references from EPUB...", file=sys.stderr)
     _run_epub_step(item_key, item_data, zotero_data_dir, epub_budget=epub_budget)
     return s2_ok
 
@@ -337,10 +337,10 @@ def main():
     # Pre-initialize embedding model and validate ChromaDB data
     try:
         from citation_mapper import _get_emb_fn, _get_segment_meta
-        print(f"[PROGRESS] Initializing embedding model and checking ChromaDB...", file=sys.stderr)
+        print("[PROGRESS] Initializing embedding model and checking ChromaDB...", file=sys.stderr)
         _get_segment_meta()  # Validates that data exists
         _get_emb_fn()        # Loads model and warms up
-        print(f"[PROGRESS] Ready.", file=sys.stderr)
+        print("[PROGRESS] Ready.", file=sys.stderr)
     except Exception as e:
         print(f"[WARNING] Initialization issue: {e}", file=sys.stderr)
 
@@ -376,7 +376,7 @@ def main():
             else:
                 skip_s2 = (status == "s2_done" and not args.force)
                 if skip_s2:
-                    print(f"[RESUME] S2 step already done. Running EPUB step only.", file=sys.stderr)
+                    print("[RESUME] S2 step already done. Running EPUB step only.", file=sys.stderr)
                 s2_ok = process_item(args.item, item_data, zotero_data_dir, skip_s2=skip_s2,
                                      epub_budget=args.epub_budget or 50)
                 if s2_ok:
@@ -401,7 +401,7 @@ def main():
 
         print(f"\n{'='*60}", file=sys.stderr)
         print(f"  全 {total} 件を処理します（force={args.force}）", file=sys.stderr)
-        print(f"  ステータス凡例: スキップ=両ステップ完了済み / 再開=S2完了・EPUB未実行", file=sys.stderr)
+        print("  ステータス凡例: スキップ=両ステップ完了済み / 再開=S2完了・EPUB未実行", file=sys.stderr)
         print(f"{'='*60}\n", file=sys.stderr)
 
         for idx, raw in enumerate(items, start=1):
@@ -498,7 +498,7 @@ def main():
         # ── final summary ────────────────────────────────────────
         total_time = time.time() - run_start
         print(f"\n{'='*60}", file=sys.stderr)
-        print(f"  完了サマリー", file=sys.stderr)
+        print("  完了サマリー", file=sys.stderr)
         print(f"{'='*60}", file=sys.stderr)
         print(f"  合計件数  : {total}", file=sys.stderr)
         print(f"  処理済み  : {stats['processed']}  (両ステップ新規実行)", file=sys.stderr)

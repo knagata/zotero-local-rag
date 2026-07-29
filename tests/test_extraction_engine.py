@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import os
 import unittest
 from pathlib import Path
@@ -91,9 +92,12 @@ class ExtractionEngineTests(unittest.TestCase):
 
     def test_package_import_path_loads_existing_adapter_modules(self):
         registry = EngineRegistry()
-        import src.pdf_extract
-        import src.docling_extract
-        import src.ndlocr_extract
+        for module_name in (
+            "src.pdf_extract",
+            "src.docling_extract",
+            "src.ndlocr_extract",
+        ):
+            self.assertIsNotNone(importlib.import_module(module_name))
         self.assertEqual(registry.get("pymupdf").name, "pymupdf")
 
     def test_mistral_ocr_requires_key_and_explicit_cloud_opt_in(self):

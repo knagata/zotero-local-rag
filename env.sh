@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-set -euo pipefail
 
 # Project root (directory containing this script)
 # Works in bash and zsh when the script is sourced.
@@ -110,6 +109,6 @@ if [[ "${HF_HUB_OFFLINE:-0}" == "1" || "${TRANSFORMERS_OFFLINE:-0}" == "1" ]]; t
   if [[ ! -d "${EMB_MODEL}" ]]; then
     echo "ERROR: Offline mode is enabled (HF_HUB_OFFLINE=1 or TRANSFORMERS_OFFLINE=1), but EMB_MODEL is not a local directory: ${EMB_MODEL}" 1>&2
     echo "Fix: set EMB_MODEL to an existing local snapshot directory under ./data/models/, or unset EMB_MODEL to use the default for EMB_PROFILE." 1>&2
-    exit 1
+    return 1 2>/dev/null || exit 1
   fi
 fi

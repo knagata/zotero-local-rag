@@ -1,4 +1,5 @@
 import os
+from xml.etree.ElementTree import ParseError
 from unittest import mock
 
 import pytest
@@ -27,7 +28,7 @@ def test_parse_tei_preserves_reference_and_inline_link():
 
 
 def test_parse_tei_rejects_malformed_xml():
-    with pytest.raises(Exception):
+    with pytest.raises(ParseError):
         parse_tei("<TEI>")
 
 

@@ -97,7 +97,7 @@ _status_label = {
     "ai_pending": "AI解析待ち",
     "ai_done":    "AI解析完了",
 }
-print(f"  ── 被引用データ（citations）──────────────")
+print("  ── 被引用データ（citations）──────────────")
 print(f"    データあり Zotero アイテム: {cit_items:>5,} 件")
 print(f"    ユニーク外部論文（被引用元): {cit_papers:>5,} 件")
 print(f"    総レコード数              : {cit_rows:>6,} 件")
@@ -106,7 +106,7 @@ for st, n in cit_status:
     pct = n / cit_rows * 100 if cit_rows else 0
     print(f"      {label:<30}: {n:>6,} 件  ({pct:.1f}%)")
 print()
-print(f"  ── 参照データ（references）───────────────")
+print("  ── 参照データ（references）───────────────")
 print(f"    データあり Zotero アイテム: {ref_items:>5,} 件")
 print(f"    ユニーク外部論文（参照先） : {ref_papers:>5,} 件")
 print(f"    総レコード数              : {ref_rows:>6,} 件")
@@ -115,7 +115,7 @@ for st, n in ref_status:
     pct = n / ref_rows * 100 if ref_rows else 0
     print(f"      {label:<30}: {n:>6,} 件  ({pct:.1f}%)")
 print()
-print(f"  ── アイテム別内訳 ────────────────────────")
+print("  ── アイテム別内訳 ────────────────────────")
 print(f"    被引用＋参照 両方あり     : {both_items:>5,} 件")
 print(f"    被引用データのみ          : {only_cit:>5,} 件")
 print(f"    参照データのみ            : {only_ref:>5,} 件")

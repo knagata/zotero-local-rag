@@ -1,7 +1,7 @@
 """Read-only data service for Citation Graph structure and summaries."""
 from __future__ import annotations
 
-from typing import Any, Iterable
+from typing import Any
 
 from src import db_relations
 from src.chunk_store import get_item_chunks, natural_chunk_key
@@ -35,17 +35,18 @@ def _page(values: list[dict[str, Any]], cursor: str | None, limit: int) -> dict[
 
 
 def _generation_status(
-    conn: Any, item_key: str, kind: str, row_count: int,
+    conn: Any, item_key: str, row_count: int,
 ) -> dict[str, Any]:
     if row_count:
         return {"status": "available", "count": row_count}
     row = conn.execute(
-        "SELECT status, row_count, updated_at FROM insight_generation_status "
-        "WHERE item_key = ? AND kind = ?",
-        (item_key, kind),
+        "SELECT status, updated_at FROM artifact_processing_status "
+        "WHERE item_key = ? AND artifact_type = 'summary' AND attachment_key = ''",
+        (item_key,),
     ).fetchone()
     if row:
-        return {"status": row["status"], "count": 0, "updated_at": row["updated_at"]}
+        status = "processed_empty" if row["status"] == "empty" else row["status"]
+        return {"status": status, "count": 0, "updated_at": row["updated_at"]}
     return {"status": "not_processed", "count": 0}
 
 
@@ -92,7 +93,9 @@ def get_document_outline(item_key: str) -> dict[str, Any]:
     if structure is None:
         return {"item_key": key, "structure": None, "nodes": []}
     summaries = {
-        str(row["node_id"]): row for row in db_relations.get_document_node_summaries(key)
+        str(row["node_id"]): row
+        for row in db_relations.get_document_node_summaries(key)
+        if row.get("quality_status") != "disabled"
     }
     nodes = []
     for node in db_relations.get_document_nodes(key):
@@ -121,19 +124,22 @@ def get_item_insights(item_key: str) -> dict[str, Any]:
         abstract_row = conn.execute(
             "SELECT abstract FROM item_citation_status WHERE item_key = ?", (key,),
         ).fetchone()
-        summary_row = conn.execute(
-            "SELECT summary, model, updated_at FROM item_summaries WHERE item_key = ?", (key,),
-        ).fetchone()
-        section_count = int(conn.execute(
-            "SELECT COUNT(*) FROM section_summaries WHERE item_key = ?", (key,),
-        ).fetchone()[0])
-        summary = dict(summary_row) if summary_row else None
+        summary = db_relations.get_item_root_summary(key, searchable_only=False)
+        if summary and summary.get("quality_status") == "disabled":
+            summary = None
+        section_count = int(conn.execute('''
+            SELECT COUNT(*)
+            FROM document_node_summaries s
+            JOIN document_nodes n ON n.node_id = s.node_id
+            WHERE s.item_key = ? AND n.node_type != 'item_root'
+              AND s.quality_status != 'disabled'
+        ''', (key,)).fetchone()[0])
         if summary:
-            summary["kind"] = "extractive" if summary.get("model") == "extractive" else "llm"
+            summary["kind"] = summary.get("summary_kind") or "llm"
             summary["report_status"] = _current_summary_report_status(
                 conn, key, "", summary["summary"], summary.get("model"),
             )
-        sections = _generation_status(conn, key, "sections", section_count)
+        sections = _generation_status(conn, key, section_count)
         return {
             "item_key": key,
             "abstract": abstract_row["abstract"] if abstract_row else None,
@@ -152,27 +158,32 @@ def list_sections(
     needle = str(query or "").strip().casefold()
     conn = db_relations.get_db_connection()
     try:
-        rows = [dict(row) for row in conn.execute(
-            "SELECT * FROM section_summaries WHERE item_key = ?", (key,),
-        ).fetchall()]
-        rows.sort(key=lambda row: natural_chunk_key(str(row.get("section_id") or "")))
+        rows = [dict(row) for row in conn.execute('''
+            SELECT s.*, n.node_type, n.depth, n.title, n.first_chunk_id
+            FROM document_node_summaries s
+            JOIN document_nodes n ON n.node_id = s.node_id
+            WHERE s.item_key = ? AND n.node_type != 'item_root'
+              AND s.quality_status != 'disabled'
+            ORDER BY n.first_chunk_id, n.depth, n.ordinal, n.node_id
+        ''', (key,)).fetchall()]
+        rows.sort(key=lambda row: natural_chunk_key(str(row.get("first_chunk_id") or "")))
         result = []
         for row in rows:
             if needle and needle not in "\n".join((
-                str(row.get("chapter") or ""), str(row.get("summary") or ""),
+                str(row.get("title") or ""), str(row.get("summary") or ""),
             )).casefold():
                 continue
             result.append({
-                "section_id": row["section_id"],
-                "chapter": row.get("chapter") or "",
+                "section_id": row["node_id"],
+                "chapter": row.get("title") or "",
                 "summary": row["summary"],
                 "model": row.get("model") or "",
-                "chunk_count": row.get("chunk_count"),
-                "chapter_authors": row.get("chapter_authors") or "",
-                "first_publication_note": row.get("first_publication_note") or "",
+                "chunk_count": row.get("source_chunk_count"),
+                "chapter_authors": "",
+                "first_publication_note": "",
                 "updated_at": row.get("updated_at"),
                 "report_status": _current_summary_report_status(
-                    conn, key, str(row["section_id"]), row["summary"], row.get("model"),
+                    conn, key, str(row["node_id"]), row["summary"], row.get("model"),
                 ),
             })
         return _page(result, cursor, limit)
@@ -185,27 +196,28 @@ def get_section_source(item_key: str, section_id: str) -> dict[str, Any]:
     section_key = str(section_id or "").strip()
     if not section_key:
         raise ValueError("section_id is required.")
-    # Use the same deterministic grouping routine as summary generation so IDs
-    # cannot drift between the stored summary and its displayed source chunks.
-    from src.build_summaries import split_sections
-
-    sections = {
-        str(section["section_id"]): section
-        for section in split_sections(get_item_chunks(key))
-    }
-    section = sections.get(section_key)
-    if section is None:
+    node = next((
+        row for row in db_relations.get_document_nodes(key)
+        if str(row.get("node_id")) == section_key
+    ), None)
+    if node is None or node.get("node_type") == "item_root":
         raise KeyError("section source was not found.")
+    chunk_ids = set(db_relations.get_node_descendant_chunks([section_key]))
+    chunks = [
+        chunk for chunk in get_item_chunks(key)
+        if str(chunk.get("id") or "") in chunk_ids
+    ]
+    chunks.sort(key=lambda row: natural_chunk_key(str(row.get("id") or "")))
     return {
         "item_key": key,
         "section_id": section_key,
-        "chapter": section.get("chapter") or "",
+        "chapter": node.get("title") or "",
         "chunks": [{
             "chunk_id": str(chunk.get("id") or ""),
             "text": str(chunk.get("text") or ""),
             "page": chunk.get("metadata", {}).get("page")
                 or chunk.get("metadata", {}).get("pageNumber"),
-        } for chunk in section.get("chunks") or [] if chunk.get("text")],
+        } for chunk in chunks if chunk.get("text")],
     }
 
 

@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from citation_graph import server as show_citation_graph
 from src import db_relations
+from tests.v3_summary_fixtures import seed_v3_summaries
 
 
 def _json(response):
@@ -22,10 +23,8 @@ class CitationInsightsApiTests(unittest.TestCase):
         self.db_patch = patch.object(db_relations, "DB_PATH", str(self.db_path))
         self.db_patch.start()
         db_relations._db_initialized = False
-        db_relations.save_item_summary("ITEM", "item summary", "deepseek:flash")
-        db_relations.save_section_summary(
-            "ITEM", "w0", "section summary", chapter="Chapter", model="deepseek:flash",
-        )
+        fixture = seed_v3_summaries(db_relations)
+        self.section_id = fixture["section_ids"]["w0"]
 
     def tearDown(self):
         self.db_patch.stop()
@@ -36,7 +35,7 @@ class CitationInsightsApiTests(unittest.TestCase):
         overview = _json(show_citation_graph._route_node_insights("ITEM"))
         self.assertEqual(overview["sections"]["count"], 1)
         sections = _json(show_citation_graph._route_node_sections("ITEM", "", "", 50))
-        self.assertEqual(sections["items"][0]["section_id"], "w0")
+        self.assertEqual(sections["items"][0]["section_id"], self.section_id)
 
     def test_abstract_route_uses_the_packaged_database_module(self):
         response = _json(show_citation_graph._route_node_abstract("ITEM"))
@@ -50,6 +49,41 @@ class CitationInsightsApiTests(unittest.TestCase):
             response = show_citation_graph._route_generate_summary(request)
         self.assertEqual(response.status_code, 503)
         self.assertIn("DEEPSEEK_API_KEY", _json(response)["error"])
+
+    def test_generated_summary_is_saved_only_to_the_v3_item_root(self):
+        request = show_citation_graph._SummaryRequest(
+            item_key="ITEM", force=True,
+        )
+        client = unittest.mock.Mock()
+        client.generate_text.return_value = "generated V3 summary"
+        with patch.dict(os.environ, {"DEEPSEEK_API_KEY": "secret"}), patch.object(
+            show_citation_graph, "get_item_chunks",
+            return_value=[{"text": "source text"}],
+        ), patch(
+            "src.llm_client.DeepSeekClient", return_value=client,
+        ):
+            response = show_citation_graph._route_generate_summary(request)
+        self.assertEqual(response.status_code, 200)
+        saved = db_relations.get_item_root_summary("ITEM")
+        self.assertEqual(saved["summary"], "generated V3 summary")
+        conn = db_relations.get_db_connection()
+        try:
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM item_summaries WHERE item_key = 'ITEM'",
+            ).fetchone()[0], 0)
+        finally:
+            conn.close()
+
+    def test_manual_summary_edit_updates_the_v3_item_root(self):
+        response = show_citation_graph._route_save_summary(
+            show_citation_graph._SummarySaveRequest(
+                item_key="ITEM", summary="manually corrected summary",
+            )
+        )
+        self.assertEqual(response.status_code, 200)
+        saved = db_relations.get_item_root_summary("ITEM")
+        self.assertEqual(saved["summary"], "manually corrected summary")
+        self.assertEqual(saved["model"], "manual")
 
     @patch(
         "src.crossref_client.fetch_crossref_by_doi",
@@ -90,7 +124,7 @@ class CitationInsightsApiTests(unittest.TestCase):
         self.assertEqual(states["summary"]["reason_code"], "no_cloud")
 
     def test_outline_route_is_empty_until_structure_exists(self):
-        outline = _json(show_citation_graph._route_node_outline("ITEM"))
+        outline = _json(show_citation_graph._route_node_outline("MISSING"))
         self.assertIsNone(outline["structure"])
         self.assertEqual(outline["nodes"], [])
 

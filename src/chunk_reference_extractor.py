@@ -41,7 +41,7 @@ def _split_numbered_entries(text: str) -> List[str] | None:
     if len(matches) < 2:
         return None
     numbers = [int(match.group(1)) for match in matches]
-    ascending = sum(1 for a, b in zip(numbers, numbers[1:]) if b == a + 1)
+    ascending = sum(1 for a, b in zip(numbers, numbers[1:], strict=False) if b == a + 1)
     if ascending < max(1, len(matches) - 2):
         return None
     entries: List[str] = []

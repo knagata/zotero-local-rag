@@ -6,7 +6,6 @@ EPubは toc.ncx (epub2) または nav.xhtml (epub3) に必ず目次が入って�
 
 import json
 import os
-import sys
 import zipfile
 from pathlib import Path
 from xml.etree import ElementTree as ET

@@ -263,9 +263,9 @@ def resolve_collection_name(
     """Resolve a ChromaDB collection name.
 
     If *env_value* is provided and non-empty, it is used verbatim.
-    Otherwise the embedding dimension is probed and the *default* name
-    is suffixed with ``_<dim>`` (e.g. ``zotero_paragraphs_v3_384``) to prevent
-    dimension mismatch when switching embedding models.
+    Otherwise *default* is used unchanged. V3 permits only its canonical
+    collection name; embedding compatibility is enforced by the collection
+    fingerprint rather than by inventing dimension-suffixed collection names.
 
     Args:
         ef: Embedding function callable (list[str] -> list[list[float]]).
@@ -275,12 +275,7 @@ def resolve_collection_name(
     Returns:
         Resolved collection name.
     """
-    explicit = (env_value or "").strip()
-    if explicit:
-        base = explicit
-    else:
-        dim = probe_embedding_dim(ef)
-        base = f"{default}_{dim}" if isinstance(dim, int) and dim > 0 else default
+    base = (env_value or "").strip() or default
     if suffix:
         clean_suffix = re.sub(r"[^a-zA-Z0-9_-]+", "_", suffix).strip("_")
         if not clean_suffix:
@@ -376,8 +371,8 @@ def get_collection(
     """
     Create / open Chroma collection with an embedding function.
 
-    - If CHROMA_COLLECTION is not explicitly set, suffix the default collection name
-      by embedding dimension to prevent mismatch when switching models.
+    - Use the configured collection name, or the canonical default unchanged.
+    - Embedding dimension/model compatibility is recorded in the fingerprint.
     - Write embedder_config.json for reproducibility/debug.
     """
     cfg = resolve_embedder_settings(project_root)

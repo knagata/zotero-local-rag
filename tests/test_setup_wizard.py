@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import stat
 import tempfile
 import unittest
 from io import StringIO
@@ -27,6 +28,8 @@ class SetupWizardTests(unittest.TestCase):
             self.assertIn("# Citation network and bibliographic metadata", rendered)
             self.assertIn("# Other existing settings", rendered)
             self.assertEqual(setup_wizard.read_env_file(path), values)
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+            self.assertFalse(path.with_name(".env.tmp").exists())
 
     def test_core_level_does_not_require_network_credentials(self):
         config = {"UNRELATED": "preserved"}

@@ -174,7 +174,10 @@ class HierarchicalSearchTests(unittest.TestCase):
                 {"results": [item_hit]}, {"results": [item_hit]}, {"results": [direct_hit]},
             ]
         ) as mock_search, patch.object(
-            rag_mcp_server, "get_document_node_summaries", return_value=[]
+            rag_mcp_server, "get_searchable_document_node_ids",
+            side_effect=lambda ids: set(ids),
+        ), patch.object(
+            rag_mcp_server, "get_item_root_summaries", return_value={},
         ):
             response = rag_mcp_server.hierarchical_search("query", auto_expand=False)
         self.assertEqual(response["candidate_nodes"][0]["node_id"], "dn:chapter")
@@ -190,15 +193,38 @@ class HierarchicalSearchTests(unittest.TestCase):
         self.assertEqual(item_candidate["year"], 1990)
 
     def test_item_summary_uses_v3_item_root(self):
-        summaries = [
-            {"node_type": "chapter", "summary": "chapter"},
-            {"node_type": "item_root", "summary": "whole item"},
-        ]
         with patch.object(
-            rag_mcp_server, "get_document_node_summaries", return_value=summaries,
+            rag_mcp_server, "get_item_root_summary",
+            return_value={"node_type": "item_root", "summary": "whole item"},
         ):
             result = rag_mcp_server.get_item_summary("ITEM")
         self.assertEqual(result["summary"]["summary"], "whole item")
+
+    def test_disabled_stale_summary_embedding_cannot_route_results(self):
+        summary_collection = Mock()
+        summary_collection.query.return_value = {
+            "metadatas": [[{
+                "itemKey": "ITEM", "node_id": "disabled:node", "title": "Chapter",
+            }]],
+            "documents": [["disabled summary"]],
+        }
+        client = Mock()
+        client.get_collection.return_value = summary_collection
+        paragraphs = Mock()
+        paragraphs._embedding_function.return_value = [[0.1, 0.2]]
+        paragraphs._chroma_client = client
+        with patch.object(
+            rag_mcp_server, "get_searchable_document_node_ids", return_value=set(),
+        ), patch.object(
+            rag_mcp_server, "rag_search", return_value={"results": []},
+        ) as search:
+            response = rag_mcp_server._hierarchical_search_v2(
+                ["query"], k=5, k_items=5, where=None, include_direct=False,
+                return_summaries=False, paragraph_collection=paragraphs,
+            )
+        self.assertEqual(response["candidate_nodes"], [])
+        self.assertEqual(response["candidate_items"], [])
+        search.assert_not_called()
 
     def test_v2_routes_same_item_search_by_aggregated_node_rrf(self):
         """Two lower-ranked nodes for B beat A's first single node."""
@@ -220,6 +246,9 @@ class HierarchicalSearchTests(unittest.TestCase):
             rag_mcp_server, "get_node_descendant_chunks", return_value=[]
         ), patch.object(
             rag_mcp_server, "get_node_descendant_leaf_ids", return_value=[]
+        ), patch.object(
+            rag_mcp_server, "get_searchable_document_node_ids",
+            side_effect=lambda ids: set(ids),
         ), patch.object(
             rag_mcp_server, "rag_search", return_value={"results": []}
         ) as mock_search:

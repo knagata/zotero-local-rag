@@ -3,13 +3,11 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import re
 import unicodedata
 from difflib import SequenceMatcher
 from typing import Any
 
-import httpx
 
 try:
     from .cinii_client import search_cinii

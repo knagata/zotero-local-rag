@@ -124,6 +124,14 @@ class ResourceDetectionTests(unittest.TestCase):
         with env, dotenv:
             self.assertFalse(fg.llm_configured())
 
+    def test_a_usable_later_fallback_counts_as_configured(self):
+        env, dotenv = _env(
+            LLM_STANDARD="gemini:first, deepseek:second",
+            DEEPSEEK_API_KEY="secret",
+        )
+        with env, dotenv:
+            self.assertTrue(fg.llm_configured())
+
 
 class VerifyEnabledFeaturesTests(unittest.TestCase):
     """A feature on without its resource is an error, not a silent downgrade."""

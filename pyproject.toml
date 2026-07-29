@@ -30,5 +30,12 @@ dependencies = [
 [project.optional-dependencies]
 llm-anthropic = ["anthropic>=0.75.0"]
 
+[dependency-groups]
+dev = ["pytest>=8,<9"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
 [project.scripts]
 zotero-local-rag = "src.rag_mcp_server:main"

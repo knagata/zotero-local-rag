@@ -13,7 +13,6 @@ import re
 from collections import Counter
 from typing import Any
 
-import httpx
 
 try:
     from .llm_client import DeepSeekClient, InvalidLLMResponse

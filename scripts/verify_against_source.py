@@ -32,7 +32,7 @@ from src.env_utils import load_dotenv_native  # noqa: E402
 
 load_dotenv_native(ROOT)
 
-from src.chunk_store import active_collection_name, get_item_chunks  # noqa: E402
+from src.chunk_store import active_collection_name  # noqa: E402
 from src.db_relations import get_db_connection  # noqa: E402
 from src.manifest import load_manifest  # noqa: E402
 from src.source_verification import (  # noqa: E402
@@ -90,9 +90,6 @@ def main() -> int:
     collection_name = args.collection or active_collection_name(chroma_dir=args.chroma_dir)
     if collection_name != V3_COLLECTION:
         parser.error(f"--collection must be {V3_COLLECTION!r}; the legacy data plane is retired")
-    if not collection_name:
-        print("No active collection.", file=sys.stderr)
-        return 2
 
     rows = _collection_rows(collection_name, chroma_dir=args.chroma_dir)
     by_attachment: dict[str, list[dict[str, Any]]] = defaultdict(list)
