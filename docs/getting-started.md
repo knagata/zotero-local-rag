@@ -48,8 +48,9 @@ Customではページ境界の前後それぞれにDocling、Granite、Mistral�
 （Apple Silicon搭載Macのみ）。
 
 CustomではNDLOCR-Liteも検出します。未導入の場合は、約450MBの無料ローカルツールとして
-インストールするか確認します。NDLOCR-Liteは日本語の明示的な再OCRと固定レイアウトEPUBに
-使われ、通常の画像PDFは構造化設定に応じてDocling／Granite／Mistralで処理されます。
+公式GitHubリポジトリの検証済みタグからインストールするか確認します。NDLOCR-Liteは
+日本語の明示的な再OCRと固定レイアウトEPUBに使われ、通常の画像PDFは構造化設定に応じて
+Docling／Granite／Mistralで処理されます。
 
 Tesseractと日本語言語データも検出します。Customで不足している場合は、Homebrewから
 インストールするか確認します。Tesseractは画像PDF全体の主OCRではなく、フォント復号に

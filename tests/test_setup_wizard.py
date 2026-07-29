@@ -252,7 +252,7 @@ class SetupWizardTests(unittest.TestCase):
             run.call_args_list[0].args[0],
             [
                 "/usr/local/bin/uv", "tool", "install", "--force",
-                setup_wizard.NDLOCR_REQUIREMENT,
+                "git+https://github.com/ndl-lab/ndlocr-lite.git@1.0.0",
             ],
         )
         self.assertEqual(

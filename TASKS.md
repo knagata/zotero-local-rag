@@ -358,8 +358,9 @@ A（PDF構造化）・B（課金LLM）は独立、C（構造抽出エンジン�
     製品名・環境変数名・確認入力語など、操作上そのまま示す必要がある識別子は維持する。
   - Granite未導入時も選択肢から隠さず、選択後の確認に応じてApple Silicon用の専用venvと
     固定依存をウィザードが導入・検証する。失敗または拒否時は該当区分をDoclingへ戻す。
-  - CustomでNDLOCR-Liteを検出し、未導入なら約450MBの隔離`uv tool`として任意導入する。
-    検証した実行ファイルの絶対パスを`NDLOCR_BIN`へ保存する。
+  - CustomでNDLOCR-Liteを検出し、未導入なら公式GitHubの検証済み`1.0.0`タグから
+    約450MBの隔離`uv tool`として任意導入する。検証した実行ファイルの絶対パスを
+    `NDLOCR_BIN`へ保存する（NDLOCR-LiteはPyPI未公開のためレジストリ名では指定しない）。
   - Tesseractは画像PDF全体の主OCRではなく、フォント復号失敗ページ専用の補助であることを
     ウィザードと文書に明記する。Customでは本体と日本語言語データを検出し、不足時は
     明示同意後にHomebrewから`tesseract`／`tesseract-lang`を導入・検証する。

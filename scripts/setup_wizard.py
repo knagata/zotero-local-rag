@@ -155,7 +155,9 @@ LLM_FLAGS = (
 
 GRANITE_VENV_PYTHON = "tmp/granite_docling_venv/bin/python"
 GRANITE_REQUIREMENTS = ("docling==2.102.1", "mlx-vlm==0.6.6")
-NDLOCR_REQUIREMENT = "ndlocr-lite==1.0.0"
+NDLOCR_REQUIREMENT = (
+    "git+https://github.com/ndl-lab/ndlocr-lite.git@1.0.0"
+)
 
 
 def describe_preset(config: dict[str, str]) -> str:
@@ -314,6 +316,7 @@ def install_ndlocr(config: dict[str, str]) -> bool:
         print(
             "[!] NDLOCR-Liteのインストールに失敗しました"
             f"（終了コード: {installed.returncode}）。"
+            "GitHubへの接続を確認してください。"
         )
         return False
 

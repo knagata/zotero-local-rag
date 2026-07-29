@@ -149,7 +149,7 @@ AIの印刷ページ番号は採用せず、本文で再発見した見出しの
 | 変数 | 用途 | 既定 |
 |---|---|---|
 | `RAPIDOCR_DPI` / `RAPIDOCR_MIN_CONFIDENCE` | 固定レイアウトEPUB・明示re-OCR向けの英/他言語OCR（通常PDFルートでは使わない） | `200` / `0.45` |
-| `NDLOCR_BIN` / `NDLOCR_DPI` / `NDLOCR_TIMEOUT_SEC` | 日本語ローカルOCR（NDLOCR-Lite）。Customで検出または任意導入し、実行ファイルの絶対パスを保存 | — / `200` / `14400` |
+| `NDLOCR_BIN` / `NDLOCR_DPI` / `NDLOCR_TIMEOUT_SEC` | 日本語ローカルOCR（NDLOCR-Lite）。Customで検出するか、公式GitHubの検証済み`1.0.0`タグから任意導入し、実行ファイルの絶対パスを保存 | — / `200` / `14400` |
 | `MISTRAL_OCR_API_KEY` / `MISTRAL_OCR_MODEL` / `MISTRAL_OCR_BASE_URL` | Mistral OCR（クラウド・Batch API）。専用queue採用に使用 | — |
 | `MISTRAL_OCR_BATCH_MAX_INPUT_BYTES` | Batch入力のbase64 JSONL概算上限。大容量PDFを一括uploadせず、残りは次回Batchへ回す | `104857600`（100 MiB） |
 | `MISTRAL_OCR_BATCH_UPLOAD_WORKERS` | 分割したBatch入力を並列uploadする最大数 | `3` |
