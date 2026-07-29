@@ -8,6 +8,7 @@ comparing against the original source files.
 from __future__ import annotations
 
 import sys
+import typing
 import unittest
 from pathlib import Path
 
@@ -16,7 +17,10 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from index_from_zotero import _pages_without_chunks  # noqa: E402
+from index_from_zotero import (  # noqa: E402
+    _pages_without_chunks,
+    _source_content_unchanged,
+)
 
 
 class PagesWithoutChunksTests(unittest.TestCase):
@@ -42,6 +46,10 @@ class PagesWithoutChunksTests(unittest.TestCase):
 
     def test_zero_chunks_reports_every_expected_page(self):
         self.assertEqual(_pages_without_chunks([], 3), [1, 2, 3])
+
+    def test_public_helper_annotations_resolve(self):
+        typing.get_type_hints(_pages_without_chunks)
+        typing.get_type_hints(_source_content_unchanged)
 
 
 if __name__ == "__main__":

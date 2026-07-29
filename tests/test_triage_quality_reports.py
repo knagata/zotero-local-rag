@@ -7,6 +7,22 @@ from scripts import triage_quality_reports
 
 
 class QualityReportTriageTests(unittest.TestCase):
+    def test_summary_source_uses_only_reported_chunk_ids(self):
+        report = {
+            "item_key": "ITEM",
+            "evidence_chunk_ids": ["chunk-2"],
+            "section_id": "",
+        }
+        chunks = [
+            {"id": "chunk-1", "text": "unselected"},
+            {"id": "chunk-2", "text": "selected source"},
+        ]
+        with patch.object(
+            triage_quality_reports, "get_item_chunks", return_value=chunks,
+        ):
+            source = triage_quality_reports._summary_source(report)
+        self.assertEqual(source, ("selected source", "reported_chunks"))
+
     def test_decisive_judgment_requires_exact_source_quote(self):
         valid = triage_quality_reports._validated_judgment({
             "decision": "confirmed",

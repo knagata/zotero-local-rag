@@ -27,6 +27,16 @@ tmp/
 # data/ はすべて再生成可能なランタイム状態。Git追跡対象を置かない。
 /data/
 
+# ── ローカル評価・監査生成物 ──────────────────────────────
+# 個人のZoteroキー、所蔵資料名、絶対パスを含み得るため追跡しない。
+/evaluations/legacy_retirement_baseline_*.json
+/evaluations/source_verification_*.json
+/evaluations/v3_cutover/
+/evaluations/v3_cutover_audit*.json
+/evaluations/outline_gold_v1/
+/evaluations/ocr_bakeoff_v3/sample_suggestions.json
+/evaluations/ocr_bakeoff_v3/selected_samples.json
+
 # ── 設計メモ ─────────────────────────────────────────────
 LAYOUT_DESIGN_NOTES.md
 dev-notes/

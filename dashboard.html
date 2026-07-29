@@ -1426,12 +1426,12 @@
         <div style="display: flex; align-items: flex-start; gap: 12px;">
           <button class="delete-btn" data-action="delete" title="Delete task">&times;</button>
           <span class="checkbox ${task.checked ? 'checked' : ''}" data-action="toggle"></span>
-          <div class="card-title" data-action="edit-title">${task.title}</div>
+          <div class="card-title" data-action="edit-title">${escapeHtml(task.title)}</div>
         </div>
       `;
 
       if (task.note) {
-        html += `<div class="card-note" data-action="edit-note" style="cursor: pointer; margin-left: 30px;">${task.note}</div>`;
+        html += `<div class="card-note" data-action="edit-note" style="cursor: pointer; margin-left: 30px;">${escapeHtml(task.note)}</div>`;
       } else {
         html += `<div class="card-note add-on-hover" data-action="edit-note" style="cursor: pointer; margin-left: 30px; font-style: italic;">+ Add note</div>`;
       }
@@ -1441,7 +1441,7 @@
         task.subtasks.forEach((st, idx) => {
           html += `<div class="subtask">
             <span class="checkbox ${st.checked ? 'checked' : ''}" data-action="toggle-sub" data-idx="${idx}" style="width: 16px; height: 16px; min-width: 16px; min-height: 16px;"></span>
-            <span data-action="edit-subtask" data-idx="${idx}" style="cursor: pointer;">${st.text}</span>
+            <span data-action="edit-subtask" data-idx="${idx}" style="cursor: pointer;">${escapeHtml(st.text)}</span>
           </div>`;
         });
         html += `<div class="subtask add-on-hover" data-action="add-subtask" style="color: var(--text-muted); cursor: pointer; font-style: italic; padding-left: 24px;">+ Add subtask</div>`;
@@ -1644,12 +1644,12 @@
       col.className = 'column';
       col.innerHTML = `
         <div class="column-header">
-          <span class="column-title" data-section-id="${id}" style="cursor: pointer;">${title}</span>
+          <span class="column-title" data-section-id="${escapeAttribute(id)}" style="cursor: pointer;">${escapeHtml(title)}</span>
           <span class="count">${items.length}</span>
         </div>
-        <div class="cards" data-column="${id}"></div>
+        <div class="cards" data-column="${escapeAttribute(id)}"></div>
         <div class="add-card">
-          <button data-add="${id}">+ Add task</button>
+          <button data-add="${escapeAttribute(id)}">+ Add task</button>
         </div>
       `;
 
@@ -1929,7 +1929,7 @@
       quickAdd.innerHTML = `
         <span class="checkbox" style="opacity: 0.3;"></span>
         <input type="text" class="quick-add-input" placeholder="Add a task..." id="quickAddInput">
-        <span class="quick-add-section" id="quickAddSectionBtn">${sectionName}</span>
+        <span class="quick-add-section" id="quickAddSectionBtn">${escapeHtml(sectionName)}</span>
       `;
       listView.appendChild(quickAdd);
 
@@ -1967,7 +1967,7 @@
         const header = document.createElement('div');
         header.className = 'list-section-header';
         header.innerHTML = `
-          <span class="section-title" data-section-id="${section.id}">${section.name}</span>
+          <span class="section-title" data-section-id="${escapeAttribute(section.id)}">${escapeHtml(section.name)}</span>
           <span class="count">${sectionTasks.length}</span>
         `;
 
@@ -2496,6 +2496,12 @@
       return div.innerHTML;
     }
 
+    function escapeAttribute(text) {
+      return escapeHtml(text)
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
     function parseMemoryMarkdown(content) {
       const parsed = {
         title: '',
@@ -2635,7 +2641,7 @@
 
       for (const file of memoryData.memoryFiles) {
         const name = file.name.replace('.md', '');
-        html += `<button class="memory-tab${!memoryData.claudeMd && memoryData.memoryFiles[0] === file ? ' active' : ''}" data-tab="file-${name}">${name}</button>`;
+        html += `<button class="memory-tab${!memoryData.claudeMd && memoryData.memoryFiles[0] === file ? ' active' : ''}" data-tab="file-${escapeAttribute(name)}">${escapeHtml(name)}</button>`;
       }
 
       for (const dirName of Object.keys(memoryData.memoryDirs).sort()) {
@@ -2658,7 +2664,7 @@
         } else {
           count = files.length;
         }
-        html += `<button class="memory-tab" data-tab="dir-${dirName}">${dirName} <span class="count">${count}</span></button>`;
+        html += `<button class="memory-tab" data-tab="dir-${escapeAttribute(dirName)}">${escapeHtml(dirName)} <span class="count">${count}</span></button>`;
       }
 
       memoryTabsContainer.innerHTML = html;
@@ -2712,7 +2718,7 @@
         statsHtml += `
           <div class="stat">
             <div class="stat-value">${count}</div>
-            <div class="stat-label">${dirName}</div>
+            <div class="stat-label">${escapeHtml(dirName)}</div>
           </div>
         `;
       }
@@ -2742,12 +2748,15 @@
       memoryContentContainer.innerHTML = `
         <div class="file-card">
           <div class="file-card-header">
-            <span class="file-card-title">${fileName}</span>
+            <span class="file-card-title">${escapeHtml(fileName)}</span>
           </div>
           <div class="file-card-content expanded markdown-content">${content}</div>
         </div>
-        <button onclick="openEditModal('${fileName}', 'memoryFile')" style="margin-top: 10px;">Edit ${fileName}</button>
+        <button id="editMemoryFileBtn" style="margin-top: 10px;">Edit ${escapeHtml(fileName)}</button>
       `;
+      document.getElementById('editMemoryFileBtn').addEventListener(
+        'click', () => openEditModal(fileName, 'memoryFile')
+      );
     }
 
     function renderMemoryDirectory(dirName) {
@@ -2763,7 +2772,7 @@
       let html = `
         <div class="search-box">
           <span style="color: var(--text-muted);">&#128269;</span>
-          <input type="text" placeholder="Search ${dirName}..." id="dirSearch" oninput="filterMemoryDirectory('${dirName}', this.value)">
+          <input type="text" placeholder="Search ${escapeAttribute(dirName)}..." id="dirSearch">
         </div>
         <div class="memory-grid" id="dirGrid">
       `;
@@ -2797,7 +2806,7 @@
         if (!preview) preview = getPreview(p.rawContent, 100);
 
         html += `
-          <div class="memory-card" onclick="openFileModal('${dirName}', '${file.name}')" data-search="${escapeHtml((title + ' ' + JSON.stringify(p.fields) + ' ' + p.rawContent).toLowerCase())}">
+          <div class="memory-card" data-dir="${escapeAttribute(dirName)}" data-file="${escapeAttribute(file.name)}" data-search="${escapeAttribute((title + ' ' + JSON.stringify(p.fields) + ' ' + p.rawContent).toLowerCase())}">
             <div class="memory-card-title">${escapeHtml(title)}</div>
             ${fieldsHtml}
             <div class="memory-card-preview">${escapeHtml(preview)}</div>
@@ -2806,19 +2815,29 @@
       }
 
       html += `
-        <div class="add-btn" onclick="openNewFileModal('${dirName}')">
-          + Add to ${dirName}
+        <div class="add-btn" data-new-dir="${escapeAttribute(dirName)}">
+          + Add to ${escapeHtml(dirName)}
         </div>
       </div>`;
 
       memoryContentContainer.innerHTML = html;
+      document.getElementById('dirSearch').addEventListener(
+        'input', event => filterMemoryDirectory(dirName, event.target.value)
+      );
+      memoryContentContainer.querySelectorAll('.memory-card[data-file]').forEach(card => {
+        card.addEventListener('click', () => openFileModal(card.dataset.dir, card.dataset.file));
+      });
+      const addButton = memoryContentContainer.querySelector('.add-btn[data-new-dir]');
+      if (addButton) {
+        addButton.addEventListener('click', () => openNewFileModal(addButton.dataset.newDir));
+      }
     }
 
     function renderMemoryDirectoryFlat(dirName, files) {
       let html = `
         <div class="search-box">
           <span style="color: var(--text-muted);">&#128269;</span>
-          <input type="text" placeholder="Search ${dirName}..." id="dirSearch" oninput="filterMemoryDirectory('${dirName}', this.value)">
+          <input type="text" placeholder="Search ${escapeAttribute(dirName)}..." id="dirSearch">
         </div>
         <div id="dirGrid">
       `;
@@ -2831,7 +2850,7 @@
         if (fieldEntries.length > 0) {
           html += `<div class="file-card" style="margin-bottom: 16px;"><table class="memory-flat-table"><tbody>`;
           for (const [key, value] of fieldEntries) {
-            html += `<tr data-search="${escapeHtml((key + ' ' + value).toLowerCase())}"><td>${escapeHtml(key)}</td><td>${escapeHtml(value)}</td></tr>`;
+            html += `<tr data-search="${escapeAttribute((key + ' ' + value).toLowerCase())}"><td>${escapeHtml(key)}</td><td>${escapeHtml(value)}</td></tr>`;
           }
           html += `</tbody></table></div>`;
         }
@@ -2845,7 +2864,7 @@
           html += `</tr></thead><tbody>`;
           for (const row of table.rows) {
             const searchData = row.join(' ').toLowerCase();
-            html += `<tr data-search="${escapeHtml(searchData)}">`;
+            html += `<tr data-search="${escapeAttribute(searchData)}">`;
             for (const cell of row) {
               html += `<td>${escapeHtml(cell)}</td>`;
             }
@@ -2863,7 +2882,7 @@
           for (const line of lines) {
             const cleanLine = line.replace(/^[-*]\s*/, '').replace(/\*\*(.+?)\*\*/g, '$1').trim();
             if (!cleanLine) continue;
-            html += `<tr data-search="${escapeHtml((sectionName + ' ' + cleanLine).toLowerCase())}"><td colspan="2">${escapeHtml(cleanLine)}</td></tr>`;
+            html += `<tr data-search="${escapeAttribute((sectionName + ' ' + cleanLine).toLowerCase())}"><td colspan="2">${escapeHtml(cleanLine)}</td></tr>`;
           }
           html += `</tbody></table></div>`;
         }
@@ -2871,6 +2890,9 @@
 
       html += `</div>`;
       memoryContentContainer.innerHTML = html;
+      document.getElementById('dirSearch').addEventListener(
+        'input', event => filterMemoryDirectory(dirName, event.target.value)
+      );
     }
 
     function filterMemoryDirectory(dirName, searchTerm) {
@@ -3096,4 +3118,3 @@
   </script>
 </body>
 </html>
-

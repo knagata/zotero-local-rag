@@ -1,7 +1,8 @@
 # Zotero Local RAG — アーキテクチャ図
 
 > 現行の実装契約は [SPEC.md](../SPEC.md)、移行・品質gateの記録は
-> [TASKS.md](../TASKS.md) と `evaluations/` 配下の追跡済み監査結果を参照してください。
+> [TASKS.md](../TASKS.md) を参照してください。`evaluations/` のローカル監査結果は
+> Zotero識別子や絶対パスを含み得るためGitでは追跡しません。
 > 本文はV3（構造化取り込み）を前提に記述しています。
 
 ---

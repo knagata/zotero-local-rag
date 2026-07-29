@@ -3982,7 +3982,8 @@ function _setDetailActive(active) {
 }
 function esc(s) {
   return String(s == null ? '' : s)
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 function kv(k, v) {
   return '<div class="sb-kv"><span class="sb-k">' + esc(k) + '</span><span class="sb-v">' + esc(v) + '</span></div>';
@@ -4226,11 +4227,11 @@ function showDetail(nodeId) {
   var itemKey    = n.itemKey || '';
 
   var doiLinkHtml = doi
-    ? '<a href="https://doi.org/' + esc(doi) + '" target="_blank">' + esc(doi) + '</a>'
+    ? '<a href="https://doi.org/' + encodeURIComponent(doi) + '" target="_blank" rel="noopener noreferrer">' + esc(doi) + '</a>'
     : '<span style="opacity:.5">—</span>';
   var isbnLinkHtml = isbn
     ? isbn.trim().split(/\s+/).map(function(i) {
-        return '<a href="https://worldcat.org/isbn/' + esc(i) + '" target="_blank">' + esc(i) + '</a>';
+        return '<a href="https://worldcat.org/isbn/' + encodeURIComponent(i) + '" target="_blank" rel="noopener noreferrer">' + esc(i) + '</a>';
       }).join('<span style="color:var(--text-dis)"> / </span>')
     : '<span style="opacity:.5">—</span>';
 
@@ -5584,7 +5585,7 @@ console.log('[RAG] sigma ready – nodes:', graph.order, 'edges:', graph.size,
   .catch(function(e) {
     var el = document.getElementById('loading');
     if (el) el.innerHTML =
-      '<div style="color:#f87171;font-size:13px">グラフ読み込みエラー: ' + e.message + '</div>';
+      '<div style="color:#f87171;font-size:13px">グラフ読み込みエラー: ' + esc(e.message) + '</div>';
     console.error('[RAG] fetch /api/graph failed:', e);
   });
 
@@ -6551,7 +6552,7 @@ class _RelationReportRequest(BaseModel):
 def _route_relation_report(body: _RelationReportRequest) -> JSONResponse:
     """Queue a graph relation for human review; do not hide it immediately."""
     try:
-        from db_relations import submit_relation_report
+        from src.db_relations import submit_relation_report
         report = submit_relation_report(
             direction=body.direction,
             item_key=body.item_key,
@@ -6568,10 +6569,6 @@ def _route_relation_report(body: _RelationReportRequest) -> JSONResponse:
         return JSONResponse({"error": str(exc)}, status_code=500)
 
 
-_SRC_DIR = str(PROJECT_ROOT / "src")
-if _SRC_DIR not in sys.path:
-    sys.path.insert(0, _SRC_DIR)
-
 # オンデマンド要約で選択可能なモデル（key: APIモデルID, value: 表示名）。
 SUMMARY_MODELS = {
     "deepseek-v4-pro": "DeepSeek V4 Pro",
@@ -6582,7 +6579,7 @@ SUMMARY_DEFAULT_MODEL = "deepseek-v4-pro"
 @app.get("/api/node/abstract")
 def _route_node_abstract(key: str) -> JSONResponse:
     """アイテムのアブストラクトとキャッシュ済み要約を返す。"""
-    from db_relations import get_item_abstract, get_item_summary
+    from src.db_relations import get_item_abstract, get_item_summary
     abstract = get_item_abstract(key)
     summary  = get_item_summary(key)
     return JSONResponse({
@@ -6701,7 +6698,7 @@ def _route_fetch_abstract(body: _FetchAbstractRequest) -> JSONResponse:
     Zotero 起動中のみ利用可能（SQLite は起動中ロックされるため HTTP API を使う）。
     取得できた概要は item_citation_status.abstract に保存し、以降は DB から表示する。
     """
-    from db_relations import get_item_abstract, update_item_citation_status
+    from src.db_relations import get_item_abstract, update_item_citation_status
 
     # 既にキャッシュ済みなら即返す
     cached = get_item_abstract(body.item_key)
@@ -6747,7 +6744,7 @@ def _route_external_abstract(paper_id: str = "", doi: str = "") -> JSONResponse:
     どちらでも得られなければ status='none'。外部論文には本文チャンクが無いため
     AI 要約は生成しない（情報不足時のハルシネーション回避）。
     """
-    from db_relations import get_external_abstract, save_external_abstract
+    from src.db_relations import get_external_abstract, save_external_abstract
 
     paper_id = (paper_id or "").strip()
     doi = (doi or "").strip()
@@ -6827,7 +6824,7 @@ def _natural_key(s: str) -> list:
 @app.post("/api/node/summary")
 def _route_generate_summary(body: _SummaryRequest) -> JSONResponse:
     """ChromaDB チャンクからDeepSeekで要約を生成してキャッシュする。"""
-    from db_relations import get_item_summary, save_item_summary
+    from src.db_relations import get_item_summary, save_item_summary
     from llm_client import DeepSeekClient, LLMError
 
     # キャッシュ済みで force=False なら即返す
@@ -6895,7 +6892,7 @@ class _SummarySaveRequest(BaseModel):
 @app.put("/api/node/summary")
 def _route_save_summary(body: _SummarySaveRequest) -> JSONResponse:
     """手動編集した要約を保存する。"""
-    from db_relations import save_item_summary
+    from src.db_relations import save_item_summary
     save_item_summary(body.item_key, body.summary, "manual")
     return JSONResponse({"ok": True})
 

@@ -245,7 +245,7 @@ def _delete_by_attachment_keys(
 
 
 def _pages_without_chunks(
-    chunks: Iterable[Tuple[str, str, Dict[str, Any]]], expected_page_count: Any,
+    chunks: Iterable[tuple[str, str, dict[str, Any]]], expected_page_count: Any,
 ) -> list[int]:
     """Expected pages (1-based) that produced zero chunks.
 
@@ -810,7 +810,7 @@ AI_TOC_ALIGNMENT_FAILURE_REASONS = frozenset({
 
 
 def _source_content_unchanged(
-    prev: Dict[str, Any] | None, *, mtime: float, size: int, signature: str | None,
+    prev: dict[str, Any] | None, *, mtime: float, size: int, signature: str | None,
 ) -> bool:
     """Whether ``prev``'s recorded mtime/size (and content, if known) still match.
 

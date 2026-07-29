@@ -96,7 +96,6 @@ def _judge_with_fallback(prompt: str, source: str) -> dict:
 def _summary_source(report: dict) -> tuple[str, str] | None:
     chunks = get_item_chunks(report["item_key"])
     requested = set(report.get("evidence_chunk_ids") or [])
-    requested.add(str(current.get("chunk_id") or ""))
     if requested:
         selected = [chunk for chunk in chunks if str(chunk.get("id") or "") in requested]
         if selected:

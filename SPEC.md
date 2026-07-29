@@ -2,7 +2,9 @@
 
 Status: active implementation contract as of 2026-07-27.  This document
 supersedes historical plans where they conflict. Design evidence and rollout
-records are tracked in `TASKS.md` and the versioned reports under `evaluations/`.
+records are tracked in `TASKS.md`. Local audit reports under `evaluations/` may
+contain private Zotero identifiers and paths, so generated reports are not
+versioned.
 
 ## Active data plane
 

@@ -1,6 +1,7 @@
 # Tasks
 
-正本: `SPEC.md`。実装・検証の履歴はこのファイルと`evaluations/`の追跡済みレポートに残す。
+正本: `SPEC.md`。実装・検証の永続的な履歴はこのファイルに残す。
+`evaluations/`のローカル生成レポートはZotero識別子や絶対パスを含み得るため追跡しない。
 
 ## Active
 
@@ -231,7 +232,7 @@ extractor修正は並行実装する。修正完了まで埋め込み・正本DB
   - 削除済み5件（Zoteroが404を返す）は`--exclude-item`で除外する。この5件はlegacyにのみ残る。
   - 構造状態: recovered 257 / exact 171 / flat_fallback 112 / unavailable 18。
   - **訂正**: 本日の監査結果JSONはリポジトリに保存していない（scratchpad出力のみ）。
-    `evaluations/v3_cutover_audit_current.json`は2026-07-23生成の別物である。
+    監査JSONはZotero識別子を含むローカル生成物としてGit追跡対象外にした。
     再現するには`--exclude-item`5件付きで再実行すること。
   - **未了分は下の2項目へ分離した**（監査の実行と、その結果の目視レビューは別作業）。
 - [x] **EPUB・outline PDF・無構造PDF・論文を各3件以上目視確認する**（2026-07-29）
@@ -973,7 +974,7 @@ A（PDF構造化）・B（課金LLM）は独立、C（構造抽出エンジン�
 
 - [ ] **V3 cutover後の文字量比outlierを資料単位でレビューする**
   - 2026-07-28の全件監査で**27件**（21件は2026-07-23時点の数）。うち5件はZoteroから削除済みの
-    item（`ratio=0.0`）なので実質22件。正本は`evaluations/v3_cutover_audit_current.json`。
+    item（`ratio=0.0`）なので実質22件。監査JSONはローカルで再生成し、Gitには保存しない。
   - `CAXCWCQB`の旧PyMuPDF由来scanned警告はRapidOCR品質結果と分離し、警告来歴の整理を行う。
   - 目的は**説明不能な減少が0件であることの確認**。ざっと見た限り大半はV3側の改善で、例えば
     `2N3HG369`はlegacy 8チャンクに対しV3 2,481チャンク（取れていなかったものが取れた）。

@@ -37,6 +37,10 @@ class CitationInsightsApiTests(unittest.TestCase):
         sections = _json(show_citation_graph._route_node_sections("ITEM", "", "", 50))
         self.assertEqual(sections["items"][0]["section_id"], "w0")
 
+    def test_abstract_route_uses_the_packaged_database_module(self):
+        response = _json(show_citation_graph._route_node_abstract("ITEM"))
+        self.assertEqual(response["summary"]["summary"], "item summary")
+
     def test_processing_status_distinguishes_degraded_and_blocked_work(self):
         db_relations.mark_artifact_status(
             "ITEM", "structure", "degraded", reason_code="flat_fallback",
@@ -80,6 +84,9 @@ class CitationInsightsApiTests(unittest.TestCase):
         self.assertIn('data-insight-tab="processing"', html)
         self.assertIn('aria-modal="true"', html)
         self.assertIn("var MIN_W = 280, MAX_W = 700", html)
+        self.assertIn('.replace(/"/g, \'&quot;\')', html)
+        self.assertIn(".replace(/'/g, '&#39;')", html)
+        self.assertIn("encodeURIComponent(doi)", html)
 
 
 if __name__ == "__main__":
