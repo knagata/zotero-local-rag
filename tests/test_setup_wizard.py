@@ -98,6 +98,21 @@ class SetupWizardTests(unittest.TestCase):
         for flag in setup_wizard.LLM_FLAGS:
             self.assertEqual(config[flag], "0")
 
+    def test_custom_can_install_granite_when_it_is_not_ready(self):
+        config: dict[str, str] = {}
+        answers = ["2", "n", "y", "", "2", "2", "", "", "", "", "", ""]
+        with patch.object(
+            setup_wizard, "_granite_selectable", return_value=False,
+        ), patch.object(
+            setup_wizard, "install_granite_environment", return_value=True,
+        ) as install, patch(
+            "builtins.input", side_effect=answers,
+        ), patch("sys.stdout", StringIO()):
+            setup_wizard.configure_feature_level(config)
+        install.assert_called_once_with(config)
+        self.assertEqual(config["PDF_STRUCTURE_ENGINE_SHORT"], "granite")
+        self.assertEqual(config["PDF_STRUCTURE_ENGINE_LONG"], "granite")
+
     def test_custom_citation_network_prompts_for_s2_key(self):
         config: dict[str, str] = {}
         with patch(
@@ -125,7 +140,7 @@ class SetupWizardTests(unittest.TestCase):
 
     def test_custom_mistral_engine_requires_its_api_key(self):
         config: dict[str, str] = {}
-        answers = ["2", "n", "y", "", "1", "2", "", "", "", "", ""]
+        answers = ["2", "n", "y", "", "1", "3", "", "", "", "", ""]
         with patch.object(
             setup_wizard, "_granite_selectable", return_value=False,
         ), patch("builtins.input", side_effect=answers), patch.object(
@@ -156,6 +171,39 @@ class SetupWizardTests(unittest.TestCase):
             "builtins.input", return_value="3",
         ), patch("sys.stdout", StringIO()):
             self.assertEqual(setup_wizard._choose_engine("Long", "docling"), "mistral")
+
+    def test_granite_remains_selectable_before_its_environment_is_installed(self):
+        output = StringIO()
+        with patch.object(setup_wizard, "_granite_selectable", return_value=False), patch(
+            "builtins.input", return_value="2",
+        ), patch("sys.stdout", output):
+            selected = setup_wizard._choose_engine("長いPDF", "docling")
+        self.assertEqual(selected, "granite")
+        self.assertIn("初回選択時に専用環境を導入", output.getvalue())
+
+    def test_granite_installer_creates_and_verifies_an_isolated_environment(self):
+        config: dict[str, str] = {}
+        with tempfile.TemporaryDirectory() as directory:
+            interpreter = Path(directory) / "granite" / "bin" / "python"
+            completed = SimpleNamespace(returncode=0)
+            with patch.object(
+                setup_wizard.platform, "system", return_value="Darwin",
+            ), patch.object(
+                setup_wizard.platform, "machine", return_value="arm64",
+            ), patch.object(
+                setup_wizard.shutil, "which", return_value="/usr/local/bin/uv",
+            ), patch.object(
+                setup_wizard.subprocess, "run", return_value=completed,
+            ) as run, patch.object(
+                setup_wizard, "_granite_environment_ready", return_value=True,
+            ), patch("sys.stdout", StringIO()):
+                installed = setup_wizard.install_granite_environment(
+                    config, python_path=interpreter,
+                )
+        self.assertTrue(installed)
+        self.assertEqual(run.call_count, 3)
+        self.assertIn("--clear", run.call_args_list[0].args[0])
+        self.assertEqual(config["GRANITE_VENV_PYTHON"], str(interpreter.absolute()))
 
     def test_switching_engines_away_from_mistral_disables_queue(self):
         config = {

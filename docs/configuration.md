@@ -30,7 +30,8 @@ uv run scripts/setup_wizard.py --status
 CustomではCitation Network、PDF構造化、AI目次、OCR監査、クエリ拡張、階層要約、
 参考文献抽出を一項目ずつ設定します。PDF構造化を有効にすると、ページ境界未満と以上の
 エンジンを独立して選べるため、`Granite / Granite`や`Docling / Mistral`など任意の
-組み合わせが可能です。Graniteは専用venvとアダプタが検出された場合に表示されます。
+組み合わせが可能です。Graniteは常に選択肢へ表示され、専用環境が無い状態で選ぶと、
+Apple Silicon搭載Macではウィザードが導入確認後に専用venvを作成します。
 APIキー入力には非表示入力を使い、入力直前にもその旨を表示します。
 
 ### 構造化エンジンの性格

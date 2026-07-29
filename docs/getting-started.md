@@ -43,8 +43,9 @@ uv run scripts/setup_wizard.py
   AI目次・OCR監査・クエリ拡張・階層要約・参考文献抽出を一項目ずつ選択
 
 Customではページ境界の前後それぞれにDocling、Granite、Mistralを独立して指定できます。
-例えば、短いPDFと長いPDFの両方をGraniteにする構成も選べます。Graniteは専用環境が
-検出された場合に選択肢へ表示されます。
+例えば、短いPDFと長いPDFの両方をGraniteにする構成も選べます。Graniteの専用環境が
+未導入の場合は、Graniteを選んだ後の確認に同意するとウィザードが作成します
+（Apple Silicon搭載Macのみ）。
 
 APIキーは入力中に画面へ表示されません。後からウィザードを再実行して構成を変更できます。
 

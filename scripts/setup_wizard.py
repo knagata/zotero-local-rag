@@ -150,6 +150,9 @@ LLM_FLAGS = (
     "LLM_SUMMARIES_ENABLE", "LLM_REFERENCE_EXTRACTION_ENABLE",
 )
 
+GRANITE_VENV_PYTHON = "tmp/granite_docling_venv/bin/python"
+GRANITE_REQUIREMENTS = ("docling==2.102.1", "mlx-vlm==0.6.6")
+
 
 def describe_preset(config: dict[str, str]) -> str:
     """Distinguish the zero-cost minimal baseline from an edited setup."""
@@ -186,6 +189,82 @@ def _granite_selectable() -> bool:
     return granite_configured()
 
 
+def _granite_environment_ready(python_path: Path) -> bool:
+    if not python_path.exists():
+        return False
+    check = (
+        "from importlib.util import find_spec;"
+        "raise SystemExit(0 if find_spec('docling') and find_spec('mlx_vlm') else 1)"
+    )
+    try:
+        completed = subprocess.run(
+            [str(python_path), "-c", check],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return completed.returncode == 0
+
+
+def install_granite_environment(
+    config: dict[str, str], *, python_path: Path | None = None,
+) -> bool:
+    """Create the isolated Granite environment selected by the operator."""
+    if platform.system() != "Darwin" or platform.machine() != "arm64":
+        print("[!] GraniteはApple Silicon搭載Macでのみ利用できます。")
+        return False
+    uv_path = shutil.which("uv")
+    if not uv_path:
+        print("[!] uvが見つからないためGranite専用環境を作成できません。")
+        return False
+
+    interpreter = python_path or ROOT / GRANITE_VENV_PYTHON
+    if not interpreter.is_absolute():
+        interpreter = ROOT / interpreter
+    # Do not call resolve(): a venv's python is commonly a symlink to the base
+    # interpreter, and resolving it would discard the venv's site-packages.
+    interpreter = interpreter.absolute()
+    environment = interpreter.parent.parent
+    print("\nGranite専用環境を準備します。初回はモデル関連パッケージの取得に時間がかかります。")
+    commands: list[tuple[str, list[str]]] = []
+    if not interpreter.exists():
+        commands.append((
+            "専用virtualenvを作成",
+            [uv_path, "venv", str(environment), "--python", "3.10", "--clear"],
+        ))
+    commands.extend(
+        (
+            f"{requirement}をインストール",
+            [uv_path, "pip", "install", "--python", str(interpreter), requirement],
+        )
+        for requirement in GRANITE_REQUIREMENTS
+    )
+    for label, command in commands:
+        print(f"  - {label}しています...")
+        try:
+            completed = subprocess.run(command, cwd=ROOT)
+        except OSError as exc:
+            print(f"[!] Granite専用環境の準備に失敗しました: {exc}")
+            return False
+        if completed.returncode != 0:
+            print(f"[!] {label}に失敗しました（終了コード: {completed.returncode}）。")
+            return False
+
+    if not _granite_environment_ready(interpreter):
+        print("[!] Granite専用環境を検証できませんでした。Doclingへ戻します。")
+        return False
+    try:
+        configured_path = str(interpreter.relative_to(ROOT))
+    except ValueError:
+        configured_path = str(interpreter)
+    config["GRANITE_VENV_PYTHON"] = configured_path
+    print("[+] Granite専用環境の準備が完了しました。")
+    return True
+
+
 def _choose_engine(label: str, current: str) -> str:
     """Choice (C) for one size bucket.
 
@@ -193,17 +272,17 @@ def _choose_engine(label: str, current: str) -> str:
     recommendation, because which one is right depends on what the library
     holds and whether the owner will pay per page.
     """
+    granite_description = "Granite — 無料・約2.3倍低速・総合精度が高い"
+    if not _granite_selectable():
+        granite_description += "（初回選択時に専用環境を導入）"
     options = [
         ("docling", "Docling — 無料・高速・表と数式に強い"),
+        ("granite", granite_description),
         ("mistral", "Mistral OCR — ページ単位課金・高速・長いスキャンに強い"),
     ]
-    if _granite_selectable():
-        options.insert(1, ("granite", "Granite — 無料・約2.3倍低速・総合精度が高い"))
     print(f"\n  {label}")
     for number, (_name, description) in enumerate(options, start=1):
         print(f"     [{number}] {description}")
-    if not any(name == "granite" for name, _description in options):
-        print("     （Graniteの利用には専用virtualenvが必要です）")
     names = [name for name, _description in options]
     default = str(names.index(current) + 1) if current in names else "1"
     choice = input(f"  選択 [1-{len(options)}、既定 {default}]: ").strip() or default
@@ -226,6 +305,21 @@ def configure_pdf_engines(config: dict[str, str]) -> None:
     config["PDF_STRUCTURE_ENGINE_LONG"] = _choose_engine(
         f"{boundary}ページ以上:", config.get("PDF_STRUCTURE_ENGINE_LONG", "docling"),
     )
+    uses_granite = "granite" in {
+        config["PDF_STRUCTURE_ENGINE_SHORT"], config["PDF_STRUCTURE_ENGINE_LONG"],
+    }
+    if uses_granite and not _granite_selectable():
+        print("\nGraniteを使うには専用環境の初回導入が必要です。")
+        install_now = _ask_yes_no(
+            "今すぐGranite専用環境をインストールしますか？",
+            current=True,
+        )
+        installed = install_now and install_granite_environment(config)
+        if not installed:
+            for key in ("PDF_STRUCTURE_ENGINE_SHORT", "PDF_STRUCTURE_ENGINE_LONG"):
+                if config[key] == "granite":
+                    config[key] = "docling"
+            print("[案内] Graniteを選んだ区分はDoclingへ戻しました。")
     uses_mistral = "mistral" in {
         config["PDF_STRUCTURE_ENGINE_SHORT"], config["PDF_STRUCTURE_ENGINE_LONG"],
     }
