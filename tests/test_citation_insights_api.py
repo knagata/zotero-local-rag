@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+import inspect
 import json
-import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -41,49 +41,21 @@ class CitationInsightsApiTests(unittest.TestCase):
         response = _json(show_citation_graph._route_node_abstract("ITEM"))
         self.assertEqual(response["summary"]["summary"], "item summary")
 
-    def test_summary_generation_route_reaches_packaged_llm_module(self):
-        request = show_citation_graph._SummaryRequest(
-            item_key="MISSING", force=True,
-        )
-        with patch.dict(os.environ, {"DEEPSEEK_API_KEY": ""}):
-            response = show_citation_graph._route_generate_summary(request)
-        self.assertEqual(response.status_code, 503)
-        self.assertIn("DEEPSEEK_API_KEY", _json(response)["error"])
+    def test_browser_summary_writes_are_not_exposed(self):
+        routes = {
+            (method, route.path)
+            for route in show_citation_graph.app.routes
+            for method in getattr(route, "methods", set())
+        }
+        self.assertNotIn(("POST", "/api/node/summary"), routes)
+        self.assertNotIn(("PUT", "/api/node/summary"), routes)
 
-    def test_generated_summary_is_saved_only_to_the_v3_item_root(self):
-        request = show_citation_graph._SummaryRequest(
-            item_key="ITEM", force=True,
-        )
-        client = unittest.mock.Mock()
-        client.generate_text.return_value = "generated V3 summary"
-        with patch.dict(os.environ, {"DEEPSEEK_API_KEY": "secret"}), patch.object(
-            show_citation_graph, "get_item_chunks",
-            return_value=[{"text": "source text"}],
-        ), patch(
-            "src.llm_client.DeepSeekClient", return_value=client,
-        ):
-            response = show_citation_graph._route_generate_summary(request)
-        self.assertEqual(response.status_code, 200)
-        saved = db_relations.get_item_root_summary("ITEM")
-        self.assertEqual(saved["summary"], "generated V3 summary")
-        conn = db_relations.get_db_connection()
-        try:
-            self.assertEqual(conn.execute(
-                "SELECT COUNT(*) FROM item_summaries WHERE item_key = 'ITEM'",
-            ).fetchone()[0], 0)
-        finally:
-            conn.close()
-
-    def test_manual_summary_edit_updates_the_v3_item_root(self):
-        response = show_citation_graph._route_save_summary(
-            show_citation_graph._SummarySaveRequest(
-                item_key="ITEM", summary="manually corrected summary",
-            )
-        )
-        self.assertEqual(response.status_code, 200)
-        saved = db_relations.get_item_root_summary("ITEM")
-        self.assertEqual(saved["summary"], "manually corrected summary")
-        self.assertEqual(saved["model"], "manual")
+    def test_browser_summary_ui_is_read_only(self):
+        source = inspect.getsource(show_citation_graph._build_sigma_html)
+        self.assertNotIn("AI要約を生成", source)
+        self.assertNotIn("sum-edit-btn", source)
+        self.assertNotIn("fetch('/api/node/summary'", source)
+        self.assertIn("Maintenance Widgetで要約更新", source)
 
     @patch(
         "src.crossref_client.fetch_crossref_by_doi",

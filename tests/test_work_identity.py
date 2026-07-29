@@ -24,12 +24,20 @@ class WorkIdentityTests(unittest.TestCase):
 
     def test_promotes_only_distinct_authored_chapters(self):
         db_relations.resolve_work(zotero_item_key="ITEM", title="Volume")
-        db_relations.save_section_summary(
-            "ITEM", "c1", "a", chapter="Chapter A", chapter_authors="Author A"
+        connection = db_relations.get_db_connection()
+        connection.executemany(
+            """
+            INSERT INTO section_summaries
+                (item_key, section_id, chapter, summary, chapter_authors)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            [
+                ("ITEM", "c1", "Chapter A", "a", "Author A"),
+                ("ITEM", "c2", "Chapter B", "b", "Author B"),
+            ],
         )
-        db_relations.save_section_summary(
-            "ITEM", "c2", "b", chapter="Chapter B", chapter_authors="Author B"
-        )
+        connection.commit()
+        connection.close()
         preview = work_identity.promote_chapters("ITEM")
         self.assertTrue(preview["eligible"])
         result = work_identity.promote_chapters("ITEM", dry_run=False)

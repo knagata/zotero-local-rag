@@ -67,6 +67,32 @@ class CitationInsightsTests(unittest.TestCase):
         self.assertEqual([row["chunk_id"] for row in source["chunks"]], ["chunk-1", "chunk-2"])
         self.assertEqual(source["chunks"][0]["page"], 3)
 
+    def test_outline_loads_all_summary_parts_in_one_query(self):
+        section_id = self.section_ids["w0"]
+        db_relations.replace_document_node_summary_parts(
+            section_id,
+            [{
+                "child_node_ids": ["child-a"],
+                "summary": "intermediate reduction",
+                "model": "deepseek:test",
+            }],
+            prompt_version="test",
+            source_fingerprint="fixture",
+        )
+        with patch.object(
+            db_relations,
+            "get_document_node_summary_parts_for_nodes",
+            wraps=db_relations.get_document_node_summary_parts_for_nodes,
+        ) as batch, patch.object(
+            db_relations,
+            "get_document_node_summary_parts",
+            side_effect=AssertionError("per-node summary-part query"),
+        ):
+            outline = citation_insights.get_document_outline("ITEM")
+        batch.assert_called_once()
+        row = next(node for node in outline["nodes"] if node["node_id"] == section_id)
+        self.assertEqual(row["summary_parts"][0]["child_node_ids"], ["child-a"])
+
 
 if __name__ == "__main__":
     unittest.main()

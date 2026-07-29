@@ -40,7 +40,6 @@ Edge colors:
 import argparse
 import json
 import os
-import re
 import sqlite3
 import sys
 import time
@@ -54,7 +53,6 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.item_vectors import get_item_vectors as _shared_get_item_vectors
-from src.chunk_store import get_item_chunks
 load_dotenv(PROJECT_ROOT / ".env")
 
 DB_PATH         = os.environ.get("RELATIONS_DB_PATH", str(PROJECT_ROOT / "data" / "relations.db"))
@@ -1655,29 +1653,7 @@ def _build_sigma_html(
     border: 1px solid var(--outline-variant); background: none; color: var(--on-surface-variant);
   }
   .summary-btn:hover { border-color: var(--on-surface-variant); color: var(--on-surface); }
-  .summary-btn.primary {
-    background: var(--node-zotero); color: #fff; border-color: transparent;
-  }
-  .summary-btn.primary:hover { filter: brightness(1.1); }
   .summary-btn:disabled { opacity: 0.5; cursor: default; }
-  .summary-model-select {
-    font-size: 11px; padding: 3px 6px; border-radius: 4px; cursor: pointer;
-    border: 1px solid var(--outline-variant); background: var(--surface-container-high);
-    color: var(--on-surface-variant); outline: none; max-width: 150px;
-  }
-  .summary-model-select:focus { border-color: var(--node-zotero); }
-  .summary-textarea {
-    width: 100%; box-sizing: border-box; min-height: 100px;
-    font-size: 12px; line-height: 1.6;
-    background: var(--surface-container-high); border: 1px solid var(--outline-variant);
-    border-radius: 4px; color: var(--on-surface); padding: 6px 8px;
-    resize: vertical; outline: none; margin-top: 6px;
-  }
-  .summary-textarea:focus { border-color: var(--node-zotero); }
-  .summary-status {
-    font-size: 11px; color: var(--text-dis); margin-top: 4px; display: none;
-  }
-  .summary-status.show { display: block; }
 
   /* ── Hierarchical summary / structured-case insights ── */
   .insights-shell { min-width: 0; }
@@ -3326,7 +3302,7 @@ renderer.on('clickNode', function (ev) {
   else {
     recomputeSelection(ev.node);
     if (window._panToNode) window._panToNode(ev.node);
-    // Show abstract in context pane (zotero → 本文+AI要約 / 外部論文 → S2概要)
+    // Show abstract in context pane (zotero → 概要+階層要約 / 外部論文 → S2概要)
     var n = GRAPH_DATA.nodes.find(function(nd) { return nd.id === ev.node; });
     if (n && n.group === 'zotero' && n.itemKey) {
       _showNodeAbstract(ev.node);
@@ -4089,11 +4065,11 @@ document.getElementById('dup-warn-close').addEventListener('click', function() {
   _dupWarn.classList.remove('show');
 });
 function _normIsbn(s) {
-  return s.replace(/[-\s]/g, '').toLowerCase();
+  return s.replace(/[-\\s]/g, '').toLowerCase();
 }
 function _isbnSet(raw) {
   // スペース区切りで複数ISBNが入る場合があるため、各要素をnormして Set にする
-  return new Set((raw || '').split(/\s+/).map(_normIsbn).filter(Boolean));
+  return new Set((raw || '').split(/\\s+/).map(_normIsbn).filter(Boolean));
 }
 function _checkDuplicate(nodeId, field, newVal) {
   if (!newVal || field === 'title') return;
@@ -4240,7 +4216,7 @@ function showDetail(nodeId) {
     ? '<a href="https://doi.org/' + encodeURIComponent(doi) + '" target="_blank" rel="noopener noreferrer">' + esc(doi) + '</a>'
     : '<span style="opacity:.5">—</span>';
   var isbnLinkHtml = isbn
-    ? isbn.trim().split(/\s+/).map(function(i) {
+    ? isbn.trim().split(/\\s+/).map(function(i) {
         return '<a href="https://worldcat.org/isbn/' + encodeURIComponent(i) + '" target="_blank" rel="noopener noreferrer">' + esc(i) + '</a>';
       }).join('<span style="color:var(--text-dis)"> / </span>')
     : '<span style="opacity:.5">—</span>';
@@ -4378,7 +4354,7 @@ function _applyAbstractToggle(abstract) {
 
 // 外部論文ノード（group=external/reference）の概要を取得して表示。
 // Crossref（Abstract）優先 → S2（abstract + tldr）フォールバック。翻訳トグル付き。
-// 本文チャンクが無いため AI 要約は出さない。両ソースに情報が無ければ「概要情報なし」を明示。
+// 本文チャンクが無いため階層要約は出さない。両ソースに情報が無ければ「概要情報なし」を明示。
 function _showExternalAbstract(nodeId) {
   var n = GRAPH_DATA.nodes.find(function(nd) { return nd.id === nodeId; });
   if (!n) return;
@@ -4519,47 +4495,16 @@ function _applyExternalToggle(targets) {
     });
 }
 
-// 選択可能な要約モデル（バックエンドの SUMMARY_MODELS と対応）
-var _SUMMARY_MODELS = [
-  ['deepseek-v4-pro', 'DeepSeek V4 Pro'],
-];
-var _SUMMARY_MODEL_DEFAULT = 'deepseek-v4-pro';
-
-function _getSummaryModel() {
-  var saved = localStorage.getItem('aiSummaryModel');
-  var valid = _SUMMARY_MODELS.some(function(m) { return m[0] === saved; });
-  return valid ? saved : _SUMMARY_MODEL_DEFAULT;
-}
-
-function _modelLabel(id) {
-  for (var i = 0; i < _SUMMARY_MODELS.length; i++) {
-    if (_SUMMARY_MODELS[i][0] === id) return _SUMMARY_MODELS[i][1];
-  }
-  return id;
-}
-
-function _modelSelectHtml() {
-  // モデルが1つだけならドロップダウンは出さない（将来増えたら自動で表示）
-  if (_SUMMARY_MODELS.length <= 1) return '';
-  var cur = _getSummaryModel();
-  var html = '<select class="summary-model-select" id="sum-model-select" title="要約に使うモデル">';
-  _SUMMARY_MODELS.forEach(function(m) {
-    html += '<option value="' + m[0] + '"' + (m[0] === cur ? ' selected' : '') + '>' + m[1] + '</option>';
-  });
-  html += '</select>';
-  return html;
-}
-
 function _fmtSummaryDate(iso) {
   if (!iso) return '';
   // SQLite CURRENT_TIMESTAMP は UTC ("YYYY-MM-DD HH:MM:SS")。Zが無ければ付与してパース。
   var s = iso.replace(' ', 'T');
-  if (!/Z|[+-]\d\d:?\d\d$/.test(s)) s += 'Z';
+  if (!/Z|[+-]\\d\\d:?\\d\\d$/.test(s)) s += 'Z';
   var d = new Date(s);
   return isNaN(d) ? '' : d.toLocaleDateString('ja-JP');
 }
 
-function _renderSummarySection(itemKey, title, summaryData) {
+function _renderSummarySection(itemKey, summaryData) {
   var sec = document.getElementById('abs-summary-section');
   if (!sec) return;
   sec.style.display = '';
@@ -4569,13 +4514,9 @@ function _renderSummarySection(itemKey, title, summaryData) {
   function _renderSummaryBody(sd) {
     if (!sd) {
       bodyEl.innerHTML =
-        '<div class="summary-actions">' +
-          '<button class="summary-btn primary" id="sum-gen-btn">AI要約を生成</button>' +
-          _modelSelectHtml() +
-        '</div>' +
-        '<div class="summary-status" id="sum-status"></div>';
+        '<div class="ctx-pane-empty">階層要約は未生成です。Maintenance Widgetで要約更新を実行してください。</div>';
     } else {
-      var modelLabel = sd.model && sd.model !== 'manual' ? ' (' + esc(_modelLabel(sd.model)) + ')' : '';
+      var modelLabel = sd.model ? ' (' + esc(sd.model) + ')' : '';
       var dateStr = _fmtSummaryDate(sd.updated_at);
       var reportBadge = sd.report_status === 'pending'
         ? '<span class="reported-badge">報告済み・判定待ち</span>'
@@ -4587,68 +4528,11 @@ function _renderSummarySection(itemKey, title, summaryData) {
         '</div>' +
         reportBadge +
         '<div class="summary-actions" id="sum-actions">' +
-          '<button class="summary-btn" id="sum-regen-btn">再生成</button>' +
-          '<button class="summary-btn" id="sum-edit-btn">編集</button>' +
           '<button class="summary-btn" id="sum-report-btn"' +
             (sd.report_status === 'pending' || sd.report_status === 'disabled' ? ' disabled' : '') + '>問題を報告</button>' +
-          _modelSelectHtml() +
-        '</div>' +
-        '<div class="summary-status" id="sum-status"></div>';
+        '</div>';
     }
-    if (typeof InsightsPane !== 'undefined' && InsightsPane.updateSummary) {
-      InsightsPane.updateSummary(itemKey, sd || null);
-    }
-    // Wire buttons
-    var genBtn   = document.getElementById('sum-gen-btn');
-    var regenBtn = document.getElementById('sum-regen-btn');
-    var editBtn  = document.getElementById('sum-edit-btn');
     var reportBtn = document.getElementById('sum-report-btn');
-    var modelSel = document.getElementById('sum-model-select');
-
-    if (modelSel) {
-      modelSel.addEventListener('change', function() {
-        localStorage.setItem('aiSummaryModel', modelSel.value);
-      });
-    }
-
-    function _startGenerate(force) {
-      var statusEl = document.getElementById('sum-status');
-      if (statusEl) {
-        statusEl.style.color = '';
-        statusEl.textContent = 'AI要約を生成中…（' + _modelLabel(_getSummaryModel()) + '）';
-        statusEl.classList.add('show');
-      }
-      if (genBtn)   genBtn.disabled = true;
-      if (regenBtn) regenBtn.disabled = true;
-      fetch('/api/node/summary', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          item_key: itemKey,
-          title:    title || '',
-          force:    !!force,
-          model:    _getSummaryModel()
-        })
-      })
-        .then(function(r) { return r.json(); })
-        .then(function(d) {
-          if (d.error) {
-            if (statusEl) { statusEl.style.color = '#f87171'; statusEl.textContent = 'エラー: ' + d.error; }
-            if (genBtn)   genBtn.disabled = false;
-            if (regenBtn) regenBtn.disabled = false;
-          } else {
-            _renderSummaryBody({ summary: d.summary, model: d.model, updated_at: d.updated_at });
-          }
-        })
-        .catch(function(e) {
-          if (statusEl) { statusEl.style.color = '#f87171'; statusEl.textContent = 'エラー: ' + e.message; }
-          if (genBtn)   genBtn.disabled = false;
-          if (regenBtn) regenBtn.disabled = false;
-        });
-    }
-
-    if (genBtn)   genBtn.addEventListener('click', function() { _startGenerate(false); });
-    if (regenBtn) regenBtn.addEventListener('click', function() { _startGenerate(true); });
     if (reportBtn) {
       reportBtn.addEventListener('click', function() {
         _openQualityReport({
@@ -4658,47 +4542,6 @@ function _renderSummarySection(itemKey, title, summaryData) {
             sd.report_status = 'pending';
             _renderSummaryBody(sd);
           }
-        });
-      });
-    }
-    if (editBtn) {
-      editBtn.addEventListener('click', function() {
-        var curText = document.getElementById('sum-text');
-        var cur = curText ? curText.textContent : '';
-        var actionsDiv = document.getElementById('sum-actions');
-        if (actionsDiv) actionsDiv.style.display = 'none';
-        if (curText) curText.style.display = 'none';
-        var editArea = document.createElement('textarea');
-        editArea.className = 'summary-textarea';
-        editArea.value = cur;
-        bodyEl.appendChild(editArea);
-        var saveBtn = document.createElement('button');
-        saveBtn.className = 'summary-btn primary';
-        saveBtn.textContent = '保存';
-        var cancelBtn = document.createElement('button');
-        cancelBtn.className = 'summary-btn';
-        cancelBtn.textContent = 'キャンセル';
-        var editActions = document.createElement('div');
-        editActions.className = 'summary-actions';
-        editActions.appendChild(saveBtn);
-        editActions.appendChild(cancelBtn);
-        bodyEl.appendChild(editActions);
-        editArea.focus();
-        saveBtn.addEventListener('click', function() {
-          var newText = editArea.value.trim();
-          if (!newText) return;
-          fetch('/api/node/summary', {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ item_key: itemKey, summary: newText })
-          })
-            .then(function(r) { return r.json(); })
-            .then(function() {
-              _renderSummaryBody({ summary: newText, model: 'manual', updated_at: new Date().toISOString() });
-            });
-        });
-        cancelBtn.addEventListener('click', function() {
-          _renderSummaryBody({ summary: cur, model: sd ? sd.model : '', updated_at: sd ? sd.updated_at : '' });
         });
       });
     }
@@ -5007,15 +4850,13 @@ var InsightsPane = (function() {
     panel.innerHTML =
       '<div class="insights-section"><div class="insights-label">ZOTERO 概要</div>' +
         '<div id="insight-abstract-body"></div></div>' +
-      '<div class="summary-section" id="abs-summary-section"><div class="summary-section-label">AI 要約</div>' +
+      '<div class="summary-section" id="abs-summary-section"><div class="summary-section-label">階層要約</div>' +
         '<div id="abs-summary-body"></div></div>' +
       '<div class="processing-summary" id="processing-summary"></div>' +
       '<div class="insights-help" style="margin-top:16px">検索と読解を補助する自動生成情報です。重要な判断では原文を確認してください。</div>';
     if (state.data.abstract) renderAbstract(state, state.data.abstract);
     else fetchAbstract(state);
-    _renderSummarySection(
-      state.itemKey, state.node.fullTitle || state.node.label || '', state.data.summary
-    );
+    _renderSummarySection(state.itemKey, state.data.summary);
     if (state.data.summary && state.data.summary.kind === 'extractive') {
       var label = document.querySelector('#abs-summary-section .summary-section-label');
       if (label) label.textContent = '抽出的要約';
@@ -5271,12 +5112,7 @@ var InsightsPane = (function() {
     });
   }
 
-  function updateSummary(itemKey, summary) {
-    if (cache[itemKey]) cache[itemKey].summary = summary;
-    if (current && current.itemKey === itemKey && current.data) current.data.summary = summary;
-  }
-
-  return {open: open, updateSummary: updateSummary};
+  return {open: open};
 })();
 
 /* ── 8. Sidebar: 資料一覧 ────────────────────────────────── */
@@ -6576,13 +6412,6 @@ def _route_relation_report(body: _RelationReportRequest) -> JSONResponse:
         return JSONResponse({"error": str(exc)}, status_code=500)
 
 
-# オンデマンド要約で選択可能なモデル（key: APIモデルID, value: 表示名）。
-SUMMARY_MODELS = {
-    "deepseek-v4-pro": "DeepSeek V4 Pro",
-}
-SUMMARY_DEFAULT_MODEL = "deepseek-v4-pro"
-
-
 @app.get("/api/node/abstract")
 def _route_node_abstract(key: str) -> JSONResponse:
     """アイテムのアブストラクトとキャッシュ済み要約を返す。"""
@@ -6749,7 +6578,7 @@ def _route_external_abstract(paper_id: str = "", doi: str = "") -> JSONResponse:
       2) Crossref に Abstract が無い／DOI が無い場合は S2 にフォールバックし、
          abstract と tldr（S2 自身の AI 要約）を取得
     どちらでも得られなければ status='none'。外部論文には本文チャンクが無いため
-    AI 要約は生成しない（情報不足時のハルシネーション回避）。
+    階層要約は生成しない（情報不足時のハルシネーション回避）。
     """
     from src.db_relations import get_external_abstract, save_external_abstract
 
@@ -6814,115 +6643,6 @@ def _route_external_abstract(paper_id: str = "", doi: str = "") -> JSONResponse:
     return JSONResponse({
         "abstract": abstract, "tldr": tldr, "status": status, "cached": False,
     })
-
-
-class _SummaryRequest(BaseModel):
-    item_key: str
-    title:    str = ""
-    force:    bool = False
-    model:    str = SUMMARY_DEFAULT_MODEL
-
-
-def _natural_key(s: str) -> list:
-    """'a:p10:para2' 形式のIDを数値考慮で並べるためのソートキー。"""
-    return [int(t) if t.isdigit() else t for t in re.split(r"(\d+)", s)]
-
-
-@app.post("/api/node/summary")
-def _route_generate_summary(body: _SummaryRequest) -> JSONResponse:
-    """ChromaDB チャンクからDeepSeekで要約を生成してキャッシュする。"""
-    from src.db_relations import (
-        get_item_root_summary,
-        mark_artifact_status,
-        save_item_root_summary,
-    )
-    from src.llm_client import DeepSeekClient, LLMError
-
-    # キャッシュ済みで force=False なら即返す
-    if not body.force:
-        cached = get_item_root_summary(body.item_key, searchable_only=True)
-        if cached:
-            return JSONResponse({
-                "summary": cached["summary"], "model": cached["model"],
-                "updated_at": cached["updated_at"], "cached": True,
-            })
-
-    api_key = os.environ.get("DEEPSEEK_API_KEY", "")
-    if not api_key:
-        return JSONResponse({"error": "DEEPSEEK_API_KEY が .env に設定されていません"}, status_code=503)
-
-    model = body.model if body.model in SUMMARY_MODELS else SUMMARY_DEFAULT_MODEL
-
-    try:
-        chunks_text = [chunk["text"] for chunk in get_item_chunks(body.item_key) if chunk["text"]]
-    except Exception as e:
-        return JSONResponse({"error": f"ChromaDB 読み取りエラー: {e}"}, status_code=500)
-
-    if not chunks_text:
-        return JSONResponse({"error": "チャンクが見つかりません（インデックスを確認してください）"}, status_code=404)
-
-    # チャンクを連結（最大 60,000 文字）
-    combined = "\n\n".join(chunks_text)[:60000]
-
-    title_hint = f"（タイトル: {body.title}）" if body.title else ""
-    prompt = (
-        f"次に示すのは学術資料のテキスト断片です{title_hint}。\n"
-        "この資料の内容を研究者向けに日本語で 400〜600 字程度に要約してください。\n"
-        "主張・方法・結論を含め、簡潔かつ正確にまとめます。前置きや見出しは不要で、"
-        "要約本文のみを書いてください。\n\n"
-        f"=== 資料ここから ===\n{combined}\n=== 資料ここまで ===\n\n"
-        "日本語要約："
-    )
-    try:
-        summary_text = DeepSeekClient(model).generate_text(
-            prompt, max_tokens=2048, timeout=120,
-        )
-    except LLMError as e:
-        return JSONResponse({"error": f"DeepSeek API エラー: {e}"}, status_code=502)
-
-    stored_model = f"deepseek:{model}"
-    try:
-        saved = save_item_root_summary(
-            body.item_key, summary_text, model=stored_model,
-            prompt_version="citation-graph-item-v1",
-            source_chunk_count=len(chunks_text),
-            source_chars=sum(len(value) for value in chunks_text),
-            input_scope={"source": "citation_graph", "manual_force": bool(body.force)},
-        )
-    except ValueError as exc:
-        return JSONResponse({"error": str(exc)}, status_code=409)
-    mark_artifact_status(
-        body.item_key, "summary", "success",
-        processor_version="citation-graph-item-v1", model=stored_model,
-        counts={"nodes": 1, "llm": 1},
-    )
-    return JSONResponse({
-        "summary": summary_text, "model": stored_model,
-        "updated_at": saved["updated_at"], "cached": False,
-    })
-
-
-class _SummarySaveRequest(BaseModel):
-    item_key: str
-    summary:  str
-
-
-@app.put("/api/node/summary")
-def _route_save_summary(body: _SummarySaveRequest) -> JSONResponse:
-    """手動編集した要約を保存する。"""
-    from src.db_relations import get_item_root_summary, save_item_root_summary
-    current = get_item_root_summary(body.item_key, searchable_only=False)
-    try:
-        save_item_root_summary(
-            body.item_key, body.summary, model="manual",
-            prompt_version="citation-graph-manual-v1",
-            source_chunk_count=int((current or {}).get("source_chunk_count") or 0),
-            source_chars=int((current or {}).get("source_chars") or 0),
-            input_scope={"source": "citation_graph", "manual": True},
-        )
-    except ValueError as exc:
-        return JSONResponse({"error": str(exc)}, status_code=409)
-    return JSONResponse({"ok": True})
 
 
 class _IdentifierUpdate(BaseModel):

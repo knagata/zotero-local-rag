@@ -1,11 +1,6 @@
 from __future__ import annotations
 
-import io
 import unittest
-import sys
-import tempfile
-from contextlib import redirect_stdout
-from pathlib import Path
 from unittest.mock import Mock, patch
 
 from src import build_summaries
@@ -13,32 +8,20 @@ from src import db_relations
 from src import summary_core
 from src.build_summaries import SECTION_WINDOW, split_sections
 from src.embedder import resolve_collection_name
-from src.llm_client import RateLimitReached
 
 
 class SummaryPipelineTests(unittest.TestCase):
-    def setUp(self) -> None:
-        """Isolate the database.
-
-        Without this, three cases here reached the *real* data/relations.db --
-        mark_insight_generation_status was not mocked, so running the suite
-        upserted a row into a legacy table that the retirement audit watches for
-        new writes. The audit's write-zero gate then failed on rows the tests
-        had produced, which is exactly the signal it exists to give about
-        production traffic (2026-07-28). Every other suite touching db_relations
-        already patches DB_PATH in setUp; this file was the omission.
-        """
-        self._tempdir = tempfile.TemporaryDirectory()
-        self._db_patch = patch.object(
-            db_relations, "DB_PATH", str(Path(self._tempdir.name) / "relations.db"),
-        )
-        self._db_patch.start()
-        db_relations._db_initialized = False
-
-    def tearDown(self) -> None:
-        self._db_patch.stop()
-        db_relations._db_initialized = False
-        self._tempdir.cleanup()
+    def test_legacy_summary_writers_are_not_exposed(self):
+        for name in ("build_item", "embed_summaries", "main"):
+            self.assertFalse(hasattr(build_summaries, name), name)
+        for name in (
+            "save_item_summary",
+            "save_section_summary",
+            "replace_extractive_summary_bundle",
+            "delete_section_summary",
+            "mark_insight_generation_status",
+        ):
+            self.assertFalse(hasattr(db_relations, name), name)
 
     def test_codex_schemas_are_strict_objects(self):
         def assert_strict(schema):
@@ -53,7 +36,6 @@ class SummaryPipelineTests(unittest.TestCase):
                 assert_strict(variant)
 
         assert_strict(build_summaries.SUMMARY_ONLY_SCHEMA)
-        assert_strict(build_summaries.ITEM_SCHEMA)
 
     def test_evidence_units_preserve_exact_ocr_text_and_chunk_identity(self):
         section = {
@@ -227,164 +209,6 @@ class SummaryPipelineTests(unittest.TestCase):
             "paragraphs__sum_item",
         )
 
-    def test_llm_mode_does_not_treat_extractively_summarized_item_as_unchanged(self):
-        chunks = [{"id": "a", "text": "substantive body " * 40, "metadata": {}}]
-        existing = {"chunk_count": 1, "source_mtime": 0.0, "model": "extractive"}
-        # Previously this asserted "excluded", which only happened because the
-        # unconfigured cloud policy failed closed. That gate was removed
-        # 2026-07-27, so the item now reaches the LLM -- which is the point of
-        # the test: an extractively summarised item must not count as unchanged.
-        with patch.object(build_summaries, "get_item_chunks", return_value=chunks), patch.object(
-            build_summaries, "load_manifest", return_value={}
-        ), patch.object(build_summaries, "get_item_summary", return_value=existing), patch.object(
-            build_summaries, "_source_mtime", return_value=0.0
-        ), patch.object(
-            build_summaries, "_llm_section",
-            side_effect=RuntimeError("stop after the unchanged check"),
-        ) as llm_section:
-            with self.assertRaises(RuntimeError):
-                build_summaries.build_item("ITEM", mode="llm")
-        llm_section.assert_called()
-
-    def test_force_does_not_replace_luna_with_deepseek_without_explicit_override(self):
-        chunks = [{"id": "a", "text": "body", "metadata": {}}]
-        existing = {
-            "chunk_count": 1, "source_mtime": 0.0,
-            "model": "codex_cli:gpt-5.6-luna",
-        }
-        deepseek = Mock(provider="deepseek", model="deepseek-v4-pro")
-        with patch.object(build_summaries, "get_item_chunks", return_value=chunks), patch.object(
-            build_summaries, "load_manifest", return_value={}
-        ), patch.object(build_summaries, "get_item_summary", return_value=existing), patch.object(
-            build_summaries, "_source_mtime", return_value=0.0
-        ), patch.object(build_summaries, "get_llm", return_value=deepseek):
-            result = build_summaries.build_item("ITEM", mode="llm", force=True)
-        self.assertEqual(result["status"], "protected_existing")
-
-    def test_rate_limit_propagates_for_resumable_batch_stop(self):
-        chunks = [{"id": "a", "text": "substantive body " * 40, "metadata": {}}]
-        with patch.object(build_summaries, "get_item_chunks", return_value=chunks), patch.object(
-            build_summaries, "load_manifest", return_value={}
-        ), patch.object(build_summaries, "get_item_summary", return_value=None), patch.object(
-            build_summaries, "_source_mtime", return_value=0.0
-        ), patch.object(
-            build_summaries, "_llm_section", side_effect=RateLimitReached("quota")
-        ):
-            with self.assertRaises(RateLimitReached):
-                build_summaries.build_item("ITEM", mode="llm")
-
-    def test_max_items_counts_updates_not_unchanged_scans(self):
-        results = [
-            {"item_key": "A", "status": "unchanged"},
-            {"item_key": "B", "status": "updated"},
-            {"item_key": "C", "status": "unchanged"},
-            {"item_key": "D", "status": "updated"},
-        ]
-        output = io.StringIO()
-        with patch.object(build_summaries, "list_item_keys", return_value=list("ABCDE")), patch.object(
-            build_summaries, "build_item", side_effect=results
-        ) as build, patch.object(
-            sys, "argv", ["build_summaries", "--max-items", "2", "--no-embed"]
-        ), redirect_stdout(output):
-            build_summaries.main()
-        self.assertEqual([call.args[0] for call in build.call_args_list], list("ABCD"))
-        self.assertIn('"stop_reason": "max_items"', output.getvalue())
-
-    def test_stop_file_prevents_starting_the_next_item(self):
-        output = io.StringIO()
-        with tempfile.TemporaryDirectory() as tmp:
-            stop_file = Path(tmp) / "batch.stop"
-            stop_file.touch()
-            with patch.object(build_summaries, "list_item_keys", return_value=["A", "B"]), patch.object(
-                build_summaries, "build_item"
-            ) as build, patch.object(
-                sys, "argv", [
-                    "build_summaries", "--stop-file", str(stop_file), "--no-embed",
-                ],
-            ), redirect_stdout(output):
-                build_summaries.main()
-        build.assert_not_called()
-        self.assertIn('"stop_reason": "stop_requested"', output.getvalue())
-
-    def test_quota_guard_runs_before_each_llm_request(self):
-        chunks = [{"id": "a", "text": "substantive body " * 40, "metadata": {}}]
-        generated = {
-            "summary": "本文の要約", "chapter_authors": [],
-            "first_publication_note": None,
-            "_verification": {"total_generated": 0, "total_discarded": 0,
-                              "suspicious_section": False},
-        }
-        item_result = {"summary": "全体要約", "summary_en": "Summary", "keywords": ["test"]}
-        guard = Mock()
-        with patch.object(build_summaries, "get_item_chunks", return_value=chunks), patch.object(
-            build_summaries, "load_manifest", return_value={}
-        ), patch.object(build_summaries, "get_item_summary", return_value=None), patch.object(
-            build_summaries, "_source_mtime", return_value=0.0
-        ), patch.object(
-            build_summaries, "_llm_section", return_value=(generated, "codex_cli:test")
-        ), patch.object(
-            build_summaries, "_llm_item", return_value=(item_result, "codex_cli:test")
-        ), patch.object(build_summaries, "save_section_summary"), patch.object(
-            build_summaries, "save_item_summary"
-        ):
-            build_summaries.build_item("ITEM", mode="llm", quota_guard=guard)
-        self.assertEqual(guard.call_count, 2)
-
-    def test_llm_build_skips_non_content_and_removes_old_section(self):
-        chunks = [{
-            "id": "a", "text": "chapter listing " * 50,
-            "metadata": {"chapter": "目次"},
-        }]
-        with patch.object(build_summaries, "get_item_chunks", return_value=chunks), patch.object(
-            build_summaries, "load_manifest", return_value={}
-        ), patch.object(build_summaries, "get_item_summary", return_value=None), patch.object(
-            build_summaries, "_source_mtime", return_value=0.0
-        ), patch.object(
-            build_summaries, "delete_section_summary"
-        ) as delete, patch.object(build_summaries, "save_item_summary"), patch.object(
-            build_summaries, "_llm_section"
-        ) as llm:
-            audit_sections = []
-            result = build_summaries.build_item(
-                "ITEM", mode="llm", audit_sections=audit_sections,
-            )
-        delete.assert_called_once_with("ITEM", "c0")
-        llm.assert_not_called()
-        self.assertEqual(result["skipped_non_content"], 1)
-        self.assertEqual(result["sections"], 0)
-        self.assertEqual(audit_sections[0]["status"], "skipped_non_content")
-
-    def test_llm_build_discards_meta_response_and_removes_old_section(self):
-        chunks = [{
-            "id": "a", "text": "substantive source text " * 50,
-            "metadata": {"chapter": "Terms"},
-        }]
-        generated = {
-            "summary": "入力には要約対象の本文が含まれていません。ご提示ください。",
-            "chapter_authors": [], "first_publication_note": None,
-            "_verification": {"total_generated": 0, "total_discarded": 0,
-                              "suspicious_section": False},
-        }
-        with patch.object(build_summaries, "get_item_chunks", return_value=chunks), patch.object(
-            build_summaries, "load_manifest", return_value={}
-        ), patch.object(build_summaries, "get_item_summary", return_value=None), patch.object(
-            build_summaries, "_source_mtime", return_value=0.0
-        ), patch.object(
-            build_summaries, "_llm_section", return_value=(generated, "codex_cli:gpt-5.6-luna")
-        ), patch.object(build_summaries, "delete_section_summary") as delete, patch.object(
-            build_summaries, "save_section_summary"
-        ) as save_section, patch.object(build_summaries, "save_item_summary"):
-            audit_sections = []
-            result = build_summaries.build_item(
-                "ITEM", mode="llm", audit_sections=audit_sections,
-            )
-        delete.assert_called_once_with("ITEM", "c0")
-        save_section.assert_not_called()
-        self.assertEqual(result["sections"], 0)
-        self.assertEqual(result["skipped_non_content"], 1)
-        self.assertEqual(audit_sections[0]["skip_reason"], "meta_response")
-
-
 if __name__ == "__main__":
     unittest.main()
 
@@ -412,4 +236,3 @@ class MinLeafCharsTests(unittest.TestCase):
         from src.build_structure_summaries import MIN_LEAF_CHARS
         self.assertIsInstance(MIN_LEAF_CHARS, int)
         self.assertGreater(MIN_LEAF_CHARS, 0)
-

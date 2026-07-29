@@ -97,6 +97,9 @@ def get_document_outline(item_key: str) -> dict[str, Any]:
         for row in db_relations.get_document_node_summaries(key)
         if row.get("quality_status") != "disabled"
     }
+    summary_parts = db_relations.get_document_node_summary_parts_for_nodes(
+        list(summaries),
+    )
     nodes = []
     for node in db_relations.get_document_nodes(key):
         summary = summaries.get(str(node["node_id"]))
@@ -111,7 +114,7 @@ def get_document_outline(item_key: str) -> dict[str, Any]:
             "summary": summary.get("summary") if summary else None,
             "summary_kind": summary.get("summary_kind") if summary else None,
             "quality_status": summary.get("quality_status") if summary else None,
-            "summary_parts": db_relations.get_document_node_summary_parts(str(node["node_id"])) if summary else [],
+            "summary_parts": summary_parts.get(str(node["node_id"]), []),
         })
     return {"item_key": key, "structure": structure, "nodes": nodes}
 

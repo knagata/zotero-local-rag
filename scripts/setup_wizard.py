@@ -8,6 +8,7 @@ from contextlib import contextmanager
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -71,14 +72,22 @@ def write_env_file(path: Path, values: dict[str, str]) -> None:
         rendered.extend(["", "# Other existing settings"])
         rendered.extend(f"{key}={values[key]}" for key in extras)
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + ".tmp")
-    temporary.touch(mode=0o600, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent,
+    )
+    temporary = Path(temporary_name)
     try:
-        temporary.chmod(0o600)
-    except OSError:
-        pass
-    temporary.write_text("\n".join(rendered) + "\n", encoding="utf-8")
-    temporary.replace(path)
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            descriptor = -1
+            handle.write("\n".join(rendered) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        temporary.unlink(missing_ok=True)
 
 
 def _set_optional_secret(config: dict[str, str], key: str, prompt: str) -> None:

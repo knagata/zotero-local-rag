@@ -31,6 +31,24 @@ class SetupWizardTests(unittest.TestCase):
             self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
             self.assertFalse(path.with_name(".env.tmp").exists())
 
+    def test_env_write_does_not_follow_a_predictable_temp_symlink(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            victim = root / "victim"
+            victim.write_text("do not overwrite", encoding="utf-8")
+            (root / ".env.tmp").symlink_to(victim)
+
+            path = root / ".env"
+            setup_wizard.write_env_file(path, {"FEATURE_LEVEL": "core"})
+
+            self.assertEqual(victim.read_text(encoding="utf-8"), "do not overwrite")
+            self.assertFalse(path.is_symlink())
+            self.assertEqual(
+                setup_wizard.read_env_file(path)["FEATURE_LEVEL"],
+                "core",
+            )
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+
     def test_core_level_does_not_require_network_credentials(self):
         config = {"UNRELATED": "preserved"}
         with patch("builtins.input", side_effect=["1"]), patch("sys.stdout", StringIO()):

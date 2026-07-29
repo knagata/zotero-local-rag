@@ -1,10 +1,8 @@
-"""Shared summary primitives for the legacy and V3 pipelines.
+"""Shared prompt and verification primitives for V3 hierarchical summaries.
 
-These functions and prompt-adjacent constants were factored out of
-``build_summaries.py`` so the canonical V3 node-summary pipeline
-(``build_structure_summaries.py``) no longer imports the legacy module.  The
-behaviour (and every prompt string it relies on) is intentionally unchanged;
-this is a move, not a rewrite, so ``prompt_version`` semantics are preserved.
+The read-only ``build_summaries.py`` compatibility module also re-exports a
+subset for offline model comparisons. Canonical persistence is owned solely by
+``build_structure_summaries.py``.
 """
 from __future__ import annotations
 

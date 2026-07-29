@@ -140,6 +140,14 @@ class DocumentStructureTests(unittest.TestCase):
         )
         self.assertEqual(db_relations.get_document_node_summary_parts(node_id), [])
 
+    def test_blank_node_summary_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "summary must not be empty"):
+            db_relations.save_document_node_summary(
+                "node", "ITEM", "   ", summary_kind="llm",
+                source_fingerprint="fixture", source_chunk_count=1,
+                source_chars=10,
+            )
+
     def test_purge_removes_v3_structure_artifact_and_cascades(self):
         # R7: purge_removed_items must delete V3 document structure / node rows
         # (with their cascading summaries) and artifact status/event rows for

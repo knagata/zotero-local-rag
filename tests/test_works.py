@@ -70,16 +70,6 @@ class CanonicalWorksTests(unittest.TestCase):
         finally:
             connection.close()
 
-    def test_invalidate_item_summaries_removes_all_chunk_derived_rows(self):
-        db_relations.save_item_summary("ITEM", "summary", "test")
-        db_relations.save_section_summary("ITEM", "c0", "section", model="test")
-        counts = db_relations.invalidate_item_summaries("ITEM")
-        self.assertEqual(counts, {
-            "section_summaries": 1, "item_summaries": 1,
-        })
-        self.assertIsNone(db_relations.get_item_summary("ITEM"))
-        self.assertEqual(db_relations.get_section_summaries("ITEM"), [])
-
     def test_conservative_title_match_and_year(self):
         first = db_relations.resolve_work(title="Essai sur le don", authors="Mauss", year=1925)
         second = db_relations.resolve_work(title="Essai sur le don!", authors="Mauss", year=1926)
@@ -220,46 +210,6 @@ class CanonicalWorksTests(unittest.TestCase):
             connection.close()
         self.assertEqual(counts["edges"], 0)
         self.assertEqual(edges, 0)
-
-    def test_summary_crud(self):
-        db_relations.save_item_summary(
-            "ITEM1", "日本語要約", "extractive", summary_en="English summary",
-            keywords="gift; 贈与", chunk_count=12, source_mtime=1.5,
-        )
-        db_relations.save_section_summary(
-            "ITEM1", "c1", "章要約", chapter="第一章", model="extractive",
-            chunk_count=4, chapter_authors="A. Author",
-        )
-        self.assertEqual(db_relations.get_item_summary("ITEM1")["summary_en"], "English summary")
-        self.assertEqual(db_relations.get_section_summaries("ITEM1")[0]["chapter"], "第一章")
-        db_relations.delete_section_summary("ITEM1", "c1")
-        self.assertEqual(db_relations.get_section_summaries("ITEM1"), [])
-
-    def test_extractive_summary_bundle_replacement_is_atomic_and_guarded(self):
-        db_relations.save_item_summary("ITEM", "extractive", "extractive", chunk_count=2)
-        db_relations.save_section_summary(
-            "ITEM", "w0", "old section", model="extractive", chunk_count=1,
-        )
-        replaced = db_relations.replace_extractive_summary_bundle(
-            "ITEM", "LLM item", [{
-                "section_id": "w1", "chapter": "Chapter", "summary": "LLM section",
-                "chunk_count": 2, "model": "deepseek:flash",
-            }], model="deepseek:test", chunk_count=2, source_mtime=3.0,
-        )
-        self.assertTrue(replaced)
-        self.assertEqual(db_relations.get_item_summary("ITEM")["model"], "deepseek:test")
-        self.assertEqual(
-            [row["section_id"] for row in db_relations.get_section_summaries("ITEM")], ["w1"],
-        )
-        self.assertEqual(
-            db_relations.get_section_summaries("ITEM")[0]["model"], "deepseek:flash",
-        )
-        refused = db_relations.replace_extractive_summary_bundle(
-            "ITEM", "other", [], model="deepseek:other",
-        )
-        self.assertFalse(refused)
-        self.assertEqual(db_relations.get_item_summary("ITEM")["summary"], "LLM item")
-
 
 if __name__ == "__main__":
     unittest.main()

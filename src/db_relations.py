@@ -1662,32 +1662,6 @@ def get_item_summary(item_key: str) -> Optional[dict]:
         conn.close()
 
 
-def save_item_summary(
-    item_key: str, summary: str, model: str = "", *, summary_en: Optional[str] = None,
-    keywords: Optional[str] = None, chunk_count: Optional[int] = None,
-    source_mtime: Optional[float] = None,
-) -> None:
-    conn = get_db_connection()
-    try:
-        cursor = conn.cursor()
-        cursor.execute('''
-            INSERT INTO item_summaries
-                (item_key, summary, summary_en, keywords, model, chunk_count, source_mtime, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-            ON CONFLICT(item_key) DO UPDATE SET
-                summary    = excluded.summary,
-                summary_en = excluded.summary_en,
-                keywords   = excluded.keywords,
-                model      = excluded.model,
-                chunk_count = excluded.chunk_count,
-                source_mtime = excluded.source_mtime,
-                updated_at = CURRENT_TIMESTAMP
-        ''', (item_key, summary, summary_en, keywords, model, chunk_count, source_mtime))
-        conn.commit()
-    finally:
-        conn.close()
-
-
 def get_section_summaries(item_key: str) -> List[Dict[str, Any]]:
     conn = get_db_connection()
     try:
@@ -1695,119 +1669,6 @@ def get_section_summaries(item_key: str) -> List[Dict[str, Any]]:
             SELECT * FROM section_summaries WHERE item_key = ? ORDER BY section_id
         ''', (item_key,)).fetchall()
         return [dict(row) for row in rows]
-    finally:
-        conn.close()
-
-
-def save_section_summary(
-    item_key: str, section_id: str, summary: str, *, chapter: Optional[str] = None,
-    model: str = "", chunk_count: Optional[int] = None,
-    chapter_authors: Optional[str] = None, first_publication_note: Optional[str] = None,
-) -> None:
-    conn = get_db_connection()
-    try:
-        conn.execute('''
-            INSERT INTO section_summaries
-                (item_key, section_id, chapter, summary, model, chunk_count,
-                 chapter_authors, first_publication_note, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-            ON CONFLICT(item_key, section_id) DO UPDATE SET
-                chapter = excluded.chapter, summary = excluded.summary,
-                model = excluded.model, chunk_count = excluded.chunk_count,
-                chapter_authors = excluded.chapter_authors,
-                first_publication_note = excluded.first_publication_note,
-                updated_at = CURRENT_TIMESTAMP
-        ''', (
-            item_key, section_id, chapter, summary, model, chunk_count,
-            chapter_authors, first_publication_note,
-        ))
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def replace_extractive_summary_bundle(
-    item_key: str, item_summary: str, section_summaries: List[Dict[str, Any]], *,
-    model: str, chunk_count: Optional[int] = None, source_mtime: Optional[float] = None,
-) -> bool:
-    """Atomically replace one extractive hierarchy with verified LLM summaries.
-
-    If another process has already installed a non-extractive item summary, this
-    returns ``False`` and leaves every row unchanged.
-    """
-    conn = get_db_connection()
-    try:
-        conn.execute("BEGIN IMMEDIATE")
-        row = conn.execute(
-            "SELECT model FROM item_summaries WHERE item_key = ?", (item_key,),
-        ).fetchone()
-        if row is None or row["model"] != "extractive":
-            conn.rollback()
-            return False
-        conn.execute("DELETE FROM section_summaries WHERE item_key = ?", (item_key,))
-        for section in section_summaries:
-            conn.execute('''
-                INSERT INTO section_summaries
-                    (item_key, section_id, chapter, summary, model, chunk_count,
-                     chapter_authors, first_publication_note, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, CURRENT_TIMESTAMP)
-            ''', (
-                item_key, section["section_id"], section.get("chapter"),
-                section["summary"], section.get("model") or model,
-                section.get("chunk_count"),
-            ))
-        section_count = len(section_summaries)
-        conn.execute('''
-            INSERT INTO insight_generation_status (item_key, kind, status, row_count, updated_at)
-            VALUES (?, 'sections', ?, ?, CURRENT_TIMESTAMP)
-            ON CONFLICT(item_key, kind) DO UPDATE SET
-                status=excluded.status, row_count=excluded.row_count,
-                updated_at=CURRENT_TIMESTAMP
-        ''', (
-            item_key, "available" if section_count else "processed_empty", section_count,
-        ))
-        conn.execute('''
-            UPDATE item_summaries SET summary = ?, summary_en = NULL, keywords = NULL,
-                model = ?, chunk_count = ?, source_mtime = ?, updated_at = CURRENT_TIMESTAMP
-            WHERE item_key = ?
-        ''', (item_summary, model, chunk_count, source_mtime, item_key))
-        conn.commit()
-        return True
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
-
-
-def delete_section_summary(item_key: str, section_id: str) -> None:
-    """Remove a skipped legacy section summary idempotently."""
-    conn = get_db_connection()
-    try:
-        conn.execute(
-            "DELETE FROM section_summaries WHERE item_key = ? AND section_id = ?",
-            (item_key, section_id),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def invalidate_item_summaries(item_key: str) -> Dict[str, int]:
-    """Delete all legacy summaries derived from chunks that are about to change."""
-    conn = get_db_connection()
-    try:
-        counts: Dict[str, int] = {}
-        conn.execute("BEGIN IMMEDIATE")
-        for table in ("section_summaries", "item_summaries"):
-            cursor = conn.execute(f"DELETE FROM {table} WHERE item_key = ?", (item_key,))
-            counts[table] = max(0, int(cursor.rowcount))
-        conn.execute("DELETE FROM insight_generation_status WHERE item_key = ?", (item_key,))
-        conn.commit()
-        return counts
-    except Exception:
-        conn.rollback()
-        raise
     finally:
         conn.close()
 
@@ -1855,39 +1716,6 @@ def reset_ingestion_derived_state() -> Dict[str, int]:
     except Exception:
         conn.rollback()
         raise
-    finally:
-        conn.close()
-
-
-def get_insight_generation_status(item_key: str, kind: str) -> Optional[Dict[str, Any]]:
-    if kind != "sections":
-        raise ValueError("kind must be sections.")
-    conn = get_db_connection()
-    try:
-        row = conn.execute(
-            "SELECT status, row_count, updated_at FROM insight_generation_status "
-            "WHERE item_key = ? AND kind = ?",
-            (item_key, kind),
-        ).fetchone()
-        return dict(row) if row else None
-    finally:
-        conn.close()
-
-
-def mark_insight_generation_status(item_key: str, kind: str, row_count: int) -> None:
-    if kind != "sections":
-        raise ValueError("kind must be sections.")
-    count = max(0, int(row_count))
-    conn = get_db_connection()
-    try:
-        conn.execute('''
-            INSERT INTO insight_generation_status (item_key, kind, status, row_count, updated_at)
-            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-            ON CONFLICT(item_key, kind) DO UPDATE SET
-                status=excluded.status, row_count=excluded.row_count,
-                updated_at=CURRENT_TIMESTAMP
-        ''', (item_key, kind, "available" if count else "processed_empty", count))
-        conn.commit()
     finally:
         conn.close()
 
@@ -3527,6 +3355,9 @@ def save_document_node_summary(
     source_chunk_count: int, source_chars: int, quality_status: str = "accepted",
     input_scope: Optional[Dict[str, Any]] = None,
 ) -> None:
+    summary = str(summary or "").strip()
+    if not summary:
+        raise ValueError("summary must not be empty")
     if summary_kind not in {"llm", "extractive"}:
         raise ValueError("summary_kind must be llm or extractive")
     if quality_status not in {"accepted", "candidate", "degraded", "disabled"}:
@@ -3591,20 +3422,35 @@ def replace_document_node_summary_parts(
 
 def get_document_node_summary_parts(node_id: str) -> List[Dict[str, Any]]:
     """Return a node's retained reduction inputs in document order."""
+    normalized = str(node_id or "").strip()
+    if not normalized:
+        return []
+    return get_document_node_summary_parts_for_nodes([normalized]).get(normalized, [])
+
+
+def get_document_node_summary_parts_for_nodes(
+    node_ids: List[str],
+) -> Dict[str, List[Dict[str, Any]]]:
+    """Return retained reduction inputs for several nodes in one query."""
+    ids = list(dict.fromkeys(str(value or "").strip() for value in node_ids if value))
+    if not ids:
+        return {}
+    placeholders = ",".join("?" for _ in ids)
     conn = get_db_connection()
     try:
-        rows = conn.execute('''
-            SELECT * FROM document_node_summary_parts WHERE node_id = ?
-            ORDER BY part_ordinal ASC
-        ''', (node_id,)).fetchall()
-        result = []
+        rows = conn.execute(f'''
+            SELECT * FROM document_node_summary_parts
+            WHERE node_id IN ({placeholders})
+            ORDER BY node_id ASC, part_ordinal ASC
+        ''', ids).fetchall()
+        result: Dict[str, List[Dict[str, Any]]] = {}
         for row in rows:
             value = dict(row)
             try:
                 value["child_node_ids"] = json.loads(value.pop("child_node_ids_json") or "[]")
             except (TypeError, ValueError):
                 value["child_node_ids"] = []
-            result.append(value)
+            result.setdefault(str(value["node_id"]), []).append(value)
         return result
     finally:
         conn.close()
@@ -3720,38 +3566,6 @@ def get_searchable_document_node_ids(node_ids: List[str]) -> set[str]:
         return {str(row["node_id"]) for row in rows}
     finally:
         conn.close()
-
-
-def save_item_root_summary(
-    item_key: str, summary: str, *, model: str,
-    prompt_version: str, source_chunk_count: int, source_chars: int,
-    input_scope: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
-    """Save an accepted V3 item-root summary for an existing document tree."""
-    conn = get_db_connection()
-    try:
-        row = conn.execute('''
-            SELECT n.node_id, d.source_fingerprint
-            FROM document_nodes n
-            JOIN document_structures d ON d.item_key = n.item_key
-            WHERE n.item_key = ? AND n.node_type = 'item_root'
-            ORDER BY n.ordinal ASC LIMIT 1
-        ''', ((item_key or "").strip(),)).fetchone()
-    finally:
-        conn.close()
-    if row is None:
-        raise ValueError("V3 document structure is required before saving an item summary.")
-    save_document_node_summary(
-        str(row["node_id"]), (item_key or "").strip(), summary,
-        summary_kind="llm", model=model, prompt_version=prompt_version,
-        source_fingerprint=str(row["source_fingerprint"]),
-        source_chunk_count=source_chunk_count, source_chars=source_chars,
-        quality_status="accepted", input_scope=input_scope,
-    )
-    saved = get_item_root_summary(item_key, searchable_only=False)
-    if saved is None:
-        raise RuntimeError("saved V3 item-root summary could not be reloaded")
-    return saved
 
 
 def get_all_document_node_summaries(

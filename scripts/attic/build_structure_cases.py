@@ -12,7 +12,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.build_structure_cases import build_structure_cases
-from src.build_summaries import embed_summaries
+from src.build_structure_summaries import embed_structure_summaries
 from src.chunk_store import list_item_keys
 from src.db_relations import mark_artifact_status
 from src.env_utils import load_dotenv_native
@@ -52,7 +52,7 @@ def main() -> None:
     }
     if updated and not args.no_embed and report["stop_reason"] == "completed":
         try:
-            report["embedded"] = embed_summaries(item_keys=updated)
+            report["embedded"] = embed_structure_summaries(item_keys=updated)
             for key in updated:
                 mark_artifact_status(key, "embeddings", "success", processor_version="structure-case-v2-1", counts=report["embedded"])
         except Exception as exc:
