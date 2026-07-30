@@ -12,9 +12,17 @@ echo "日常更新を次の順番でまとめて実行します。"
 echo "Enterを押すと既定の「実行」を選択します。"
 echo ""
 
-# The library owner may make local maintenance non-interactive. Paid API steps
-# (hierarchical summaries and cloud OCR) remain explicit per-run opt-ins.
-maintenance_auto_approve="${MAINTENANCE_AUTO_APPROVE:-1}"
+# The library owner may make local maintenance non-interactive (e.g. for a
+# cron/launchd job) by exporting MAINTENANCE_AUTO_APPROVE=1 in that job's own
+# environment. Paid API steps (hierarchical summaries and cloud OCR) remain
+# explicit per-run opt-ins regardless. Defaults to 0 (ask), matching
+# .env.example -- this script never sources .env itself (only the uv-run
+# Python subprocesses it launches do), so an interactive double-click launch
+# must default to asking here or every question (including "save a log?")
+# silently never fires (found 2026-07-31: the fallback here was "1" while
+# .env.example documented "0", so a plain double-click always ran fully
+# unattended with paid steps silently skipped instead of offered).
+maintenance_auto_approve="${MAINTENANCE_AUTO_APPROVE:-0}"
 if [[ "$maintenance_auto_approve" == "1" ]]; then
     echo "[情報] MAINTENANCE_AUTO_APPROVE=1: ローカル更新を自動許可します（有料API処理は除外）。"
     echo ""
