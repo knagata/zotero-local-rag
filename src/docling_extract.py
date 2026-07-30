@@ -609,7 +609,7 @@ def _relieve_patch_memory() -> None:
 def _patch_pages_with_docling_ocr(
     pdf_path: Path, pages: List[int], *, attachment_key: str, meta_base: Dict[str, Any],
     chunk_namespace: str, patch_marker_key: str, unresolved_block_type: str,
-    unresolved_text: Any,
+    unresolved_text: Any, unresolved_zone: str = "body",
 ) -> Tuple[List[Tuple[str, str, Dict[str, Any]]], set[int]]:
     """Shared body for ``patch_scanned_pages_with_docling`` and
     ``patch_corrupted_pages_with_docling`` (E2c/E2d, note 77): re-render just
@@ -636,7 +636,14 @@ def _patch_pages_with_docling_ocr(
     produced a chunk. A page that yields no usable text still gets a synthetic
     marker chunk (``unresolved_block_type``, not silently dropped) so it stays
     visible in the document outline/structure browser rather than looking like
-    a hole in the extraction. Text Docling *does* recover is screened by
+    a hole in the extraction. Its zone defaults to ``"body"`` but callers whose
+    marker text means "this page resisted repair" (rather than "this is
+    ordinary body content Docling just didn't OCR") must pass
+    ``unresolved_zone="corrupted"`` -- that zone's whole purpose, per
+    ``document_structure.ZONE_POLICIES``, is excluding exactly this kind of
+    known-unreliable text from retrieval and summaries; leaving it in
+    ``"body"`` indexes the literal marker string as if it were real content
+    (2026-07-30). Text Docling *does* recover is screened by
     ``_looks_like_scanned_patch_ocr_noise``: OCR misreads (garbled,
     concatenated-word text) are common enough that "Docling produced a chunk"
     alone isn't sufficient evidence of real content -- a chunk that fails this
@@ -723,7 +730,7 @@ def _patch_pages_with_docling_ocr(
         md["page"] = page_number
         md[patch_marker_key] = "docling"
         md["block_type"] = unresolved_block_type
-        md["zone"] = "body"
+        md["zone"] = unresolved_zone
         text = (
             unresolved_text(page_number) if callable(unresolved_text)
             else unresolved_text.format(page=page_number)
@@ -795,14 +802,20 @@ def patch_corrupted_pages_with_docling(
     ``block_type="figure"`` marker, an unresolved corrupted page is not
     necessarily a figure: it's a body-text page that resisted repair, so the
     marker says exactly that instead of implying "this was never text"
-    (user decision 2026-07-26). See ``_patch_pages_with_docling_ocr`` for the
-    shared mechanics (also used by ``patch_scanned_pages_with_docling``).
+    (user decision 2026-07-26). Its zone is ``"corrupted"``, not ``"body"``:
+    this marker is a placeholder for text known to be unrecoverable, exactly
+    what ``document_structure.ZONE_POLICIES["corrupted"]`` exists to exclude
+    from retrieval and summaries -- indexing the literal marker string as
+    ordinary body text let it surface in search results and LLM summary input
+    (found in code review, fixed 2026-07-30). See ``_patch_pages_with_docling_ocr``
+    for the shared mechanics (also used by ``patch_scanned_pages_with_docling``).
     """
     return _patch_pages_with_docling_ocr(
         pdf_path, corrupted_pages, attachment_key=attachment_key, meta_base=meta_base,
         chunk_namespace=chunk_namespace, patch_marker_key="corrupted_page_patch",
         unresolved_block_type="corrupted_unresolved",
         unresolved_text=lambda page: f"[Corrupted page {page} — unresolved]",
+        unresolved_zone="corrupted",
     )
 
 

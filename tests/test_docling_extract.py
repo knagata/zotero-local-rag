@@ -191,6 +191,10 @@ class DoclingExtractTests(unittest.TestCase):
         self.assertEqual(by_page[5][1]["scanned_page_patch"], "docling")
         self.assertIn(":scanpatch:", output[0][0])
         self.assertEqual(by_page[12][1]["block_type"], "figure")
+        # Unlike the corrupted-page marker, a figure marker stays zone="body"
+        # (user decision 2026-07-25): these are ordinary body pages, not a
+        # specific zone -- see docstring.
+        self.assertEqual(by_page[12][1]["zone"], "body")
         self.assertEqual(by_page[12][1]["scanned_page_patch"], "docling")
         self.assertIn(":scanpatch:figure:", [cid for cid, _t, md in output if md["page"] == 12][0])
         # Both pages were attempted, so both count as resolved for the gate,
@@ -276,6 +280,10 @@ class DoclingExtractTests(unittest.TestCase):
         # distinct from the scanned-page patch's "figure" marker since a
         # corrupted page is body text that resisted repair, not a photo.
         self.assertEqual(by_page[9][1]["block_type"], "corrupted_unresolved")
+        # 2026-07-30 regression: the unresolved marker must be excluded from
+        # ordinary retrieval/summaries like any other known-garbage text, not
+        # indexed as zone="body" alongside genuinely recovered content.
+        self.assertEqual(by_page[9][1]["zone"], "corrupted")
         self.assertEqual(by_page[9][1]["corrupted_page_patch"], "docling")
         self.assertIn(
             ":corruptpatch:corrupted_unresolved:",
@@ -309,6 +317,7 @@ class DoclingExtractTests(unittest.TestCase):
         by_page = {md["page"]: (text, md) for _cid, text, md in output}
         self.assertEqual(by_page[30][0], "A properly recovered sentence with real words.")
         self.assertEqual(by_page[31][1]["block_type"], "corrupted_unresolved")
+        self.assertEqual(by_page[31][1]["zone"], "corrupted")
         self.assertNotIn("CobraHelicopters", by_page[31][0])
         self.assertEqual(attempted, {30, 31})
 

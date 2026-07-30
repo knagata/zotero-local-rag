@@ -14,7 +14,7 @@
 - [x] **F1: `reocr_adoption.py`のChromaロールバックフラグ順序**（2026-07-30）
   `adopt_prepared_reocr`が`collection.delete()`成功後・`upsert()`失敗時に
   ロールバックせず、チャンクが永久消失する。src/reocr_adoption.py:154-203
-- [ ] **F2: `docling_extract.py`の破損ページzoneタグ付け**
+- [x] **F2: `docling_extract.py`の破損ページzoneタグ付け**（2026-07-30）
   `_patch_pages_with_docling_ocr`が`corrupted_unresolved`プレースホルダーに
   `zone="body"`を付けて索引化し、検索・要約にゴミ文字列が混入する。
   src/docling_extract.py:721-736
