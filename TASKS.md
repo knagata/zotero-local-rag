@@ -46,9 +46,13 @@
   `resolve_work()`を全候補走査＋最高スコア採用に変更。`is_owned_work()`は
   真偽値のみを返す関数のため（どのレコードが一致したかは無関係）調査の結果
   変更不要と判断。
-- [ ] **F11: `chunk_store.py`のCHROMA_DIRパス解決バイパス**
-  `DEFAULT_CHROMA_DIR`が`resolve_configured_path`を経由せず生の環境変数から
-  直接計算される潜在バグ。src/chunk_store.py:16, scripts/audit_v3_cutover.py
+- [x] **F11: `chunk_store.py`のCHROMA_DIRパス解決バイパス**（2026-07-30）
+  `DEFAULT_CHROMA_DIR`に`.expanduser()`を追加。加えて`audit_v3_cutover.py`に
+  `--chroma-dir`を新設し、全chunk_store呼び出しに明示的に受け渡すよう変更
+  （`run_db_audit.py`からも渡すよう更新）。デフォルト頼みをやめ、
+  `v3_data_plane.chroma_dir()`が唯一の解決経路になるようにした。
+
+これで今回のレビューで見つかった11件すべてに対応完了。
 
 ### Phase 0: ゼロ再構築前の取り込み完全性修正
 

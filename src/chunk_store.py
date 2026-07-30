@@ -13,7 +13,16 @@ except ImportError:
     from v3_data_plane import collection_name as v3_collection_name
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_CHROMA_DIR = Path(os.environ.get("CHROMA_DIR", ROOT / "data" / "chroma"))
+# .expanduser(): v3_data_plane.resolve_configured_path is "the one place this
+# resolution rule is written" (its own docstring) precisely because this used
+# to be a second, independent copy that missed .expanduser() -- a ~-prefixed
+# CHROMA_DIR would silently resolve to a literal "~" subdirectory here while
+# every other V3 entry point expanded it correctly (found in code review,
+# fixed 2026-07-30). Callers that already resolved CHROMA_DIR themselves
+# (e.g. via v3_data_plane.chroma_dir()/enforce_environment()) should still
+# pass chroma_dir= explicitly rather than rely on this default, since this
+# module has no way to know a caller's working directory differs from ROOT.
+DEFAULT_CHROMA_DIR = Path(os.environ.get("CHROMA_DIR", ROOT / "data" / "chroma")).expanduser()
 
 
 def natural_chunk_key(chunk_id: str) -> list[Any]:

@@ -1,11 +1,35 @@
 from __future__ import annotations
 
+import importlib.util
+import os
 import sqlite3
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from src.chunk_store import get_item_chunks, list_chunk_ids_without_item, list_item_keys
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def _fresh_chunk_store_module():
+    """Re-import chunk_store so its module-level DEFAULT_CHROMA_DIR is
+    recomputed from the currently patched CHROMA_DIR env var -- it's bound
+    once at import time, so reusing the already-imported src.chunk_store
+    module would see the value from whenever the test suite first imported
+    it, not the value patched in this test."""
+    src_dir = str(ROOT / "src")
+    if src_dir not in sys.path:
+        sys.path.insert(0, src_dir)  # chunk_store's ImportError fallback needs bare `v3_data_plane`
+    spec = importlib.util.spec_from_file_location(
+        "chunk_store_fresh", ROOT / "src" / "chunk_store.py",
+    )
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 class ChunkStoreTests(unittest.TestCase):
@@ -60,6 +84,21 @@ class ChunkStoreTests(unittest.TestCase):
             chroma_dir=self.chroma_dir, collection_name="paragraphs",
         )
         self.assertEqual(orphaned, ["A:p3:para0:part0"])
+
+
+class DefaultChromaDirExpansionTests(unittest.TestCase):
+    def test_a_tilde_prefixed_chroma_dir_is_expanded(self):
+        # 2026-07-30 regression: DEFAULT_CHROMA_DIR was computed directly from
+        # the raw CHROMA_DIR env var with no .expanduser(), unlike every other
+        # V3 entry point (which all go through
+        # v3_data_plane.resolve_configured_path). A ~-prefixed CHROMA_DIR
+        # would silently resolve to a literal "~" subdirectory here instead
+        # of the user's home directory.
+        with tempfile.TemporaryDirectory() as home_dir:
+            with patch.dict(os.environ, {"HOME": home_dir, "CHROMA_DIR": "~/chroma-data"}):
+                module = _fresh_chunk_store_module()
+        self.assertEqual(module.DEFAULT_CHROMA_DIR, Path(home_dir) / "chroma-data")
+        self.assertNotIn("~", str(module.DEFAULT_CHROMA_DIR))
 
 
 if __name__ == "__main__":

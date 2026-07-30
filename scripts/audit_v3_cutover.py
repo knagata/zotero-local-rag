@@ -29,6 +29,7 @@ from src.manifest import load_manifest
 from src.source_coverage import coverage_gap_is_adoptable, validate_source_coverage
 from src.database_gate import database_state_fingerprint, external_audit_attestation
 from src.v3_data_plane import V3_COLLECTION
+from src.v3_data_plane import chroma_dir as resolve_chroma_dir
 
 
 def source_rows(rows: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
@@ -253,6 +254,16 @@ def main() -> None:
     parser.add_argument("--old-collection", default="zotero_paragraphs")
     parser.add_argument("--new-collection", default="zotero_paragraphs_v3")
     parser.add_argument("--manifest", type=Path, default=ROOT / "data" / "manifest_v3.json")
+    parser.add_argument(
+        "--chroma-dir", type=Path, default=None,
+        # None (not chunk_store.DEFAULT_CHROMA_DIR) so the resolution always
+        # goes through v3_data_plane.chroma_dir() below -- that's the one
+        # place CHROMA_DIR resolution (~ expansion, relative-to-project-root)
+        # is written; a second default computed independently is exactly
+        # what drifted out of sync before (found in code review, fixed
+        # 2026-07-30).
+        help="Chroma persistence directory (defaults to CHROMA_DIR or data/chroma).",
+    )
     parser.add_argument("--lexical-db", type=Path, default=ROOT / "data" / "lexical_v3.sqlite3")
     parser.add_argument(
         "--pipeline-config", type=Path,
@@ -278,6 +289,7 @@ def main() -> None:
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    chroma_dir = args.chroma_dir or resolve_chroma_dir(ROOT)
     if args.new_collection != V3_COLLECTION:
         parser.error(
             f"--new-collection must be {V3_COLLECTION!r}; the legacy data plane is retired"
@@ -306,11 +318,11 @@ def main() -> None:
             parser.error(str(exc))
     excluded = {str(value) for value in args.exclude_item if value}
     old_keys = [] if args.new_only else [
-        key for key in list_item_keys(collection_name=args.old_collection)
+        key for key in list_item_keys(chroma_dir=chroma_dir, collection_name=args.old_collection)
         if key not in excluded
     ]
     new_keys = [
-        key for key in list_item_keys(collection_name=args.new_collection)
+        key for key in list_item_keys(chroma_dir=chroma_dir, collection_name=args.new_collection)
         if key not in excluded
     ]
     audited_keys = sorted(set(old_keys) | set(new_keys))
@@ -364,9 +376,9 @@ def main() -> None:
     for item_key in selected:
         old_rows = (
             [] if args.new_only
-            else get_item_chunks(item_key, collection_name=args.old_collection)
+            else get_item_chunks(item_key, chroma_dir=chroma_dir, collection_name=args.old_collection)
         )
-        new_rows = get_item_chunks(item_key, collection_name=args.new_collection)
+        new_rows = get_item_chunks(item_key, chroma_dir=chroma_dir, collection_name=args.new_collection)
         attested_chroma_rows.extend(new_rows)
         row = compare_item(item_key, old_rows, new_rows, live_node_ids)
         structure = get_document_structure(item_key)
@@ -382,16 +394,20 @@ def main() -> None:
         comparisons.append(row)
     manifest = load_manifest(args.manifest)
     manifest_files = manifest.get("files") if isinstance(manifest.get("files"), dict) else {}
-    orphaned_chunk_ids = list_chunk_ids_without_item(collection_name=args.new_collection)
-    attachmentless_chunk_ids = list_chunk_ids_without_attachment(
-        collection_name=args.new_collection,
+    orphaned_chunk_ids = list_chunk_ids_without_item(
+        chroma_dir=chroma_dir, collection_name=args.new_collection,
     )
-    chroma_ids = set(list_chunk_ids(collection_name=args.new_collection))
+    attachmentless_chunk_ids = list_chunk_ids_without_attachment(
+        chroma_dir=chroma_dir, collection_name=args.new_collection,
+    )
+    chroma_ids = set(list_chunk_ids(chroma_dir=chroma_dir, collection_name=args.new_collection))
     lexical_ids = set(list_lexical_chunk_ids(path=args.lexical_db))
     global_failures = global_gate_failures(
         manifest=manifest,
         manifest_attachment_keys=set(str(value) for value in manifest_files),
-        chroma_attachment_keys=set(list_attachment_keys(collection_name=args.new_collection)),
+        chroma_attachment_keys=set(
+            list_attachment_keys(chroma_dir=chroma_dir, collection_name=args.new_collection)
+        ),
         chroma_ids=chroma_ids,
         lexical_ids=lexical_ids,
         pipeline_config_exists=args.pipeline_config.exists(),

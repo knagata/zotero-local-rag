@@ -86,6 +86,7 @@ def main() -> None:
     _run(
         "python", "scripts/audit_v3_cutover.py",
         "--new-only", "--new-collection", collection, "--manifest", str(manifest),
+        "--chroma-dir", str(chroma_dir),
         "--lexical-db", str(lexical_db), "--pipeline-config", str(pipeline_config),
         "--zotero-report", str(zotero_audit_path), "--source-report", str(source_audit_path),
         "--output", str(gate_path),
