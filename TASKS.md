@@ -5,6 +5,49 @@
 
 ## Active
 
+### 2026-07-30 全コードレビュー: 検出された欠陥の修正
+
+`src/`全体＋Setup/Maintenance-Widgetから呼ばれるscriptsを5並列agentでレビューし、
+明確かつ重大な瑕疵を検出（詳細はセッション記録参照）。利用制限による中断に備え、
+1件直すごとにここへ進捗を反映してコミットする。
+
+- [ ] **F1: `reocr_adoption.py`のChromaロールバックフラグ順序**
+  `adopt_prepared_reocr`が`collection.delete()`成功後・`upsert()`失敗時に
+  ロールバックせず、チャンクが永久消失する。src/reocr_adoption.py:154-203
+- [ ] **F2: `docling_extract.py`の破損ページzoneタグ付け**
+  `_patch_pages_with_docling_ocr`が`corrupted_unresolved`プレースホルダーに
+  `zone="body"`を付けて索引化し、検索・要約にゴミ文字列が混入する。
+  src/docling_extract.py:721-736
+- [ ] **F3: `rag_mcp_server.py`の`search_items` FFIデッドロック＋品質フィルタ欠落**
+  `rag_search`/`_hierarchical_search_v2`にある「クエリ埋め込み事前計算」共通化を
+  `search_items`にも適用し、`retrieval_policy_allowed`フィルタも揃える。
+  src/rag_mcp_server.py:1630-1741
+- [ ] **F4: `verify_against_source.py`の読み取り失敗fail-open**
+  ソースPDFが読めない場合、監査结果から除外されて`passed: true`のまま通過する。
+  scripts/verify_against_source.py:132-161
+- [ ] **F5: `index_from_zotero.py`の削除失敗の握りつぶし**
+  `_delete_by_attachment_keys(strict=False)`の例外が呼び出し側の空`except`で消え、
+  削除失敗でも成功扱いでmanifestから孤立キーが消える。
+  src/index_from_zotero.py:230-246,1669-1674
+- [ ] **F6: `rag_mcp_server.py`のグローバルChromaクライアント状態の排他制御**
+  `_reset_col`/`_col`がロックなしで並行呼び出しされ得る。src/rag_mcp_server.py:232-508
+- [ ] **F7: `run_mistral_ocr_batch.py`の`create_job`冪等性チェックポイント**
+  課金ジョブ作成後に状態保存前でクラッシュすると再実行で重複課金が起こり得る。
+  scripts/run_mistral_ocr_batch.py:191-211
+- [ ] **F8: `item_vectors.py`のアイテム単位キャッシュ無効化**
+  再取込後も古い埋め込みベクトルがキャッシュされ続け、`related_items`が古い結果を返す。
+  src/item_vectors.py:44-99
+- [ ] **F9: OCR系extractorの`ocr_pages`/`missing_pages`集計を共通化**
+  yomitoku/rapidocrが実際の出力に関わらず全ページ主張する古いバグを、
+  mistral/ndlocrで既に直っている集計ロジックに揃える。
+  src/yomitoku_extract.py:277, src/rapidocr_extract.py:216
+- [ ] **F10: `db_relations.py`の`resolve_work()`曖昧一致の決定性**
+  `ORDER BY`なしのクエリで同点候補があると非決定的に同定される。
+  src/db_relations.py:830-853, 2606-2644
+- [ ] **F11: `chunk_store.py`のCHROMA_DIRパス解決バイパス**
+  `DEFAULT_CHROMA_DIR`が`resolve_configured_path`を経由せず生の環境変数から
+  直接計算される潜在バグ。src/chunk_store.py:16, scripts/audit_v3_cutover.py
+
 ### Phase 0: ゼロ再構築前の取り込み完全性修正
 
 依存順: `Z0` → (`Z1`, `Z2`, `Z3`) → `Z4` → `Z5` → `Z6`。相互に独立する
