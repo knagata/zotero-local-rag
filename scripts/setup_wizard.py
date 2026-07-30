@@ -733,7 +733,17 @@ def configure_feature_level(config: dict[str, str]) -> None:
     if can_keep:
         print(f"   [0] 現在の設定を維持（現在: {existing}）")
     default = "0" if can_keep else "1"
-    choice = input(f"選択 [0-2、既定 {default}]: ").strip() or default
+    valid_choices = {"0", "1", "2"} if can_keep else {"1", "2"}
+    while True:
+        choice = input(f"選択 [0-2、既定 {default}]: ").strip() or default
+        if choice in valid_choices:
+            break
+        # Any unrecognized input used to fall through to the `else` branch
+        # below (apply_preset(config, "minimal")), so mistyping "y" here --
+        # an easy slip, since most other wizard prompts are y/n -- silently
+        # reset every feature-level setting (including PDF structure
+        # recovery) back to Minimal with no error at all (found 2026-07-31).
+        print(f"'{choice}'は無効な選択です。{'0、1、2' if can_keep else '1、2'}のいずれかを入力してください。")
     if choice == "0":
         return
     if choice == "2":

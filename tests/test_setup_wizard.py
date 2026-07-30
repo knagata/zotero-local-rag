@@ -452,6 +452,22 @@ class SetupWizardTests(unittest.TestCase):
             setup_wizard.configure_feature_level(config)
         self.assertEqual(config, before)
 
+    def test_an_unrecognized_choice_reprompts_instead_of_silently_resetting_to_minimal(self):
+        # 2026-07-31 regression: any input other than "0"/"2" used to fall
+        # through to `else: apply_preset(config, "minimal")` with no
+        # validation -- mistyping "y" here (an easy slip, since most other
+        # wizard prompts ARE y/n) silently reset every feature-level setting,
+        # including PDF structure recovery, back to Minimal with no error.
+        config = dict(setup_wizard.PRESETS["minimal"])
+        config["FEATURE_LEVEL"] = "custom"
+        config["PDF_STRUCTURE_RECOVERY_ENABLE"] = "1"
+        before = dict(config)
+        output = StringIO()
+        with patch("builtins.input", side_effect=["y", "0"]), patch("sys.stdout", output):
+            setup_wizard.configure_feature_level(config)
+        self.assertIn("無効な選択です", output.getvalue())
+        self.assertEqual(config, before)  # "0" (keep current) applied after the reprompt
+
     def test_removed_cloud_policy_keys_are_cleared_on_any_run(self):
         config = {"EXTRACT_EXCLUDE_TAGS": "stale", "SUMMARY_ALLOW_CLOUD_ALL": "1",
                   "MISTRAL_OCR_FALLBACK_ENABLE": "1"}
