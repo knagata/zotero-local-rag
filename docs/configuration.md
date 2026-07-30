@@ -98,7 +98,7 @@ LLMロールはプロバイダ接頭辞つきで指定します（例: `deepseek
 | `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` | ロールが `anthropic:` / `gemini:` の場合に必須 |
 | `LLM_OPENAI_BASE_URL` / `LLM_OPENAI_API_KEY` | ロールが `openai_compat:` の場合に必須 |
 | `SUMMARY_BATCH_MAX_ITEMS` / `SUMMARY_BATCH_WORKERS` | メンテナンス要約バッチの規模・並列度 |
-| `MAINTENANCE_AUTO_APPROVE` | `1`ならローカル更新を自動許可。有料要約・Mistralは常に明示許可 | `1` |
+| `MAINTENANCE_AUTO_APPROVE` | 既定は`0`（毎回確認）。`1`ならローカル更新を自動許可（有料要約・Mistralは常に明示許可） |
 
 ### クラウド送信ポリシー
 
