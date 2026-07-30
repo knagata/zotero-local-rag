@@ -168,6 +168,23 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def submit(args: argparse.Namespace, state: dict[str, Any]) -> dict[str, Any]:
+    # A crash between create_job() succeeding and its result being persisted
+    # used to leave phase="uploaded" with every input_file_id populated, so a
+    # retry saw no pending uploads and called client.create_job() again --
+    # submitting a second, duplicate billed batch job for the same documents
+    # (found in code review, fixed 2026-07-30). phase="submitting" is written
+    # just before the call so that exact crash window fails closed on retry
+    # instead of silently resubmitting.
+    if state.get("phase") == "submitting":
+        raise RuntimeError(
+            "state is in phase='submitting': a previous run may have already "
+            "created a billed Mistral OCR batch job before crashing partway "
+            "through recording that fact. Check the Mistral dashboard/API for "
+            "a job matching this batch's uploaded input files before retrying -- "
+            "resubmitting here could create a duplicate paid job. Once confirmed, "
+            "edit the state file's phase back to 'uploaded' (or 'submitted' with "
+            "the real job_id, if one was created) and retry."
+        )
     if state.get("phase") not in {"prepared", "uploaded"}:
         raise RuntimeError(f"state must be prepared/uploaded before submit (phase={state.get('phase')})")
     input_files = state.get("input_files")
@@ -202,6 +219,8 @@ def submit(args: argparse.Namespace, state: dict[str, Any]) -> dict[str, Any]:
                 state.update({"phase": "uploaded", "uploaded_at": utc_now()})
                 save_json_atomic(args.state, state)
     input_file_ids = [str(entry["input_file_id"]) for entry in input_files]
+    state.update({"phase": "submitting", "submit_attempted_at": utc_now()})
+    save_json_atomic(args.state, state)
     job = client.create_job(input_file_ids, model=str(state["model"]), timeout_hours=args.timeout_hours)
     state.update({
         "phase": "submitted", "submitted_at": utc_now(),

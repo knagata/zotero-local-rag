@@ -31,7 +31,7 @@
   src/index_from_zotero.py:230-246,1669-1674
 - [x] **F6: `rag_mcp_server.py`のグローバルChromaクライアント状態の排他制御**（2026-07-30）
   `_reset_col`/`_col`がロックなしで並行呼び出しされ得る。src/rag_mcp_server.py:232-508
-- [ ] **F7: `run_mistral_ocr_batch.py`の`create_job`冪等性チェックポイント**
+- [x] **F7: `run_mistral_ocr_batch.py`の`create_job`冪等性チェックポイント**（2026-07-30）
   課金ジョブ作成後に状態保存前でクラッシュすると再実行で重複課金が起こり得る。
   scripts/run_mistral_ocr_batch.py:191-211
 - [ ] **F8: `item_vectors.py`のアイテム単位キャッシュ無効化**
