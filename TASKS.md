@@ -29,7 +29,7 @@
   `_delete_by_attachment_keys(strict=False)`の例外が呼び出し側の空`except`で消え、
   削除失敗でも成功扱いでmanifestから孤立キーが消える。
   src/index_from_zotero.py:230-246,1669-1674
-- [ ] **F6: `rag_mcp_server.py`のグローバルChromaクライアント状態の排他制御**
+- [x] **F6: `rag_mcp_server.py`のグローバルChromaクライアント状態の排他制御**（2026-07-30）
   `_reset_col`/`_col`がロックなしで並行呼び出しされ得る。src/rag_mcp_server.py:232-508
 - [ ] **F7: `run_mistral_ocr_batch.py`の`create_job`冪等性チェックポイント**
   課金ジョブ作成後に状態保存前でクラッシュすると再実行で重複課金が起こり得る。

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import threading
 os.environ["HF_HUB_OFFLINE"] = "1"
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -248,6 +249,13 @@ _COL_INIT_MANIFEST_MTIME: float = 0.0
 # read." A row-count mismatch is the corroborating signal that data actually
 # changed.
 _COL_INIT_ROW_COUNT: Optional[int] = None
+# Guards every read/mutation of the _COL/_EMB_FN globals above. Several tool
+# handlers can field concurrent MCP calls and each may call _col()/_reset_col()
+# mid-request; without this, one coroutine could observe _COL as None/half-
+# initialized while another is concurrently closing or rebuilding it. RLock
+# because _col() itself calls _reset_col() while already holding the lock
+# (found in code review, fixed 2026-07-30).
+_col_lock = threading.RLock()
 
 
 def _db_mtimes() -> tuple[float, float]:
@@ -321,42 +329,49 @@ def _reset_col() -> None:
     everything from disk.
     """
     global _COL
-    client = getattr(_COL, "_chroma_client", None) if _COL is not None else None
-    _COL = None
-    if client is not None:
-        try:
-            client.close()
-        except Exception as e:
-            _log.warning("ChromaDB client close() failed: %s", e)
-
-    # Belt and braces: if any client for this path was never closed (leaked
-    # refcount), the System survives close().  Stop and evict it explicitly.
-    try:
-        from chromadb.api.shared_system_client import SharedSystemClient
-
-        chroma_real = os.path.realpath(CHROMA_DIR)
-        for ident in list(SharedSystemClient._identifier_to_system.keys()):
+    with _col_lock:
+        client = getattr(_COL, "_chroma_client", None) if _COL is not None else None
+        _COL = None
+        if client is not None:
             try:
-                if os.path.realpath(ident) != chroma_real:
-                    continue
-            except OSError:
-                continue
-            system = SharedSystemClient._identifier_to_system.pop(ident, None)
-            with SharedSystemClient._refcount_lock:
-                SharedSystemClient._identifier_to_refcount.pop(ident, None)
-            if system is not None:
-                _log.info("Force-stopping leaked ChromaDB System for %s", ident)
-                try:
-                    system.stop()
-                except Exception as e:
-                    _log.warning("ChromaDB System stop() failed: %s", e)
-    except Exception as e:
-        _log.warning("ChromaDB system-cache eviction failed: %s", e)
+                client.close()
+            except Exception as e:
+                _log.warning("ChromaDB client close() failed: %s", e)
 
-    gc.collect()
+        # Belt and braces: if any client for this path was never closed (leaked
+        # refcount), the System survives close().  Stop and evict it explicitly.
+        try:
+            from chromadb.api.shared_system_client import SharedSystemClient
+
+            chroma_real = os.path.realpath(CHROMA_DIR)
+            for ident in list(SharedSystemClient._identifier_to_system.keys()):
+                try:
+                    if os.path.realpath(ident) != chroma_real:
+                        continue
+                except OSError:
+                    continue
+                system = SharedSystemClient._identifier_to_system.pop(ident, None)
+                with SharedSystemClient._refcount_lock:
+                    SharedSystemClient._identifier_to_refcount.pop(ident, None)
+                if system is not None:
+                    _log.info("Force-stopping leaked ChromaDB System for %s", ident)
+                    try:
+                        system.stop()
+                    except Exception as e:
+                        _log.warning("ChromaDB System stop() failed: %s", e)
+        except Exception as e:
+            _log.warning("ChromaDB system-cache eviction failed: %s", e)
+
+        gc.collect()
 
 
 def _col():
+    with _col_lock:
+        return _col_locked()
+
+
+def _col_locked():
+    """Body of ``_col()``; callers must already hold ``_col_lock``."""
     global _COL, _EMB_FN, _EMB_COLLECTION_NAME, _COL_INIT_MTIME
     global _COL_INIT_DB_MTIME, _COL_INIT_MANIFEST_MTIME, _COL_INIT_ROW_COUNT
 

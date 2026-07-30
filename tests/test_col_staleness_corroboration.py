@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -161,6 +162,57 @@ class CollectionRowCountTests(unittest.TestCase):
                 count = rag_mcp_server._collection_row_count("zotero_paragraphs_v3")
 
         self.assertEqual(count, 2)
+
+
+class ColLockSerializationTests(unittest.TestCase):
+    """2026-07-30 regression: _COL/_EMB_FN were mutated with no locking despite
+    the MCP server fielding concurrent tool calls. One coroutine could observe
+    _COL as None/half-initialized while another was concurrently resetting or
+    rebuilding it -- an intermittent, hard-to-reproduce crash or stale-client
+    query. _col_lock must be held for the full duration of _col()'s work.
+    """
+
+    def setUp(self):
+        self._orig_col = rag_mcp_server._COL
+        self._orig_emb_fn = rag_mcp_server._EMB_FN
+        self._orig_coll_name = rag_mcp_server._EMB_COLLECTION_NAME
+
+    def tearDown(self):
+        rag_mcp_server._COL = self._orig_col
+        rag_mcp_server._EMB_FN = self._orig_emb_fn
+        rag_mcp_server._EMB_COLLECTION_NAME = self._orig_coll_name
+
+    def test_col_lock_is_held_for_the_full_duration_of_col(self):
+        rag_mcp_server._COL = None
+        rag_mcp_server._EMB_FN = Mock()  # skip the embedding-model init branch
+        rag_mcp_server._EMB_COLLECTION_NAME = "zotero_paragraphs_v3"
+
+        entered = threading.Event()
+        release = threading.Event()
+
+        def slow_open_chroma_collection(*args, **kwargs):
+            entered.set()
+            release.wait(timeout=2)
+            return Mock()
+
+        with patch.object(rag_mcp_server, "_db_mtimes", return_value=(0.0, 0.0)), \
+             patch.object(
+                 rag_mcp_server, "open_chroma_collection",
+                 side_effect=slow_open_chroma_collection,
+             ):
+            thread = threading.Thread(target=rag_mcp_server._col)
+            thread.start()
+            self.assertTrue(entered.wait(timeout=2), "worker never entered _col()")
+            # _col() must still hold the lock while mid-initialization -- a
+            # non-blocking acquire from this thread must fail.
+            self.assertFalse(rag_mcp_server._col_lock.acquire(blocking=False))
+            release.set()
+            thread.join(timeout=2)
+            self.assertFalse(thread.is_alive())
+
+        # Once _col() has returned, the lock must be free again.
+        self.assertTrue(rag_mcp_server._col_lock.acquire(blocking=False))
+        rag_mcp_server._col_lock.release()
 
 
 if __name__ == "__main__":
