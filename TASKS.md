@@ -37,10 +37,11 @@
 - [x] **F8: `item_vectors.py`のアイテム単位キャッシュ無効化**（2026-07-30）
   再取込後も古い埋め込みベクトルがキャッシュされ続け、`related_items`が古い結果を返す。
   src/item_vectors.py:44-99
-- [ ] **F9: OCR系extractorの`ocr_pages`/`missing_pages`集計を共通化**
-  yomitoku/rapidocrが実際の出力に関わらず全ページ主張する古いバグを、
-  mistral/ndlocrで既に直っている集計ロジックに揃える。
-  src/yomitoku_extract.py:277, src/rapidocr_extract.py:216
+- [x] **F9: OCR系extractorの`ocr_pages`/`missing_pages`集計を共通化**（2026-07-30）
+  yomitoku_extract.pyを修正（実際にchunkを産出したページのみ`ocr_pages`に計上）。
+  rapidocr_extract.pyは調査の結果ndlocrと同じ「`ocr_pages`=試行ページ、
+  `missing_pages`は別途`pages_with_text`から算出」という設計済みの規約に
+  従っており、ゲートは`missing_pages`しか見ないため実害なし。変更不要と判断。
 - [ ] **F10: `db_relations.py`の`resolve_work()`曖昧一致の決定性**
   `ORDER BY`なしのクエリで同点候補があると非決定的に同定される。
   src/db_relations.py:830-853, 2606-2644

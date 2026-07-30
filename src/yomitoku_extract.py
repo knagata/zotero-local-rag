@@ -207,6 +207,7 @@ def extract_chunks_from_pdf_with_yomitoku(
     total_blocks = 0
     heading_blocks = 0
     inferred_path: List[str] = []
+    covered_pages: List[int] = []
 
     for page_index, image in enumerate(images):
         page_no = page_index + 1
@@ -232,6 +233,7 @@ def extract_chunks_from_pdf_with_yomitoku(
         max_chars = MAX_CHARS_CJK if is_cjk else MAX_CHARS
         target_chars = TARGET_CHARS_CJK if is_cjk else TARGET_CHARS
 
+        chunks_before_page = len(chunks)
         for block_index, block in enumerate(blocks):
             block_text = block["text"]
             if block["block_type"] == "heading":
@@ -266,15 +268,26 @@ def extract_chunks_from_pdf_with_yomitoku(
                         metadata[f"bbox_{axis}"] = float(block["bbox"][axis])
                 chunks.append((chunk_id, part, metadata))
                 total_blocks += 1
+        if len(chunks) > chunks_before_page:
+            covered_pages.append(page_no)
         if not outline_path and active_path:
             inferred_path = list(active_path)
 
+    covered_pages = sorted(set(covered_pages))
+    # ocr_pages used to be claimed as every page of the source PDF regardless
+    # of whether that page actually produced any chunks, reproducing the same
+    # bug already found and fixed in mistral_ocr_extract.py/ndlocr_extract.py
+    # (found in code review, fixed 2026-07-30): a page yomitoku ran on but got
+    # nothing usable from left no trace, so a coverage gate reading ocr_pages
+    # would see full coverage for a page with zero indexed text.
+    missing_pages = sorted(set(range(1, page_count + 1)) - set(covered_pages))
     return chunks, {
         "is_scanned": False, "is_corrupted": False,
         "scanned_pages": [], "corrupted_pages": [],
         "total_pages": page_count, "parser": "yomitoku",
         "device": device, "lite": lite,
-        "ocr_pages": list(range(1, page_count + 1)),
+        "ocr_pages": covered_pages,
+        "missing_pages": missing_pages,
         "page_confidences": page_confidences,
         "blocks": total_blocks, "heading_blocks": heading_blocks,
         "dpi": dpi,
