@@ -1666,11 +1666,19 @@ async def main_async(args: argparse.Namespace) -> None:
             # attachment answering keyword search (2026-07-28). This helper
             # instead defers to lexical_index's own default resolution, the
             # same as every other caller.
+            # strict=True so a real delete failure (transient Chroma/lexical
+            # I/O error) raises instead of being swallowed inside the helper
+            # -- strict=False's default fail-open meant this try/except could
+            # never actually fire, so deleted_stale and the manifest pop below
+            # ran unconditionally even when the underlying delete failed,
+            # orphaning the stale rows with no manifest entry left to retry
+            # them from (found in code review, fixed 2026-07-30).
             try:
-                _delete_by_attachment_keys(col, [stale_key])
-                deleted_stale += 1
-            except Exception:
-                pass
+                _delete_by_attachment_keys(col, [stale_key], strict=True)
+            except Exception as exc:
+                print(f"[WARN] Failed to delete stale attachment {stale_key}: {exc}", file=sys.stderr)
+                continue
+            deleted_stale += 1
             files_manifest.pop(stale_key, None)
 
         # relations.db からも削除済みアイテムのレコードをパージ。

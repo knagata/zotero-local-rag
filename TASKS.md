@@ -25,7 +25,7 @@
 - [x] **F4: `verify_against_source.py`の読み取り失敗fail-open**（2026-07-30）
   ソースPDFが読めない場合、監査结果から除外されて`passed: true`のまま通過する。
   scripts/verify_against_source.py:132-161
-- [ ] **F5: `index_from_zotero.py`の削除失敗の握りつぶし**
+- [x] **F5: `index_from_zotero.py`の削除失敗の握りつぶし**（2026-07-30）
   `_delete_by_attachment_keys(strict=False)`の例外が呼び出し側の空`except`で消え、
   削除失敗でも成功扱いでmanifestから孤立キーが消える。
   src/index_from_zotero.py:230-246,1669-1674
