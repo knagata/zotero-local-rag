@@ -71,8 +71,8 @@ macOSでは [Maintenance-Widget.command](Maintenance-Widget.command) をダブ�
 
 不要な項目だけ `n` を入力して除外できます。実行後に未解決の処理状態サマリも表示されます。ログはTerminalへ表示されます。
 
-DBのゼロ再構築（`--rebuild`）は [Setup.command](Setup.command) から行います。初回構築（確認なし）または
-プロファイル変更時の再構築（`REBUILD`入力確認）を案内し、続けてDB監査まで実行できます。
+DBのゼロ再構築（`--rebuild`）は [Setup.command](Setup.command) から行います。初回構築は確認なし、既存DBがある場合は
+常に再構築の案内（`REBUILD`入力確認。プロファイル変更時は必須、他は任意）が出て、続けてDB監査まで実行できます。
 
 AI要約の全件backfillは費用確認（`SUMMARIZE`入力）とDB監査合格後に行います。既に最新の要約は追加API呼び出しなしでskipします。Mistral Batchも、
 初回は送信だけを行い、完了後にWidgetを再起動して同項目を許可したときに回収・品質確認・採用します。

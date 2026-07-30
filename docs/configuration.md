@@ -175,7 +175,8 @@ Homebrewの`tesseract`／`tesseract-lang`をウィザードから導入します
 ### サーバーDB構築と階層要約
 
 DBのゼロ構築・再構築は `Setup.command` から行います（真の初回は確認なし、既存DBがある
-プロファイル変更時は`REBUILD`入力確認）。構築後に案内されるDB監査（Zotero/原本/DB整合性の
+場合は常に`REBUILD`入力確認付きの案内。プロファイル変更時は必須、それ以外は任意）。
+構築後に案内されるDB監査（Zotero/原本/DB整合性の
 3監査、非破壊）が、現在のDB世代に結び付いた合格gateを作成します。有料の階層AI要約
 （`Maintenance-Widget.command`の差分バッチ、または`SUMMARIZE`確認を伴う全件一括生成）は
 このgateがなければ実行できず、監査後にDBが変わると次の要約実行前に停止します。

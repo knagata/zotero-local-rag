@@ -23,7 +23,8 @@
 バックアップを復元するか、原本からDBを再構築します。
 
 確定手順は [Setup.command](../Setup.command) でのV3 DBゼロ構築（真の初回は確認なし、
-既存DBがあるプロファイル変更時は`REBUILD`確認）と、[Maintenance-Widget.command](../Maintenance-Widget.command)
+既存DBがある場合は常に`REBUILD`確認付きの再構築案内。プロファイル変更時は必須、それ以外は
+任意でスキップ可）と、[Maintenance-Widget.command](../Maintenance-Widget.command)
 から実行するDB監査（Zotero・原本coverage・DB整合性、非破壊）です。合格したDB世代だけが
 有料階層AI要約（差分バッチ、または`SUMMARIZE`確認を伴う全件一括生成）を実行でき、
 `scripts/audit_structure_summaries.py`で要約と`__sum_node`索引を監査します。

@@ -915,9 +915,15 @@ def offer_initial_db_build(
     A true first run -- and only a state we can positively prove is empty --
     has nothing to lose, so it skips the typed REBUILD confirmation. Anything
     else keeps it: the confirmation protects an *existing* database, and a
-    state we cannot read is not evidence that there is no database. A profile
-    change is the case that reaches it in practice (2026-07-30 user decision),
-    since that rebuild discards real embeddings.
+    state we cannot read is not evidence that there is no database. The offer
+    itself is unconditional whenever a database already exists -- not only on
+    a profile change -- so the operator always gets a chance to rebuild after
+    changing any other setting that affects extraction/indexing (PDF
+    structure recovery, an engine choice, etc.), not just the embedding model
+    (2026-07-31 user decision, superseding the narrower 2026-07-30 one).
+    ``profile_changed`` only adjusts the wording: a profile change makes the
+    existing collection outright unusable, so that case is phrased as
+    required rather than optional.
 
     There used to be a third .command file (Server-Database-Workflow.command)
     hosting both steps; it added a file to discover without changing either
@@ -937,14 +943,18 @@ def offer_initial_db_build(
     """
     db_state = db_lifecycle.existing_database_state(chroma_directory, manifest_file)
     destructive = db_state != db_lifecycle.DB_STATE_EMPTY
-    if destructive and not profile_changed:
-        return True
 
     print("\n" + "=" * 60)
     if destructive:
-        print("5. DBの再構築（設定変更のため必要）")
-        print("   埋め込みプロファイルが変更されたため、既存のV3データベースは")
-        print("   このままでは使えません（既存の埋め込みを破棄して作り直します）。")
+        if profile_changed:
+            print("5. DBの再構築（設定変更のため必要）")
+            print("   埋め込みプロファイルが変更されたため、既存のV3データベースは")
+            print("   このままでは使えません（既存の埋め込みを破棄して作り直します）。")
+        else:
+            print("5. DBの再構築（任意）")
+            print("   PDF構造化やLLM機能など、埋め込み以外の設定を変更した場合に")
+            print("   ここでゼロから作り直せます。不要ならEnterでスキップしてください")
+            print("   （既存のデータベースはそのまま使えます）。")
         if db_state == db_lifecycle.DB_STATE_UNKNOWN:
             print("   [注意] 既存DBの状態を確認できませんでした（manifestが読めない、")
             print("          または設定が解決できません）。中身がある前提で扱います。")

@@ -377,7 +377,10 @@ class SetupWizardTests(unittest.TestCase):
                 setup_wizard, "ensure_embedding_model",
                 return_value=str(Path(directory) / "models" / "bge-m3"),
             ), patch(
-                "builtins.input", side_effect=["y", "", ""],
+                # Trailing "" declines the now-unconditional (2026-07-31)
+                # rebuild offer -- previously skipped outright for an
+                # unchanged profile, so this test needed one fewer answer.
+                "builtins.input", side_effect=["y", "", "", ""],
             ), patch.object(
                 setup_wizard.shutil, "which", return_value=None,
             ), patch.object(
@@ -484,6 +487,12 @@ class OfferInitialDbBuildTests(unittest.TestCase):
     # literal string REBUILD for this same destructive operation, and
     # collapsing the files must not weaken that (2026-07-30 user decision).
     #
+    # The offer itself is unconditional whenever a database exists, not only
+    # on a profile change (2026-07-31 user decision) -- an operator who
+    # changed e.g. PDF structure recovery wants the same chance to rebuild
+    # that a profile change gets, just phrased as optional rather than
+    # required.
+    #
     # The return value (True = no failure, False = the operator asked for a
     # build/audit that then failed) is what lets Setup.command's exit code
     # actually reflect a failure instead of always reporting success
@@ -503,25 +512,39 @@ class OfferInitialDbBuildTests(unittest.TestCase):
             manifest_file=self.MANIFEST_FILE, profile_changed=profile_changed,
         )
 
-    def test_existing_db_with_unchanged_profile_skips_everything(self):
+    def test_existing_db_with_unchanged_profile_still_offers_a_rebuild(self):
+        # 2026-07-31: the offer used to be skipped entirely (no prompt at
+        # all) whenever the profile hadn't changed, so changing any other
+        # setting (PDF structure recovery, an engine choice) gave no chance
+        # to rebuild from the wizard -- only the raw `--rebuild` CLI flag
+        # could do it. Declining (bare Enter) must still skip cleanly.
         with self._state(setup_wizard.db_lifecycle.DB_STATE_POPULATED), \
-             patch("builtins.input") as mock_input, \
+             patch("builtins.input", side_effect=[""]) as mock_input, \
              patch.object(setup_wizard.db_lifecycle, "run_rebuild") as mock_rebuild, \
              patch.object(setup_wizard.db_lifecycle, "run_audit") as mock_audit, \
              patch("sys.stdout", StringIO()):
             result = self._call(profile_changed=False)
-        mock_input.assert_not_called()
+        mock_input.assert_called_once()
         mock_rebuild.assert_not_called()
         mock_audit.assert_not_called()
         self.assertTrue(result)
 
-    def test_unreadable_state_with_unchanged_profile_also_skips_everything(self):
+    def test_unchanged_profile_rebuild_offer_still_proceeds_on_typed_rebuild(self):
+        with self._state(setup_wizard.db_lifecycle.DB_STATE_POPULATED), \
+             patch("builtins.input", side_effect=["REBUILD", "n"]), \
+             patch.object(setup_wizard.db_lifecycle, "run_rebuild", return_value=0) as mock_rebuild, \
+             patch("sys.stdout", StringIO()):
+            result = self._call(profile_changed=False)
+        mock_rebuild.assert_called_once_with(Path("/unused"))
+        self.assertTrue(result)
+
+    def test_unreadable_state_with_unchanged_profile_still_offers_a_rebuild(self):
         with self._state(setup_wizard.db_lifecycle.DB_STATE_UNKNOWN), \
-             patch("builtins.input") as mock_input, \
+             patch("builtins.input", side_effect=[""]) as mock_input, \
              patch.object(setup_wizard.db_lifecycle, "run_rebuild") as mock_rebuild, \
              patch("sys.stdout", StringIO()):
             result = self._call(profile_changed=False)
-        mock_input.assert_not_called()
+        mock_input.assert_called_once()
         mock_rebuild.assert_not_called()
         self.assertTrue(result)
 
