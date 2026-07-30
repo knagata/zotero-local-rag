@@ -11,7 +11,7 @@
 明確かつ重大な瑕疵を検出（詳細はセッション記録参照）。利用制限による中断に備え、
 1件直すごとにここへ進捗を反映してコミットする。
 
-- [ ] **F1: `reocr_adoption.py`のChromaロールバックフラグ順序**
+- [x] **F1: `reocr_adoption.py`のChromaロールバックフラグ順序**（2026-07-30）
   `adopt_prepared_reocr`が`collection.delete()`成功後・`upsert()`失敗時に
   ロールバックせず、チャンクが永久消失する。src/reocr_adoption.py:154-203
 - [ ] **F2: `docling_extract.py`の破損ページzoneタグ付け**

@@ -151,11 +151,17 @@ def adopt_prepared_reocr(
 
     status_writer(item_key, "extraction", "running", attachment_key=attachment_key,
                   processor_version=str(prepared.get("version") or "unknown"))
+    # collection_delete_done must be tracked separately from collection_changed:
+    # if delete() succeeds but the following upsert() throws, collection_changed
+    # would stay False and the except block below would skip restoring the old
+    # rows, leaving the attachment's chunks permanently deleted (2026-07-30).
+    collection_delete_done = False
     collection_changed = False
     lexical_changed = False
     manifest_changed = False
     try:
         collection.delete(where={"attachmentKey": attachment_key})
+        collection_delete_done = True
         collection.upsert(ids=new_ids, documents=new_docs, metadatas=new_metas)
         collection_changed = True
         delete_by_attachment_keys([attachment_key], path=lexical_path)
@@ -190,10 +196,10 @@ def adopt_prepared_reocr(
         status_writer(item_key, "references", "stale", reason_code="source_reocr_adopted",
                       source_fingerprint=built["source_fingerprint"])
     except Exception:
-        if collection_changed:
+        if collection_delete_done:
             collection.delete(where={"attachmentKey": attachment_key})
             collection.upsert(ids=old_ids, documents=old_docs, metadatas=old_metas)
-        if lexical_changed or collection_changed:
+        if lexical_changed or collection_delete_done:
             delete_by_attachment_keys([attachment_key], path=lexical_path)
             upsert_chunks(old_ids, old_docs, old_metas, path=lexical_path)
         if manifest_changed:

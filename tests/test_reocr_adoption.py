@@ -105,6 +105,39 @@ class ReocrAdoptionTests(unittest.TestCase):
             self.assertEqual(set(collection.rows), {"ATT:p1:old"})
             self.assertEqual(load_manifest(manifest_path), original)
 
+    def test_upsert_failure_after_delete_still_restores_old_chroma_rows(self):
+        # Regression for 2026-07-30: collection_changed used to flip to True
+        # only after BOTH delete() and upsert() succeeded, so an upsert()
+        # failure right after a successful delete() skipped the rollback
+        # entirely and permanently dropped the attachment's chunks.
+        collection = FakeCollection()
+        rows = old_chunks()
+        collection.upsert(ids=[rows[0]["id"]], documents=[rows[0]["text"]], metadatas=[rows[0]["metadata"]])
+        real_upsert = collection.upsert
+        calls = {"n": 0}
+
+        def upsert_fails_once(*, ids, documents, metadatas):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("upsert failed")
+            real_upsert(ids=ids, documents=documents, metadatas=metadatas)
+
+        collection.upsert = upsert_fails_once
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest_path = root / "manifest_v3.json"
+            original = {"version": 1, "files": {"ATT": {"title": "Before"}}, "notes": {}}
+            save_manifest(manifest_path, original)
+            with self.assertRaises(RuntimeError):
+                adopt_prepared_reocr(
+                    item_key="ITEM", attachment_key="ATT", prepared=prepared(),
+                    collection=collection, old_item_chunks=rows,
+                    manifest_path=manifest_path, lexical_path=root / "lexical.sqlite3",
+                    status_writer=lambda *args, **kwargs: None,
+                )
+            self.assertEqual(set(collection.rows), {"ATT:p1:old"})
+            self.assertEqual(load_manifest(manifest_path), original)
+
 
 if __name__ == "__main__":
     unittest.main()
