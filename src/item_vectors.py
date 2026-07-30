@@ -33,26 +33,47 @@ def get_item_vectors(
     """Return normalized means of each item's chunk embeddings.
 
     Unknown items are computed incrementally. A collection or embedding-dimension
-    change invalidates the cache. Individual malformed vectors are ignored.
+    change invalidates the whole cache. Individual malformed vectors are ignored.
+
+    A per-item entry also carries the chunk count Chroma reported when it was
+    computed ("n"). Re-ingesting one item (e.g. via ``--force-reparse``) does
+    not change the collection name or dimension, so the wholesale invalidation
+    above never fires for it -- without this per-item check the stale vector
+    would be served indefinitely and ``related_items()`` would silently never
+    reflect the re-extraction (found in code review, fixed 2026-07-30).
     """
     requested = list(dict.fromkeys(key for key in item_keys if key))
     if not requested:
         return {}
     cache_path = cache_path or DEFAULT_CACHE_PATH
     vectors: dict[str, list[float]] = {}
+    chunk_counts: dict[str, int] = {}
     metadata: dict[str, Any] = {}
     if cache_path.exists():
         try:
             raw = json.loads(cache_path.read_text(encoding="utf-8"))
             if isinstance(raw, dict):
                 metadata = raw.get(_META_KEY, {}) if isinstance(raw.get(_META_KEY), dict) else {}
-                vectors = {
-                    key: value
-                    for key, value in raw.items()
-                    if key != _META_KEY and isinstance(value, list)
-                }
+                for key, value in raw.items():
+                    if key == _META_KEY:
+                        continue
+                    if isinstance(value, list):
+                        # Legacy entries (written before per-item staleness
+                        # tracking) carry no chunk count -- leave them out of
+                        # chunk_counts so the freshness check below always
+                        # recomputes them once, migrating them to the new
+                        # format.
+                        vectors[key] = value
+                    elif (
+                        isinstance(value, dict)
+                        and isinstance(value.get("v"), list)
+                        and isinstance(value.get("n"), int)
+                    ):
+                        vectors[key] = value["v"]
+                        chunk_counts[key] = value["n"]
         except (OSError, json.JSONDecodeError):
             vectors = {}
+            chunk_counts = {}
 
     client = None
     try:
@@ -68,6 +89,20 @@ def get_item_vectors(
             or metadata.get("collection") not in (None, collection_name)
         ):
             vectors = {}
+            chunk_counts = {}
+
+        stale_keys: set[str] = set()
+        for key in (key for key in requested if key in vectors):
+            try:
+                current_count = collection.get(where={"itemKey": key}, include=[])
+                current_count = len(current_count.get("ids") or [])
+            except Exception:
+                continue
+            if chunk_counts.get(key) != current_count:
+                stale_keys.add(key)
+        for key in stale_keys:
+            vectors.pop(key, None)
+            chunk_counts.pop(key, None)
 
         for key in (key for key in requested if key not in vectors):
             try:
@@ -85,6 +120,7 @@ def get_item_vectors(
                     continue
                 vector /= norm
                 vectors[key] = [round(float(value), 6) for value in vector]
+                chunk_counts[key] = len(item_embeddings)
                 current_dim = current_dim or len(vector)
             except Exception:
                 continue
@@ -95,7 +131,11 @@ def get_item_vectors(
                 "embedding_dim": current_dim,
                 "collection": collection_name,
             },
-            **vectors,
+            **{
+                key: {"v": value, "n": chunk_counts[key]}
+                for key, value in vectors.items()
+                if key in chunk_counts
+            },
         }
         temporary = cache_path.with_suffix(".tmp")
         temporary.write_text(json.dumps(payload), encoding="utf-8")

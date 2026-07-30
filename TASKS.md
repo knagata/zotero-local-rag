@@ -34,7 +34,7 @@
 - [x] **F7: `run_mistral_ocr_batch.py`の`create_job`冪等性チェックポイント**（2026-07-30）
   課金ジョブ作成後に状態保存前でクラッシュすると再実行で重複課金が起こり得る。
   scripts/run_mistral_ocr_batch.py:191-211
-- [ ] **F8: `item_vectors.py`のアイテム単位キャッシュ無効化**
+- [x] **F8: `item_vectors.py`のアイテム単位キャッシュ無効化**（2026-07-30）
   再取込後も古い埋め込みベクトルがキャッシュされ続け、`related_items`が古い結果を返す。
   src/item_vectors.py:44-99
 - [ ] **F9: OCR系extractorの`ocr_pages`/`missing_pages`集計を共通化**
