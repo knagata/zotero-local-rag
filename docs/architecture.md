@@ -22,10 +22,11 @@
 旧（legacy）collection・manifest・FTSへの設定rollbackはサポートしません。障害時はV3の
 バックアップを復元するか、原本からDBを再構築します。
 
-サーバーでの確定手順は [Server-Database-Workflow.command](../Server-Database-Workflow.command)
-の4フェーズです。フェーズ1でV3 DBをゼロから構築し、フェーズ2でZotero・原本coverage・
-DB整合性を監査します。合格したDB世代だけが、フェーズ3の有料階層AI要約を実行でき、
-フェーズ4で要約と`__sum_node`索引を監査します。
+確定手順は [Setup.command](../Setup.command) でのV3 DBゼロ構築（真の初回は確認なし、
+既存DBがあるプロファイル変更時は`REBUILD`確認）と、[Maintenance-Widget.command](../Maintenance-Widget.command)
+から実行するDB監査（Zotero・原本coverage・DB整合性、非破壊）です。合格したDB世代だけが
+有料階層AI要約（差分バッチ、または`SUMMARIZE`確認を伴う全件一括生成）を実行でき、
+`scripts/audit_structure_summaries.py`で要約と`__sum_node`索引を監査します。
 
 **要約の現況**: 文書構造からのbottom-upなAI（LLM）要約パイプラインは実装済みですが、
 全件生成はpilot→ユーザー承認待ちの段階です。検索索引（`__sum_node`）に載るのはLLM要約

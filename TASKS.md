@@ -62,13 +62,34 @@ extractor修正は並行実装する。修正完了まで埋め込み・正本DB
 
 ### サーバー再構築の確定手順
 
-- [ ] **V3唯一化とサーバーDB構築を完了する**
+- [x] **V3唯一化とサーバーDB構築を完了する**（2026-07-30、直後の項目で置き換え）
   - 旧collection・旧manifest・旧FTSへのruntime rollbackを廃止し、V3以外の設定をfail-closedにする。
-  - `Setup.command` / `setup_wizard.py --server` は設定だけを行い、DB構築・埋め込み・有料APIを実行しない。
-  - `Server-Database-Workflow.command` を `1) DB再構築 → 2) Zotero/原本/DB監査 →
-    3) 有料階層要約 → 4) 要約監査` の順に別実行する。
-  - フェーズ2のDB世代gateがなければフェーズ3のAPI呼出しを開始しない。Custom設定で
-    AI目次fast pathはフェーズ1でも課金し得るため、必要に応じて明示的に無効化する。
+  - ~~`Setup.command` / `setup_wizard.py --server` は設定だけを行い、DB構築・埋め込み・有料APIを実行しない。~~
+    （2026-07-30 ユーザー判断で撤回。Setup自身がDB構築を案内・実行する形に変更。詳細は次項。）
+  - ~~`Server-Database-Workflow.command` を `1) DB再構築 → 2) Zotero/原本/DB監査 →
+    3) 有料階層要約 → 4) 要約監査` の順に別実行する。~~（同ファイルは廃止。次項参照。）
+  - DB世代gateがなければ有料要約のAPI呼出しを開始しない、という制約自体は維持
+    （`scripts/run_db_audit.py`が作成するgateに変更なし）。Custom設定でAI目次fast pathは
+    DB構築時でも課金し得るため、必要に応じて明示的に無効化する。
+- [x] **運用スクリプトを`Setup.command`/`Maintenance-Widget.command`の2本へ集約する**（2026-07-30）
+  - `Server-Database-Workflow.command`を廃止。理由: 「初回構築」と「その後の運用」しか
+    実際には無く、この2つには元々自然な置き場（Setup/Maintenance）があった。危険な操作
+    （`--rebuild`・全件要約の一括課金）はファイルを分けて守るのではなく、個別の入力確認
+    （`REBUILD`/`SUMMARIZE`手打ち）で守る形に変更（ユーザー判断）。
+  - フェーズ2（Zotero照合＋原本照合＋DB完全監査＋gate作成）を`scripts/run_db_audit.py`に
+    1本化。Setup（構築直後）・Maintenance-Widget（日常項目）の両方がこれを呼ぶ。
+  - `Setup.command`: 設定保存後に`db_lifecycle.existing_database_state()`でDB有無を判定し、
+    真の初回は`REBUILD`確認を省略、既存DBがある状態でのプロファイル変更時は確認を必須のまま
+    維持（`db_lifecycle.run_rebuild()`/`run_audit()`を呼ぶ。DB構築・監査ロジック自体は
+    `src/db_lifecycle.py`に切り出し、対話UIだけ`scripts/setup_wizard.py`側に残した。
+    実行主体は`uv run src/index_from_zotero.py --rebuild`等へのサブプロセス呼び出しで、
+    フェーズ1〜2のように別の`.command`ファイルへシェルアウトすることはなくなった、の意）。
+  - `Maintenance-Widget.command`: 項目「DBを監査する」を追加。非破壊・無料なので既存の
+    差分更新・引用ネットワーク更新と同じ既定onの区分に入れ、既定値は前回合格gateの有無で
+    自動判定（無い/失効していれば既定yes、最新なら既定skip）。旧フェーズ3・4
+    （全件要約一括生成・要約監査）も「全件要約を一括生成する」項目としてオプトイン統合
+    （`SUMMARIZE`手打ち確認、既定off、auto-approve対象外）。
+  - `docs/`・`README.md`・`TASKS.md`内の旧ファイル参照を更新。
 
 ### Phase 3: V3並行再取込とカットオーバー監査を完走する
 

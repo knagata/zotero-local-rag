@@ -20,6 +20,31 @@ if [[ "$maintenance_auto_approve" == "1" ]]; then
     echo ""
 fi
 
+# Off by default -- routine runs don't need a permanent transcript, but
+# embedding/audit work is exactly the kind of thing worth being able to
+# debug after the terminal window is long gone (2026-07-30). Auto-approve
+# runs (cron/launchd) never see this prompt, so they need the env var
+# instead if logging is wanted there.
+save_log=0
+if [[ "$maintenance_auto_approve" == "1" ]]; then
+    if [[ "${MAINTENANCE_SAVE_LOG:-0}" == "1" ]]; then
+        save_log=1
+    fi
+else
+    read -r -p "ログを保存しますか？ [y/N]: " log_answer
+    case "$log_answer" in
+        y|Y|yes|Yes|YES) save_log=1 ;;
+    esac
+fi
+if [[ "$save_log" == "1" ]]; then
+    log_dir="${MAINTENANCE_LOG_DIR:-data/logs}"
+    mkdir -p "$log_dir"
+    log_file="$log_dir/maintenance_$(date +%Y%m%d_%H%M%S).log"
+    exec > >(tee -a "$log_file") 2>&1
+    echo "[情報] ログを保存します: $log_file"
+    echo ""
+fi
+
 ask_enabled() {
     local prompt="$1"
     local answer
@@ -48,38 +73,139 @@ ask_disabled() {
     esac
 }
 
+# The audit is free and non-destructive (Zotero照合＋原本照合、read-only), so
+# unlike summaries/Mistral it is safe to auto-approve -- but only when it is
+# actually needed. Its default tracks whether a passing gate already exists:
+# the first run (no gate yet, or a prior audit failed and cleared it) defaults
+# to yes, every run after a passing audit defaults to no. This mirrors what a
+# careful operator would type by hand instead of asking them to remember it.
+gate_path="${SERVER_DB_GATE_PATH:-data/quality/server_database_gate.json}"
+
+# scripts/audit_v3_cutover.py writes this file unconditionally -- including
+# on failure, with "passed": false -- before it raises on that failure. So
+# the file's mere existence is not evidence the audit passed; only its
+# `gate.passed` field is (matches src/database_gate.py's own check).
+gate_passes() {
+    [[ -f "$gate_path" ]] || return 1
+    /usr/bin/python3 - "$gate_path" <<'PY'
+import json
+import sys
+
+try:
+    with open(sys.argv[1], encoding="utf-8") as f:
+        data = json.load(f)
+except (OSError, ValueError):
+    sys.exit(1)
+gate = data.get("gate") if isinstance(data, dict) else None
+sys.exit(0 if isinstance(gate, dict) and gate.get("passed") is True else 1)
+PY
+}
+
+audit_default_yes=1
+if gate_passes; then
+    audit_default_yes=0
+fi
+
+ask_audit() {
+    local prompt="$1"
+    local answer
+    if [[ "$audit_default_yes" == "1" ]]; then
+        if [[ "$maintenance_auto_approve" == "1" ]]; then
+            echo "$prompt [自動許可: 監査合格証明が未作成/失効のため]"
+            return 0
+        fi
+        read -r -p "$prompt [Y/n]: " answer
+        case "$answer" in
+            n|N|no|No|NO) return 1 ;;
+            *) return 0 ;;
+        esac
+    else
+        if [[ "$maintenance_auto_approve" == "1" ]]; then
+            echo "$prompt [自動実行の対象外: 監査合格証明は最新]"
+            return 1
+        fi
+        read -r -p "$prompt [y/N]: " answer
+        case "$answer" in
+            y|Y|yes|Yes|YES) return 0 ;;
+            *) return 1 ;;
+        esac
+    fi
+}
+
+# Shared by both paid-summary blocks below: true only once the audit
+# succeeded and a fresh gate exists. Records why it was skipped otherwise
+# instead of duplicating that logic in each block.
+require_gate() {
+    local step_label="$1"
+    if [[ "$audit_failed" == "1" ]]; then
+        echo "[エラー] この実行のDB監査が不合格のため、${step_label}はスキップします。"
+        summary_blocked=1
+        return 1
+    fi
+    if ! gate_passes; then
+        echo "[エラー] DB監査の合格証明がありません。上の「2. DBを監査する」を許可して"
+        echo "         先に合格させてください: $gate_path"
+        summary_blocked=1
+        return 1
+    fi
+    return 0
+}
+
 run_library=0
+run_audit=0
 run_summaries=0
+run_bulk_summary=0
 run_citations=0
 run_mistral_batch=0
+# A requested summary step that could not run for lack of a passing gate is
+# reported at the very end rather than aborting mid-run: the citation update
+# and the unresolved-status listing do not depend on the audit, so killing the
+# script here would silently drop work the operator explicitly asked for.
+summary_blocked=0
+# Set when this run's audit failed. Tracked separately from the gate file
+# because run_db_audit.py can die before it invalidates a previous gate,
+# which would otherwise let a stale gate authorise paid summaries in the very
+# run the operator was told would generate none.
+audit_failed=0
 mistral_state_path="${MISTRAL_BATCH_STATE_PATH:-data/mistral_ocr_batch_state.json}"
 
 if ask_enabled "1. ライブラリを差分更新する"; then
     run_library=1
 fi
+if ask_audit "2. DBを監査する（Zotero本体との突き合わせを含む・非破壊。要約の実行に必要）"; then
+    run_audit=1
+fi
 # Paid summaries are never included by auto-approval. They require an explicit
 # per-run opt-in and a server database gate produced after a successful audit.
 if [[ "$maintenance_auto_approve" == "1" ]]; then
-    echo "2. 要約を差分更新する（DeepSeek API料金あり） [自動実行の対象外]"
-elif ask_disabled "2. 要約を差分更新する（DeepSeek API料金あり・DB監査合格後のみ）"; then
+    echo "3. 要約を差分更新する（DeepSeek API料金あり） [自動実行の対象外]"
+elif ask_disabled "3. 要約を差分更新する（DeepSeek API料金あり・DB監査合格後のみ・少量バッチ）"; then
     run_summaries=1
 fi
-if ask_enabled "3. 引用ネットワークの未処理・エラー分を更新する"; then
+if [[ "$maintenance_auto_approve" == "1" ]]; then
+    echo "4. 全件要約を一括生成する（DeepSeek API課金・重い処理） [自動実行の対象外]"
+elif ask_disabled "4. 全件要約を一括生成する（DeepSeek API課金・DB監査合格後のみ・SUMMARIZE確認・重い処理）"; then
+    run_bulk_summary=1
+fi
+if ask_enabled "5. 引用ネットワークの未処理・エラー分を更新する"; then
     run_citations=1
 fi
-echo "4. 品質報告のAI判定 [退役: 旧要約DBを参照するため実行不可]"
-if ask_disabled "5. Mistral OCRバッチを送信・回収・品質確認・採用する（クラウド送信を含む）"; then
+echo "6. 品質報告のAI判定 [退役: 旧要約DBを参照するため実行不可]"
+if ask_disabled "7. Mistral OCRバッチを送信・回収・品質確認・採用する（クラウド送信を含む）"; then
     run_mistral_batch=1
 fi
 
 echo ""
 echo "実行予定:"
 if [[ "$run_library" == "1" ]]; then echo "  ✓ ライブラリ更新"; fi
-if [[ "$run_summaries" == "1" ]]; then echo "  ✓ 文書構造要約・検索索引の更新"; fi
+if [[ "$run_audit" == "1" ]]; then echo "  ✓ DB監査"; fi
+if [[ "$run_summaries" == "1" ]]; then echo "  ✓ 文書構造要約・検索索引の更新（差分）"; fi
+if [[ "$run_bulk_summary" == "1" ]]; then echo "  ✓ 全件要約の一括生成"; fi
 if [[ "$run_citations" == "1" ]]; then echo "  ✓ 引用ネットワーク更新"; fi
 if [[ "$run_mistral_batch" == "1" ]]; then echo "  ✓ Mistral OCRバッチ処理"; fi
 
-if [[ "$run_library" == "0" && "$run_summaries" == "0" && "$run_citations" == "0" && "$run_mistral_batch" == "0" ]]; then
+if [[ "$run_library" == "0" && "$run_audit" == "0" && "$run_summaries" == "0" \
+        && "$run_bulk_summary" == "0" && "$run_citations" == "0" && "$run_mistral_batch" == "0" ]]; then
     echo "  （選択なし）"
     echo ""
     echo "更新を行わず終了します。"
@@ -218,39 +344,75 @@ if [[ "$run_mistral_batch" == "1" ]]; then
     run_mistral_batch_step
 fi
 
-if [[ "$run_summaries" == "1" ]]; then
-    if [[ "$run_library" == "0" ]]; then
-        run_step "文書構造V3の差分確認" uv run python scripts/rebuild_document_structure.py --all
+# A summary step needs an up-to-date document structure even when the library
+# update itself was skipped this run. This must happen before the audit below
+# -- it writes document_structures, which is an input to the gate's fingerprint
+# -- not inside the summary blocks, where it would run after the audit instead.
+if [[ "$run_library" == "0" && ( "$run_summaries" == "1" || "$run_bulk_summary" == "1" ) ]]; then
+    run_step "文書構造V3の差分確認" uv run python scripts/rebuild_document_structure.py --all
+fi
+
+# The audit runs after every step that writes canonical data (library update,
+# Mistral adoption, the structure refresh above) and before every step that
+# consumes its gate. Auditing earlier would bind the gate to a DB generation
+# this same run then replaces, and build_structure_summaries.py would reject
+# it as stale.
+if [[ "$run_audit" == "1" ]]; then
+    echo ""
+    echo "========================================================================"
+    echo ">> DB監査（Zotero本体との突き合わせ・原本照合・非破壊）"
+    echo "========================================================================"
+    # A failed audit must not abort the rest of routine maintenance -- only
+    # the paid summary steps depend on its result. Citations and the library
+    # update are independent of it. The gate file alone is not a sufficient
+    # signal: run_db_audit.py can fail before it gets far enough to invalidate
+    # a previous gate, so the failure is recorded explicitly here instead.
+    if uv run python scripts/run_db_audit.py; then
+        echo "[完了] DB監査"
+    else
+        audit_failed=1
+        echo "[警告] DB監査が不合格でした。要約の生成はこの実行では行われません。"
+        echo "       詳細は上記の出力を確認してください: $gate_path"
     fi
+fi
+
+if [[ "$run_summaries" == "1" ]]; then
     # バッチ単位のLLM要約生成を標準機能として実行する。1回のメンテナンスでは
     # 有限バッチ（既定10件）だけ処理し、複数並列ワーカー（既定10）でDeepSeek APIへ
     # 同時にリクエストする。バッチ件数・並列度は環境変数で変更できる
     # （SUMMARY_BACKFILL_BATCH_SIZE / SUMMARY_BACKFILL_WORKERS）。
     # R1差分スキップにより、既にfingerprint一致の要約はLLM呼び出しゼロでskipされるため、
     # ウィジェットを繰り返し実行すれば未処理分から順にバッチが進む。
-    # 大規模一括backfillは scripts/detached_summary_backfill.py を別途使う。
+    # 全件を一度に済ませたい場合は下の「4. 全件要約を一括生成する」を使う。
     summary_batch_size="${SUMMARY_BACKFILL_BATCH_SIZE:-10}"
     summary_workers="${SUMMARY_BACKFILL_WORKERS:-10}"
-    summary_database_gate="${SUMMARY_DATABASE_GATE:-data/quality/server_database_gate.json}"
-    if [[ ! -f "$summary_database_gate" ]]; then
-        echo "[エラー] DB監査の合格証明がありません。先にServer-Database-Workflow.commandの"
-        echo "         フェーズ2を合格させてください: $summary_database_gate"
-        exit 2
-    fi
-    # 全件LLM backfillは「pilotバッチ → 費用レポート → ユーザー承認」の後に限る。
-    # 承認マーカーが無い間も、Yを押した場合にバッチ単位でpilot実行できるようにする。
-    if [[ -f "data/quality/summary_backfill_approved" ]]; then
+    if require_gate "要約の差分更新"; then
         run_step "DeepSeek 文書構造V3要約・検索索引更新（差分・${summary_batch_size}件バッチ・${summary_workers}並列）" \
             uv run python scripts/build_structure_summaries.py --all --mode llm --limit "$summary_batch_size" --workers "$summary_workers" --embed \
-            --database-gate "$summary_database_gate"
-    else
-        echo ""
-        echo "[注意] 全件LLM要約の一括生成は未承認です（data/quality/summary_backfill_approved が無い）。"
-        echo "       安全のため${summary_batch_size}件のバッチのみ実行します（SUMMARY_BACKFILL_BATCH_SIZEで変更可）。"
-        echo "       承認後にマーカーを作成すると、以後は差分の残り分にバッチが順次進みます。"
-        run_step "DeepSeek 文書構造V3要約 ${summary_batch_size}件バッチ" \
-            uv run python scripts/build_structure_summaries.py --all --mode llm --limit "$summary_batch_size" --workers "$summary_workers" --embed \
-            --database-gate "$summary_database_gate"
+            --database-gate "$gate_path"
+    fi
+fi
+
+if [[ "$run_bulk_summary" == "1" ]]; then
+    echo ""
+    echo "========================================================================"
+    echo ">> 全件要約の一括生成（DeepSeek API課金・重い処理）"
+    echo "========================================================================"
+    if require_gate "全件要約の一括生成"; then
+        echo "[課金確認] DeepSeek APIで全件の階層要約を生成します。DB変更後の古い合格証明は"
+        echo "           自動拒否されます。"
+        read -r -p "続行するには SUMMARIZE と入力してください（スキップする場合はEnter）: " bulk_confirmation
+        if [[ "$bulk_confirmation" != "SUMMARIZE" ]]; then
+            echo "全件要約の一括生成をキャンセルしました。"
+        else
+            bulk_summary_workers="${SUMMARY_BULK_WORKERS:-20}"
+            run_step "DeepSeek 階層AI要約生成・要約索引構築（全件・${bulk_summary_workers}並列）" \
+                uv run python scripts/build_structure_summaries.py --all --mode llm \
+                --workers "$bulk_summary_workers" --embed --database-gate "$gate_path"
+            run_step "階層要約・要約索引監査" \
+                uv run python scripts/audit_structure_summaries.py \
+                --output "${SERVER_SUMMARY_AUDIT_PATH:-data/quality/server_summary_audit.json}"
+        fi
     fi
 fi
 
@@ -270,3 +432,11 @@ echo ""
 echo "========================================"
 echo " 選択した日常更新が完了しました"
 echo "========================================"
+
+if [[ "$summary_blocked" == "1" ]]; then
+    echo ""
+    echo "[注意] DB監査に合格していないため、要約の生成はスキップしました。"
+    echo "       他の更新は最後まで実行済みです。「2. DBを監査する」を合格させてから"
+    echo "       要約を再実行してください: $gate_path"
+    exit 2
+fi

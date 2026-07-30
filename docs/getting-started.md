@@ -99,26 +99,21 @@ Claude Desktopの設定例:
 uv run scripts/setup_wizard.py --server
 ```
 
-Setupは`.env`と接続設定を作るだけで、DB構築・埋め込み・AI目次・OCR・階層AI要約を実行しません。
-これらは料金や長時間処理を伴い得るため、サーバー上で次のworkflowを順番に実行します。
+`.env`と接続設定を保存した後、SetupはDB構築が必要かどうかを判定して案内します
+（真の初回は確認なしで進められ、既存DBがある状態でのプロファイル変更は`REBUILD`の
+入力確認が必要です）。構築後は続けてDB監査（Zotero対象・原本coverage・DB整合性、
+非破壊）の実行も案内されます。ここをスキップした場合は、後で
+`Maintenance-Widget.command`から監査だけ実行できます。
 
-```bash
-bash Server-Database-Workflow.command
-```
-
-1. V3 DBをゼロから構築する（階層要約は生成しない）
-2. Zoteroの対象・原本coverage・DB整合性を監査する
-3. 合格したDB世代に対してのみ、有料の階層AI要約を生成・索引化する
-4. 階層要約と要約索引を監査する
-
-フェーズ2が成功しない限りフェーズ3は開始できません。Customで
-`PDF_AI_TOC_FAST_PATH_ENABLE=1` を選んだ場合は、フェーズ1中にAI目次推定がAPIを
-使用し得る点にも注意してください。
+有料の階層AI要約は、DB監査に合格した世代に対してのみ`Maintenance-Widget.command`から
+生成・索引化できます（少量バッチの差分実行、または`SUMMARIZE`入力確認を伴う全件一括生成）。
+DB監査に合格しない限り開始できません。Customで`PDF_AI_TOC_FAST_PATH_ENABLE=1` を選んだ
+場合は、DB構築中にAI目次推定がAPIを使用し得る点にも注意してください。
 
 ## 5. 動作を確認する
 
-フェーズ2まで完了した後にClaude Desktopを再起動し、`server_status`を呼び出します。
-`status: ok`とコレクション件数が確認できれば完了です。
+DB構築（と、できればDB監査）まで完了した後にClaude Desktopを再起動し、`server_status`を
+呼び出します。`status: ok`とコレクション件数が確認できれば完了です。
 
 設定状態だけを秘密値なしで確認する場合:
 

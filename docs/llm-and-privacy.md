@@ -54,9 +54,8 @@ Mistral OCRだけで、Semantic Scholarの鍵は無料です（ただし鍵な�
 | `PDF_MISTRAL_TOC_QUEUE_ENABLE` | Mistral OCR Batch（ファイル全体を送信） |
 
 Customで `PDF_AI_TOC_FAST_PATH_ENABLE=1` を選ぶAI目次推定も有料です。これは階層要約とは
-別の処理で、DB構築フェーズ中にも実行され得ます。サーバーでは
-`Server-Database-Workflow.command` のフェーズ1（DB構築）を始める前に、この機能を有効にするか
-決めてください。DB整合性の確認後にのみ階層AI要約へ進む場合は、フェーズ1では`0`にします。
+別の処理で、DB構築中にも実行され得ます。`Setup.command`でDB構築を始める前に、この機能を
+有効にするか決めてください。DB整合性の確認後にのみ階層AI要約へ進む場合は、構築時は`0`にします。
 
 ## LLM要約
 

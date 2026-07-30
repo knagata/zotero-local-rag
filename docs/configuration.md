@@ -174,20 +174,21 @@ Homebrewの`tesseract`／`tesseract-lang`をウィザードから導入します
 
 ### サーバーDB構築と階層要約
 
-サーバーでは `Server-Database-Workflow.command` を使用し、必ず `1 → 2 → 3 → 4` の順に
-別実行します。フェーズ1はV3 DB構築、フェーズ2はZotero/原本/DB監査、フェーズ3は有料の
-階層AI要約、フェーズ4は要約監査です。フェーズ2の監査レポートはDB世代に結び付き、DBが
-変わった場合はフェーズ3がAPI呼出し前に停止します。
+DBのゼロ構築・再構築は `Setup.command` から行います（真の初回は確認なし、既存DBがある
+プロファイル変更時は`REBUILD`入力確認）。構築後に案内されるDB監査（Zotero/原本/DB整合性の
+3監査、非破壊）が、現在のDB世代に結び付いた合格gateを作成します。有料の階層AI要約
+（`Maintenance-Widget.command`の差分バッチ、または`SUMMARIZE`確認を伴う全件一括生成）は
+このgateがなければ実行できず、監査後にDBが変わると次の要約実行前に停止します。
 
 ### 構造・要約を手動で構築する場合
 
 本番collectionはV3固定です。構造の再構築は手動実行できますが、要約用gateは必ず
-`Server-Database-Workflow.command` のフェーズ2でZotero・原本・DBの3監査を通して作成します。
+`uv run python scripts/run_db_audit.py`（Zotero・原本・DBの3監査）を通して作成します。
 `audit_v3_cutover.py --new-only` 単独ではgateを作れません。
 
 ```bash
 uv run python scripts/rebuild_document_structure.py --all --collection zotero_paragraphs_v3
-# Server-Database-Workflow.command のフェーズ2を実行
+uv run python scripts/run_db_audit.py
 uv run python scripts/build_structure_summaries.py --all --collection zotero_paragraphs_v3 \
   --mode llm --limit 10 --embed --database-gate data/quality/server_database_gate.json
 ```

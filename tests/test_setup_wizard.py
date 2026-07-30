@@ -393,6 +393,55 @@ class SetupWizardTests(unittest.TestCase):
             "index_from_zotero.py" in str(call.args[0]) for call in executed.call_args_list
         ))
 
+    def test_a_legacy_manifest_path_in_config_is_rejected_before_any_db_build(self):
+        # v3_data_plane.manifest_path() rejects a non-canonical filename for
+        # every other V3 entry point; main() can't call that function
+        # directly here (it reads os.environ, which this process never
+        # populates from the config just saved), so it must replicate the
+        # same fail-closed check itself instead of silently reading whatever
+        # MANIFEST_PATH happens to hold (2026-07-30).
+        #
+        # In the real `modify` flow, enforce_v3_configuration() already
+        # forces MANIFEST_PATH back to canonical, and _configuration_problems()
+        # (built on the same V3_DATA_PLANE check) rejects a stale value right
+        # after; the `not modify` branch's _v3_configuration_problems() check
+        # rejects it earlier still. All three are mocked out here so this
+        # test isolates the specific defense-in-depth check being added,
+        # rather than accidentally passing via one of the pre-existing ones.
+        with tempfile.TemporaryDirectory() as directory:
+            zotero = Path(directory) / "Zotero"
+            zotero.mkdir()
+            (zotero / "storage").mkdir()
+            (zotero / "zotero.sqlite").write_text("", encoding="utf-8")
+            config = {
+                **setup_wizard.PRESETS["minimal"],
+                "ZOTERO_DATA_DIR": str(zotero),
+                "MANIFEST_PATH": "data/manifest.json",
+            }
+            with patch.object(
+                setup_wizard, "read_env_file", return_value=dict(config),
+            ), patch.object(
+                setup_wizard, "write_env_file",
+            ), patch.object(
+                setup_wizard, "configure_feature_level",
+            ), patch.object(
+                setup_wizard, "enforce_v3_configuration",
+            ), patch.object(
+                setup_wizard, "_configuration_problems", return_value=[],
+            ), patch.object(
+                setup_wizard, "ensure_embedding_model", return_value="model",
+            ), patch(
+                "builtins.input", side_effect=["y", "", ""],
+            ), patch.object(
+                setup_wizard.shutil, "which", return_value=None,
+            ), patch.object(
+                setup_wizard.subprocess, "run",
+                return_value=SimpleNamespace(stdout="", returncode=0),
+            ), patch("sys.stdout", StringIO()):
+                with self.assertRaises(SystemExit) as ctx:
+                    setup_wizard.main(["--server"])
+        self.assertIn("MANIFEST_PATH", str(ctx.exception.code))
+
     def test_keeping_current_settings_changes_nothing(self):
         config = dict(setup_wizard.PRESETS["minimal"])
         config["FEATURE_LEVEL"] = "custom"
@@ -412,6 +461,147 @@ class SetupWizardTests(unittest.TestCase):
                     "MISTRAL_OCR_FALLBACK_ENABLE"):
             self.assertNotIn(key, config)
 
+class OfferInitialDbBuildTests(unittest.TestCase):
+    # A true first run (a provably empty state) skips the typed REBUILD
+    # confirmation, since there is nothing yet to destroy. Every other state
+    # keeps it: the deleted Server-Database-Workflow.command demanded the
+    # literal string REBUILD for this same destructive operation, and
+    # collapsing the files must not weaken that (2026-07-30 user decision).
+    #
+    # The return value (True = no failure, False = the operator asked for a
+    # build/audit that then failed) is what lets Setup.command's exit code
+    # actually reflect a failure instead of always reporting success
+    # (2026-07-30). The classify/rebuild/audit primitives themselves live in
+    # src/db_lifecycle.py and are tested there directly
+    # (tests/test_db_lifecycle.py) -- this class only tests the interactive
+    # confirmation flow that wraps them.
+    CHROMA_DIR = Path("/unused/data/chroma")
+    MANIFEST_FILE = Path("/unused/data/manifest_v3.json")
+
+    def _state(self, value: str):
+        return patch.object(setup_wizard.db_lifecycle, "existing_database_state", return_value=value)
+
+    def _call(self, *, profile_changed: bool) -> bool:
+        return setup_wizard.offer_initial_db_build(
+            Path("/unused"), chroma_directory=self.CHROMA_DIR,
+            manifest_file=self.MANIFEST_FILE, profile_changed=profile_changed,
+        )
+
+    def test_existing_db_with_unchanged_profile_skips_everything(self):
+        with self._state(setup_wizard.db_lifecycle.DB_STATE_POPULATED), \
+             patch("builtins.input") as mock_input, \
+             patch.object(setup_wizard.db_lifecycle, "run_rebuild") as mock_rebuild, \
+             patch.object(setup_wizard.db_lifecycle, "run_audit") as mock_audit, \
+             patch("sys.stdout", StringIO()):
+            result = self._call(profile_changed=False)
+        mock_input.assert_not_called()
+        mock_rebuild.assert_not_called()
+        mock_audit.assert_not_called()
+        self.assertTrue(result)
+
+    def test_unreadable_state_with_unchanged_profile_also_skips_everything(self):
+        with self._state(setup_wizard.db_lifecycle.DB_STATE_UNKNOWN), \
+             patch("builtins.input") as mock_input, \
+             patch.object(setup_wizard.db_lifecycle, "run_rebuild") as mock_rebuild, \
+             patch("sys.stdout", StringIO()):
+            result = self._call(profile_changed=False)
+        mock_input.assert_not_called()
+        mock_rebuild.assert_not_called()
+        self.assertTrue(result)
+
+    def test_true_first_run_skips_the_rebuild_confirmation(self):
+        with self._state(setup_wizard.db_lifecycle.DB_STATE_EMPTY), \
+             patch("builtins.input", side_effect=["", "n"]), \
+             patch.object(setup_wizard.db_lifecycle, "run_rebuild", return_value=0) as mock_rebuild, \
+             patch("sys.stdout", StringIO()):
+            result = self._call(profile_changed=False)
+        mock_rebuild.assert_called_once_with(Path("/unused"))
+        self.assertTrue(result)
+
+    def test_profile_change_on_existing_db_rejects_a_bare_y(self):
+        # The guard this replaced required the literal word; `y` must not be
+        # enough to delete a populated collection.
+        for answer in ("y", "Y", "yes", "rebuild", ""):
+            with self.subTest(answer=answer):
+                with self._state(setup_wizard.db_lifecycle.DB_STATE_POPULATED), \
+                     patch("builtins.input", side_effect=[answer]), \
+                     patch.object(setup_wizard.db_lifecycle, "run_rebuild") as mock_rebuild, \
+                     patch("sys.stdout", StringIO()):
+                    result = self._call(profile_changed=True)
+                mock_rebuild.assert_not_called()
+                self.assertTrue(result)
+
+    def test_profile_change_on_existing_db_proceeds_on_typed_rebuild(self):
+        with self._state(setup_wizard.db_lifecycle.DB_STATE_POPULATED), \
+             patch("builtins.input", side_effect=["REBUILD", "n"]), \
+             patch.object(setup_wizard.db_lifecycle, "run_rebuild", return_value=0) as mock_rebuild, \
+             patch("sys.stdout", StringIO()):
+            result = self._call(profile_changed=True)
+        mock_rebuild.assert_called_once_with(Path("/unused"))
+        self.assertTrue(result)
+
+    def test_unreadable_state_is_guarded_like_a_populated_one(self):
+        with self._state(setup_wizard.db_lifecycle.DB_STATE_UNKNOWN), \
+             patch("builtins.input", side_effect=["y"]), \
+             patch.object(setup_wizard.db_lifecycle, "run_rebuild") as mock_rebuild, \
+             patch("sys.stdout", StringIO()):
+            result = self._call(profile_changed=True)
+        mock_rebuild.assert_not_called()
+        self.assertTrue(result)
+
+    def test_declining_the_offer_never_invokes_the_build(self):
+        with self._state(setup_wizard.db_lifecycle.DB_STATE_EMPTY), \
+             patch("builtins.input", side_effect=["n"]), \
+             patch.object(setup_wizard.db_lifecycle, "run_rebuild") as mock_rebuild, \
+             patch("sys.stdout", StringIO()):
+            result = self._call(profile_changed=False)
+        mock_rebuild.assert_not_called()
+        self.assertTrue(result)
+
+    def test_a_failed_build_never_reaches_the_audit_offer(self):
+        with self._state(setup_wizard.db_lifecycle.DB_STATE_EMPTY), \
+             patch("builtins.input", side_effect=[""]) as mock_input, \
+             patch.object(setup_wizard.db_lifecycle, "run_rebuild", return_value=2) as mock_rebuild, \
+             patch.object(setup_wizard.db_lifecycle, "run_audit") as mock_audit, \
+             patch("sys.stdout", StringIO()):
+            result = self._call(profile_changed=False)
+        mock_rebuild.assert_called_once()
+        mock_audit.assert_not_called()
+        self.assertEqual(mock_input.call_count, 1)
+        self.assertFalse(result)
+
+    def test_accepting_the_audit_offer_runs_the_audit(self):
+        with self._state(setup_wizard.db_lifecycle.DB_STATE_EMPTY), \
+             patch("builtins.input", side_effect=["", "y"]), \
+             patch.object(setup_wizard.db_lifecycle, "run_rebuild", return_value=0) as mock_rebuild, \
+             patch.object(setup_wizard.db_lifecycle, "run_audit", return_value=0) as mock_audit, \
+             patch("sys.stdout", StringIO()):
+            result = self._call(profile_changed=False)
+        mock_rebuild.assert_called_once_with(Path("/unused"))
+        mock_audit.assert_called_once_with(Path("/unused"))
+        self.assertTrue(result)
+
+    def test_a_failed_audit_is_reported_as_a_failure(self):
+        with self._state(setup_wizard.db_lifecycle.DB_STATE_EMPTY), \
+             patch("builtins.input", side_effect=["", "y"]), \
+             patch.object(setup_wizard.db_lifecycle, "run_rebuild", return_value=0), \
+             patch.object(setup_wizard.db_lifecycle, "run_audit", return_value=1), \
+             patch("sys.stdout", StringIO()):
+            result = self._call(profile_changed=False)
+        self.assertFalse(result)
+
+    def test_declining_the_audit_offer_never_invokes_it(self):
+        with self._state(setup_wizard.db_lifecycle.DB_STATE_EMPTY), \
+             patch("builtins.input", side_effect=["", "n"]), \
+             patch.object(setup_wizard.db_lifecycle, "run_rebuild", return_value=0), \
+             patch.object(setup_wizard.db_lifecycle, "run_audit") as mock_audit, \
+             patch("sys.stdout", StringIO()):
+            result = self._call(profile_changed=False)
+        mock_audit.assert_not_called()
+        self.assertTrue(result)
+
+
+class StatusNeverPrintsSecretsTests(unittest.TestCase):
     def test_status_never_prints_secret_values(self):
         config = {
             "FEATURE_LEVEL": "custom", "S2_API_KEY": "do-not-print",

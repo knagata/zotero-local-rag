@@ -16,8 +16,9 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from src import db_lifecycle
 from src.v3_data_plane import (
-    V3_COLLECTION, V3_LEXICAL_NAME, V3_MANIFEST_NAME,
+    V3_COLLECTION, V3_LEXICAL_NAME, V3_MANIFEST_NAME, resolve_configured_path,
 )
 from src.embedder import ensure_embedding_model
 
@@ -890,6 +891,90 @@ def configure_claude_mcp(root_dir: Path, chroma_dir: Path, emb_profile: str,
     return True
 
 
+def offer_initial_db_build(
+    root_dir: Path, *, chroma_directory: Path, manifest_file: Path, profile_changed: bool,
+) -> bool:
+    """Build (and then audit) the V3 DB when this run's config requires it.
+
+    ``chroma_directory``/``manifest_file`` must be resolved by the caller from
+    the config just saved (not read from ``os.environ`` here) -- this wizard
+    never loads its own ``.env`` back into its process, so reading the
+    environment directly would check the default location instead of
+    whatever the operator configured (2026-07-30).
+
+    A true first run -- and only a state we can positively prove is empty --
+    has nothing to lose, so it skips the typed REBUILD confirmation. Anything
+    else keeps it: the confirmation protects an *existing* database, and a
+    state we cannot read is not evidence that there is no database. A profile
+    change is the case that reaches it in practice (2026-07-30 user decision),
+    since that rebuild discards real embeddings.
+
+    There used to be a third .command file (Server-Database-Workflow.command)
+    hosting both steps; it added a file to discover without changing either
+    risk profile, so its build/audit logic now lives in src/db_lifecycle.py
+    and scripts/run_db_audit.py instead (2026-07-30 user decision). The typed
+    REBUILD confirmation is carried over from it verbatim -- collapsing the
+    files must not quietly weaken the guard they contained. This function
+    owns only the interactive confirmation UX; the non-interactive
+    classify/rebuild/audit primitives live in src/db_lifecycle.py so this
+    wizard file's growing config-collection concerns don't keep absorbing
+    unrelated DB-lifecycle logic (2026-07-30).
+
+    Returns ``False`` only when the operator asked for something (a build or
+    an audit) that then failed -- the caller uses this to make Setup.command
+    exit non-zero instead of printing its usual "safe to close" message.
+    Declining an offer is not a failure and returns ``True``.
+    """
+    db_state = db_lifecycle.existing_database_state(chroma_directory, manifest_file)
+    destructive = db_state != db_lifecycle.DB_STATE_EMPTY
+    if destructive and not profile_changed:
+        return True
+
+    print("\n" + "=" * 60)
+    if destructive:
+        print("5. DBの再構築（設定変更のため必要）")
+        print("   埋め込みプロファイルが変更されたため、既存のV3データベースは")
+        print("   このままでは使えません（既存の埋め込みを破棄して作り直します）。")
+        if db_state == db_lifecycle.DB_STATE_UNKNOWN:
+            print("   [注意] 既存DBの状態を確認できませんでした（manifestが読めない、")
+            print("          または設定が解決できません）。中身がある前提で扱います。")
+        print("   Chromaコレクション・manifest・語彙索引をすべて削除して作り直します。")
+        confirmation = input("続行するには REBUILD と入力してください（中止する場合はEnter）: ").strip()
+        if confirmation != "REBUILD":
+            print("   スキップしました。準備ができたら手動で次を実行してください:")
+            print("     uv run src/index_from_zotero.py --rebuild --progress")
+            return True
+    else:
+        print("5. 初回DB構築")
+        print("   まだデータベースが構築されていません。")
+        ans = input("今すぐ構築しますか？ [Y/n]: ").strip().lower()
+        if ans == "n":
+            print("   スキップしました。準備ができたら手動で次を実行してください:")
+            print("     uv run src/index_from_zotero.py --rebuild --progress")
+            return True
+
+    print()
+    build_code = db_lifecycle.run_rebuild(root_dir)
+    if build_code != 0:
+        print(f"\n[エラー] DB構築が失敗しました（終了コード: {build_code}）。上記の出力を確認してください。")
+        return False
+
+    print("\n構築が完了しました。続けてDB監査の実行を推奨します"
+          "（Zotero本体との突き合わせを含む、非破壊の読み取り専用チェックです）。")
+    ans = input("今すぐDB監査を実行しますか？ [Y/n]: ").strip().lower()
+    if ans == "n":
+        print("   監査は後でMaintenance-Widget.commandの「DBを監査する」から実行できます。")
+        return True
+    print()
+    audit_code = db_lifecycle.run_audit(root_dir)
+    if audit_code != 0:
+        print(f"\n[注意] DB監査が不合格でした（終了コード: {audit_code}）。出力を確認してください。")
+        return False
+    print("\n[合格] DB監査に合格しました。要約生成をご希望の場合はMaintenance-Widget.command"
+          "から実行してください（DeepSeek API課金あり）。")
+    return True
+
+
 def main(argv: list[str] | None = None):
     parser = argparse.ArgumentParser(
         description="Zotero Local RAGを設定します。",
@@ -1055,13 +1140,45 @@ def main(argv: list[str] | None = None):
         print("   ⚠️  埋め込みモデルのプロファイルが変更されました")
         print(f"   変更前: {prev_emb_profile} → 変更後: {emb_profile}")
         print()
-        print("   このプロファイルを使う前にV3コレクションを再構築してください。")
+        print("   このプロファイルを使う前にV3コレクションを再構築する必要があります。")
 
     print("\nセットアップウィザードが完了しました。")
     print(f"設定方式: {existing_config.get('FEATURE_LEVEL', '旧形式/カスタム')}")
-    print("このウィザードはDB構築や有料API処理を開始していません。")
-    print("次にServer-Database-Workflow.commandを実行し、フェーズ1〜4を完了してください。")
+
+    # Resolved from the config just saved, not from os.environ -- this
+    # process never loads its own .env back into itself (2026-07-30).
+    # resolve_configured_path is the same resolution rule v3_data_plane.py's
+    # own chroma_dir()/manifest_path() use, called directly here instead of
+    # reimplemented, so both stay consistent (e.g. both expand `~`) rather
+    # than risking one getting fixed and the other missed (2026-07-30).
+    resolved_chroma_dir = resolve_configured_path(root_dir, chroma_dir)
+    manifest_file = resolve_configured_path(
+        root_dir, existing_config.get("MANIFEST_PATH", f"data/{V3_MANIFEST_NAME}"),
+    )
+    # Mirrors v3_data_plane.manifest_path()'s own rejection of a non-canonical
+    # filename -- that function can't be called here (it reads MANIFEST_PATH
+    # from os.environ, which this process never populates), but the
+    # fail-closed contract it enforces for every other V3 entry point must
+    # still hold for this one (2026-07-30).
+    if manifest_file.name != V3_MANIFEST_NAME:
+        raise SystemExit(
+            f"設定のMANIFEST_PATHが不正です: {manifest_file}\n"
+            f"旧形式のmanifestは廃止されました。ファイル名は{V3_MANIFEST_NAME}である必要があります。"
+        )
+
+    db_build_ok = offer_initial_db_build(
+        root_dir, chroma_directory=resolved_chroma_dir, manifest_file=manifest_file,
+        profile_changed=profile_changed,
+    )
+
+    print("\n日常のライブラリ差分更新・DB監査・階層要約の生成（有料API）は")
+    print("すべてMaintenance-Widget.commandから行えます。")
     print("設定を変更・拡張する場合は、いつでもSetup.commandを再実行できます。")
+    if not db_build_ok:
+        # Setup.command checks the process exit code to decide whether to
+        # print its "safe to close" message -- a build/audit failure must
+        # not be followed by that message from either side (2026-07-30).
+        raise SystemExit(2)
     print("このウィンドウは閉じて構いません。")
 
 
