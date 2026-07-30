@@ -42,9 +42,10 @@
   rapidocr_extract.pyは調査の結果ndlocrと同じ「`ocr_pages`=試行ページ、
   `missing_pages`は別途`pages_with_text`から算出」という設計済みの規約に
   従っており、ゲートは`missing_pages`しか見ないため実害なし。変更不要と判断。
-- [ ] **F10: `db_relations.py`の`resolve_work()`曖昧一致の決定性**
-  `ORDER BY`なしのクエリで同点候補があると非決定的に同定される。
-  src/db_relations.py:830-853, 2606-2644
+- [x] **F10: `db_relations.py`の`resolve_work()`曖昧一致の決定性**（2026-07-30）
+  `resolve_work()`を全候補走査＋最高スコア採用に変更。`is_owned_work()`は
+  真偽値のみを返す関数のため（どのレコードが一致したかは無関係）調査の結果
+  変更不要と判断。
 - [ ] **F11: `chunk_store.py`のCHROMA_DIRパス解決バイパス**
   `DEFAULT_CHROMA_DIR`が`resolve_configured_path`を経由せず生の環境変数から
   直接計算される潜在バグ。src/chunk_store.py:16, scripts/audit_v3_cutover.py

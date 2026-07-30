@@ -828,10 +828,24 @@ def resolve_work(
                 break
 
         if row is None and values["title_norm"]:
+            # ORDER BY work_id: candidates is scanned in full below rather than
+            # stopped at the first match, but a stable enumeration order still
+            # matters for the score-tie fallback (below) to be deterministic
+            # across runs rather than depend on SQLite's unordered scan order
+            # (found in code review, fixed 2026-07-30).
             candidates = conn.execute(
-                "SELECT * FROM works WHERE title_norm = ? OR title_norm LIKE ? LIMIT 100",
+                "SELECT * FROM works WHERE title_norm = ? OR title_norm LIKE ? "
+                "ORDER BY work_id LIMIT 100",
                 (values["title_norm"], f"{values['title_norm'][:80]}%"),
             ).fetchall()
+            # Take the best-scoring candidate across the whole set, not the
+            # first one that clears the threshold: two distinct works (e.g. a
+            # book and a later edition/reprint by the same author) can both
+            # qualify, and stopping at the first previously meant the match
+            # depended on SQLite's unordered scan order rather than which
+            # candidate is actually the better match (found in code review,
+            # fixed 2026-07-30).
+            best_score = -1.0
             for candidate in candidates:
                 similarity = SequenceMatcher(None, values["title_norm"], candidate["title_norm"] or "").ratio()
                 years_comparable = year is not None and candidate["year"] is not None
@@ -848,9 +862,10 @@ def resolve_work(
                 if (
                     similarity >= 0.90 and (year_match or author_match)
                     and not year_conflict and not author_conflict
+                    and similarity > best_score
                 ):
                     row = candidate
-                    break
+                    best_score = similarity
 
         columns = list(values)
         if row is not None:

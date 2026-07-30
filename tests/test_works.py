@@ -77,6 +77,40 @@ class CanonicalWorksTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertNotEqual(first, far_year)
 
+    def test_fuzzy_title_match_picks_the_best_candidate_not_the_first_row(self):
+        # 2026-07-30 regression: candidates were fetched with no ORDER BY and
+        # the loop broke at the first row clearing the 0.90 threshold, so a
+        # weaker match inserted earlier (title_norm "essaisurledonx", a
+        # trailing-character variant that still clears both the LIKE-prefix
+        # candidate filter and the 0.90 similarity floor) could win over a
+        # later, exact-title candidate -- non-deterministic and dependent on
+        # SQLite's unordered scan order, not on which candidate is actually
+        # the better match. Seeded directly via SQL (not resolve_work) so the
+        # two candidates don't merge with each other before the real query.
+        connection = db_relations.get_db_connection()
+        try:
+            connection.execute(
+                "INSERT INTO works (title, title_norm, authors, year) VALUES (?, ?, ?, ?)",
+                ("Essai sur le donx", "essaisurledonx", "Mauss", 1925),
+            )
+            weaker = connection.execute(
+                "SELECT work_id FROM works WHERE title_norm = 'essaisurledonx'"
+            ).fetchone()["work_id"]
+            connection.execute(
+                "INSERT INTO works (title, title_norm, authors, year) VALUES (?, ?, ?, ?)",
+                ("Essai sur le don", "essaisurledon", "Mauss", 1925),
+            )
+            exact = connection.execute(
+                "SELECT work_id FROM works WHERE title_norm = 'essaisurledon'"
+            ).fetchone()["work_id"]
+            connection.commit()
+        finally:
+            connection.close()
+        self.assertLess(weaker, exact)  # weaker was inserted (and would sort) first
+
+        resolved = db_relations.resolve_work(title="Essai sur le don", authors="Mauss", year=1925)
+        self.assertEqual(resolved, exact)
+
     def test_title_only_works_are_never_merged(self):
         first = db_relations.resolve_work(title="贈与")
         second = db_relations.resolve_work(title="贈与")
