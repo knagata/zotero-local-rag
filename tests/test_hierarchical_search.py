@@ -260,6 +260,45 @@ class HierarchicalSearchTests(unittest.TestCase):
         self.assertEqual(mock_search.call_count, 1)
         self.assertEqual(mock_search.call_args.kwargs["include_item_keys"], ["B"])
 
+    def test_search_items_computes_embeddings_manually_not_query_texts(self):
+        # 2026-07-30 regression: search_items used to call col.query(query_texts=...),
+        # letting Chroma invoke the embedding function from inside its FFI query
+        # call -- the exact deadlock rag_search/_hierarchical_search_v2 already
+        # avoid by precomputing query_embeddings themselves.
+        col = Mock()
+        col._embedding_function.return_value = [[0.1, 0.2]]
+        col.query.return_value = {
+            "ids": [["c1"]],
+            "documents": [["evidence " * 40]],
+            "metadatas": [[{"itemKey": "A", "retrieval_policy": "normal", "title": "A"}]],
+            "distances": [[0.1]],
+        }
+        with patch.object(rag_mcp_server, "_col", return_value=col), \
+             patch.object(rag_mcp_server, "_check_indexing_lock", return_value=(False, None)):
+            result = rag_mcp_server.search_items("query", k=5)
+        col._embedding_function.assert_called_once_with(["query"])
+        self.assertNotIn("query_texts", col.query.call_args.kwargs)
+        self.assertEqual(col.query.call_args.kwargs["query_embeddings"], [[0.1, 0.2]])
+        self.assertEqual([row["itemKey"] for row in result["items"]], ["A"])
+
+    def test_search_items_excludes_policy_excluded_and_short_chunks(self):
+        col = Mock()
+        col._embedding_function.return_value = [[0.1, 0.2]]
+        col.query.return_value = {
+            "ids": [["excluded", "short", "good"]],
+            "documents": [["evidence " * 40, "too short", "evidence " * 40]],
+            "metadatas": [[
+                {"itemKey": "EXCLUDED", "retrieval_policy": "exclude"},
+                {"itemKey": "SHORT", "retrieval_policy": "normal"},
+                {"itemKey": "GOOD", "retrieval_policy": "normal"},
+            ]],
+            "distances": [[0.1, 0.2, 0.3]],
+        }
+        with patch.object(rag_mcp_server, "_col", return_value=col), \
+             patch.object(rag_mcp_server, "_check_indexing_lock", return_value=(False, None)):
+            result = rag_mcp_server.search_items("query", k=5)
+        self.assertEqual([row["itemKey"] for row in result["items"]], ["GOOD"])
+
 
 if __name__ == "__main__":
     unittest.main()

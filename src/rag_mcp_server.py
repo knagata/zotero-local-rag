@@ -1674,13 +1674,21 @@ def search_items(
     )
 
     queries = [query] if isinstance(query, str) else query
+    allow_explicit = explicit_note_intent(queries)
+    min_return_chars = int(os.environ.get("MIN_RETURN_CHARS", "200"))
     for _attempt in range(2):
         try:
+            # Manually compute embeddings to avoid Chroma FFI deadlock, same
+            # as rag_search / _hierarchical_search_v2 -- col.query(query_texts=...)
+            # lets Chroma invoke the embedding function from inside its Rust
+            # FFI call, which can hang the whole (single-process) server
+            # (found in code review, fixed 2026-07-30).
+            query_embeddings = col._embedding_function(queries)
             res = col.query(
-                query_texts=queries,
+                query_embeddings=query_embeddings,
                 n_results=k_internal,
                 where=effective_where,
-                include=["metadatas", "distances"],
+                include=["documents", "metadatas", "distances"],
             )
             break
         except Exception as _exc:
@@ -1697,20 +1705,33 @@ def search_items(
     items_map = {}
 
     all_q_ids = res.get("ids") or []
+    all_q_docs = res.get("documents") or []
     all_q_metas = res.get("metadatas") or []
     all_q_dists = res.get("distances") or []
 
     for q_idx in range(len(all_q_ids)):
         q_ids = all_q_ids[q_idx]
+        q_docs = all_q_docs[q_idx] if q_idx < len(all_q_docs) else []
         q_metas = all_q_metas[q_idx] if q_idx < len(all_q_metas) else []
         q_dists = all_q_dists[q_idx] if q_idx < len(all_q_dists) else []
 
         for h_idx in range(len(q_ids)):
             md = q_metas[h_idx] if h_idx < len(q_metas) else {}
+            document = q_docs[h_idx] if h_idx < len(q_docs) else ""
             dist = q_dists[h_idx] if h_idx < len(q_dists) else 1.0
             ikey = md.get("itemKey")
 
             if not ikey:
+                continue
+            # Same policy/quality gate rag_search applies: exclude
+            # policy-excluded/corrupted chunks and below-floor fragments so
+            # search_items can't surface a hit rag_search would never return
+            # (found in code review, fixed 2026-07-30).
+            if not retrieval_policy_allowed(
+                md if isinstance(md, dict) else {}, allow_explicit=allow_explicit,
+            ):
+                continue
+            if len(str(document or "").strip()) < min_return_chars:
                 continue
 
             # RRF contribution based on rank in THIS query's result list

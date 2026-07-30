@@ -18,7 +18,7 @@
   `_patch_pages_with_docling_ocr`が`corrupted_unresolved`プレースホルダーに
   `zone="body"`を付けて索引化し、検索・要約にゴミ文字列が混入する。
   src/docling_extract.py:721-736
-- [ ] **F3: `rag_mcp_server.py`の`search_items` FFIデッドロック＋品質フィルタ欠落**
+- [x] **F3: `rag_mcp_server.py`の`search_items` FFIデッドロック＋品質フィルタ欠落**（2026-07-30）
   `rag_search`/`_hierarchical_search_v2`にある「クエリ埋め込み事前計算」共通化を
   `search_items`にも適用し、`retrieval_policy_allowed`フィルタも揃える。
   src/rag_mcp_server.py:1630-1741
