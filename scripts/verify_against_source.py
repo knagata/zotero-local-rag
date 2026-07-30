@@ -151,12 +151,19 @@ def main() -> int:
                 })
 
     lost = [d for d in report["documents"] if d.get("lost_pages")]
+    # A source PDF this script could not read (moved, corrupted, permission
+    # error) means the one invariant this script exists to check was never
+    # actually verified for that document -- that must fail the audit, not
+    # be recorded as a footnote excluded from the pass/fail computation
+    # (found in code review, fixed 2026-07-30).
+    unreadable = [d for d in report["documents"] if d.get("error")]
     report["summary"] = {
         "documents_with_lost_pages": len(lost),
         "lost_pages_total": sum(len(d["lost_pages"]) for d in lost),
         "orphan_chunks": len(report["orphan_chunks"]),
         "dangling_node_chunks": len(report["dangling_node_chunks"]),
         "unretrievable_items": len(report["unretrievable_items"]),
+        "unreadable_source_documents": len(unreadable),
     }
     report["passed"] = not any(report["summary"].values())
 

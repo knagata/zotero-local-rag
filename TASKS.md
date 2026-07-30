@@ -22,7 +22,7 @@
   `rag_search`/`_hierarchical_search_v2`にある「クエリ埋め込み事前計算」共通化を
   `search_items`にも適用し、`retrieval_policy_allowed`フィルタも揃える。
   src/rag_mcp_server.py:1630-1741
-- [ ] **F4: `verify_against_source.py`の読み取り失敗fail-open**
+- [x] **F4: `verify_against_source.py`の読み取り失敗fail-open**（2026-07-30）
   ソースPDFが読めない場合、監査结果から除外されて`passed: true`のまま通過する。
   scripts/verify_against_source.py:132-161
 - [ ] **F5: `index_from_zotero.py`の削除失敗の握りつぶし**
