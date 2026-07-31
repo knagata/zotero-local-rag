@@ -2224,6 +2224,7 @@ async def main_async(args: argparse.Namespace) -> None:
                     try:
                         patched, attempted_pages = patch_scanned_pages_with_docling(
                             file_path, scanned_pages, attachment_key=a.attachmentKey, meta_base=meta_base,
+                            worker=docling_worker,
                         )
                     except Exception as exc:
                         patched, attempted_pages = [], set()
@@ -2273,6 +2274,7 @@ async def main_async(args: argparse.Namespace) -> None:
                             patched, attempted_pages = patch_corrupted_pages_with_docling(
                                 file_path, failed_pages,
                                 attachment_key=a.attachmentKey, meta_base=meta_base,
+                                worker=docling_worker,
                                 # This uses the corrupted-page marker semantics
                                 # for scan-derived OCR failures, but is a
                                 # separate repair provenance from the later
@@ -2330,6 +2332,7 @@ async def main_async(args: argparse.Namespace) -> None:
                     try:
                         corrupt_patched, corrupt_attempted_pages = patch_corrupted_pages_with_docling(
                             file_path, corrupted_pages, attachment_key=a.attachmentKey, meta_base=meta_base,
+                            worker=docling_worker,
                         )
                     except Exception as exc:
                         corrupt_patched, corrupt_attempted_pages = [], set()
@@ -2514,7 +2517,10 @@ async def main_async(args: argparse.Namespace) -> None:
                     and total_pages >= minimum_pages
                     and structure_recovery
                 ):
-                    recovered = try_ai_toc_fast_path(file_path, scope_item_key, chunks, quality_info)
+                    recovered = try_ai_toc_fast_path(
+                        file_path, scope_item_key, chunks, quality_info,
+                        docling_worker=docling_worker,
+                    )
                     quality_info = dict(quality_info)
                     quality_info["ai_toc_recovery_status"] = (
                         "accepted" if recovered.accepted else recovered.reason

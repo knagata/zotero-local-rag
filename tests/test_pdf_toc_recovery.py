@@ -350,7 +350,7 @@ def test_docling_reference_enrichment_stamps_the_attachment_key():
     }
     captured_meta_base = {}
 
-    def fake_extract(pdf_path, pages, *, attachment_key, meta_base):
+    def fake_extract(pdf_path, pages, *, attachment_key, meta_base, worker):
         captured_meta_base.update(meta_base)
         return []  # empty is fine; the splice guard leaves structured untouched
 
@@ -363,7 +363,53 @@ def test_docling_reference_enrichment_stamps_the_attachment_key():
         try_ai_toc_fast_path(Path("sample.pdf"), "ITEM", chunks, {
             "is_scanned": False, "is_corrupted": False, "total_pages": 30,
             "scanned_ratio": 0.0, "corrupted_ratio": 0.0, "extraction_failure_ratio": 0.0,
-        })
+        }, docling_worker=object())
 
     assert captured_meta_base.get("itemKey") == "ITEM"
     assert captured_meta_base.get("attachmentKey"), "attachmentKey must be stamped, not omitted"
+
+
+def test_ai_toc_reference_enrichment_skipped_without_a_docling_worker():
+    # LX6XGB67 (2026-07-31): Docling segfaulted inside native OCR. Without a
+    # crash-isolating worker the enrichment must not run in-process -- it is
+    # optional, and the fail-closed path keeps the coarse AI-TOC chunks.
+    chunks = [
+        (f"ATT:p{page}:para0:part0", f"Body text on page {page}", {"page": page})
+        for page in (10, 30)
+    ]
+    inferred = {
+        "document_type": "monograph",
+        "headings": [
+            {"title": "One", "page": 10, "level": 1},
+            {"title": "Two", "page": 30, "level": 1},
+        ],
+    }
+    records = {
+        10: [{"text": "One", "reading_order": 0}],
+        30: [{"text": "Two", "reading_order": 0}],
+    }
+    env = {
+        "PDF_AI_TOC_FAST_PATH_ENABLE": "1", "PDF_AI_TOC_MIN_COVERAGE": "0.9",
+        "PDF_AI_TOC_MIN_STRUCTURED_CHUNK_RATIO": "0.8", "PDF_AI_TOC_MIN_PAGES": "30",
+        "PDF_AI_TOC_DOCLING_REFERENCES_ENABLE": "1",
+    }
+
+    def exploding_extract(*_args, **_kwargs):
+        raise AssertionError("Docling must not run without a worker")
+
+    with mock.patch.dict(os.environ, env, clear=False), \
+         mock.patch("src.pdf_toc_recovery.infer_toc", return_value=inferred), \
+         mock.patch("src.pdf_toc_recovery._page_records", return_value=records), \
+         mock.patch("src.pdf_toc_recovery._reference_section_pages", return_value=[10]), \
+         mock.patch("src.docling_extract.extract_reference_sections_with_docling",
+                    side_effect=exploding_extract):
+        result = try_ai_toc_fast_path(Path("sample.pdf"), "ITEM", chunks, {
+            "is_scanned": False, "is_corrupted": False, "total_pages": 30,
+            "scanned_ratio": 0.0, "corrupted_ratio": 0.0, "extraction_failure_ratio": 0.0,
+        })
+
+    assert result.accepted
+    assert "docling_reference_chunks" not in result.diagnostics
+    # The skip must be visible: an enabled feature doing nothing is otherwise
+    # indistinguishable from one that ran.
+    assert result.diagnostics["docling_reference_enrichment_skipped"] == "no_docling_worker"

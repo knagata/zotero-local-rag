@@ -38,6 +38,19 @@ class _Item:
         return self._markdown or self.text
 
 
+class _FakeDoclingWorker:
+    """Stands in for the run's DoclingWorker subprocess in patch-path tests."""
+
+    def __init__(self, result=None, *, side_effect=None):
+        self._result = result
+        self._side_effect = side_effect
+
+    def extract(self, pdf_path, attachment_key, meta_base):
+        if self._side_effect is not None:
+            return self._side_effect(pdf_path, attachment_key, meta_base)
+        return self._result
+
+
 class _Doc:
     pages = {1: object(), 2: object()}
 
@@ -174,12 +187,10 @@ class DoclingExtractTests(unittest.TestCase):
         sub_to_original = ("missing-fixture-sub.pdf", {1: 5, 2: 12})
         with patch.object(
             docling_extract, "_build_scanned_page_subset", return_value=sub_to_original,
-        ) as mocked_subset, patch.object(
-            docling_extract, "extract_chunks_from_pdf_with_docling",
-            return_value=(fake_chunks, {"parser": "docling"}),
-        ), patch("os.unlink"):
+        ) as mocked_subset, patch("os.unlink"):
             output, attempted = docling_extract.patch_scanned_pages_with_docling(
                 Path("missing-fixture.pdf"), [5, 12], attachment_key="ATT", meta_base={"itemKey": "ITEM"},
+                worker=_FakeDoclingWorker((fake_chunks, {"parser": "docling"})),
             )
         mocked_subset.assert_called_once()
         # Page 5 yielded a real text chunk; page 12 (a figure Docling found no
@@ -236,12 +247,10 @@ class DoclingExtractTests(unittest.TestCase):
         sub_to_original = ("missing-fixture-sub.pdf", {1: 24, 2: 92})
         with patch.object(
             docling_extract, "_build_scanned_page_subset", return_value=sub_to_original,
-        ), patch.object(
-            docling_extract, "extract_chunks_from_pdf_with_docling",
-            return_value=(fake_chunks, {"parser": "docling"}),
         ), patch("os.unlink"):
             output, attempted = docling_extract.patch_scanned_pages_with_docling(
                 Path("missing-fixture.pdf"), [24, 92], attachment_key="ATT", meta_base={"itemKey": "ITEM"},
+                worker=_FakeDoclingWorker((fake_chunks, {"parser": "docling"})),
             )
         by_page = {md["page"]: (text, md) for _cid, text, md in output}
         self.assertEqual(by_page[24][0], "Sven Lutticken")
@@ -263,12 +272,10 @@ class DoclingExtractTests(unittest.TestCase):
         sub_to_original = ("missing-fixture-sub.pdf", {1: 2, 2: 9})
         with patch.object(
             docling_extract, "_build_scanned_page_subset", return_value=sub_to_original,
-        ) as mocked_subset, patch.object(
-            docling_extract, "extract_chunks_from_pdf_with_docling",
-            return_value=(fake_chunks, {"parser": "docling"}),
-        ), patch("os.unlink"):
+        ) as mocked_subset, patch("os.unlink"):
             output, attempted = docling_extract.patch_corrupted_pages_with_docling(
                 Path("missing-fixture.pdf"), [2, 9], attachment_key="ATT", meta_base={"itemKey": "ITEM"},
+                worker=_FakeDoclingWorker((fake_chunks, {"parser": "docling"})),
             )
         mocked_subset.assert_called_once()
         self.assertEqual(len(output), 2)
@@ -307,12 +314,10 @@ class DoclingExtractTests(unittest.TestCase):
         sub_to_original = ("missing-fixture-sub.pdf", {1: 30, 2: 31})
         with patch.object(
             docling_extract, "_build_scanned_page_subset", return_value=sub_to_original,
-        ), patch.object(
-            docling_extract, "extract_chunks_from_pdf_with_docling",
-            return_value=(fake_chunks, {"parser": "docling"}),
         ), patch("os.unlink"):
             output, attempted = docling_extract.patch_corrupted_pages_with_docling(
                 Path("missing-fixture.pdf"), [30, 31], attachment_key="ATT", meta_base={"itemKey": "ITEM"},
+                worker=_FakeDoclingWorker((fake_chunks, {"parser": "docling"})),
             )
         by_page = {md["page"]: (text, md) for _cid, text, md in output}
         self.assertEqual(by_page[30][0], "A properly recovered sentence with real words.")
@@ -335,12 +340,10 @@ class DoclingExtractTests(unittest.TestCase):
         with patch.object(
             docling_extract, "_build_scanned_page_subset",
             return_value=("sub.pdf", {1: 7}),
-        ), patch.object(
-            docling_extract, "extract_chunks_from_pdf_with_docling",
-            return_value=(fake_chunks, {"parser": "docling"}),
         ), patch("os.unlink"):
             output, attempted = docling_extract.patch_corrupted_pages_with_docling(
                 Path("missing.pdf"), [7], attachment_key="XGEQTPS3", meta_base={"itemKey": "TA4V4875"},
+                worker=_FakeDoclingWorker((fake_chunks, {"parser": "docling"})),
             )
 
         self.assertEqual(attempted, {7})
@@ -365,17 +368,16 @@ class DoclingExtractTests(unittest.TestCase):
         with patch.object(
             docling_extract, "_build_scanned_page_subset",
             return_value=("sub.pdf", {1: 1}),
-        ), patch.object(
-            docling_extract, "extract_chunks_from_pdf_with_docling",
-            return_value=(fake_chunks, {"parser": "docling"}),
         ), patch("os.unlink"):
+            worker = _FakeDoclingWorker((fake_chunks, {"parser": "docling"}))
             scan_repair, _ = docling_extract.patch_corrupted_pages_with_docling(
                 Path("missing.pdf"), [1], attachment_key="XGEQTPS3",
-                meta_base={"itemKey": "TA4V4875"}, chunk_namespace="scanrepair",
+                meta_base={"itemKey": "TA4V4875"}, worker=worker,
+                chunk_namespace="scanrepair",
             )
             corruption_repair, _ = docling_extract.patch_corrupted_pages_with_docling(
                 Path("missing.pdf"), [1], attachment_key="XGEQTPS3",
-                meta_base={"itemKey": "TA4V4875"},
+                meta_base={"itemKey": "TA4V4875"}, worker=worker,
             )
 
         merged_ids = [cid for cid, _text, _md in scan_repair + corruption_repair]
@@ -413,11 +415,11 @@ class DoclingExtractTests(unittest.TestCase):
         pages = list(range(1, 8))  # 7 pages, batch size 3 -> 3 batches
         with patch.dict(_os.environ, {"PDF_PAGE_PATCH_BATCH_PAGES": "3"}), \
              patch.object(docling_extract, "_build_scanned_page_subset", side_effect=fake_subset), \
-             patch.object(docling_extract, "extract_chunks_from_pdf_with_docling", side_effect=fake_docling), \
              patch.object(docling_extract, "_relieve_patch_memory"), \
              patch("os.unlink"):
             output, attempted = docling_extract.patch_corrupted_pages_with_docling(
                 Path("missing.pdf"), pages, attachment_key="ATT", meta_base={"itemKey": "I"},
+                worker=_FakeDoclingWorker(side_effect=fake_docling),
             )
         self.assertEqual(built_batches, [[1, 2, 3], [4, 5, 6], [7]])
         self.assertEqual(attempted, set(pages))
@@ -453,12 +455,12 @@ class DoclingExtractTests(unittest.TestCase):
 
         with patch.dict(_os.environ, {"PDF_PAGE_PATCH_BATCH_PAGES": "2"}), \
              patch.object(docling_extract, "_build_scanned_page_subset", side_effect=fake_subset), \
-             patch.object(docling_extract, "extract_chunks_from_pdf_with_docling", side_effect=fake_docling), \
              patch.object(docling_extract, "_relieve_patch_memory"), \
              patch("os.unlink"):
             output, attempted = docling_extract.patch_scanned_pages_with_docling(
                 Path("missing.pdf"), [10, 11, 20, 21], attachment_key="ATT",
                 meta_base={"itemKey": "I"},
+                worker=_FakeDoclingWorker(side_effect=fake_docling),
             )
         # All four pages attempted despite batch 1 failing.
         self.assertEqual(attempted, {10, 11, 20, 21})
@@ -469,6 +471,46 @@ class DoclingExtractTests(unittest.TestCase):
         # Second batch succeeded: page 20 has text, page 21 is a marker.
         self.assertEqual(by_page[20]["block_type"], "text")
         self.assertEqual(by_page[21]["block_type"], "figure")
+
+    def test_patch_worker_crash_does_not_abort_remaining_batches(self):
+        # LX6XGB67 (2026-07-31): Docling segfaulted inside OpenCV's kleidicv
+        # NEON resize during a page patch. Running it in-process killed the
+        # whole indexing run; through DoclingWorker the same crash arrives as
+        # a RuntimeError, so only that batch's pages go unresolved.
+        import os as _os
+
+        calls = {"n": 0}
+
+        def crashing_worker(_path, _att, _meta):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("Docling worker crashed while processing: sub.pdf")
+            return (
+                [("ATT:p1:para0:part0", "Recovered text with plenty of words here.",
+                  {"page": 1, "block_type": "text"})],
+                {"parser": "docling"},
+            )
+
+        with patch.dict(_os.environ, {"PDF_PAGE_PATCH_BATCH_PAGES": "2"}), \
+             patch.object(
+                 docling_extract, "_build_scanned_page_subset",
+                 side_effect=lambda _pdf, batch: (
+                     "sub.pdf", {i + 1: page for i, page in enumerate(batch)}
+                 ),
+             ), \
+             patch.object(docling_extract, "_relieve_patch_memory"), \
+             patch("os.unlink"):
+            output, attempted = docling_extract.patch_corrupted_pages_with_docling(
+                Path("missing.pdf"), [3, 4, 5, 6], attachment_key="ATT",
+                meta_base={"itemKey": "I"},
+                worker=_FakeDoclingWorker(side_effect=crashing_worker),
+            )
+
+        self.assertEqual(attempted, {3, 4, 5, 6})
+        by_page = {md["page"]: md for _c, _t, md in output}
+        self.assertEqual(by_page[3]["block_type"], "corrupted_unresolved")
+        self.assertEqual(by_page[4]["block_type"], "corrupted_unresolved")
+        self.assertEqual(by_page[5]["block_type"], "text")
 
     def test_patch_batch_size_env_parsing(self):
         import os as _os
@@ -497,6 +539,7 @@ class DoclingExtractTests(unittest.TestCase):
         ):
             output = docling_extract.extract_reference_sections_with_docling(
                 Path("missing-fixture.pdf"), [20], attachment_key="ATT", meta_base={"itemKey": "ITEM"},
+                worker=_FakeDoclingWorker(([], {})),
             )
         self.assertEqual(len(output), 1)
         chunk_id, text, md = output[0]

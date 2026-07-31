@@ -501,6 +501,7 @@ def try_ai_toc_fast_path(
     pdf_path: Path, item_key: str,
     chunks: Sequence[tuple[str, str, Mapping[str, Any]]],
     quality: Mapping[str, Any], *, client: LLMClient | None = None,
+    docling_worker: Any = None,
 ) -> TocRecoveryResult:
     """Return accepted structured chunks or a fail-closed Docling fallback reason."""
     original = [(cid, text, dict(md)) for cid, text, md in chunks]
@@ -557,7 +558,19 @@ def try_ai_toc_fast_path(
     # E2b (note 77): re-parse just the reference/endnote section pages with
     # Docling for one-entry-per-chunk structure.  Opt-in and fail-closed -- any
     # error keeps the coarse AI-TOC chunks so ingestion is never blocked.
-    if os.environ.get("PDF_AI_TOC_DOCLING_REFERENCES_ENABLE", "0").strip() == "1":
+    # Without a worker there is no crash-isolated way to run Docling here, and
+    # a native OCR segfault would kill the caller outright (LX6XGB67,
+    # 2026-07-31) -- so skip the enrichment rather than run it in-process,
+    # which is the same fail-closed outcome as any error below.  Record why:
+    # an operator who enabled this feature would otherwise have no way to tell
+    # a silent skip from a run where it worked, since only the error path
+    # below leaves a diagnostic.
+    references_enabled = (
+        os.environ.get("PDF_AI_TOC_DOCLING_REFERENCES_ENABLE", "0").strip() == "1"
+    )
+    if references_enabled and docling_worker is None:
+        diagnostics["docling_reference_enrichment_skipped"] = "no_docling_worker"
+    if references_enabled and docling_worker is not None:
         reference_pages = _reference_section_pages(structured)
         if reference_pages:
             try:
@@ -576,6 +589,7 @@ def try_ai_toc_fast_path(
                 meta_base = {"itemKey": item_key, "attachmentKey": attachment_key}
                 reference_chunks = extract_reference_sections_with_docling(
                     pdf_path, reference_pages, attachment_key=attachment_key, meta_base=meta_base,
+                    worker=docling_worker,
                 )
                 if reference_chunks:
                     structured = _splice_reference_chunks(structured, reference_chunks, reference_pages)

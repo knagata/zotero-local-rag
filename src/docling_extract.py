@@ -403,14 +403,29 @@ _REFERENCE_HARVEST_ZONES = {"bibliography", "endnote", "footnote"}
 
 def _docling_subset_pages(
     pdf_path: Path, pages: List[int], *, attachment_key: str, meta_base: Dict[str, Any],
+    worker: Any,
 ) -> Tuple[List[Tuple[str, str, Dict[str, Any]]], Dict[int, int], Dict[str, Any]]:
     """Run Docling on just the given 1-based ``pages`` of a PDF.
 
     Builds a temporary sub-PDF containing only those pages (in the given
     order), runs Docling on it, and returns the raw chunks alongside a
     sub-page -> original-page map so callers can remap ``page`` metadata back
-    onto the source document.  Shared by the reference-section (E2b) and
-    scanned-page (E2c) Docling patch paths.
+    onto the source document.
+
+    Used only by the reference-section path (E2b). The scanned/corrupted page
+    patches (E2c/E2d) deliberately do *not* share this: they build their
+    sub-PDF with ``_build_scanned_page_subset``, which re-renders each page
+    from source pixels and falls back to the page's own extracted embedded
+    image when a broken content stream makes ``get_pixmap()`` come out blank.
+    Reference pages are ordinary text pages that never hit that failure mode,
+    so the plain ``insert_pdf`` copy below is enough for them. Do not
+    "de-duplicate" the two builders into this one -- that silently drops the
+    recovery fallback, and the affected scanned pages then yield no text while
+    still looking like a clean figure-page result.
+
+    Docling runs in ``worker`` (the run's ``DoclingWorker``) rather than
+    in-process, for the reason given in ``_patch_pages_with_docling_ocr``: a
+    native OCR segfault is uncatchable and would otherwise kill the caller.
     """
     import os
     import tempfile
@@ -434,7 +449,7 @@ def _docling_subset_pages(
         subset.close()
         source.close()
     try:
-        chunks, quality = extract_chunks_from_pdf_with_docling(
+        chunks, quality = worker.extract(
             Path(handle.name), attachment_key, dict(meta_base),
         )
     finally:
@@ -444,6 +459,7 @@ def _docling_subset_pages(
 
 def extract_reference_sections_with_docling(
     pdf_path: Path, pages: List[int], *, attachment_key: str, meta_base: Dict[str, Any],
+    worker: Any,
 ) -> List[Tuple[str, str, Dict[str, Any]]]:
     """Structure a PDF's reference/note pages with Docling (E2b, note 77).
 
@@ -454,6 +470,7 @@ def extract_reference_sections_with_docling(
     """
     chunks, sub_to_original, _quality = _docling_subset_pages(
         pdf_path, pages, attachment_key=attachment_key, meta_base=meta_base,
+        worker=worker,
     )
     output: List[Tuple[str, str, Dict[str, Any]]] = []
     for chunk_id, text, metadata in chunks:
@@ -587,7 +604,22 @@ def _patch_batch_size() -> int:
 
 
 def _relieve_patch_memory() -> None:
-    """Best-effort memory release between patch batches (gc + torch caches)."""
+    """Best-effort memory release between patch batches (gc + CUDA cache).
+
+    This runs in the *parent* process. Docling's own allocations now live in
+    the ``DoclingWorker`` child, which releases them itself
+    (``docling_worker._relieve_worker_memory_pressure``), so the batch memory
+    this was added for (AX5CRKJ6's 208-page patch, 2026-07-26) is no longer
+    reachable from here -- ``gc.collect()`` still matters for the chunk lists
+    and sub-PDF buffers the parent does hold.
+
+    Deliberately no ``torch.mps.empty_cache()``: on macOS that call can
+    segfault inside ``MPSAllocator/MPSStream`` (see
+    ``docling_worker._relieve_worker_memory_pressure``). It could only free the
+    parent's embedding-model cache, which is not what this function is for, so
+    keeping it would leave a native-crash path in the process holding the live
+    Chroma client and buy nothing. CUDA cleanup has no bearing on that crash.
+    """
     import gc
 
     try:
@@ -599,15 +631,13 @@ def _relieve_patch_memory() -> None:
 
         if getattr(torch, "cuda", None) is not None and torch.cuda.is_available():
             torch.cuda.empty_cache()
-        mps = getattr(getattr(torch, "backends", None), "mps", None)
-        if mps is not None and mps.is_available():
-            torch.mps.empty_cache()
     except Exception:
         pass
 
 
 def _patch_pages_with_docling_ocr(
     pdf_path: Path, pages: List[int], *, attachment_key: str, meta_base: Dict[str, Any],
+    worker: Any,
     chunk_namespace: str, patch_marker_key: str, unresolved_block_type: str,
     unresolved_text: Any, unresolved_zone: str = "body",
 ) -> Tuple[List[Tuple[str, str, Dict[str, Any]]], set[int]]:
@@ -661,6 +691,15 @@ def _patch_pages_with_docling_ocr(
     marker chunks (visible, not garbage, not silently dropped) and count as
     attempted for the caller's ratio gate, exactly like a page Docling
     processed but found no usable text on.
+
+    ``worker`` is the run's ``DoclingWorker``. Docling runs there rather than
+    in-process for the same reason the main extraction path does: a native
+    segfault inside OCR (observed 2026-07-31 on LX6XGB67, in OpenCV's kleidicv
+    NEON ``resize``) kills its whole process outright, and no ``except`` here
+    can catch it. Calling Docling directly made that crash take down the parent
+    process holding the live Chroma client mid-run; through the worker it
+    surfaces as the RuntimeError the per-batch handler below already treats as
+    an unresolved batch.
     """
     import os
     import sys
@@ -683,7 +722,7 @@ def _patch_pages_with_docling_ocr(
         try:
             sub_path, sub_to_original = _build_scanned_page_subset(pdf_path, batch)
             try:
-                chunks, _quality = extract_chunks_from_pdf_with_docling(
+                chunks, _quality = worker.extract(
                     Path(sub_path), attachment_key, dict(meta_base),
                 )
             finally:
@@ -745,6 +784,7 @@ def _patch_pages_with_docling_ocr(
 
 def patch_scanned_pages_with_docling(
     pdf_path: Path, scanned_pages: List[int], *, attachment_key: str, meta_base: Dict[str, Any],
+    worker: Any,
 ) -> Tuple[List[Tuple[str, str, Dict[str, Any]]], set[int]]:
     """OCR just a PDF's scanned (image-only) pages with Docling (E2c, note 77).
 
@@ -769,6 +809,7 @@ def patch_scanned_pages_with_docling(
     """
     return _patch_pages_with_docling_ocr(
         pdf_path, scanned_pages, attachment_key=attachment_key, meta_base=meta_base,
+        worker=worker,
         chunk_namespace="scanpatch", patch_marker_key="scanned_page_patch",
         unresolved_block_type="figure",
         unresolved_text=lambda page: f"[Figure page {page}]",
@@ -777,7 +818,7 @@ def patch_scanned_pages_with_docling(
 
 def patch_corrupted_pages_with_docling(
     pdf_path: Path, corrupted_pages: List[int], *, attachment_key: str, meta_base: Dict[str, Any],
-    chunk_namespace: str = "corruptpatch",
+    worker: Any, chunk_namespace: str = "corruptpatch",
 ) -> Tuple[List[Tuple[str, str, Dict[str, Any]]], set[int]]:
     """Re-OCR just a PDF's text-corrupted pages with Docling (E2d, note 77).
 
@@ -812,6 +853,7 @@ def patch_corrupted_pages_with_docling(
     """
     return _patch_pages_with_docling_ocr(
         pdf_path, corrupted_pages, attachment_key=attachment_key, meta_base=meta_base,
+        worker=worker,
         chunk_namespace=chunk_namespace, patch_marker_key="corrupted_page_patch",
         unresolved_block_type="corrupted_unresolved",
         unresolved_text=lambda page: f"[Corrupted page {page} — unresolved]",
