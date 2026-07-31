@@ -15,6 +15,9 @@ try:
         build_pdf_page_chapter_lookup, build_pdf_page_structure_path_lookup, get_pdf_toc,
     )
     from .env_utils import load_dotenv_native
+    from .ocr_cache import (
+        MISTRAL_REQUEST_CONTRACT, load_result, load_result_any_model, source_digest, store_result,
+    )
     from .text_utils import (
         MAX_CHARS, MAX_CHARS_CJK, TARGET_CHARS, TARGET_CHARS_CJK,
         MIN_CHUNK_CHARS, MIN_CHUNK_CHARS_NO_SPACE, HARD_MIN_CHARS, HARD_MIN_CHARS_CJK,
@@ -25,6 +28,9 @@ except ImportError:  # direct `python src/index_from_zotero.py` execution
         build_pdf_page_chapter_lookup, build_pdf_page_structure_path_lookup, get_pdf_toc,
     )
     from env_utils import load_dotenv_native
+    from ocr_cache import (
+        MISTRAL_REQUEST_CONTRACT, load_result, load_result_any_model, source_digest, store_result,
+    )
     from text_utils import (
         MAX_CHARS, MAX_CHARS_CJK, TARGET_CHARS, TARGET_CHARS_CJK,
         MIN_CHUNK_CHARS, MIN_CHUNK_CHARS_NO_SPACE, HARD_MIN_CHARS, HARD_MIN_CHARS_CJK,
@@ -178,28 +184,135 @@ def _call_mistral_ocr_api(
     return response.json()
 
 
+def _resolve_cache_paths(data_dir: Path | None) -> tuple[str, Path]:
+    """(configured model, cache root), with .env loaded so both agree.
+
+    Shared by every entry point that needs to know how a lookup would resolve
+    -- ``has_archived_result`` and ``extract_chunks_from_pdf_with_mistral_ocr``
+    -- so they cannot silently diverge on which model or directory a lookup
+    means.
+    """
+    load_dotenv_native(Path(__file__).resolve().parents[1])
+    model = os.environ.get("MISTRAL_OCR_MODEL", "").strip() or DEFAULT_MODEL
+    root = Path(data_dir) if data_dir is not None else Path(__file__).resolve().parents[1] / "data"
+    return model, root
+
+
+def _find_cached_result(
+    pdf_path: Path, *, data_dir: Path | None,
+) -> tuple[str, str, dict[str, Any]] | None:
+    """(digest, model, result) for an archived response, or None if there is none.
+
+    Tries the configured model first, then falls back to any model archived
+    under the same request contract -- see ``load_result_any_model`` for why
+    that fallback is safe. Single implementation so ``has_archived_result``
+    and ``extract_chunks_from_pdf_with_mistral_ocr`` can never disagree about
+    what a lookup would find.
+    """
+    model, root = _resolve_cache_paths(data_dir)
+    try:
+        digest = source_digest(pdf_path)
+    except OSError:
+        return None
+    if not digest:
+        return None
+    cached = load_result(
+        root, engine="mistral_ocr", model=model,
+        contract_version=MISTRAL_REQUEST_CONTRACT, digest=digest,
+    )
+    if cached is not None:
+        return digest, model, cached
+    found = load_result_any_model(
+        root, engine="mistral_ocr",
+        contract_version=MISTRAL_REQUEST_CONTRACT, digest=digest,
+    )
+    if found is not None:
+        cached_model, cached = found
+        return digest, cached_model, cached
+    return None
+
+
+def has_archived_result(pdf_path: Path, *, data_dir: Path | None = None) -> bool:
+    """Whether an archived response exists for this file, with no API call.
+
+    Lets a caller route around the cloud-availability gate (which exists to
+    stop an unconfigured or disabled key from being used to *send* data) when
+    the outcome would be a pure cache replay: MISTRAL_OCR_API_KEY missing or
+    unset must not also block re-deriving chunks from an already-archived
+    response, since doing so makes no request and needs no key.
+    """
+    return _find_cached_result(pdf_path, data_dir=data_dir) is not None
+
+
 def extract_chunks_from_pdf_with_mistral_ocr(
     pdf_path: Path,
     attachment_key: str,
     meta_base: Dict[str, Any],
+    *,
+    data_dir: Path | None = None,
+    use_cache: bool = True,
 ) -> Tuple[List[Tuple[str, str, Dict[str, Any]]], Dict[str, Any]]:
     """OCR a PDF with the Mistral OCR cloud API and emit the standard chunk contract.
 
     This is a cloud engine (no-cloud attachments must never reach it; see
     ``EngineRegistry.select(no_cloud=True)``). Requires ``MISTRAL_OCR_API_KEY``.
+
+    An archived response for this exact (file bytes, model, request contract)
+    is replayed instead of paying for the call again; chunking always re-runs
+    on current code, so a parsing fix takes effect without a refetch. Pass
+    ``use_cache=False`` when the *response itself* is suspect -- that is the
+    only case a refetch buys anything.
     """
-    load_dotenv_native(Path(__file__).resolve().parents[1])
+    model, root = _resolve_cache_paths(data_dir)
+
+    digest = ""
+    try:
+        digest = source_digest(pdf_path)
+    except OSError:
+        digest = ""
+
+    if use_cache and digest:
+        found = _find_cached_result(pdf_path, data_dir=data_dir)
+        if found is not None:
+            _digest, cached_model, cached = found
+            chunks, quality = extract_chunks_from_mistral_ocr_result(
+                pdf_path, attachment_key, meta_base, cached, model=cached_model,
+            )
+            quality = dict(quality)
+            quality["ocr_cache"] = "hit"
+            quality["ocr_source_sha256"] = digest
+            return chunks, quality
+
     api_key = os.environ.get("MISTRAL_OCR_API_KEY", "").strip()
     if not api_key:
         raise RuntimeError("MISTRAL_OCR_API_KEY is not configured; Mistral OCR is a cloud engine and opt-in only.")
-    model = os.environ.get("MISTRAL_OCR_MODEL", "").strip() or DEFAULT_MODEL
     base_url = os.environ.get("MISTRAL_OCR_BASE_URL", "").strip() or DEFAULT_BASE_URL
     timeout = max(1.0, float(os.environ.get("MISTRAL_OCR_TIMEOUT_SEC", "120")))
 
     result = _call_mistral_ocr_api(pdf_path, api_key=api_key, model=model, base_url=base_url, timeout=timeout)
-    return extract_chunks_from_mistral_ocr_result(
+    chunks, quality = extract_chunks_from_mistral_ocr_result(
         pdf_path, attachment_key, meta_base, result, model=model,
     )
+    quality = dict(quality)
+    quality["ocr_cache"] = "miss"
+    if digest:
+        quality["ocr_source_sha256"] = digest
+        # Archive only what produced usable output: replaying an empty or
+        # failed response forever is worse than paying for one refetch.
+        if chunks:
+            try:
+                store_result(
+                    root, engine="mistral_ocr", model=model,
+                    contract_version=MISTRAL_REQUEST_CONTRACT, digest=digest,
+                    result=result, attachment_key=attachment_key,
+                    title=str(meta_base.get("title") or ""),
+                    source_size=pdf_path.stat().st_size,
+                    source_path=str(pdf_path),
+                )
+                quality["ocr_cache"] = "stored"
+            except OSError:
+                pass  # archiving is an optimisation; never fail an ingest for it
+    return chunks, quality
 
 
 #: Meaningful at any length, so they skip the merge/HARD_MIN_CHARS drop below.
@@ -371,5 +484,5 @@ def mistral_ocr_available() -> tuple[bool, str]:
 
 __all__ = [
     "extract_chunks_from_pdf_with_mistral_ocr", "extract_chunks_from_mistral_ocr_result",
-    "mistral_ocr_available",
+    "has_archived_result", "mistral_ocr_available",
 ]

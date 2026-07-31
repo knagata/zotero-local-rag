@@ -34,6 +34,7 @@ from local_ocr_pipeline import REPEAT_ARTIFACT_RE, run_local_ocr
 from mistral_ocr_extract import (
     extract_chunks_from_mistral_ocr_result,
     extract_chunks_from_pdf_with_mistral_ocr,
+    has_archived_result,
     mistral_ocr_available,
 )
 from epub_fallback import (
@@ -578,6 +579,13 @@ def parse_args() -> argparse.Namespace:
         "--force-reparse", action="store_true",
         help="Re-extract selected items even if unchanged (bypasses the mtime/pipeline skip). "
              "Use after an extraction-code change. Requires --item/--attachment/--limit/--source-type to scope.",
+    )
+    p.add_argument(
+        "--refetch-ocr", action="store_true",
+        help="Ignore the archived raw OCR response and call the engine again. "
+             "Only needed when the OCR output itself is suspect -- a parsing or "
+             "chunking fix does not need this, since chunks are always re-derived "
+             "from the archive with current code.",
     )
     p.add_argument("--dump-attachments", action="store_true", help="Print resolved attachments list then proceed.")
     p.add_argument(
@@ -1986,10 +1994,15 @@ async def main_async(args: argparse.Namespace) -> None:
             # the *cloud-send* policy here would incorrectly block adoption
             # even though this run makes no API request or text transmission.
             staged_result_path = str(reocr_route.get("mistral_result_path") or "").strip()
-            allowed, policy_reason = (
-                (True, "staged_batch_result") if staged_result_path
-                else mistral_ocr_available()
-            )
+            if staged_result_path:
+                allowed, policy_reason = True, "staged_batch_result"
+            elif stype == "pdf" and not args.refetch_ocr and has_archived_result(file_path, data_dir=DATA_DIR):
+                # Same reasoning as the staged-result case just above: this
+                # makes no API request and sends nothing, so the cloud-send
+                # policy has nothing to gate here.
+                allowed, policy_reason = True, "archived_ocr_response"
+            else:
+                allowed, policy_reason = mistral_ocr_available()
             if not allowed:
                 chunks, quality_info = [], {}
                 mark_artifact_status(
@@ -2068,7 +2081,20 @@ async def main_async(args: argparse.Namespace) -> None:
                     elif stype == "pdf":
                         chunks, quality_info = extract_chunks_from_pdf_with_mistral_ocr(
                             file_path, a.attachmentKey, meta_base,
+                            data_dir=DATA_DIR, use_cache=not args.refetch_ocr,
                         )
+                        if show_progress:
+                            # extract_chunks_from_pdf_with_mistral_ocr always
+                            # sets exactly one of these three.
+                            note = {
+                                "hit": "archived OCR reused (no API call)",
+                                "stored": "fetched from API and archived",
+                                "miss": "fetched from API (not archived)",
+                            }[str(quality_info["ocr_cache"])]
+                            print(
+                                f"[PROGRESS]   ↳ Mistral OCR: {note}",
+                                file=sys.__stderr__,
+                            )
                     else:
                         raise RuntimeError("fixed-layout EPUB Mistral route requires a staged Batch result")
                 except Exception as exc:

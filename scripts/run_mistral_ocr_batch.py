@@ -23,6 +23,7 @@ from src.mistral_ocr_batch import (
     source_fingerprint, source_matches, write_batch_jsonl,
 )
 from src.mistral_ocr_extract import DEFAULT_BASE_URL, DEFAULT_MODEL, mistral_ocr_available
+from src.ocr_cache import MISTRAL_REQUEST_CONTRACT, source_digest, store_result
 from src.zotero_source_localapi import ZoteroLocalAPI
 from scripts.list_mistral_toc_candidates import REASON, build_queue_rows
 from src.db_relations import get_artifact_processing_statuses
@@ -83,6 +84,7 @@ async def resolve_candidates(item_filters: list[str] | None) -> list[tuple[dict[
         row = dict(row)
         row.update(source_fingerprint(source_path))
         row["source_path"] = str(source_path)
+        row["title"] = str(attachment.title or "")
         row["batch_document_path"] = str(batch_path)
         row["pdf_path"] = str(batch_path)
         resolved.append((row, batch_path))
@@ -280,6 +282,34 @@ def collect(args: argparse.Namespace, state: dict[str, Any]) -> dict[str, Any]:
                 result_path.write_text(
                     json.dumps(entry["body"], ensure_ascii=False) + "\n", encoding="utf-8",
                 )
+                # Also archive it content-addressed. The copy above lives in
+                # this job's work directory and is reachable only by passing
+                # this run's adoption queue to --reocr-candidates, so it is
+                # lost the moment the work directory is cleaned up; the
+                # archived copy stays findable from the source bytes alone.
+                # Gated results only -- see ocr_cache.store_result.
+                #
+                # Keyed on the *attachment* file, not the document that was
+                # sent: those differ whenever a derivative was submitted (a
+                # fixed-layout EPUB's rendered PDF, a compressed PDF), and
+                # prepare() even overwrites row["pdf_path"] with the
+                # derivative. An ingest looks entries up by hashing the
+                # attachment it is processing, so keying on the derivative
+                # would file this response where nothing ever queries.
+                try:
+                    store_result(
+                        ROOT / "data", engine="mistral_ocr",
+                        model=str(state["model"]),
+                        contract_version=MISTRAL_REQUEST_CONTRACT,
+                        digest=source_digest(source_path), result=entry["body"],
+                        attachment_key=attachment_key,
+                        title=str(row.get("title") or ""),
+                        source_size=source_path.stat().st_size,
+                        source_path=str(source_path),
+                        batch_job_id=str(state["job_id"]),
+                    )
+                except OSError as exc:
+                    print(f"[WARN] could not archive OCR result for {attachment_key}: {exc}")
                 adoption_rows.append({
                     **row,
                     "target_engine": "mistral_ocr",
@@ -297,12 +327,32 @@ def collect(args: argparse.Namespace, state: dict[str, Any]) -> dict[str, Any]:
         "batch_job_id": str(state["job_id"]),
         "candidates": adoption_rows,
     })
+    # The request payloads inline every source PDF as base64, so they dwarf
+    # everything else here (3.4 GB against 34 MB of responses in the first
+    # corpus-wide run). Once the job has been collected they can only be used
+    # to re-send documents that are already stored in the archive, so they are
+    # dead weight; dropping them is what keeps a work directory from being the
+    # reason someone deletes the responses too. Kept on --keep-batch-input for
+    # anyone debugging what was actually sent.
+    freed = 0
+    if not args.keep_batch_input:
+        for stale in sorted(work_dir.glob("input*.jsonl")):
+            try:
+                size = stale.stat().st_size
+                stale.unlink()
+            except OSError as exc:
+                print(f"[WARN] could not remove {stale.name}: {exc}")
+            else:
+                freed += size
     state.update({
         "phase": "collected", "collected_at": utc_now(),
         "output_path": str(output_path), "adoption_queue": str(adoption_queue),
         "reports": reports, "adoptable_count": len(adoption_rows),
+        "batch_input_removed_bytes": freed,
     })
     save_json_atomic(args.state, state)
+    if freed:
+        print(f"removed batch input payloads ({freed / 1e9:.2f} GB) now that results are archived")
     return state
 
 
@@ -318,6 +368,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--item", action="append", help="Limit preparation to itemKey; repeatable.")
     parser.add_argument("--model", default=os.environ.get("MISTRAL_OCR_MODEL") or DEFAULT_MODEL)
     parser.add_argument("--timeout-hours", type=int, default=24)
+    parser.add_argument(
+        "--keep-batch-input", action="store_true",
+        help="Keep the base64 request payloads after --collect. They are only "
+             "useful for inspecting what was sent; the responses they produced "
+             "are archived under data/ocr_cache/ regardless.",
+    )
     parser.add_argument(
         "--max-input-bytes", type=int,
         default=int(os.environ.get("MISTRAL_OCR_BATCH_MAX_INPUT_BYTES", DEFAULT_MAX_INPUT_BYTES)),

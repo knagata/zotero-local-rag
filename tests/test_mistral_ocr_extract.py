@@ -280,3 +280,155 @@ class OcrPageCoverageTests(unittest.TestCase):
             )
         self.assertEqual(quality["ocr_pages"], [1, 2])
         self.assertEqual(quality["missing_pages"], [])
+
+
+class MistralOcrCacheIntegrationTests(unittest.TestCase):
+    """The archive must remove the API call, not the parsing."""
+
+    def setUp(self):
+        import tempfile
+
+        import fitz
+
+        self._tmp = tempfile.TemporaryDirectory()
+        self.data_dir = Path(self._tmp.name)
+        self.pdf = self.data_dir / "doc.pdf"
+        # A real one-page PDF: the parser opens the source to read page labels
+        # and the TOC, so a placeholder byte string would fail before reaching
+        # anything this test is about.
+        doc = fitz.open()
+        doc.new_page()
+        doc.save(str(self.pdf))
+        doc.close()
+        self.response = {
+            "pages": [{"index": 0, "markdown": "# Title\n\nA paragraph of body text that is long enough to survive chunk merging thresholds."}],
+            "model": "mistral-ocr-latest",
+        }
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _run(self, **kwargs):
+        return mistral_ocr_extract.extract_chunks_from_pdf_with_mistral_ocr(
+            self.pdf, "ATT", {"itemKey": "ITEM"}, data_dir=self.data_dir, **kwargs,
+        )
+
+    def test_first_call_fetches_and_archives_second_call_does_not_fetch(self):
+        env = {"MISTRAL_OCR_API_KEY": "k", "MISTRAL_OCR_MODEL": "mistral-ocr-latest"}
+        with mock.patch.dict(os.environ, env), \
+             mock.patch.object(mistral_ocr_extract, "load_dotenv_native"), \
+             mock.patch.object(mistral_ocr_extract, "get_pdf_toc", return_value=[]), \
+             mock.patch.object(
+                 mistral_ocr_extract, "_call_mistral_ocr_api", return_value=self.response,
+             ) as api:
+            _chunks, first = self._run()
+            self.assertEqual(api.call_count, 1)
+            self.assertEqual(first["ocr_cache"], "stored")
+
+            _chunks2, second = self._run()
+            # No second API call: the archived response was replayed.
+            self.assertEqual(api.call_count, 1)
+            self.assertEqual(second["ocr_cache"], "hit")
+
+    def test_refetch_bypasses_the_archive(self):
+        env = {"MISTRAL_OCR_API_KEY": "k", "MISTRAL_OCR_MODEL": "mistral-ocr-latest"}
+        with mock.patch.dict(os.environ, env), \
+             mock.patch.object(mistral_ocr_extract, "load_dotenv_native"), \
+             mock.patch.object(mistral_ocr_extract, "get_pdf_toc", return_value=[]), \
+             mock.patch.object(
+                 mistral_ocr_extract, "_call_mistral_ocr_api", return_value=self.response,
+             ) as api:
+            self._run()
+            self._run(use_cache=False)
+            self.assertEqual(api.call_count, 2)
+
+    def test_a_response_that_yields_no_chunks_is_not_archived(self):
+        # Replaying an empty response forever is worse than one refetch.
+        env = {"MISTRAL_OCR_API_KEY": "k", "MISTRAL_OCR_MODEL": "mistral-ocr-latest"}
+        empty = {"pages": [], "model": "mistral-ocr-latest"}
+        with mock.patch.dict(os.environ, env), \
+             mock.patch.object(mistral_ocr_extract, "load_dotenv_native"), \
+             mock.patch.object(mistral_ocr_extract, "get_pdf_toc", return_value=[]), \
+             mock.patch.object(
+                 mistral_ocr_extract, "_call_mistral_ocr_api", return_value=empty,
+             ) as api:
+            _chunks, quality = self._run()
+            self.assertEqual(quality["ocr_cache"], "miss")
+            self._run()
+            self.assertEqual(api.call_count, 2)
+
+    def test_cache_hit_needs_no_api_key(self):
+        # A replay makes no request, so it must not require cloud credentials.
+        env = {"MISTRAL_OCR_API_KEY": "k", "MISTRAL_OCR_MODEL": "mistral-ocr-latest"}
+        with mock.patch.dict(os.environ, env), \
+             mock.patch.object(mistral_ocr_extract, "load_dotenv_native"), \
+             mock.patch.object(mistral_ocr_extract, "get_pdf_toc", return_value=[]), \
+             mock.patch.object(
+                 mistral_ocr_extract, "_call_mistral_ocr_api", return_value=self.response,
+             ):
+            self._run()
+
+        with mock.patch.dict(os.environ, {"MISTRAL_OCR_MODEL": "mistral-ocr-latest"}, clear=True), \
+             mock.patch.object(mistral_ocr_extract, "load_dotenv_native"), \
+             mock.patch.object(mistral_ocr_extract, "get_pdf_toc", return_value=[]):
+            _chunks, quality = self._run()
+            self.assertEqual(quality["ocr_cache"], "hit")
+
+    def test_hit_falls_back_across_a_model_mismatch(self):
+        # run_mistral_ocr_batch.py --model can archive under a different
+        # model than this process's MISTRAL_OCR_MODEL; the lookup must still
+        # find it rather than re-buying the OCR.
+        from src.ocr_cache import MISTRAL_REQUEST_CONTRACT, store_result
+
+        store_result(
+            self.data_dir, engine="mistral_ocr", model="mistral-ocr-4-0",
+            contract_version=MISTRAL_REQUEST_CONTRACT,
+            digest=mistral_ocr_extract.source_digest(self.pdf),
+            result=self.response, attachment_key="ATT",
+        )
+        env = {"MISTRAL_OCR_MODEL": "mistral-ocr-latest"}
+        with mock.patch.dict(os.environ, env, clear=True), \
+             mock.patch.object(mistral_ocr_extract, "load_dotenv_native"), \
+             mock.patch.object(mistral_ocr_extract, "get_pdf_toc", return_value=[]), \
+             mock.patch.object(
+                 mistral_ocr_extract, "_call_mistral_ocr_api",
+             ) as api:
+            _chunks, quality = self._run()
+        self.assertEqual(api.call_count, 0)
+        self.assertEqual(quality["ocr_cache"], "hit")
+
+    def test_has_archived_result_true_only_when_something_is_cached(self):
+        self.assertFalse(mistral_ocr_extract.has_archived_result(self.pdf, data_dir=self.data_dir))
+        env = {"MISTRAL_OCR_API_KEY": "k", "MISTRAL_OCR_MODEL": "mistral-ocr-latest"}
+        with mock.patch.dict(os.environ, env), \
+             mock.patch.object(mistral_ocr_extract, "load_dotenv_native"), \
+             mock.patch.object(mistral_ocr_extract, "get_pdf_toc", return_value=[]), \
+             mock.patch.object(
+                 mistral_ocr_extract, "_call_mistral_ocr_api", return_value=self.response,
+             ):
+            self._run()
+        self.assertTrue(mistral_ocr_extract.has_archived_result(self.pdf, data_dir=self.data_dir))
+
+    def test_has_archived_result_loads_dotenv_like_the_fetch_path_does(self):
+        # Both entry points must resolve MISTRAL_OCR_MODEL identically, so a
+        # model set only in .env (not the process environment) must still be
+        # picked up by has_archived_result, exactly as the fetch path does.
+        from src.ocr_cache import MISTRAL_REQUEST_CONTRACT, store_result
+
+        store_result(
+            self.data_dir, engine="mistral_ocr", model="from-dotenv-model",
+            contract_version=MISTRAL_REQUEST_CONTRACT,
+            digest=mistral_ocr_extract.source_digest(self.pdf),
+            result=self.response, attachment_key="ATT",
+        )
+
+        def fake_load_dotenv(_root):
+            os.environ["MISTRAL_OCR_MODEL"] = "from-dotenv-model"
+
+        with mock.patch.dict(os.environ, {}, clear=True), \
+             mock.patch.object(
+                 mistral_ocr_extract, "load_dotenv_native", side_effect=fake_load_dotenv,
+             ) as loader:
+            found = mistral_ocr_extract.has_archived_result(self.pdf, data_dir=self.data_dir)
+        loader.assert_called_once()
+        self.assertTrue(found)
