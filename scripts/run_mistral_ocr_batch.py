@@ -43,12 +43,14 @@ def load_state(path: Path) -> dict[str, Any]:
 
 
 async def resolve_candidates(item_filters: list[str] | None) -> list[tuple[dict[str, Any], Path]]:
+    print("[PROGRESS] Resolving Mistral OCR batch candidates...", file=sys.stderr)
     rows = build_queue_rows(get_artifact_processing_statuses(
         artifact_type="extraction", reason_code=REASON,
     ))
     if item_filters:
         allowed = set(item_filters)
         rows = [row for row in rows if row["item_key"] in allowed]
+    print(f"[PROGRESS] {len(rows)} queued candidate(s); fetching attachment metadata from Zotero...", file=sys.stderr)
     api = ZoteroLocalAPI()
     data_dir = os.environ.get("ZOTERO_DATA_DIR")
     attachments = await api.list_normalized_attachments(
@@ -88,6 +90,7 @@ async def resolve_candidates(item_filters: list[str] | None) -> list[tuple[dict[
         row["batch_document_path"] = str(batch_path)
         row["pdf_path"] = str(batch_path)
         resolved.append((row, batch_path))
+    print(f"[PROGRESS] Resolved {len(resolved)} attachment(s) for this batch.", file=sys.stderr)
     return resolved
 
 
@@ -141,11 +144,17 @@ def client_from_env() -> MistralBatchClient:
 
 def prepare(args: argparse.Namespace) -> dict[str, Any]:
     resolved = asyncio.run(resolve_candidates(args.item))
+    if not resolved:
+        print("[PROGRESS] No candidates to batch.", file=sys.stderr)
     batches = split_input_batches(resolved, args.max_input_bytes)
     run_id = datetime.now().strftime("%Y%m%dT%H%M%S")
     work_dir = args.work_dir / run_id
     input_files: list[dict[str, Any]] = []
+    if len(batches) > 1:
+        print(f"[PROGRESS] Building {len(batches)} batch input file(s)...", file=sys.stderr)
     for index, batch in enumerate(batches, start=1):
+        if len(batches) > 1:
+            print(f"[PROGRESS] Batch {index}/{len(batches)} ({len(batch)} document(s)):", file=sys.stderr)
         input_path = work_dir / f"input-{index:03d}.jsonl"
         count = write_batch_jsonl(batch, input_path)
         input_files.append({
@@ -210,6 +219,13 @@ def submit(args: argparse.Namespace, state: dict[str, Any]) -> dict[str, Any]:
     client = client_from_env()
     pending = [entry for entry in input_files if not entry.get("input_file_id")]
     if pending:
+        total_bytes = sum(Path(str(e["input_path"])).stat().st_size for e in pending)
+        print(
+            f"[PROGRESS] Uploading {len(pending)} batch input file(s) "
+            f"({total_bytes / 1e9:.2f} GB, {args.upload_workers} at a time)...",
+            file=sys.stderr,
+        )
+        uploaded = 0
         with ThreadPoolExecutor(max_workers=args.upload_workers) as executor:
             futures = {
                 executor.submit(client.upload, Path(str(entry["input_path"]))): entry
@@ -218,17 +234,26 @@ def submit(args: argparse.Namespace, state: dict[str, Any]) -> dict[str, Any]:
             for future in as_completed(futures):
                 entry = futures[future]
                 entry["input_file_id"] = future.result()
+                uploaded += 1
+                size_mb = Path(str(entry["input_path"])).stat().st_size / 1e6
+                print(
+                    f"[PROGRESS]   ↳ uploaded {uploaded}/{len(pending)}: "
+                    f"{Path(str(entry['input_path'])).name} ({size_mb:.1f} MB)",
+                    file=sys.stderr,
+                )
                 state.update({"phase": "uploaded", "uploaded_at": utc_now()})
                 save_json_atomic(args.state, state)
     input_file_ids = [str(entry["input_file_id"]) for entry in input_files]
     state.update({"phase": "submitting", "submit_attempted_at": utc_now()})
     save_json_atomic(args.state, state)
+    print(f"[PROGRESS] Creating batch job ({len(input_file_ids)} file(s), model={state['model']})...", file=sys.stderr)
     job = client.create_job(input_file_ids, model=str(state["model"]), timeout_hours=args.timeout_hours)
     state.update({
         "phase": "submitted", "submitted_at": utc_now(),
         "input_file_ids": input_file_ids, "job_id": str(job["id"]), "job": job,
     })
     save_json_atomic(args.state, state)
+    print(f"[PROGRESS] Batch job submitted: job_id={job['id']}", file=sys.stderr)
     return state
 
 

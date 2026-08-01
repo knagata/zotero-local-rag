@@ -3,9 +3,10 @@ from __future__ import annotations
 import base64
 import json
 import os
+import sys
 import tempfile
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 import fitz
 import httpx
@@ -46,14 +47,28 @@ def build_batch_request(row: dict[str, Any], pdf_path: Path) -> dict[str, Any]:
 
 
 def write_batch_jsonl(
-    rows_with_paths: Iterable[tuple[dict[str, Any], Path]], output: Path,
+    rows_with_paths: list[tuple[dict[str, Any], Path]], output: Path,
 ) -> int:
     output.parent.mkdir(parents=True, exist_ok=True)
+    total = len(rows_with_paths)
     count = 0
     with output.open("w", encoding="utf-8") as handle:
         for row, path in rows_with_paths:
-            handle.write(json.dumps(build_batch_request(row, path), ensure_ascii=False) + "\n")
+            # Each request inlines the whole PDF as base64, so this is the
+            # step that actually takes time for a large batch (read + encode
+            # every file) -- worth a visible heartbeat since it previously ran
+            # silent from here through the upload (found 2026-08-02, reported
+            # as "looks stuck"). Throttled to ~10 lines regardless of batch
+            # size so a 500-file batch doesn't spam the log the same way the
+            # per-page progress bars did.
             count += 1
+            step = max(1, total // 10)
+            if count == 1 or count == total or count % step == 0:
+                print(
+                    f"[PROGRESS]   ↳ encoding batch input {count}/{total}: {row.get('attachment_key', '?')}",
+                    file=sys.stderr,
+                )
+            handle.write(json.dumps(build_batch_request(row, path), ensure_ascii=False) + "\n")
     return count
 
 

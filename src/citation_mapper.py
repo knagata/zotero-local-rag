@@ -75,7 +75,24 @@ def _select_supported_s2_candidate(raw_text: str, result: Optional[Dict[str, Any
 
 
 def _pbar(current: int, total: int, label: str = "", width: int = 30, file=sys.stderr) -> None:
-    """1行でインプレース更新するプログレスバー。完了時は改行を出す。"""
+    """1行でインプレース更新するプログレスバー。完了時は改行を出す。
+
+    The in-place ``\\r`` update only makes sense on a real terminal: a file
+    (including a log captured via ``tee``, as Maintenance-Widget.command does)
+    has no concept of "overwrite the current line", so every intermediate
+    frame was previously kept verbatim -- hundreds of ``\\r``-joined updates
+    per item piling onto what looks like one endless line, and a citation
+    run over a library with many EPUB references pushing a log past 10MB
+    (found 2026-08-02). When ``file`` is not a tty, fall back to a handful of
+    real, newline-terminated milestone lines instead.
+    """
+    if not file.isatty():
+        step = max(1, total // 10)
+        if current != 1 and current != total and current % step != 0:
+            return
+        pct = current / total * 100 if total else 100
+        print(f"        {label.strip()}: {current}/{total} ({pct:.0f}%)", file=file, flush=True)
+        return
     filled = int(width * current / total) if total else width
     bar = "█" * filled + "░" * (width - filled)
     pct = current / total * 100 if total else 100
