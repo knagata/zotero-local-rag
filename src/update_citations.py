@@ -23,8 +23,8 @@ from env_utils import load_dotenv_native
 
 load_dotenv_native(PROJECT_ROOT)
 
-API_BASE = os.environ.get("ZOTERO_LOCAL_API_BASE", "http://127.0.0.1:8080").rstrip("/")
-API_PREFIX = os.environ.get("ZOTERO_LOCAL_API_PREFIX", "").strip("/")
+API_BASE = os.environ.get("ZOTERO_LOCAL_API_BASE", "http://127.0.0.1:23119/api").rstrip("/")
+API_PREFIX = os.environ.get("ZOTERO_LOCAL_API_PREFIX", "users/0").strip("/")
 API_KEY = os.environ.get("ZOTERO_API_KEY", "")
 
 def _zotero_request(endpoint: str, params: dict = None, method: str = "GET", data: dict = None, headers: dict = None):
@@ -88,9 +88,24 @@ def get_all_items():
     all_items = []
     while True:
         batch = _zotero_request("items", params={"format": "json", "limit": limit, "start": start})
+        if batch is None:
+            # _zotero_request already printed the underlying error. Distinguish
+            # this from "the library genuinely has zero items" (an empty list),
+            # which would otherwise silently look identical -- both used to
+            # fall straight through to "Found 0 potential items" (2026-08-01,
+            # traced from a run where Zotero simply wasn't running).
+            if start == 0:
+                # Covers both a connection failure and an HTTP error (401,
+                # 500, ...) -- _zotero_request already logged which one, so
+                # this doesn't guess a specific cause.
+                raise RuntimeError(
+                    f"Could not fetch items from the Zotero Local API at "
+                    f"{API_BASE}/{API_PREFIX} -- see the error above."
+                )
+            break
         if not batch or not isinstance(batch, list):
             break
-        
+
         for raw in batch:
             _, ad = _unwrap_item(raw)
             if ad.get("itemType") not in ("attachment", "note", "annotation"):
@@ -389,7 +404,11 @@ def main():
             print(f"Error: Could not fetch item {args.item} from Zotero API.")
 
     elif args.all:
-        items = get_all_items()
+        try:
+            items = get_all_items()
+        except RuntimeError as e:
+            print(f"[ERROR] {e}", file=sys.stderr)
+            sys.exit(1)
         total = len(items)
         if total == 0:
             print("[PROGRESS] No items found.", file=sys.stderr)
