@@ -9,8 +9,10 @@ from src.pdf_extract import (
     corrupted_ratio_threshold,
     recompute_scanned_quality_after_patch,
     recompute_corrupted_quality_after_patch,
+    recompute_blank_pages_after_patch,
     scanned_ratio_threshold,
 )
+from src.source_coverage import coverage_from_extraction, validate_source_coverage
 
 
 class RecomputeScannedQualityAfterPatchTests(unittest.TestCase):
@@ -42,6 +44,48 @@ class RecomputeScannedQualityAfterPatchTests(unittest.TestCase):
         quality = {"scanned_pages": [1, 2], "scanned_ratio": 0.02, "is_scanned": False}
         recompute_scanned_quality_after_patch(quality, {1}, total_pages=100)
         self.assertEqual(quality["scanned_pages"], [1, 2])
+
+
+class RecomputeBlankPagesAfterPatchTests(unittest.TestCase):
+    def test_patched_pages_removed_from_empty_pages(self):
+        quality = {"empty_pages": [10, 444], "total_pages": 444}
+        updated = recompute_blank_pages_after_patch(quality, {444})
+        self.assertEqual(updated["empty_pages"], [10])
+
+    def test_patched_pages_removed_from_blank_pages(self):
+        quality = {"blank_pages": [5, 12], "total_pages": 20}
+        updated = recompute_blank_pages_after_patch(quality, {5})
+        self.assertEqual(updated["blank_pages"], [12])
+
+    def test_no_op_when_neither_field_present(self):
+        quality = {"scanned_pages": [1, 2], "total_pages": 10}
+        updated = recompute_blank_pages_after_patch(quality, {1})
+        self.assertEqual(updated, quality)
+
+    def test_original_quality_info_is_not_mutated(self):
+        quality = {"empty_pages": [444]}
+        recompute_blank_pages_after_patch(quality, {444})
+        self.assertEqual(quality["empty_pages"], [444])
+
+    def test_reconciling_empty_pages_clears_the_text_blank_conflict(self):
+        # Reproduces YX3MMS4D page 444 (2026-08-02): a scan-derived repair
+        # recovers real text on a page quality_info still calls empty, and
+        # without reconciliation coverage_from_extraction fails the whole
+        # document closed with source_unit_text_blank_conflict.
+        quality = {"total_pages": 444, "empty_pages": [444]}
+        chunks = [("ID:p444:para0:part0", "[Corrupted page 444 — unresolved]", {"page": 444})]
+
+        unreconciled_verdict = validate_source_coverage(
+            coverage_from_extraction("pdf", chunks, quality)
+        )
+        self.assertFalse(unreconciled_verdict["passed"])
+        self.assertIn("source_unit_text_blank_conflict", unreconciled_verdict["reasons"])
+
+        reconciled_quality = recompute_blank_pages_after_patch(quality, {444})
+        reconciled_verdict = validate_source_coverage(
+            coverage_from_extraction("pdf", chunks, reconciled_quality)
+        )
+        self.assertNotIn("source_unit_text_blank_conflict", reconciled_verdict["reasons"])
 
 
 class RecomputeCorruptedQualityAfterPatchTests(unittest.TestCase):

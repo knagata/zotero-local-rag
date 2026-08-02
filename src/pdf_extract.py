@@ -219,6 +219,36 @@ def recompute_scanned_quality_after_patch(
     return updated
 
 
+def recompute_blank_pages_after_patch(
+    quality_info: Dict[str, Any], patched_pages: set[int],
+) -> Dict[str, Any]:
+    """Return ``quality_info`` with ``patched_pages`` cleared from empty/blank lists.
+
+    ``coverage_from_extraction`` (source_coverage.py) builds a document's
+    ``text_units`` from the final chunk list and its ``blank_units`` from
+    ``quality_info["empty_pages"]``/``["blank_pages"]``. A page the scan-derived
+    repair (``_scan_pages_needing_repair`` / ``patch_corrupted_pages_with_docling``
+    in index_from_zotero.py) successfully attempts gets a real chunk there --
+    or, if OCR still found nothing, an explicit ``corrupted_unresolved`` marker
+    chunk whose synthetic placeholder text is still non-empty. Either way the
+    page now has a chunk, so it lands in ``text_units``. If it is still also
+    listed in ``empty_pages``/``blank_pages`` from before the patch ran, the two
+    sets disagree about the same page and coverage_from_extraction fails the
+    whole document closed with ``source_unit_text_blank_conflict`` -- silently,
+    since that rejection leaves the manifest untouched exactly like a 0-chunk
+    extraction (found 2026-08-02, diagnosing YX3MMS4D page 444: scan-derived
+    repair recovered it, but ``empty_pages`` still listed it because nothing
+    called this). Sibling to ``recompute_scanned_quality_after_patch``, which
+    reconciles ``scanned_pages`` for the born-digital scan-patch path; this one
+    covers the blank/empty fields the scan-derived path actually leaves behind.
+    """
+    updated = dict(quality_info)
+    for field in ("empty_pages", "blank_pages"):
+        if updated.get(field):
+            updated[field] = [p for p in updated[field] if p not in patched_pages]
+    return updated
+
+
 def recompute_corrupted_quality_after_patch(
     quality_info: Dict[str, Any], patched_pages: set[int], total_pages: int,
 ) -> Dict[str, Any]:

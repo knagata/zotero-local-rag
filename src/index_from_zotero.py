@@ -24,7 +24,7 @@ from html_extract import (
 )
 from pdf_extract import (
     extract_chunks_from_pdf, recompute_scanned_quality_after_patch,
-    recompute_corrupted_quality_after_patch,
+    recompute_corrupted_quality_after_patch, recompute_blank_pages_after_patch,
 )
 from docling_worker import DoclingWorker
 from granite_worker import GraniteWorker
@@ -2322,6 +2322,15 @@ async def main_async(args: argparse.Namespace) -> None:
                                 if int((row[2] or {}).get("page") or 0) not in attempted_pages
                             ]
                             chunks = _sort_chunks_in_reading_order(kept + patched)
+                            # Unlike the scanned-page patch above (which calls
+                            # recompute_scanned_quality_after_patch), nothing
+                            # here reconciled empty_pages/blank_pages with the
+                            # pages this just recovered -- see
+                            # recompute_blank_pages_after_patch's docstring
+                            # (found 2026-08-02, diagnosing YX3MMS4D page 444).
+                            quality_info = recompute_blank_pages_after_patch(
+                                quality_info, attempted_pages,
+                            )
                             if show_progress:
                                 print(
                                     f"[PROGRESS]   ↳ scan-derived page repair: {len(patched)} chunk(s) "
@@ -2914,9 +2923,19 @@ async def main_async(args: argparse.Namespace) -> None:
         # A: 抽出0件は失敗扱い（manifest更新しない・削除しない・警告のみ）
         if not chunks:
             failed_extract += 1
+            # extract_chunks_from_html_snapshot records *why* in
+            # quality_info["failure_reason"] (html_read_failed /
+            # html_size_truncated / no_dom_blocks / gibberish, ...), but this
+            # was the only place that failure surfaces at all -- a 0-chunk
+            # attachment never enters the manifest, so without this the reason
+            # was unrecoverable after the fact (found 2026-08-02, diagnosing
+            # 3QHTRQN7). Other extractors don't set this key, so it's omitted
+            # for them rather than printing a misleading "reason=None".
+            failure_reason = quality_info.get("failure_reason")
+            reason_suffix = f" reason={failure_reason}" if failure_reason else ""
             print(
                 f"[WARN] Extracted 0 chunks; leaving existing index/manifest unchanged: "
-                f"attachment={a.attachmentKey} type={stype} file={file_path}",
+                f"attachment={a.attachmentKey} type={stype} file={file_path}{reason_suffix}",
                 file=sys.__stderr__,
             )
             if force_mistral:
