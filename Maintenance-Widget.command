@@ -4,6 +4,64 @@ set -uo pipefail
 cd "$(dirname "$0")"
 export PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$HOME/.local/bin:$HOME/.cargo/bin"
 
+# Runs-end summary (spec: "何が起きたか一目で分かる、次にやることがあれば
+# それも分かる" -- a long scrolling transcript otherwise makes both easy to
+# miss, as it did for the citation-network step ending silently and for the
+# Mistral batch's "come back later" notice getting buried, 2026-08-01/02).
+# SUMMARY_ROWS holds one "icon|label|detail" entry per step outcome;
+# NEXT_ACTIONS holds plain strings for anything the operator still needs to
+# do. Both print_summary (normal end) and run_step's failure path (abort)
+# render them, so the operator sees this even when the run stops early.
+RUN_START_TIME=$(date +%s)
+SUMMARY_ROWS=()
+NEXT_ACTIONS=()
+
+record_summary() {
+    SUMMARY_ROWS+=("$1|$2|${3:-}")
+}
+
+record_next_action() {
+    NEXT_ACTIONS+=("$1")
+}
+
+fmt_elapsed() {
+    local total="$1" h m s
+    h=$((total / 3600)); m=$(((total % 3600) / 60)); s=$((total % 60))
+    if [[ "$h" -gt 0 ]]; then printf "%dh%dm%ds" "$h" "$m" "$s"
+    elif [[ "$m" -gt 0 ]]; then printf "%dm%ds" "$m" "$s"
+    else printf "%ds" "$s"; fi
+}
+
+print_summary() {
+    echo ""
+    echo "========================================"
+    echo " 実行サマリー"
+    echo "========================================"
+    if [[ ${#SUMMARY_ROWS[@]} -eq 0 ]]; then
+        echo "  （実行した項目はありません）"
+    else
+        local row status label detail
+        for row in "${SUMMARY_ROWS[@]}"; do
+            IFS='|' read -r status label detail <<< "$row"
+            if [[ -n "$detail" ]]; then
+                echo "  ${status} ${label}  (${detail})"
+            else
+                echo "  ${status} ${label}"
+            fi
+        done
+    fi
+    echo "  合計所要時間: $(fmt_elapsed $(( $(date +%s) - RUN_START_TIME )))"
+
+    if [[ ${#NEXT_ACTIONS[@]} -gt 0 ]]; then
+        echo ""
+        echo "次にやること:"
+        local action
+        for action in "${NEXT_ACTIONS[@]}"; do
+            echo "  - ${action}"
+        done
+    fi
+}
+
 echo "========================================"
 echo " Zotero Local RAG - メンテナンス更新"
 echo "========================================"
@@ -148,12 +206,16 @@ require_gate() {
     if [[ "$audit_failed" == "1" ]]; then
         echo "[エラー] この実行のDB監査が不合格のため、${step_label}はスキップします。"
         summary_blocked=1
+        record_summary "－" "$step_label" "スキップ: この実行のDB監査が不合格"
+        record_next_action "「${step_label}」はDB監査の不合格によりスキップされました。原因を解消し「2. DBを監査する」を合格させてから、この項目を再実行してください。"
         return 1
     fi
     if ! gate_passes; then
         echo "[エラー] DB監査の合格証明がありません。上の「2. DBを監査する」を許可して"
         echo "         先に合格させてください: $gate_path"
         summary_blocked=1
+        record_summary "－" "$step_label" "スキップ: DB監査の合格証明なし"
+        record_next_action "「${step_label}」はDB監査の合格証明が無いためスキップされました。「2. DBを監査する」を許可して先に合格させてから、この項目を再実行してください: $gate_path"
         return 1
     fi
     return 0
@@ -229,16 +291,24 @@ fi
 run_step() {
     local label="$1"
     shift
+    local t0 elapsed
+    t0=$(date +%s)
     echo ""
     echo "========================================================================"
     echo ">> $label"
     echo "========================================================================"
     if "$@"; then
+        elapsed=$(( $(date +%s) - t0 ))
         echo "[完了] $label"
+        record_summary "✓" "$label" "$(fmt_elapsed "$elapsed")"
     else
         local code=$?
+        elapsed=$(( $(date +%s) - t0 ))
         echo "[エラー] ${label}（終了コード: ${code}）"
         echo "安全のため後続処理を実行せず終了します。"
+        record_summary "✗" "$label" "終了コード ${code}, $(fmt_elapsed "$elapsed")"
+        record_next_action "「${label}」がエラーで停止しました（終了コード ${code}）。上記の出力を確認して原因に対処し、再実行してください。"
+        print_summary
         exit "$code"
     fi
 }
@@ -290,17 +360,21 @@ run_mistral_batch_step() {
             echo ""
             echo "[案内] Mistralバッチを送信しました。処理完了後にMaintenance-Widget.commandを再度起動し、"
             echo "       この項目を明示的に許可してください。次回は結果を回収し、品質検証の合格分だけをV3へ採用します。"
+            record_next_action "Mistral OCRバッチを送信しました。クラウド側の処理完了後、Maintenance-Widget.commandを再度実行し「7. Mistral OCRバッチ」を許可すると結果を回収します。"
             ;;
         prepared|uploaded)
             run_step "Mistral OCRバッチ送信を再開" uv run python scripts/run_mistral_ocr_batch.py --submit --state "$mistral_state_path"
             echo ""
             echo "[案内] Mistralバッチを送信しました。処理完了後にメンテナンス画面を再起動してこの項目を許可してください。"
+            record_next_action "Mistral OCRバッチを送信しました。クラウド側の処理完了後、Maintenance-Widget.commandを再度実行し「7. Mistral OCRバッチ」を許可すると結果を回収します。"
             ;;
         submitted|queued|running|in_progress)
             run_step "Mistral OCRバッチ状態確認" uv run python scripts/run_mistral_ocr_batch.py --status --state "$mistral_state_path"
             phase="$(mistral_state_value phase)"
             if [[ "$phase" != "success" ]]; then
                 echo "[案内] バッチはまだ完了していません（状態=${phase:-不明}）。完了後にウィジェットを再起動してください。"
+                record_summary "－" "Mistral OCRバッチ" "実行中（状態=${phase:-不明}）"
+                record_next_action "Mistral OCRバッチがまだ完了していません（状態=${phase:-不明}）。完了後にMaintenance-Widget.commandを再度実行してください。"
                 return 0
             fi
             run_step "Mistral OCRバッチ結果回収・品質確認" uv run python scripts/run_mistral_ocr_batch.py --collect --state "$mistral_state_path"
@@ -309,13 +383,18 @@ run_mistral_batch_step() {
             run_step "Mistral OCRバッチ結果回収・品質確認" uv run python scripts/run_mistral_ocr_batch.py --collect --state "$mistral_state_path"
             ;;
         collected)
+            record_summary "－" "Mistral OCRバッチ" "既に結果回収済み"
             ;;
         failed|cancelled|timeout_exceeded)
             echo "[注意] Mistralバッチは終了状態です（状態=$phase）。状態ファイルを確認し、必要なら個別に再送信してください。"
+            record_summary "⚠" "Mistral OCRバッチ" "終了状態=$phase"
+            record_next_action "Mistral OCRバッチが失敗/中断しました（状態=${phase}）。状態ファイル（${mistral_state_path}）を確認し、必要なら個別に再送信してください。"
             return 0
             ;;
         *)
             echo "[注意] Mistralバッチの未知の状態です（状態=$phase）。安全のため何も実行しません。"
+            record_summary "⚠" "Mistral OCRバッチ" "未知の状態=$phase"
+            record_next_action "Mistral OCRバッチの状態（${phase}）が想定外です。状態ファイル（${mistral_state_path}）を確認してください。"
             return 0
             ;;
     esac
@@ -323,16 +402,20 @@ run_mistral_batch_step() {
     adopted_at="$(mistral_state_value adoption_applied_at)"
     if [[ -n "$adopted_at" ]]; then
         echo "[情報] このバッチの採用は既に完了しています（$adopted_at）。"
+        record_summary "－" "Mistral OCR採用" "既に完了（${adopted_at}）"
         return 0
     fi
     queue="$(mistral_state_value adoption_queue)"
     adoptable="$(mistral_state_value adoptable_count)"
     if [[ ! "$adoptable" =~ ^[0-9]+$ || "$adoptable" == "0" ]]; then
         echo "[情報] 品質検証を通過したMistral結果はありません。採用は行いません。"
+        record_summary "－" "Mistral OCR採用" "品質検証通過分なし"
         return 0
     fi
     if [[ -z "$queue" || ! -f "$queue" ]]; then
         echo "[エラー] Mistral採用キューが見つかりません: ${queue:-<空>}"
+        record_summary "✗" "Mistral OCR採用" "採用キューが見つからない"
+        record_next_action "Mistral採用キューが見つかりません（${queue:-<空>}）。状態ファイル（${mistral_state_path}）を確認してください。"
         return 1
     fi
     run_step "Mistral OCR品質検証の合格分をV3へ採用（${adoptable}件）" \
@@ -377,10 +460,13 @@ if [[ "$run_audit" == "1" ]]; then
     # a previous gate, so the failure is recorded explicitly here instead.
     if uv run python scripts/run_db_audit.py; then
         echo "[完了] DB監査"
+        record_summary "✓" "DB監査" ""
     else
         audit_failed=1
         echo "[警告] DB監査が不合格でした。要約の生成はこの実行では行われません。"
         echo "       詳細は上記の出力を確認してください: $gate_path"
+        record_summary "⚠" "DB監査" "不合格"
+        record_next_action "DB監査が不合格でした。上記の出力（および ${gate_path}）を確認して原因に対処し、監査に合格させてください。"
     fi
 fi
 
@@ -412,6 +498,7 @@ if [[ "$run_bulk_summary" == "1" ]]; then
         read -r -p "続行するには SUMMARIZE と入力してください（スキップする場合はEnter）: " bulk_confirmation
         if [[ "$bulk_confirmation" != "SUMMARIZE" ]]; then
             echo "全件要約の一括生成をキャンセルしました。"
+            record_summary "－" "全件要約の一括生成" "キャンセル（未確認）"
         else
             bulk_summary_workers="${SUMMARY_BULK_WORKERS:-20}"
             run_step "DeepSeek 階層AI要約生成・要約索引構築（全件・${bulk_summary_workers}並列）" \
@@ -434,7 +521,20 @@ echo ""
 echo "========================================================================"
 echo ">> 未解決の処理状態サマリ（読み取り専用）"
 echo "========================================================================"
-uv run python scripts/list_artifact_status.py --unresolved-only || true
+artifact_status_json="$(uv run python scripts/list_artifact_status.py --unresolved-only)" || artifact_status_json=""
+if [[ -n "$artifact_status_json" ]]; then
+    echo "$artifact_status_json"
+    unresolved_count="$(printf '%s' "$artifact_status_json" | /usr/bin/python3 -c '
+import json, sys
+try:
+    print(int(json.load(sys.stdin).get("unresolved_count") or 0))
+except (ValueError, TypeError):
+    print(0)
+' 2>/dev/null)"
+    if [[ "$unresolved_count" =~ ^[0-9]+$ && "$unresolved_count" -gt 0 ]]; then
+        record_next_action "未解決の処理状態が${unresolved_count}件あります。上記の「未解決の処理状態サマリ」を確認してください。"
+    fi
+fi
 
 echo ""
 echo "========================================"
@@ -446,5 +546,10 @@ if [[ "$summary_blocked" == "1" ]]; then
     echo "[注意] DB監査に合格していないため、要約の生成はスキップしました。"
     echo "       他の更新は最後まで実行済みです。「2. DBを監査する」を合格させてから"
     echo "       要約を再実行してください: $gate_path"
+fi
+
+print_summary
+
+if [[ "$summary_blocked" == "1" ]]; then
     exit 2
 fi
