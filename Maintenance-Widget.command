@@ -16,8 +16,14 @@ RUN_START_TIME=$(date +%s)
 SUMMARY_ROWS=()
 NEXT_ACTIONS=()
 
+
+# ASCII Unit Separator: unlike "|", this cannot appear in a label/detail
+# string typed or interpolated here (paths, timestamps, state names), so
+# record_summary's encoding can't be corrupted by a value containing it.
+SUMMARY_FIELD_SEP=$'\x1f'
+
 record_summary() {
-    SUMMARY_ROWS+=("$1|$2|${3:-}")
+    SUMMARY_ROWS+=("$1${SUMMARY_FIELD_SEP}$2${SUMMARY_FIELD_SEP}${3:-}")
 }
 
 record_next_action() {
@@ -42,7 +48,7 @@ print_summary() {
     else
         local row status label detail
         for row in "${SUMMARY_ROWS[@]}"; do
-            IFS='|' read -r status label detail <<< "$row"
+            IFS="$SUMMARY_FIELD_SEP" read -r status label detail <<< "$row"
             if [[ -n "$detail" ]]; then
                 echo "  ${status} ${label}  (${detail})"
             else
