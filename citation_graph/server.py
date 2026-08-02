@@ -6143,8 +6143,18 @@ def _route_index() -> str:
 
 @app.get("/api/graph")
 def _route_graph() -> JSONResponse:
-    # リビルドが実行中の場合は完了まで待機（最大120秒）
+    # リビルドが実行中の場合は完了まで待機（最大120秒）。待っても終わらない
+    # 場合（初回ビルドが120秒を超える、または他プロセスがDBを占有している
+    # 場合など）、_state["graph"] はまだ None のままなので、そのまま
+    # dict(None) すると 500 で落ちる。他のエンドポイント（/api/semantic-layout
+    # 等）は明示的に None チェックしているのに、ここだけ抜けていた
+    # （2026-08-03、実際のクラッシュから発見）。
     _rebuild_done.wait(timeout=120)
+    if _state["graph"] is None:
+        return JSONResponse(
+            {"error": "no_graph", "message": "Graph not yet built. Please wait."},
+            status_code=503,
+        )
     payload = dict(_state["graph"])
     payload["cache_hit"] = _state.get("cache_hit", False)
     return JSONResponse(payload)

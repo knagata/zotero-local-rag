@@ -2240,7 +2240,7 @@ async def main_async(args: argparse.Namespace) -> None:
                 if (
                     chunks and scanned_pages and not attempted_local_ocr
                     and structure_recovery
-                    and os.environ.get("PDF_SCANNED_PAGE_PATCH_ENABLE", "0").strip() == "1"
+                    and os.environ.get("PDF_SCANNED_PAGE_PATCH_ENABLE", "1").strip() == "1"
                     and text_layer_is_authoritative
                 ):
                     try:
