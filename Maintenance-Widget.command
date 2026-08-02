@@ -153,6 +153,18 @@ ask_disabled() {
 # careful operator would type by hand instead of asking them to remember it.
 gate_path="${SERVER_DB_GATE_PATH:-data/quality/server_database_gate.json}"
 
+# scripts/run_db_audit.py writes these two reports as its first two checks
+# run, regardless of whether the overall audit passes -- gate_path (above) is
+# written only by its *third* check, and only once the first two already
+# passed. A message that points a failed-audit operator at gate_path for
+# "details" sends them to a file that was never created, since a failure at
+# either of these first two checks (the common case) means the third check
+# -- the one that would write it -- never ran (found 2026-08-03, from an
+# operator confused that the file the widget told them to check didn't
+# exist). These two are what actually hold the failure detail in that case.
+zotero_audit_path="${SERVER_ZOTERO_AUDIT_PATH:-data/quality/server_zotero_reconciliation.json}"
+source_audit_path="${SERVER_SOURCE_AUDIT_PATH:-data/quality/server_source_verification.json}"
+
 # scripts/audit_v3_cutover.py writes this file unconditionally -- including
 # on failure, with "passed": false -- before it raises on that failure. So
 # the file's mere existence is not evidence the audit passed; only its
@@ -470,9 +482,15 @@ if [[ "$run_audit" == "1" ]]; then
     else
         audit_failed=1
         echo "[警告] DB監査が不合格でした。要約の生成はこの実行では行われません。"
-        echo "       詳細は上記の出力を確認してください: $gate_path"
+        # gate_path is only written by the audit's third/last check, which
+        # never runs if either of these first two failed (the common case) --
+        # pointing here at gate_path would send the operator to a file that
+        # does not exist yet.
+        echo "       詳細は上記の出力、または次のレポートを確認してください:"
+        echo "       ${zotero_audit_path}"
+        echo "       ${source_audit_path}"
         record_summary "⚠" "DB監査" "不合格"
-        record_next_action "DB監査が不合格でした。上記の出力（および ${gate_path}）を確認して原因に対処し、監査に合格させてください。"
+        record_next_action "DB監査が不合格でした。上記の出力、または ${zotero_audit_path} / ${source_audit_path} を確認して原因に対処し、監査に合格させてください。"
     fi
 fi
 
