@@ -392,13 +392,13 @@ run_mistral_batch_step() {
             record_summary "－" "Mistral OCRバッチ" "既に結果回収済み"
             ;;
         failed|cancelled|timeout_exceeded)
-            echo "[注意] Mistralバッチは終了状態です（状態=$phase）。状態ファイルを確認し、必要なら個別に再送信してください。"
+            echo "[注意] Mistralバッチは終了状態です（状態=${phase}）。状態ファイルを確認し、必要なら個別に再送信してください。"
             record_summary "⚠" "Mistral OCRバッチ" "終了状態=$phase"
             record_next_action "Mistral OCRバッチが失敗/中断しました（状態=${phase}）。状態ファイル（${mistral_state_path}）を確認し、必要なら個別に再送信してください。"
             return 0
             ;;
         *)
-            echo "[注意] Mistralバッチの未知の状態です（状態=$phase）。安全のため何も実行しません。"
+            echo "[注意] Mistralバッチの未知の状態です（状態=${phase}）。安全のため何も実行しません。"
             record_summary "⚠" "Mistral OCRバッチ" "未知の状態=$phase"
             record_next_action "Mistral OCRバッチの状態（${phase}）が想定外です。状態ファイル（${mistral_state_path}）を確認してください。"
             return 0
@@ -407,7 +407,7 @@ run_mistral_batch_step() {
 
     adopted_at="$(mistral_state_value adoption_applied_at)"
     if [[ -n "$adopted_at" ]]; then
-        echo "[情報] このバッチの採用は既に完了しています（$adopted_at）。"
+        echo "[情報] このバッチの採用は既に完了しています（${adopted_at}）。"
         record_summary "－" "Mistral OCR採用" "既に完了（${adopted_at}）"
         return 0
     fi
