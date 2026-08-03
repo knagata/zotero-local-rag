@@ -19,11 +19,21 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.chunk_store import get_item_chunks
-from src.db_relations import mark_artifact_status
-from src.embedder import get_collection
-from src.reocr_adoption import adopt_prepared_reocr
-from src.reocr_quality import evaluate_adoption_gate, majority_language, text_metrics
+from src.env_utils import load_dotenv_native
+
+# 他のエントリポイントと同じく、環境変数を読む前に .env を取り込む。これが
+# 無いと CHROMA_DIR / MANIFEST_PATH / LEXICAL_DB_PATH は常に未設定に見え、
+# 設定に関係なく既定値だけで動く。
+load_dotenv_native(ROOT)
+
+from src.chunk_store import get_item_chunks  # noqa: E402
+from src.db_relations import mark_artifact_status  # noqa: E402
+from src.embedder import get_collection  # noqa: E402
+from src.reocr_adoption import adopt_prepared_reocr  # noqa: E402
+from src.reocr_quality import (  # noqa: E402
+    evaluate_adoption_gate, majority_language, text_metrics,
+)
+from src.v3_data_plane import resolve_configured_path  # noqa: E402
 
 
 def selected_rows(path: Path, limit: int, item_key: str | None = None) -> list[dict[str, Any]]:
@@ -171,9 +181,16 @@ def main(argv: list[str] | None = None) -> int:
         selected = rows[0]
         key = (str(selected.get("item_key") or ""), str(selected.get("attachment_key") or ""))
         collection_name = os.environ.get("CHROMA_COLLECTION_V3", "zotero_paragraphs_v3")
-        chroma_dir = Path(os.environ.get("CHROMA_DIR", ROOT / "data" / "chroma"))
-        manifest_path = Path(os.environ.get("MANIFEST_V3_PATH", ROOT / "data" / "manifest_v3.json"))
-        lexical_path = Path(os.environ.get("LEXICAL_V3_DB_PATH", ROOT / "data" / "lexical_v3.sqlite3"))
+        # 変数名は MANIFEST_PATH / LEXICAL_DB_PATH。以前ここだけ
+        # MANIFEST_V3_PATH / LEXICAL_V3_DB_PATH というリポジトリ内のどこにも
+        # 存在しない名前を読んでおり、設定を常に無視して既定値へ落ちていた
+        # （2026-08-04）。解決は resolve_configured_path に委ねる。
+        chroma_dir = resolve_configured_path(
+            ROOT, os.environ.get("CHROMA_DIR") or ROOT / "data" / "chroma")
+        manifest_path = resolve_configured_path(
+            ROOT, os.environ.get("MANIFEST_PATH") or ROOT / "data" / "manifest_v3.json")
+        lexical_path = resolve_configured_path(
+            ROOT, os.environ.get("LEXICAL_DB_PATH") or ROOT / "data" / "lexical_v3.sqlite3")
         collection = get_collection(
             chroma_dir=chroma_dir, project_root=ROOT,
             chroma_collection_env=collection_name,

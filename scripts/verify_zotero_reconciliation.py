@@ -30,11 +30,15 @@ from src.env_utils import load_dotenv_native  # noqa: E402
 load_dotenv_native(ROOT)
 
 from src.manifest import load_manifest  # noqa: E402
+from src.v3_data_plane import resolve_configured_path  # noqa: E402
 from src.zotero_source_localapi import (  # noqa: E402
     ZoteroLocalAPI, classify_attachment_source_type,
 )
 
-MANIFEST_PATH = Path(os.environ.get("MANIFEST_PATH", ROOT / "data" / "manifest_v3.json"))
+# .env の MANIFEST_PATH は相対パス。素の Path() だとCWD基準になり、
+# プロジェクトルート以外から起動すると別のファイルを見にいく（2026-08-04）。
+MANIFEST_PATH = resolve_configured_path(
+    ROOT, os.environ.get("MANIFEST_PATH") or ROOT / "data" / "manifest_v3.json")
 
 
 async def eligible_zotero_attachments(api: ZoteroLocalAPI) -> dict[str, dict]:
