@@ -110,6 +110,7 @@ class MaintenanceCommandTests(unittest.TestCase):
             "run src/update_citations.py --all",
             "run python scripts/list_artifact_status.py --unresolved-only",
             "run python scripts/check_chroma_health.py --output data/quality/server_chroma_health.json",
+            "run python scripts/show_effective_config.py --json",
         ])
 
     def test_enter_defaults_skip_the_audit_once_the_gate_already_passes(self):
@@ -121,6 +122,7 @@ class MaintenanceCommandTests(unittest.TestCase):
             "run src/update_citations.py --all",
             "run python scripts/list_artifact_status.py --unresolved-only",
             "run python scripts/check_chroma_health.py --output data/quality/server_chroma_health.json",
+            "run python scripts/show_effective_config.py --json",
         ])
 
     def test_enter_defaults_still_run_the_audit_when_the_gate_exists_but_failed(self):
@@ -137,6 +139,7 @@ class MaintenanceCommandTests(unittest.TestCase):
             "run src/update_citations.py --all",
             "run python scripts/list_artifact_status.py --unresolved-only",
             "run python scripts/check_chroma_health.py --output data/quality/server_chroma_health.json",
+            "run python scripts/show_effective_config.py --json",
         ])
 
     def test_a_stale_failing_gate_still_blocks_a_requested_summary(self):
@@ -159,6 +162,7 @@ class MaintenanceCommandTests(unittest.TestCase):
             "run src/update_citations.py --all",
             "run python scripts/list_artifact_status.py --unresolved-only",
             "run python scripts/check_chroma_health.py --output data/quality/server_chroma_health.json",
+            "run python scripts/show_effective_config.py --json",
         ])
 
     def test_audit_then_differential_summary_run_in_the_same_invocation(self):
@@ -177,6 +181,7 @@ class MaintenanceCommandTests(unittest.TestCase):
             f"--workers 10 --embed --database-gate {gate}",
             "run python scripts/list_artifact_status.py --unresolved-only",
             "run python scripts/check_chroma_health.py --output data/quality/server_chroma_health.json",
+            "run python scripts/show_effective_config.py --json",
         ])
 
     def test_differential_summary_requires_database_gate(self):
@@ -241,6 +246,7 @@ class MaintenanceCommandTests(unittest.TestCase):
             "run src/update_citations.py --all",
             "run python scripts/list_artifact_status.py --unresolved-only",
             "run python scripts/check_chroma_health.py --output data/quality/server_chroma_health.json",
+            "run python scripts/show_effective_config.py --json",
         ])
         self.assertIn("他の更新は最後まで実行済みです", result.stdout)
 
@@ -265,6 +271,7 @@ class MaintenanceCommandTests(unittest.TestCase):
             f"--output {summary_audit}",
             "run python scripts/list_artifact_status.py --unresolved-only",
             "run python scripts/check_chroma_health.py --output data/quality/server_chroma_health.json",
+            "run python scripts/show_effective_config.py --json",
         ])
 
     def test_explicit_mistral_permission_submits_new_batch_and_explains_followup(self):
@@ -277,6 +284,7 @@ class MaintenanceCommandTests(unittest.TestCase):
             "run python scripts/run_mistral_ocr_batch.py --submit --state tmp/test_widget_mistral_state.json",
             "run python scripts/list_artifact_status.py --unresolved-only",
             "run python scripts/check_chroma_health.py --output data/quality/server_chroma_health.json",
+            "run python scripts/show_effective_config.py --json",
         ])
         self.assertIn("処理完了後にMaintenance-Widget.commandを再度起動", result.stdout)
 

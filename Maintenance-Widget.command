@@ -603,6 +603,23 @@ print(sep.join(['✓' if passed else '✗', ', '.join(parts), '1' if passed else
     fi
 fi
 
+# 実効設定のスナップショットをログへ残す（read-only）。
+# 2台で挙動が違うとき、その場の設定が分からないと原因究明が手作業の総当たりに
+# なる。PDF_SCANNED_PAGE_PATCH_ENABLE が片方だけ未設定だったために1週間分の
+# ページ内容が静かに失われた件（2026-08-03）は、まさにこれが無くて発見が
+# 遅れた。APIキーは値を出さず「設定済み・長さN」だけを表示するので、この
+# ログはそのまま共有できる。
+config_snapshot_path="${SERVER_CONFIG_SNAPSHOT_PATH:-data/quality/effective_config.json}"
+mkdir -p "$(dirname "${config_snapshot_path}")"
+# if/else にするのは `cmd && A || B` だと A が失敗したときにも B が走るため。
+# stderr は捨てない: 取得できなかった理由が分からなければ、この診断機能自体が
+# 目的を果たさない。
+if uv run python scripts/show_effective_config.py --json > "$config_snapshot_path"; then
+    record_summary "－" "実効設定スナップショット" "${config_snapshot_path}"
+else
+    record_summary "⚠" "実効設定スナップショット" "取得できませんでした"
+fi
+
 echo ""
 echo "========================================"
 echo " 選択した日常更新が完了しました"
