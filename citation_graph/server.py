@@ -2109,6 +2109,15 @@ var _loadTimer = setInterval(function() {
   if (_loadingMsg) _loadingMsg.textContent = msg;
 }, 1000);
 
+// fetch('/api/graph') の.then/.catch双方から使うため、.then内ではなくここで
+// 定義する。.then内に置くと.catchはその関数の外側なので参照できず、
+// フェッチ失敗時のエラー表示自体が ReferenceError で失敗していた（2026-08-03）。
+function esc(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
 fetch('/api/graph')
   .then(function(r) { return r.json(); })
   .then(function(GRAPH_DATA) {
@@ -3965,11 +3974,6 @@ function _setDetailActive(active) {
   detail.className          = active ? 'sb-active' : '';
   detailResizeHnd.className = active ? 'sb-active' : '';
   if (!active) { detailHeader.innerHTML = ''; detailBody.innerHTML = ''; }
-}
-function esc(s) {
-  return String(s == null ? '' : s)
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 function kv(k, v) {
   return '<div class="sb-kv"><span class="sb-k">' + esc(k) + '</span><span class="sb-v">' + esc(v) + '</span></div>';
