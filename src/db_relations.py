@@ -5,7 +5,7 @@ import unicodedata
 import hashlib
 import json
 from difflib import SequenceMatcher
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Iterable, Optional
 
 try:
     from .reference_text import strip_unicode_format_characters
@@ -3772,6 +3772,48 @@ def drop_stale_identity_rows(stale_item_key: str, current_item_key: str) -> int:
     finally:
         conn.close()
     return int(removed)
+
+
+def purge_artifact_status_for_attachments(attachment_keys: Iterable[str]) -> int:
+    """Remove attachment-scoped ledger rows for attachments no longer in Zotero.
+
+    purge_removed_items() only acts at item-key granularity, and
+    drop_stale_identity_rows() only handles an attachment gaining a parent --
+    neither covers an attachment being deleted and replaced by a new one
+    under the *same*, still-live parent item. The old attachment_key's
+    extraction row then has nothing left to ever revisit it: the item is
+    live, so it is never a purge candidate, and the new attachment is tracked
+    under its own key. Called from the same call site that already confirmed
+    each key is gone from Zotero (index_from_zotero.py's stale-attachment
+    deletion), so no second confirmation is needed here (2026-08-03).
+
+    Only rows with a non-empty ``attachment_key`` can match, so item-scoped
+    bookkeeping (structure/summary/embeddings, stored under ``''``) is never
+    touched.
+    """
+    keys = sorted({str(key or "").strip() for key in attachment_keys if str(key or "").strip()})
+    if not keys:
+        return 0
+    conn = get_db_connection()
+    try:
+        placeholders = ",".join("?" * len(keys))
+        cursor = conn.cursor()
+        cursor.execute(
+            f"DELETE FROM artifact_processing_status WHERE attachment_key IN ({placeholders})",
+            keys,
+        )
+        removed = cursor.rowcount or 0
+        cursor.execute(
+            f"DELETE FROM artifact_processing_events WHERE attachment_key IN ({placeholders})",
+            keys,
+        )
+        conn.commit()
+        return int(removed)
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def get_item_processing_status(item_key: str) -> List[Dict[str, Any]]:

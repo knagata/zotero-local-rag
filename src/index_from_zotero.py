@@ -71,7 +71,8 @@ from lexical_index import upsert_chunks as upsert_lexical_chunks
 from manifest import content_signature, load_manifest, save_manifest
 from db_relations import (
     drop_stale_identity_rows, get_item_processing_status, mark_artifact_status,
-    purge_removed_items, replace_document_structure, reset_ingestion_derived_state,
+    purge_artifact_status_for_attachments, purge_removed_items, replace_document_structure,
+    reset_ingestion_derived_state,
 )
 from document_structure import attach_structure_metadata, build_document_structure
 from chunk_store import get_item_chunks, list_chunk_ids, list_item_keys
@@ -1688,6 +1689,27 @@ async def main_async(args: argparse.Namespace) -> None:
                 continue
             deleted_stale += 1
             files_manifest.pop(stale_key, None)
+            # This is the one place that has already confirmed stale_key is
+            # gone from Zotero. Without this, an attachment deleted and
+            # replaced under the same still-live parent item leaves its old
+            # extraction/etc. ledger rows permanently unresolved: the item
+            # itself is never a purge candidate for purge_removed_items()
+            # (item-key granularity), and drop_stale_identity_rows() only
+            # covers an attachment gaining a parent, not one disappearing
+            # outright (2026-08-03).
+            # Best-effort like the manifest pop above, not wrapped into the
+            # strict=True Chroma delete above: a locked/busy relations.db
+            # here must not abort the whole full-scope run over one key that
+            # already had its Chroma/lexical rows and manifest entry cleaned
+            # up successfully (found in code review, 2026-08-03).
+            try:
+                purge_artifact_status_for_attachments([stale_key])
+            except Exception as exc:
+                print(
+                    f"[WARN] Failed to purge ledger rows for stale attachment "
+                    f"{stale_key}: {exc}",
+                    file=sys.stderr,
+                )
 
         # relations.db からも削除済みアイテムのレコードをパージ。
         #

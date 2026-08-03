@@ -197,6 +197,57 @@ class DropStaleIdentityRowsTests(unittest.TestCase):
             conn.close()
 
 
+class PurgeArtifactStatusForAttachmentsTests(unittest.TestCase):
+    """An attachment deleted and replaced under the same, still-live item."""
+
+    def setUp(self) -> None:
+        import tempfile
+        from unittest.mock import patch
+        import db_relations
+        self.db_relations = db_relations
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.patch = patch.object(
+            db_relations, "DB_PATH", str(Path(self.tempdir.name) / "relations.db"))
+        self.patch.start()
+        db_relations._db_initialized = False
+        db_relations.mark_artifact_status(
+            "287Z7U6X", "extraction", "failed", attachment_key="3QHTRQN7",
+            reason_code="no_chunks",
+        )
+        db_relations.mark_artifact_status(
+            "287Z7U6X", "extraction", "success", attachment_key="SEPE3V2R",
+        )
+        db_relations.mark_artifact_status("287Z7U6X", "structure", "degraded")
+
+    def tearDown(self) -> None:
+        self.patch.stop()
+        self.db_relations._db_initialized = False
+        self.tempdir.cleanup()
+
+    def test_gone_attachment_row_is_removed(self):
+        removed = self.db_relations.purge_artifact_status_for_attachments(["3QHTRQN7"])
+        self.assertEqual(removed, 1)
+        remaining = {
+            r["attachment_key"] for r in
+            self.db_relations.get_item_processing_status("287Z7U6X")
+        }
+        self.assertNotIn("3QHTRQN7", remaining)
+
+    def test_live_attachment_and_item_scoped_rows_are_untouched(self):
+        self.db_relations.purge_artifact_status_for_attachments(["3QHTRQN7"])
+        rows = self.db_relations.get_item_processing_status("287Z7U6X")
+        by_attachment = {r["attachment_key"]: r["status"] for r in rows}
+        self.assertEqual(by_attachment.get("SEPE3V2R"), "success")
+        self.assertEqual(by_attachment.get(""), "degraded")
+
+    def test_blank_keys_are_a_no_op(self):
+        self.assertEqual(self.db_relations.purge_artifact_status_for_attachments([]), 0)
+        self.assertEqual(self.db_relations.purge_artifact_status_for_attachments(["", None]), 0)
+        self.assertEqual(
+            len(self.db_relations.get_item_processing_status("287Z7U6X")), 3,
+        )
+
+
 
 class PurgeRemovedItemsCandidateTests(unittest.TestCase):
     """Candidates must come from every table purge_removed_items cleans.
