@@ -560,6 +560,49 @@ except (ValueError, TypeError):
     fi
 fi
 
+# Chromaデータベース健全性チェック（読み取り専用、FTS5破損のみ自動修復）。
+# 中断された書き込み（強制終了・SIGSEGV等）がFTS5の内部索引だけを本体データと
+# 無関係に破損させる場合があり、これまで気づく手段がなかった（手作業調査で発覚、
+# 2026-08-03）。孤立セグメントディレクトリ（中断されたSetupの残骸）も同時に
+# 報告するが、実害がないため削除はしない。
+echo ""
+echo "========================================================================"
+echo ">> Chromaデータベース健全性チェック（読み取り専用、FTS5破損のみ自動修復）"
+echo "========================================================================"
+chroma_health_path="${SERVER_CHROMA_HEALTH_PATH:-data/quality/server_chroma_health.json}"
+# No `|| chroma_health_json=""` here: unlike list_artifact_status.py (always
+# exits 0), this script deliberately exits 2 when a problem is found -- the
+# exact case that must not be swallowed. `set -u`/`pipefail` are active but
+# not `-e`, so a nonzero exit here does not abort the run either way.
+chroma_health_json="$(uv run python scripts/check_chroma_health.py --output "$chroma_health_path")"
+if [[ -n "$chroma_health_json" ]]; then
+    echo "$chroma_health_json"
+    chroma_health_line="$(printf '%s' "$chroma_health_json" | /usr/bin/python3 -c "
+import json, sys
+sep = '$SUMMARY_FIELD_SEP'
+try:
+    d = json.load(sys.stdin)
+except (ValueError, TypeError):
+    d = {}
+passed = bool(d.get('passed'))
+repaired = bool(d.get('fts_repair_attempted'))
+orphans = len(d.get('orphaned_segment_dirs') or [])
+parts = []
+if repaired:
+    parts.append('FTS5破損を自動修復')
+if orphans:
+    parts.append(f'孤立セグメント{orphans}件')
+if not parts:
+    parts.append('問題なし')
+print(sep.join(['✓' if passed else '✗', ', '.join(parts), '1' if passed else '0']))
+" 2>/dev/null)"
+    IFS="$SUMMARY_FIELD_SEP" read -r chroma_icon chroma_detail chroma_passed <<< "$chroma_health_line"
+    record_summary "${chroma_icon:-✗}" "Chroma健全性チェック" "${chroma_detail:-}"
+    if [[ "$chroma_passed" != "1" ]]; then
+        record_next_action "Chromaデータベースの整合性チェックで問題が見つかりました（FTS5以外の破損の可能性があります）。${chroma_health_path} を確認してください。"
+    fi
+fi
+
 echo ""
 echo "========================================"
 echo " 選択した日常更新が完了しました"
