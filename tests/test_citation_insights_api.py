@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import inspect
 import json
 import tempfile
 import unittest
@@ -14,6 +13,29 @@ from tests.v3_summary_fixtures import seed_v3_summaries
 
 def _json(response):
     return json.loads(response.body.decode("utf-8"))
+
+
+def _browser_document() -> str:
+    """The HTML shell plus the CSS/JS the browser actually loads with it.
+
+    The UI's markup and behaviour used to live entirely inside
+    _build_sigma_html's string literals, so asserting against that function
+    (or its output) covered the whole interface. The CSS and JS now live in
+    citation_graph/static/, so a check that only looks at the shell would
+    silently stop covering the thing it was written to guard (2026-08-04).
+    """
+    html = show_citation_graph._build_sigma_html(
+        n_items=1, n_nodes=1, n_edges=0, n_citer=0, n_ref=0,
+        palette=show_citation_graph._PALETTE,
+        css_root=show_citation_graph._CSS_ROOT,
+        js_theme=show_citation_graph._JS_THEME,
+    )
+    static_dir = show_citation_graph._STATIC_DIR
+    return "\n".join([
+        html,
+        (static_dir / "app.css").read_text(encoding="utf-8"),
+        (static_dir / "app.js").read_text(encoding="utf-8"),
+    ])
 
 
 class CitationInsightsApiTests(unittest.TestCase):
@@ -51,11 +73,11 @@ class CitationInsightsApiTests(unittest.TestCase):
         self.assertNotIn(("PUT", "/api/node/summary"), routes)
 
     def test_browser_summary_ui_is_read_only(self):
-        source = inspect.getsource(show_citation_graph._build_sigma_html)
-        self.assertNotIn("AI要約を生成", source)
-        self.assertNotIn("sum-edit-btn", source)
-        self.assertNotIn("fetch('/api/node/summary'", source)
-        self.assertIn("Maintenance Widgetで要約更新", source)
+        document = _browser_document()
+        self.assertNotIn("AI要約を生成", document)
+        self.assertNotIn("sum-edit-btn", document)
+        self.assertNotIn("fetch('/api/node/summary'", document)
+        self.assertIn("Maintenance Widgetで要約更新", document)
 
     @patch(
         "src.crossref_client.fetch_crossref_by_doi",
@@ -112,12 +134,7 @@ class CitationInsightsApiTests(unittest.TestCase):
         self.assertEqual(db_relations.get_summary_quality_reports("pending")[0]["reporter"], "citation-graph")
 
     def test_generated_html_contains_accessible_lazy_insights_ui(self):
-        html = show_citation_graph._build_sigma_html(
-            n_items=1, n_nodes=1, n_edges=0, n_citer=0, n_ref=0,
-            palette=show_citation_graph._PALETTE,
-            css_root=show_citation_graph._CSS_ROOT,
-            js_theme=show_citation_graph._JS_THEME,
-        )
+        html = _browser_document()
         self.assertIn('role="tablist" aria-label="資料の詳細"', html)
         self.assertIn("/api/node/sections?key=", html)
         self.assertNotIn('data-insight-tab="cases"', html)
