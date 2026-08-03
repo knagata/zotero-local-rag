@@ -140,7 +140,14 @@ def list_chunk_ids_without_item(
 def list_chunk_ids_without_attachment(
     *, chroma_dir: Path = DEFAULT_CHROMA_DIR, collection_name: str | None = None,
 ) -> list[str]:
-    """Return chunks whose attachmentKey metadata is absent or empty."""
+    """Return chunks whose attachmentKey metadata is absent or empty.
+
+    Zotero notes are written with ``attachmentKey=None``/``noteKey=<key>`` by
+    design (note_extract.py) and are excluded from the canonical document
+    tree elsewhere (orphan_cleanup.note_only_item) -- they are not attachment
+    chunks that lost their key, so they must not be counted here either
+    (2026-08-03).
+    """
     db_path = _db_path(chroma_dir)
     name = collection_name or active_collection_name(chroma_dir)
     if not db_path.exists() or not name:
@@ -153,7 +160,10 @@ def list_chunk_ids_without_attachment(
             JOIN embeddings e ON e.segment_id = s.id
             LEFT JOIN embedding_metadata attachment
                 ON attachment.id = e.id AND attachment.key = 'attachmentKey'
+            LEFT JOIN embedding_metadata source_type
+                ON source_type.id = e.id AND source_type.key = 'source_type'
             WHERE c.name = ? AND COALESCE(attachment.string_value, '') = ''
+                AND COALESCE(source_type.string_value, '') <> 'note'
             ORDER BY e.embedding_id
         ''', (name,)).fetchall()
         return [str(row[0]) for row in rows]

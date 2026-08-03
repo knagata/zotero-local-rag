@@ -9,7 +9,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from src.chunk_store import get_item_chunks, list_chunk_ids_without_item, list_item_keys
+from src.chunk_store import (
+    get_item_chunks, list_chunk_ids_without_attachment, list_chunk_ids_without_item,
+    list_item_keys,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -50,14 +53,25 @@ class ChunkStoreTests(unittest.TestCase):
             INSERT INTO embeddings VALUES (1, 's1', 'A:p10:para2:part0');
             INSERT INTO embeddings VALUES (2, 's1', 'A:p2:para1:part0');
             INSERT INTO embeddings VALUES (3, 's1', 'A:p3:para0:part0');
+            INSERT INTO embeddings VALUES (4, 's1', 'ITEM2-note1:part0');
+            INSERT INTO embeddings VALUES (5, 's1', 'B:p5:para0:part0');
             INSERT INTO embedding_metadata VALUES (1, 'itemKey', 'ITEM1', NULL, NULL, NULL);
             INSERT INTO embedding_metadata VALUES (1, 'chroma:document', 'later', NULL, NULL, NULL);
             INSERT INTO embedding_metadata VALUES (1, 'page', NULL, 10, NULL, NULL);
+            INSERT INTO embedding_metadata VALUES (1, 'attachmentKey', 'A', NULL, NULL, NULL);
             INSERT INTO embedding_metadata VALUES (2, 'itemKey', 'ITEM1', NULL, NULL, NULL);
             INSERT INTO embedding_metadata VALUES (2, 'chroma:document', 'earlier', NULL, NULL, NULL);
             INSERT INTO embedding_metadata VALUES (2, 'page', NULL, 2, NULL, NULL);
+            INSERT INTO embedding_metadata VALUES (2, 'attachmentKey', 'A', NULL, NULL, NULL);
             -- Chunk 3 has no itemKey row at all (not even an empty string).
             INSERT INTO embedding_metadata VALUES (3, 'chroma:document', 'orphaned', NULL, NULL, NULL);
+            -- Chunk 4 is a Zotero note: no attachmentKey by design (note_extract.py).
+            INSERT INTO embedding_metadata VALUES (4, 'itemKey', 'ITEM2', NULL, NULL, NULL);
+            INSERT INTO embedding_metadata VALUES (4, 'noteKey', 'note1', NULL, NULL, NULL);
+            INSERT INTO embedding_metadata VALUES (4, 'source_type', 'note', NULL, NULL, NULL);
+            -- Chunk 5 is a real attachment chunk that lost its attachmentKey.
+            INSERT INTO embedding_metadata VALUES (5, 'itemKey', 'ITEM2', NULL, NULL, NULL);
+            INSERT INTO embedding_metadata VALUES (5, 'source_type', 'pdf', NULL, NULL, NULL);
         ''')
         connection.commit()
         connection.close()
@@ -73,7 +87,7 @@ class ChunkStoreTests(unittest.TestCase):
         self.assertEqual(chunks[0]["metadata"]["page"], 2)
         self.assertEqual(
             list_item_keys(chroma_dir=self.chroma_dir, collection_name="paragraphs"),
-            ["ITEM1"],
+            ["ITEM1", "ITEM2"],
         )
 
     def test_a_chunk_with_no_itemkey_row_at_all_is_found(self):
@@ -84,6 +98,17 @@ class ChunkStoreTests(unittest.TestCase):
             chroma_dir=self.chroma_dir, collection_name="paragraphs",
         )
         self.assertEqual(orphaned, ["A:p3:para0:part0"])
+
+    def test_notes_are_excluded_but_real_attachmentless_chunks_are_not(self):
+        # 2026-08-03: notes are written with attachmentKey=None by design
+        # (note_extract.py) and must not be counted as attachment chunks that
+        # lost their key. Chunk 3 (no itemKey/attachmentKey/source_type row
+        # at all) and chunk 5 (source_type="pdf", no attachmentKey) are
+        # genuine findings; chunk 4 (source_type="note") must not appear.
+        attachmentless = list_chunk_ids_without_attachment(
+            chroma_dir=self.chroma_dir, collection_name="paragraphs",
+        )
+        self.assertEqual(attachmentless, ["A:p3:para0:part0", "B:p5:para0:part0"])
 
 
 class DefaultChromaDirExpansionTests(unittest.TestCase):
