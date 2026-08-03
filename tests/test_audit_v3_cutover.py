@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 from scripts.audit_v3_cutover import (
-    compare_item, global_gate_failures, item_metrics, partial_coverage_adoptions,
-    structure_failures,
+    compare_item, get_document_nodes, get_document_structure, global_gate_failures,
+    item_metrics, partial_coverage_adoptions, structure_failures,
 )
-from src.document_structure import STRUCTURE_VERSION, source_fingerprint
+from src import db_relations
+from src.document_structure import STRUCTURE_VERSION, build_document_structure, source_fingerprint
 from src.source_coverage import make_source_coverage
 
 
@@ -76,6 +80,35 @@ class CutoverAuditTests(unittest.TestCase):
             "structure_attachment_coverage_mismatch",
             structure_failures(structure, rows),
         )
+
+    def test_get_document_structure_merged_with_nodes_passes_real_lookup(self):
+        # get_document_structure() only returns the document_structures row --
+        # it has no "nodes" key. main() must attach document_nodes itself
+        # before calling structure_failures(), or the attachment-coverage
+        # check always sees an empty node list and fails every item
+        # regardless of the real structure (2026-08-03).
+        tempdir = tempfile.TemporaryDirectory()
+        self.addCleanup(tempdir.cleanup)
+        db_patch = patch.object(db_relations, "DB_PATH", str(Path(tempdir.name) / "relations.db"))
+        db_patch.start()
+        self.addCleanup(db_patch.stop)
+        db_relations._db_initialized = False
+        self.addCleanup(lambda: setattr(db_relations, "_db_initialized", False))
+
+        rows = [
+            {"id": "A:p1", "text": "one", "metadata": {"source_type": "pdf", "attachmentKey": "A"}},
+        ]
+        built = build_document_structure("ITEM", rows)
+        db_relations.replace_document_structure(
+            "ITEM", source_fingerprint=built["source_fingerprint"],
+            structure_version=STRUCTURE_VERSION, status=built["status"],
+            confidence=built["confidence"], nodes=built["nodes"], diagnostics=built["diagnostics"],
+        )
+
+        structure = get_document_structure("ITEM")
+        self.assertNotIn("nodes", structure)
+        merged = {**structure, "nodes": get_document_nodes("ITEM")}
+        self.assertEqual(structure_failures(merged, rows), [])
 
     def test_global_gate_requires_exact_indexes_and_completed_checkpoints(self):
         manifest = {

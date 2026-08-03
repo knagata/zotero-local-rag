@@ -21,7 +21,7 @@ from src.chunk_store import (
     get_item_chunks, list_attachment_keys, list_chunk_ids,
     list_chunk_ids_without_attachment, list_chunk_ids_without_item, list_item_keys,
 )
-from src.db_relations import get_document_structure
+from src.db_relations import get_document_nodes, get_document_structure
 from src.source_verification import dangling_node_ids, unretrievable_documents
 from src.document_structure import STRUCTURE_VERSION, source_fingerprint
 from src.lexical_index import list_chunk_ids as list_lexical_chunk_ids
@@ -382,6 +382,12 @@ def main() -> None:
         attested_chroma_rows.extend(new_rows)
         row = compare_item(item_key, old_rows, new_rows, live_node_ids)
         structure = get_document_structure(item_key)
+        if structure is not None:
+            # get_document_structure() reads only the document_structures row;
+            # structure_failures()'s attachment-coverage check needs the
+            # document_nodes rows too, so they must be attached here rather
+            # than assumed present (2026-08-03).
+            structure = {**structure, "nodes": get_document_nodes(item_key)}
         row["structure"] = {
             "status": str((structure or {}).get("status") or "missing"),
             "source_fingerprint": str((structure or {}).get("source_fingerprint") or ""),
