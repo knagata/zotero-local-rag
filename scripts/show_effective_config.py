@@ -187,9 +187,18 @@ def main() -> int:
     load_dotenv_native(ROOT)
     report = build_report()
     if args.set_only:
-        report = {**report, "settings": [
-            row for row in report["settings"] if row["state"] == "set"
-        ]}
+        # settings_count has to follow the filter. Leaving the unfiltered
+        # total next to a filtered body makes the report disagree with
+        # itself, which is fatal for the one thing it is for: being diffed
+        # and trusted. total_settings keeps the unfiltered figure visible.
+        kept = [row for row in report["settings"] if row["state"] == "set"]
+        report = {
+            **report,
+            "settings": kept,
+            "settings_count": len(kept),
+            "total_settings": report["settings_count"],
+            "filtered": "set-only",
+        }
 
     if args.json:
         print(json.dumps(report, ensure_ascii=False, indent=2))

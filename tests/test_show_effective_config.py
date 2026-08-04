@@ -108,6 +108,25 @@ class ReportShapeTests(unittest.TestCase):
         names = [row["name"] for row in build_report()["settings"]]
         self.assertEqual(names, sorted(names))
 
+    def test_set_only_keeps_the_count_consistent_with_the_rows(self):
+        # A header claiming 101 settings above a body listing 21 makes the
+        # report disagree with itself, which is fatal for something whose
+        # only job is to be diffed and trusted.
+        import subprocess
+        import sys as _sys
+        result = subprocess.run(
+            [_sys.executable, "scripts/show_effective_config.py", "--set-only", "--json"],
+            cwd=ROOT, capture_output=True, text=True, timeout=120,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        import json as _json
+        report = _json.loads(result.stdout)
+        self.assertEqual(report["settings_count"], len(report["settings"]))
+        self.assertEqual(report["filtered"], "set-only")
+        # The unfiltered figure stays available rather than being lost.
+        self.assertGreaterEqual(report["total_settings"], report["settings_count"])
+        self.assertTrue(all(row["state"] == "set" for row in report["settings"]))
+
 
 if __name__ == "__main__":
     unittest.main()
