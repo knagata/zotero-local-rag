@@ -86,6 +86,8 @@ class SetupWizardTests(unittest.TestCase):
         answers = ["2", "n", "y", "", "2", "2", "", "", "", "", ""]
         with patch.object(
             setup_wizard, "_granite_selectable", return_value=True,
+        ), patch.object(
+            setup_wizard, "_docling_ready", return_value=True,
         ), patch("builtins.input", side_effect=answers), patch(
             "sys.stdout", StringIO(),
         ):
@@ -103,6 +105,8 @@ class SetupWizardTests(unittest.TestCase):
         answers = ["2", "n", "y", "", "2", "2", "", "", "", "", "", ""]
         with patch.object(
             setup_wizard, "_granite_selectable", return_value=False,
+        ), patch.object(
+            setup_wizard, "_docling_ready", return_value=True,
         ), patch.object(
             setup_wizard, "install_granite_environment", return_value=True,
         ) as install, patch(
@@ -143,6 +147,8 @@ class SetupWizardTests(unittest.TestCase):
         answers = ["2", "n", "y", "", "1", "3", "", "", "", "", ""]
         with patch.object(
             setup_wizard, "_granite_selectable", return_value=False,
+        ), patch.object(
+            setup_wizard, "_docling_ready", return_value=True,
         ), patch("builtins.input", side_effect=answers), patch.object(
             setup_wizard.getpass, "getpass", return_value="mistral-secret",
         ), patch("sys.stdout", StringIO()):
@@ -322,6 +328,8 @@ class SetupWizardTests(unittest.TestCase):
         }
         with patch.object(
             setup_wizard, "_choose_engine", side_effect=["docling", "docling"],
+        ), patch.object(
+            setup_wizard, "_docling_ready", return_value=True,
         ), patch("builtins.input", return_value=""), patch("sys.stdout", StringIO()):
             setup_wizard.configure_pdf_engines(config)
         self.assertEqual(config["PDF_MISTRAL_TOC_QUEUE_ENABLE"], "0")
@@ -380,7 +388,7 @@ class SetupWizardTests(unittest.TestCase):
                 # Trailing "" declines the now-unconditional (2026-07-31)
                 # rebuild offer -- previously skipped outright for an
                 # unchanged profile, so this test needed one fewer answer.
-                "builtins.input", side_effect=["y", "", "", ""],
+                "builtins.input", side_effect=["y", "", "", "", ""],
             ), patch.object(
                 setup_wizard.shutil, "which", return_value=None,
             ), patch.object(
@@ -434,7 +442,7 @@ class SetupWizardTests(unittest.TestCase):
             ), patch.object(
                 setup_wizard, "ensure_embedding_model", return_value="model",
             ), patch(
-                "builtins.input", side_effect=["y", "", ""],
+                "builtins.input", side_effect=["y", "", "", ""],
             ), patch.object(
                 setup_wizard.shutil, "which", return_value=None,
             ), patch.object(

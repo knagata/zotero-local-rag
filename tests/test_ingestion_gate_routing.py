@@ -82,9 +82,10 @@ class ScannedPdfOcrRoutingTests(unittest.TestCase):
     """Regression fixtures for the 2026-07-27 scan OCR routing contract."""
 
     def _route(self, quality: dict, pages: int) -> tuple[str | None, str]:
-        return module._scanned_pdf_ocr_route(
-            quality, total_pages=pages, item_key="ITEM",
-        )
+        with patch.dict("os.environ", {"PDF_STRUCTURE_RECOVERY_ENABLE": "1"}):
+            return module._scanned_pdf_ocr_route(
+                quality, total_pages=pages, item_key="ITEM",
+            )
 
     def test_each_size_bucket_uses_its_configured_engine(self):
         # Choice (C) (note 80): the operator picks per bucket rather than the

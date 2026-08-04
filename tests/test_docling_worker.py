@@ -91,7 +91,9 @@ class DoclingWorkerTests(unittest.TestCase):
             worker.shutdown()
 
     def test_timeout_then_recovers(self):
-        worker = DoclingWorker(timeout_sec=1)
+        # Linux CI can take more than one second to spawn the replacement
+        # process after the intentional timeout.
+        worker = DoclingWorker(timeout_sec=3)
         try:
             start = time.monotonic()
             with self.assertRaises(RuntimeError) as ctx:

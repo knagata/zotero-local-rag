@@ -13,6 +13,7 @@ dependencies = [
     "trafilatura",
     "ebooklib",
     "beautifulsoup4",
+    "pillow>=10,<13",
     "pydantic>=2.12,<3",
     "fa2-modified>=0.4",
     "networkx>=3.4.2",

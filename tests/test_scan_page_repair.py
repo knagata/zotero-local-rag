@@ -10,6 +10,7 @@ from __future__ import annotations
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
@@ -86,10 +87,11 @@ class AuditReusedOcrChunksTests(unittest.TestCase):
         izo.audit_ocr_text_layer = self._audit
 
     def _run(self):
-        return izo._audit_reused_ocr_chunks(
-            [_chunk(1, BODY)], {"parser": "legacy-ocr-reuse"}, Path("x.pdf"),
-            item_key="ITEM", prev=None, mtime=1.0, size=2, show_progress=False,
-        )
+        with patch.dict("os.environ", {"OCR_LAYER_AUDIT_ENABLE": "1"}):
+            return izo._audit_reused_ocr_chunks(
+                [_chunk(1, BODY)], {"parser": "legacy-ocr-reuse"}, Path("x.pdf"),
+                item_key="ITEM", prev=None, mtime=1.0, size=2, show_progress=False,
+            )
 
     def test_acceptable_text_is_still_reused_and_gains_provenance(self):
         izo.audit_ocr_text_layer = lambda path, key: {"ocr_layer_quality": "acceptable"}

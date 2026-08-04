@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+import importlib.util
+import pytest
 from unittest.mock import MagicMock, Mock, patch
 
 from src.yomitoku_extract import extract_chunks_from_pdf_with_yomitoku
@@ -20,6 +22,12 @@ def _paragraph(order, text):
 
 
 def test_ocr_pages_only_lists_pages_that_actually_produced_chunks():
+    try:
+        yomitoku_functions = importlib.util.find_spec("yomitoku.data.functions")
+    except ModuleNotFoundError:
+        yomitoku_functions = None
+    if yomitoku_functions is None:
+        pytest.skip("optional yomitoku dependency not installed")
     # 2026-07-30 regression: ocr_pages used to be claimed as every page of
     # the source PDF regardless of whether that page produced any text --
     # the same bug already found and fixed in mistral_ocr_extract.py and
