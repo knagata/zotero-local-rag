@@ -43,6 +43,7 @@ from hierarchical_retrieval import (
     explicit_note_intent, fuse_retrieval_paths, partition_leaf_ids, retrieval_policy_allowed,
 )
 from runtime_config import bounded_env_int
+from retrieval_service import HierarchicalRetrievalDependencies, RetrievalService
 from db_relations import (
     get_item_root_summary, get_item_root_summaries, get_node_descendant_chunks,
     get_node_descendant_leaf_ids, get_searchable_document_node_ids,
@@ -1300,162 +1301,33 @@ def _load_item_root_summary(item_key: str) -> Optional[Dict[str, Any]]:
     return get_item_root_summary(item_key, searchable_only=True)
 
 
+def _retrieval_service() -> RetrievalService:
+    """Build dependencies late so compatibility patches remain effective."""
+    return RetrievalService(
+        HierarchicalRetrievalDependencies(
+            search=rag_search,
+            searchable_node_ids=get_searchable_document_node_ids,
+            descendant_chunks=get_node_descendant_chunks,
+            descendant_leaf_ids=get_node_descendant_leaf_ids,
+            item_root_summaries=get_item_root_summaries,
+            fuse_paths=fuse_retrieval_paths,
+        ),
+        summary_collection_name=(
+            f"{_EMB_COLLECTION_NAME or COLLECTION_NAME_DEFAULT}__sum_node"
+        ),
+        rrf_k=RRF_K,
+    )
+
+
 def _hierarchical_search_v2(
     queries: List[str], *, k: int, k_items: int, where: Any, include_direct: bool,
     return_summaries: bool, paragraph_collection: Any,
 ) -> Dict[str, Any]:
-    """Route summary-node hits to their source descendants, then fuse direct recall."""
-    warnings: List[str] = []
-    candidate_nodes: List[Dict[str, Any]] = []
-    candidate_scores: Dict[str, float] = {}
-    candidate_items: Dict[str, Dict[str, Any]] = {}
-    candidate_item_scores: Dict[str, float] = {}
-    try:
-        client = getattr(paragraph_collection, "_chroma_client", None)
-        collection = client.get_collection(f"{_EMB_COLLECTION_NAME or COLLECTION_NAME_DEFAULT}__sum_node")
-        embeddings = paragraph_collection._embedding_function(queries)
-        response = collection.query(
-            query_embeddings=embeddings, n_results=max(k_items * 3, 30),
-            where={"summary_kind": "llm"}, include=["metadatas", "documents", "distances"],
-        )
-        for q_index, metadata_rows in enumerate(response.get("metadatas") or []):
-            documents = (response.get("documents") or [])[q_index] if q_index < len(response.get("documents") or []) else []
-            for rank, metadata in enumerate(metadata_rows or [], start=1):
-                if not isinstance(metadata, dict) or not metadata.get("itemKey") or not metadata.get("node_id"):
-                    continue
-                node_id = str(metadata["node_id"])
-                item_key = str(metadata["itemKey"])
-                score = 1.0 / (RRF_K + rank)
-                candidate_scores[node_id] = candidate_scores.get(node_id, 0.0) + score
-                candidate_item_scores[item_key] = candidate_item_scores.get(item_key, 0.0) + score
-                candidate_items.setdefault(item_key, metadata)
-                if not any(row["node_id"] == node_id for row in candidate_nodes):
-                    document = documents[rank - 1] if rank - 1 < len(documents) else ""
-                    candidate_nodes.append({
-                        "node_id": node_id, "item_key": item_key, "title": metadata.get("title"),
-                        "node_type": metadata.get("node_type"), "depth": metadata.get("depth"),
-                        "score": score, "summary_snippet": str(document or "")[:180],
-                    })
-    except Exception as exc:
-        warnings.append(f"sum_node collection unavailable: {exc}")
-
-    candidate_nodes.sort(key=lambda row: (-candidate_scores[row["node_id"]], row["node_id"]))
-    searchable_node_ids = get_searchable_document_node_ids([
-        str(node["node_id"]) for node in candidate_nodes
-    ])
-    candidate_nodes = [
-        node for node in candidate_nodes if str(node["node_id"]) in searchable_node_ids
-    ]
-    candidate_item_scores = {}
-    for node in candidate_nodes:
-        item_key = str(node["item_key"])
-        candidate_item_scores[item_key] = (
-            candidate_item_scores.get(item_key, 0.0)
-            + candidate_scores[str(node["node_id"])]
-        )
-    candidate_items = {
-        item_key: metadata for item_key, metadata in candidate_items.items()
-        if item_key in candidate_item_scores
-    }
-    candidate_nodes = candidate_nodes[: max(k_items * 2, k_items)]
-    descendant_by_node: Dict[str, set[str]] = {}
-    for node in candidate_nodes:
-        try:
-            descendant_by_node[node["node_id"]] = set(get_node_descendant_chunks([node["node_id"]]))
-        except Exception as exc:
-            warnings.append(f"descendant lookup failed for {node['node_id']}: {exc}")
-            descendant_by_node[node["node_id"]] = set()
-    routed_ids = set().union(*descendant_by_node.values()) if descendant_by_node else set()
-    routed_nodes_by_chunk = {
-        chunk_id: [node_id for node_id, chunk_ids in descendant_by_node.items() if chunk_id in chunk_ids]
-        for chunk_id in routed_ids
-    }
-    leaf_ids: List[str] = []
-    if candidate_nodes:
-        # Resolve searchable leaf node_ids directly from SQLite instead of
-        # hydrating thousands of chunk metadatas from Chroma (R14).
-        try:
-            leaf_ids = get_node_descendant_leaf_ids([node["node_id"] for node in candidate_nodes])
-        except Exception as exc:
-            warnings.append(f"leaf node lookup failed: {exc}")
-    leaf_ids = list(dict.fromkeys(leaf_ids))
-    # A summary collection contains many nodes per item.  Its first-seen dict
-    # order selected items by an incidental Chroma response order, discarding
-    # the RRF evidence accumulated by later nodes and query variants.  Route
-    # paragraphs through the strongest *items*, while preserving the global
-    # leaf-batch ranking performed by rag_search below.
-    candidate_item_keys = sorted(
-        candidate_item_scores,
-        key=lambda item_key: (-candidate_item_scores[item_key], item_key),
-    )[:k_items]
-    leaf_response = rag_search(
-        queries, k=max(k * 12, 60), where=where, include_leaf_ids=leaf_ids,
-        auto_expand=False, hybrid=False,
-    ) if leaf_ids else {"results": []}
-    item_response = rag_search(
-        queries, k=max(k * 12, 60), where=where, include_item_keys=candidate_item_keys or None,
-        auto_expand=False, hybrid=True,
-    ) if candidate_item_keys else {"results": []}
-    direct_response = rag_search(
-        queries, k=max(k * 20, 100), where=where, auto_expand=False, hybrid=True,
-    ) if include_direct else {"results": []}
-
-    # Resolve item bibliographic title/year from paragraph chunk metadata, which
-    # carries the real Zotero item title/year — unlike __sum_node metadata whose
-    # `title` is a node (chapter) heading and which has no `year` (R8-1).
-    bib_by_item: Dict[str, Dict[str, Any]] = {}
-    for response_rows in (
-        leaf_response.get("results") or [],
-        item_response.get("results") or [],
-        direct_response.get("results") or [],
-    ):
-        for row in response_rows:
-            meta = row.get("meta") or {}
-            key = meta.get("itemKey")
-            if key and key not in bib_by_item:
-                bib_by_item[key] = {"title": meta.get("title"), "year": meta.get("year")}
-
-    results = []
-    fused_rows = fuse_retrieval_paths([
-        ("leaf", leaf_response.get("results") or []),
-        ("same_item", item_response.get("results") or []),
-        ("direct", direct_response.get("results") or []),
-    ], routed_nodes_by_chunk=routed_nodes_by_chunk)
-    root_summaries = get_item_root_summaries(
-        list(dict.fromkeys(
-            str((row.get("meta") or {}).get("itemKey") or "")
-            for row in fused_rows[:k]
-            if (row.get("meta") or {}).get("itemKey")
-        )),
-        searchable_only=True,
-    ) if return_summaries else {}
-    for row in fused_rows[:k]:
-        hit = dict(row)
-        hit["hierarchical_rrf_score"] = hit.pop("rrf_score")
-        if return_summaries:
-            item_key = (hit.get("meta") or {}).get("itemKey")
-            summary = root_summaries.get(str(item_key)) if item_key else None
-            hit["item_summary_snippet"] = (summary.get("summary") or "")[:120] if summary else ""
-            hit["item_summary_provenance"] = "v3_item_root" if summary else "none"
-        results.append(hit)
-    response: Dict[str, Any] = {
-        "results": results, "candidate_nodes": candidate_nodes,
-        "candidate_items": [
-            {
-                "item_key": key,
-                "title": (bib_by_item.get(key) or {}).get("title") or metadata.get("title"),
-                "year": (bib_by_item.get(key) or {}).get("year"),
-            }
-            for key, metadata in candidate_items.items()
-        ],
-        "reporting_obligation": (
-            "Verify claims against result chunks. If a summary concretely contradicts them, "
-            "call report_summary_quality before completing the answer."
-        ),
-    }
-    if warnings:
-        response["warnings"] = warnings
-    return response
+    return _retrieval_service().hierarchical_search(
+        queries, k=k, k_items=k_items, where=where,
+        include_direct=include_direct, return_summaries=return_summaries,
+        paragraph_collection=paragraph_collection,
+    )
 
 
 @mcp.tool()
