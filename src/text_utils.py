@@ -34,52 +34,48 @@ def _resolve_chunk_limits():
 
     # --- Latin (English) ---
     # 800 chars ≈ 1–2 paragraphs.  Model token budget is never the bottleneck.
-    if "MAX_CHARS" in os.environ:
-        max_latin = int(os.environ["MAX_CHARS"])
-    else:
-        max_latin = 1200
-
-    if "TARGET_CHARS" in os.environ:
-        target_latin = int(os.environ["TARGET_CHARS"])
-    else:
-        target_latin = 800
+    max_latin = 1200
+    target_latin = 800
 
     # --- CJK (Japanese) ---
     # 400 chars ≈ 1–2 dense paragraphs.  Constrained by token budget on MiniLM.
     _best_max_cjk = 600   # semantic ceiling (≈2–3 Japanese paragraphs)
     _best_target_cjk = 400  # semantic sweet spot (≈1–2 Japanese paragraphs)
 
-    if "MAX_CHARS_CJK" in os.environ:
-        max_cjk = int(os.environ["MAX_CHARS_CJK"])
-    else:
-        # Model ceiling may force us below the semantic ceiling
-        max_cjk = min(_best_max_cjk, int(token_budget * 1.0))
-
-    if "TARGET_CHARS_CJK" in os.environ:
-        target_cjk = int(os.environ["TARGET_CHARS_CJK"])
-    else:
-        target_cjk = min(_best_target_cjk, int(max_cjk * 0.7))
+    # Model ceiling may force us below the semantic ceiling
+    max_cjk = min(_best_max_cjk, int(token_budget * 1.0))
+    target_cjk = min(_best_target_cjk, int(max_cjk * 0.7))
 
     return max_latin, target_latin, max_cjk, target_cjk
 
 
+# These are plain constants, deliberately not environment variables.
+#
+# They decide where every chunk boundary falls, so changing one changes the
+# stored corpus. They used to be env-overridable, and that quietly defeated
+# the mechanism built to catch exactly this: the pipeline fingerprint covers
+# `chunk_scheme` (a version number) and the embedder, while the run code
+# fingerprint hashes this file. Overriding a value through the environment
+# left both unchanged, so a corpus half-built at one chunk size and half at
+# another still reported itself as homogeneous. Verified 2026-08-04:
+# MIN_CHUNK_CHARS=400 produced a byte-identical pipeline_fingerprint.
+#
+# As constants, editing one edits this file, which changes the run code
+# fingerprint and makes the change visible. Nothing had ever set any of them.
 MAX_CHARS, TARGET_CHARS, MAX_CHARS_CJK, TARGET_CHARS_CJK = _resolve_chunk_limits()
-MIN_CHUNK_CHARS = int(os.environ.get("MIN_CHUNK_CHARS", "200"))
+MIN_CHUNK_CHARS = 200
 
 # Overlap: ~12% of target size, approximating one sentence of context
-# at chunk boundaries.  OVERLAP_CHARS overrides everything.
+# at chunk boundaries.
 _OVERLAP_RATIO = 0.12
-_OVERLAP_LATIN = max(20, int(TARGET_CHARS * _OVERLAP_RATIO))
-_OVERLAP_CJK = max(15, int(TARGET_CHARS_CJK * _OVERLAP_RATIO))
-OVERLAP_CHARS_DEFAULT = int(os.environ.get("OVERLAP_CHARS", "0"))
-OVERLAP_CHARS_LATIN = int(os.environ.get("OVERLAP_CHARS_LATIN", str(_OVERLAP_LATIN)))
-OVERLAP_CHARS_CJK = int(os.environ.get("OVERLAP_CHARS_CJK", str(_OVERLAP_CJK)))
+OVERLAP_CHARS_LATIN = max(20, int(TARGET_CHARS * _OVERLAP_RATIO))
+OVERLAP_CHARS_CJK = max(15, int(TARGET_CHARS_CJK * _OVERLAP_RATIO))
 
 # For languages that typically do not use whitespace word segmentation (e.g., Japanese/Chinese).
-MIN_CHUNK_CHARS_NO_SPACE = int(os.environ.get("MIN_CHUNK_CHARS_NO_SPACE", "120"))
+MIN_CHUNK_CHARS_NO_SPACE = 120
 
 # Hard minimum to avoid indexing obvious noise (page numbers, single tokens, etc.).
-HARD_MIN_CHARS = int(os.environ.get("HARD_MIN_CHARS", "40"))
+HARD_MIN_CHARS = 40
 
 # The CJK counterpart to HARD_MIN_CHARS. Every other length constant in this
 # module has one (MIN_CHUNK_CHARS_NO_SPACE alongside MIN_CHUNK_CHARS,
@@ -91,7 +87,7 @@ HARD_MIN_CHARS = int(os.environ.get("HARD_MIN_CHARS", "40"))
 # Chinese text (2026-07-28). Halved for the same reason MAX_CHARS_CJK is
 # lower than MAX_CHARS: not an independent judgment call, the same ratio
 # applied where every sibling constant already applies it.
-HARD_MIN_CHARS_CJK = int(os.environ.get("HARD_MIN_CHARS_CJK", str(max(1, HARD_MIN_CHARS // 2))))
+HARD_MIN_CHARS_CJK = max(1, HARD_MIN_CHARS // 2)
 
 # Text cleaning / filtering
 CONTROL_CHARS = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]")
@@ -278,8 +274,10 @@ def joiner_for_text(text: str) -> str:
 
 def overlap_for_text(text: str) -> int:
     """Overlap chars for this text (CJK vs Latin tuned)."""
-    if OVERLAP_CHARS_DEFAULT and OVERLAP_CHARS_DEFAULT > 0:
-        return int(OVERLAP_CHARS_DEFAULT)
+    # A global OVERLAP_CHARS override used to short-circuit here. It was only
+    # reachable by setting an environment variable that nothing ever set, and
+    # its whole purpose was to flatten the CJK/Latin distinction this function
+    # exists to make. Removed with the other chunk-size env vars (2026-08-04).
     if not text:
         return int(OVERLAP_CHARS_LATIN)
     cjk = _cjk_ratio(text)
