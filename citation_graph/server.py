@@ -53,6 +53,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.item_vectors import get_item_vectors as _shared_get_item_vectors
+from citation_graph.graph_service import GraphBuildService
 load_dotenv(PROJECT_ROOT / ".env")
 
 DB_PATH         = os.environ.get("RELATIONS_DB_PATH", str(PROJECT_ROOT / "data" / "relations.db"))
@@ -1920,8 +1921,9 @@ def build_graph_data(
 # ── FastAPI app ───────────────────────────────────────────────────────────────
 
 import threading as _threading
+from citation_graph.lifecycle import SingleFlight, StartOnce
 
-from fastapi import FastAPI
+from fastapi import APIRouter, FastAPI
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel
 
@@ -1964,42 +1966,32 @@ def _close_watcher() -> None:
             _os.kill(_os.getpid(), __import__("signal").SIGINT)
             return
 
-_threading.Thread(target=_close_watcher, daemon=True).start()
+def _start_close_watcher() -> None:
+    """Start lifecycle monitoring once, never as an import side effect."""
+    _close_watcher_once.ensure_started()
 
-app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+
+_close_watcher_once = StartOnce(
+    lambda: _threading.Thread(target=_close_watcher, daemon=True).start()
+)
+
+router = APIRouter()
 
 
 def _rebuild_graph() -> None:
     """DB を読み直してグラフデータを再構築し _state["graph"] を更新する。"""
-    args = _state["args"]
-    conn = sqlite3.connect(_state["db_path"])
-    conn.row_factory = sqlite3.Row
-    try:
-        if args.item:
-            item_row = get_item_row(conn, args.item)
-            items = [item_row] if item_row else []
-        else:
-            items = get_top_items(conn, args.top)
-        if not items:
-            return
-        item_keys = [d["item_key"] for d in items]
-        citers    = get_citers(conn, item_keys, args.citers, min_cc=args.min_cc)
-        refs      = [] if args.no_refs else get_refs(conn, item_keys, args.refs, min_cc=args.min_cc)
-        item_meta = get_item_meta(item_keys)
-        item_rcnt = get_item_ref_counts(conn, item_keys)
-    finally:
-        conn.close()
-    result = build_graph_data(items, citers, refs,
-                              item_meta=item_meta, item_ref_counts=item_rcnt,
-                              db_path=_state["db_path"])
-    m = result["meta"]
-    _state["graph"]     = {"nodes": result["nodes"], "edges": result["edges"]}
-    _state["cache_hit"] = result.get("cache_hit", False)
-    _state["html"]      = _build_sigma_html(
-        n_items=m["n_items"], n_nodes=m["n_nodes"], n_edges=m["n_edges"],
-        n_citer=m["n_citer"], n_ref=m["n_ref"],
-        palette=m["palette"], css_root=m["css_root"], js_theme=m["js_theme"],
+    service = GraphBuildService(
+        get_item_row=get_item_row, get_top_items=get_top_items,
+        get_citers=get_citers, get_refs=get_refs, get_item_meta=get_item_meta,
+        get_item_ref_counts=get_item_ref_counts, build_graph_data=build_graph_data,
+        build_html=_build_sigma_html,
     )
+    snapshot = service.rebuild(_state["db_path"], _state["args"])
+    if snapshot is None:
+        return
+    _state["graph"] = snapshot.graph
+    _state["cache_hit"] = snapshot.cache_hit
+    _state["html"] = snapshot.html
 
 
 def _rebuild_graph_bg() -> None:
@@ -2012,13 +2004,23 @@ def _rebuild_graph_bg() -> None:
             _rebuild_done.set()
 
 
-@app.get("/", response_class=HTMLResponse)
+_rebuild_singleflight = SingleFlight(
+    _rebuild_graph_bg,
+    lambda target: _threading.Thread(target=target, daemon=False).start(),
+    externally_busy=_rebuild_lock.locked,
+)
+
+
+def _schedule_rebuild() -> bool:
+    return _rebuild_singleflight.schedule()
+
+
+@router.get("/", response_class=HTMLResponse)
 def _route_index() -> str:
     # 初期ビルド完了後かつ別のリビルドが走っていない場合のみ再ビルドを起動
     # （初期ビルド前に叩かれた場合は /api/graph が _rebuild_done.wait() で待機する）
-    if _initial_build_done.is_set() and not _rebuild_lock.locked():
-        t = _threading.Thread(target=_rebuild_graph_bg, daemon=False)
-        t.start()
+    if _initial_build_done.is_set():
+        _schedule_rebuild()
     return _state["html"]
 
 
@@ -2035,7 +2037,7 @@ _STATIC_ASSETS = {
 }
 
 
-@app.get("/static/{name}")
+@router.get("/static/{name}")
 def _route_static_asset(name: str) -> Response:
     """許可した2ファイルだけを返す（allowlist方式でパストラバーサル面をゼロにする）。
 
@@ -2054,7 +2056,7 @@ def _route_static_asset(name: str) -> Response:
     )
 
 
-@app.get("/api/graph")
+@router.get("/api/graph")
 def _route_graph() -> JSONResponse:
     # リビルドが実行中の場合は完了まで待機（最大120秒）。待っても終わらない
     # 場合（初回ビルドが120秒を超える、または他プロセスがDBを占有している
@@ -2073,7 +2075,7 @@ def _route_graph() -> JSONResponse:
     return JSONResponse(payload)
 
 
-@app.post("/api/heartbeat")
+@router.post("/api/heartbeat")
 def _route_heartbeat() -> JSONResponse:
     """ページロード時の生存通知。close が pending 中でもキャンセルする。"""
     global _browser_opened, _close_pending_at
@@ -2082,7 +2084,7 @@ def _route_heartbeat() -> JSONResponse:
     return JSONResponse({"ok": True})
 
 
-@app.post("/api/close")
+@router.post("/api/close")
 def _route_close() -> JSONResponse:
     """タブ・ウィンドウが閉じられたときのシグナル。猶予後に終了する。"""
     global _close_pending_at
@@ -2090,7 +2092,7 @@ def _route_close() -> JSONResponse:
     return JSONResponse({"ok": True})
 
 
-@app.get("/api/collections")
+@router.get("/api/collections")
 def _route_collections() -> JSONResponse:
     """Zotero SQLite からコレクション一覧と所属 item_key を返す。"""
     if not os.path.exists(ZOTERO_SQLITE):
@@ -2159,7 +2161,7 @@ def _route_collections() -> JSONResponse:
         )
 
 
-@app.get("/api/semantic-layout")
+@router.get("/api/semantic-layout")
 def _route_semantic_layout(method: str = "umap", n_clusters: int = 8) -> JSONResponse:
     """資料ベクトルを次元削減して2D意味空間マップ座標を返す。
 
@@ -2267,7 +2269,7 @@ class _TranslateBatchRequest(BaseModel):
     target: str = "ja"
 
 
-@app.post("/api/translate/batch")
+@router.post("/api/translate/batch")
 def _route_translate_batch(req: _TranslateBatchRequest) -> JSONResponse:
     """Azure Cognitive Services Translator で複数テキストを一括翻訳して返す。"""
     if not _state.get("translator"):
@@ -2298,7 +2300,7 @@ def _route_translate_batch(req: _TranslateBatchRequest) -> JSONResponse:
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
-@app.get("/api/edge/contexts")
+@router.get("/api/edge/contexts")
 def _route_edge_contexts(src: str, tgt: str) -> dict:
     """エッジ(src → tgt)の引用コンテキストを全件返す。"""
     contexts = get_contexts_for_edge(_state["db_path"], src, tgt)
@@ -2314,7 +2316,7 @@ class _RelationReportRequest(BaseModel):
     details: str
 
 
-@app.post("/api/relation/report")
+@router.post("/api/relation/report")
 def _route_relation_report(body: _RelationReportRequest) -> JSONResponse:
     """Queue a graph relation for human review; do not hide it immediately."""
     try:
@@ -2335,7 +2337,7 @@ def _route_relation_report(body: _RelationReportRequest) -> JSONResponse:
         return JSONResponse({"error": str(exc)}, status_code=500)
 
 
-@app.get("/api/node/abstract")
+@router.get("/api/node/abstract")
 def _route_node_abstract(key: str) -> JSONResponse:
     """アイテムのアブストラクトとキャッシュ済み要約を返す。"""
     from src.db_relations import get_item_abstract, get_item_root_summary
@@ -2347,7 +2349,7 @@ def _route_node_abstract(key: str) -> JSONResponse:
     })
 
 
-@app.get("/api/node/insights")
+@router.get("/api/node/insights")
 def _route_node_insights(key: str) -> JSONResponse:
     """Return the lightweight hierarchy overview for one Zotero item."""
     from citation_graph.insights import get_item_insights
@@ -2359,7 +2361,7 @@ def _route_node_insights(key: str) -> JSONResponse:
         return JSONResponse({"error": str(exc)}, status_code=500)
 
 
-@app.get("/api/node/processing-status")
+@router.get("/api/node/processing-status")
 def _route_node_processing_status(key: str) -> JSONResponse:
     """Return stage-by-stage status and available fallbacks for one item."""
     from citation_graph.insights import get_processing_overview
@@ -2371,7 +2373,7 @@ def _route_node_processing_status(key: str) -> JSONResponse:
         return JSONResponse({"error": str(exc)}, status_code=500)
 
 
-@app.get("/api/node/outline")
+@router.get("/api/node/outline")
 def _route_node_outline(key: str) -> JSONResponse:
     from citation_graph.insights import get_document_outline
     try:
@@ -2382,13 +2384,13 @@ def _route_node_outline(key: str) -> JSONResponse:
         return JSONResponse({"error": str(exc)}, status_code=500)
 
 
-@app.get("/api/processing-status/summary")
+@router.get("/api/processing-status/summary")
 def _route_processing_status_summary() -> JSONResponse:
     from src.db_relations import get_processing_status_summary
     return JSONResponse({"items": get_processing_status_summary()})
 
 
-@app.get("/api/node/sections")
+@router.get("/api/node/sections")
 def _route_node_sections(
     key: str, q: str = "", cursor: str = "", limit: int = 50,
 ) -> JSONResponse:
@@ -2403,7 +2405,7 @@ def _route_node_sections(
         return JSONResponse({"error": str(exc)}, status_code=500)
 
 
-@app.get("/api/node/section-source")
+@router.get("/api/node/section-source")
 def _route_node_section_source(key: str, section_id: str) -> JSONResponse:
     from citation_graph.insights import get_section_source
     try:
@@ -2425,7 +2427,7 @@ class _QualityReportRequest(BaseModel):
     evidence_chunk_ids: list[str] = []
 
 
-@app.post("/api/quality-report")
+@router.post("/api/quality-report")
 def _route_quality_report(body: _QualityReportRequest) -> JSONResponse:
     """Queue a summary issue without immediately hiding its target."""
     from src.db_relations import submit_summary_quality_report
@@ -2450,7 +2452,7 @@ class _FetchAbstractRequest(BaseModel):
     item_key: str
 
 
-@app.post("/api/node/fetch-abstract")
+@router.post("/api/node/fetch-abstract")
 def _route_fetch_abstract(body: _FetchAbstractRequest) -> JSONResponse:
     """Zotero local API から abstractNote を取得して DB にキャッシュする。
 
@@ -2492,7 +2494,7 @@ def _route_fetch_abstract(body: _FetchAbstractRequest) -> JSONResponse:
     return JSONResponse({"abstract": None, "found": False})
 
 
-@app.get("/api/node/external-abstract")
+@router.get("/api/node/external-abstract")
 def _route_external_abstract(paper_id: str = "", doi: str = "") -> JSONResponse:
     """外部論文の概要を取得して返す。Crossref（DOI）を優先し、無ければ S2 にフォールバック。
 
@@ -2594,7 +2596,7 @@ def _ensure_override_table(conn: sqlite3.Connection) -> None:
             pass  # 既に存在する場合は無視
 
 
-@app.post("/api/node/identifier")
+@router.post("/api/node/identifier")
 def _route_update_identifier(body: _IdentifierUpdate) -> JSONResponse:
     _ALLOWED = ("doi", "isbn", "title", "year", "authors", "citations")
     if body.field not in _ALLOWED:
@@ -2621,6 +2623,18 @@ def _route_update_identifier(body: _IdentifierUpdate) -> JSONResponse:
     return JSONResponse({"ok": True})
 
 
+def create_app() -> FastAPI:
+    """Build the ASGI application without starting background workers."""
+    application = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+    application.include_router(router)
+    return application
+
+
+# Import-compatible ASGI target. Runtime workers remain explicitly started by
+# main(), so importing this module is side-effect free.
+app = create_app()
+
+
 def _find_free_port(start: int) -> int:
     import socket
     for p in range(start, start + 20):
@@ -2638,6 +2652,8 @@ def _find_free_port(start: int) -> int:
 def main() -> None:
     import threading
     import uvicorn
+
+    _start_close_watcher()
 
     parser = argparse.ArgumentParser(
         description="Visualize citation network – serves at http://localhost:PORT")

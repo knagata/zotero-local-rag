@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import tempfile
+import sqlite3
 import unittest
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 from src.lexical_index import (
     delete_by_attachment_keys,
     delete_by_chunk_ids,
     delete_by_note_key,
+    rebuild_from_chroma,
     search_chunks,
     upsert_chunks,
 )
@@ -55,6 +58,69 @@ class LexicalIndexTests(unittest.TestCase):
         self.assertEqual(search_chunks("gift", path=self.path), [])
         delete_by_note_key("N1", path=self.path)
         self.assertEqual(search_chunks("メモ", include_notes=True, path=self.path), [])
+
+    def test_parallel_array_length_mismatch_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "equal lengths"):
+            upsert_chunks(
+                ["a", "b"], ["only one document"],
+                [{"itemKey": "I1"}, {"itemKey": "I2"}], path=self.path,
+            )
+
+    def test_database_failure_is_not_reported_as_no_search_matches(self):
+        connection = sqlite3.connect(self.path)
+        try:
+            connection.execute("DROP TABLE chunks_fts")
+            connection.execute("CREATE TABLE chunks_fts (chunk_id TEXT)")
+            connection.commit()
+        finally:
+            connection.close()
+        with self.assertRaises(sqlite3.OperationalError):
+            search_chunks("search term", path=self.path)
+
+
+class AtomicLexicalRebuildTests(unittest.TestCase):
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.path = Path(self.tempdir.name) / "lexical.sqlite3"
+        upsert_chunks(
+            ["old"], ["old searchable content"],
+            [{"itemKey": "OLD", "source_type": "pdf"}], path=self.path,
+        )
+
+    def tearDown(self):
+        self.tempdir.cleanup()
+
+    def test_failed_rebuild_preserves_the_active_database(self):
+        collection = MagicMock()
+        collection.count.return_value = 2
+        collection.get.side_effect = RuntimeError("simulated Chroma failure")
+        client = MagicMock()
+        with patch("src.item_vectors._open_collection", return_value=(client, collection)):
+            with self.assertRaisesRegex(RuntimeError, "simulated Chroma failure"):
+                rebuild_from_chroma(path=self.path, batch_size=1)
+        self.assertEqual(
+            [row["chunk_id"] for row in search_chunks("searchable", path=self.path)],
+            ["old"],
+        )
+        self.assertEqual(list(self.path.parent.glob(".*.tmp*")), [])
+        client.close.assert_called_once()
+
+    def test_successful_rebuild_replaces_the_active_database(self):
+        collection = MagicMock()
+        collection.count.return_value = 1
+        collection.get.return_value = {
+            "ids": ["new"],
+            "documents": ["new searchable content"],
+            "metadatas": [{"itemKey": "NEW", "source_type": "pdf"}],
+        }
+        client = MagicMock()
+        with patch("src.item_vectors._open_collection", return_value=(client, collection)):
+            self.assertEqual(rebuild_from_chroma(path=self.path, batch_size=1), 1)
+        self.assertEqual(search_chunks("old", path=self.path), [])
+        self.assertEqual(
+            [row["chunk_id"] for row in search_chunks("searchable", path=self.path)],
+            ["new"],
+        )
 
 
 if __name__ == "__main__":

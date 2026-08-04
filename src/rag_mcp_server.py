@@ -42,6 +42,7 @@ from search_fusion import language_balanced_order
 from hierarchical_retrieval import (
     explicit_note_intent, fuse_retrieval_paths, partition_leaf_ids, retrieval_policy_allowed,
 )
+from runtime_config import bounded_env_int
 from db_relations import (
     get_item_root_summary, get_item_root_summaries, get_node_descendant_chunks,
     get_node_descendant_leaf_ids, get_searchable_document_node_ids,
@@ -964,6 +965,7 @@ def rag_search(
     col = _col()
     if k <= 0:
         return {"results": []}
+    k = min(k, bounded_env_int("RAG_SEARCH_MAX_RESULTS", 100, minimum=1, maximum=1000))
 
 
     effective_where = _build_effective_where(
@@ -976,9 +978,22 @@ def rag_search(
         _and_where(effective_where, {"node_id": {"$in": batch}}) for batch in leaf_batches
     ] or [effective_where]
 
-    internal_k = max(k * 5, k)
+    configured_cap = bounded_env_int(
+        "RAG_SEARCH_MAX_CANDIDATES", 1000, minimum=1, maximum=10000,
+    )
+    try:
+        collection_count = col.count()
+    except Exception:
+        collection_count = None
+    candidate_cap = configured_cap
+    if isinstance(collection_count, int):
+        candidate_cap = min(candidate_cap, collection_count)
+    if candidate_cap <= 0:
+        return {"results": []}
+
+    internal_k = min(candidate_cap, max(k * 5, k))
     if exclude_chunk_ids:
-        internal_k += len(exclude_chunk_ids)
+        internal_k = min(candidate_cap, internal_k + len(exclude_chunk_ids))
 
     def _query_candidates(n_results: int) -> Optional[List[Dict[str, Any]]]:
         """Query every leaf batch, retrying once if Chroma's client is stale."""
@@ -1022,7 +1037,9 @@ def rag_search(
     # result list when its nearest neighbours are endnotes or short fragments.
     allow_explicit = explicit_note_intent(queries)
     exclude_set = set(exclude_chunk_ids or [])
-    min_return_chars = int(os.environ.get("MIN_RETURN_CHARS", "200"))
+    min_return_chars = bounded_env_int(
+        "MIN_RETURN_CHARS", 200, minimum=0, maximum=10000,
+    )
 
     def _usable_semantic_candidate_count(candidate_responses: List[Dict[str, Any]]) -> int:
         usable_ids: set[str] = set()
@@ -1048,22 +1065,6 @@ def rag_search(
                     ):
                         usable_ids.add(hit_id)
         return len(usable_ids)
-
-    # Do not turn a search request into an unbounded in-memory ranking.  Count
-    # is only an upper bound under ``where`` filters, but it avoids a pointless
-    # retry once the collection itself is exhausted.  The configurable hard cap
-    # protects broad collections whose count is much larger than this request.
-    try:
-        configured_cap = max(1, int(os.environ.get("RAG_SEARCH_MAX_CANDIDATES", "1000")))
-    except ValueError:
-        configured_cap = 1000
-    try:
-        collection_count = col.count()
-    except Exception:
-        collection_count = None
-    candidate_cap = configured_cap
-    if isinstance(collection_count, int):
-        candidate_cap = min(candidate_cap, collection_count)
 
     if (
         _usable_semantic_candidate_count(responses) < k
@@ -1906,26 +1907,33 @@ def get_debug_logs(lines: int = 100) -> Dict[str, Any]:
     Returns:
         A dict with keys: log_path, total_lines, returned_lines, log (the text).
     """
+    if os.environ.get("MCP_DEBUG_LOGS_ENABLE", "0") != "1":
+        return {
+            "total_lines": 0,
+            "returned_lines": 0,
+            "log": "",
+            "error": "Debug log access is disabled. Set MCP_DEBUG_LOGS_ENABLE=1 to enable it.",
+        }
+    lines = min(max(int(lines), 1), 500)
     try:
         with open(_LOG_PATH, "r", encoding="utf-8") as f:
             all_lines = f.readlines()
         tail = all_lines[-lines:] if len(all_lines) > lines else all_lines
         return {
-            "log_path": _LOG_PATH,
             "total_lines": len(all_lines),
             "returned_lines": len(tail),
             "log": "".join(tail),
         }
     except FileNotFoundError:
         return {
-            "log_path": _LOG_PATH,
             "total_lines": 0,
             "returned_lines": 0,
             "log": "",
             "error": "Log file not found — server may not have written any logs yet.",
         }
     except Exception as e:
-        return {"log_path": _LOG_PATH, "total_lines": 0, "returned_lines": 0, "log": "", "error": str(e)}
+        _log.warning("get_debug_logs failed: %s", e)
+        return {"total_lines": 0, "returned_lines": 0, "log": "", "error": "Unable to read debug logs."}
 
 
 @mcp.resource("docs://zotero_rag_guide")
@@ -2519,6 +2527,20 @@ async def build_citation_network(item_key: str) -> Dict[str, Any]:
     res["status"] = "success"
     res["message"] = "Completed citation network build process."
     return res
+
+
+_tool_registry = mcp
+
+
+def create_mcp() -> FastMCP:
+    """Create an MCP server from the compatibility tool registry."""
+    server = FastMCP("zotero-paragraph-rag", instructions=MCP_INSTRUCTIONS)
+    server.mount(_tool_registry)
+    return server
+
+
+# Public server instance retained for existing launchers and imports.
+mcp = create_mcp()
 
 def main():
     try:

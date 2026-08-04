@@ -13,6 +13,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 import index_from_zotero as module  # noqa: E402
+import index_batch  # noqa: E402
 
 
 class FailFlushOnUnhealthyCollectionTests(unittest.TestCase):
@@ -79,30 +80,29 @@ class FailFlushOnUnhealthyCollectionTests(unittest.TestCase):
         periodic_marker = "label=\"upsert batch\","
         final_marker = "label=\"final upsert\","
 
-        periodic_idx = source.index(periodic_marker)
-        health_check_idx_after_periodic = source.index(
-            "_fail_flush_on_unhealthy_collection", periodic_idx
-        )
-        save_manifest_idx_after_periodic = source.index(
-            "save_manifest(MANIFEST_PATH, manifest)", periodic_idx
-        )
+        # Writes and health verification now live inside one compensating unit
+        # of work. Verify its internal ordering, then verify that both callers
+        # only commit manifest state after that unit returns.
+        batch_source = Path(index_batch.__file__).read_text()
+        helper_start = batch_source.index("def replace_attachment_batch(")
+        helper_source = batch_source[helper_start:]
         self.assertLess(
-            health_check_idx_after_periodic, save_manifest_idx_after_periodic,
-            "periodic flush health check must run before save_manifest",
+            helper_source.index("upsert_batch("),
+            helper_source.index("health_check("),
         )
 
-        final_idx = source.index(final_marker)
-        health_check_idx_after_final = source.index(
-            "_fail_flush_on_unhealthy_collection", final_idx
-        )
-        # The final flush's manifest entries are merged into files_manifest
-        # (and eventually saved) inside the `if pending_manifest_updates:`
-        # block, which must come after the health check.
-        merge_idx_after_final = source.index("if pending_manifest_updates:", final_idx)
+        flush_start = source.index("def _flush_pending_index_batch(")
+        flush_end = source.index("\ndef _source_document_chunks", flush_start)
+        flush_source = source[flush_start:flush_end]
         self.assertLess(
-            health_check_idx_after_final, merge_idx_after_final,
-            "final flush health check must run before manifest entries are merged/committed",
+            flush_source.index("_replace_attachment_batch("),
+            flush_source.index("files_manifest.update("),
+            "replacement and health checks must finish before success state is committed",
         )
+
+        # Both periodic and final call sites must route through the same unit.
+        self.assertIn(periodic_marker, source)
+        self.assertIn(final_marker, source)
 
     def test_attachment_commit_requires_exact_chroma_and_lexical_ids(self):
         class Collection:

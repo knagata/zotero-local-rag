@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sqlite3
+import uuid
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -49,8 +51,13 @@ def upsert_chunks(
     *, path: Path | None = None, replace: bool = True,
 ) -> None:
     """Replace FTS rows for the supplied Chroma chunk IDs."""
+    if not (len(ids) == len(documents) == len(metadatas)):
+        raise ValueError(
+            "Lexical chunk arrays must have equal lengths: "
+            f"ids={len(ids)}, documents={len(documents)}, metadatas={len(metadatas)}"
+        )
     rows = []
-    for chunk_id, body, metadata in zip(ids, documents, metadatas, strict=False):
+    for chunk_id, body, metadata in zip(ids, documents, metadatas, strict=True):
         md = metadata if isinstance(metadata, dict) else {}
         rows.append((
             chunk_id,
@@ -227,8 +234,6 @@ def search_chunks(
             params,
         ).fetchall()
         return [dict(row) for row in rows]
-    except sqlite3.OperationalError:
-        return []
     finally:
         connection.close()
 
@@ -241,11 +246,14 @@ def rebuild_from_chroma(*, path: Path | None = None, batch_size: int = 5000) -> 
         from item_vectors import _open_collection
 
     db_path = _path(path)
-    if db_path.exists():
-        db_path.unlink()
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = db_path.with_name(f".{db_path.name}.{uuid.uuid4().hex}.tmp")
     client, collection = _open_collection()
     total = 0
     try:
+        # Ensure even an empty Chroma collection produces a valid empty FTS DB.
+        empty_connection = _connect(temporary_path)
+        empty_connection.close()
         count = collection.count()
         for offset in range(0, count, batch_size):
             result = collection.get(
@@ -256,10 +264,41 @@ def rebuild_from_chroma(*, path: Path | None = None, batch_size: int = 5000) -> 
             ids = result.get("ids") or []
             documents = result.get("documents") or []
             metadatas = result.get("metadatas") or []
-            upsert_chunks(ids, documents, metadatas, path=db_path, replace=False)
+            upsert_chunks(ids, documents, metadatas, path=temporary_path, replace=False)
             total += len(ids)
+        connection = sqlite3.connect(str(temporary_path), timeout=30)
+        try:
+            indexed = connection.execute("SELECT COUNT(*) FROM chunks_fts").fetchone()[0]
+            if indexed != total:
+                raise RuntimeError(
+                    f"Lexical rebuild validation failed: expected {total} rows, found {indexed}"
+                )
+            connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            connection.execute("PRAGMA journal_mode=DELETE")
+        finally:
+            connection.close()
+        if db_path.exists():
+            # Do not leave a WAL belonging to the old inode next to the newly
+            # replaced main file. If another reader prevents the checkpoint,
+            # fail before replacement and preserve the active database.
+            active = sqlite3.connect(str(db_path), timeout=30)
+            try:
+                active.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                active.execute("PRAGMA journal_mode=DELETE")
+            finally:
+                active.close()
+        os.replace(temporary_path, db_path)
     finally:
         client.close()
+        for candidate in (
+            temporary_path,
+            Path(f"{temporary_path}-wal"),
+            Path(f"{temporary_path}-shm"),
+        ):
+            try:
+                candidate.unlink()
+            except FileNotFoundError:
+                pass
     return total
 
 

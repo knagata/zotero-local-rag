@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import atexit
+import fcntl
 import json
 import os
 import sys
@@ -12,6 +13,7 @@ import uuid
 import gc
 from datetime import datetime, timezone
 from dataclasses import asdict
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterable, List, Optional
 
@@ -67,6 +69,13 @@ from lexical_index import delete_by_chunk_ids as delete_lexical_chunk_ids
 from lexical_index import delete_by_note_key as delete_lexical_note
 from lexical_index import chunk_ids_by_attachment_keys as lexical_chunk_ids_by_attachment_keys
 from lexical_index import upsert_chunks as upsert_lexical_chunks
+from index_batch import (
+    AttachmentBatch, FlushOutcome, PendingIndexBatch, replace_attachment_batch,
+)
+from index_run import (
+    DiscoveryResult, NoteIndexOutcome, QualityWarning, ReparseDecision,
+    ResolvedAttachmentSource,
+)
 
 from manifest import content_signature, load_manifest, save_manifest
 from db_relations import (
@@ -149,65 +158,118 @@ if "BATCH_SIZE" in os.environ and "FLUSH_SIZE" not in os.environ:
 # while the indexer is writing to ChromaDB.
 # ---------------------------------------------------------------------------
 
+
+@contextmanager
+def _indexing_lock_metadata_guard():
+    """Serialize publication, stale recovery, and release of the lock path.
+
+    The guard has a stable inode and is never replaced. This supplies the
+    compare-and-remove critical section that a pathname alone cannot provide:
+    no owner can publish or release a lock between stale inspection and unlink.
+    """
+    guard_path = INDEXING_LOCK_PATH.with_name(f".{INDEXING_LOCK_PATH.name}.guard")
+    guard_fd = os.open(guard_path, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(guard_fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(guard_fd, fcntl.LOCK_UN)
+        os.close(guard_fd)
+
 def _acquire_indexing_lock() -> dict:
     """Create the indexing lock file.  Exits with an error if another indexer
     is currently running (lock file exists and the owning process is alive).
 
     Returns the lock metadata dict that should be passed to ``_release_indexing_lock``.
     """
-    if INDEXING_LOCK_PATH.exists():
-        # A lock file already exists — check if it is stale
-        try:
-            existing = json.loads(INDEXING_LOCK_PATH.read_text(encoding="utf-8"))
-        except Exception:
-            existing = {}
-        existing_pid = existing.get("pid")
-        if existing_pid is not None:
-            try:
-                os.kill(existing_pid, 0)  # signal 0 = existence check
-                # Process is still alive → genuine conflict
-                raise SystemExit(
-                    f"別のインデクサーが実行中です (PID={existing_pid})。\n"
-                    f"ロックファイル: {INDEXING_LOCK_PATH}\n"
-                    "インデクサーの完了を待ってから再実行してください。\n"
-                    "（プロセスが存在しないはずなのにロックが残っている場合は、"
-                    "手動で削除してください）"
-                )
-            except OSError:
-                # Process is dead — stale lock, remove below
-                print(
-                    f"[WARN] 古いロックファイルを削除します（PID={existing_pid} は存在しません）",
-                    file=sys.__stderr__,
-                )
-        else:
-            # No PID in lock file — treat as stale
-            print(
-                "[WARN] PID情報のない古いロックファイルを削除します",
-                file=sys.__stderr__,
-            )
-        # Remove stale lock
-        try:
-            INDEXING_LOCK_PATH.unlink()
-        except OSError:
-            pass
-
+    INDEXING_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
     lock_data = {
         "pid": os.getpid(),
+        "token": uuid.uuid4().hex,
         "started_at": datetime.now(timezone.utc).isoformat(),
         "operation": "indexing",
     }
-    INDEXING_LOCK_PATH.write_text(json.dumps(lock_data, ensure_ascii=False), encoding="utf-8")
+    payload = json.dumps(lock_data, ensure_ascii=False).encode("utf-8")
+    candidate_path = INDEXING_LOCK_PATH.with_name(
+        f".{INDEXING_LOCK_PATH.name}.{lock_data['token']}.tmp"
+    )
+    candidate_fd = os.open(
+        candidate_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600,
+    )
+    try:
+        os.write(candidate_fd, payload)
+        os.fsync(candidate_fd)
+    finally:
+        os.close(candidate_fd)
+
+    try:
+        while True:
+            with _indexing_lock_metadata_guard():
+                try:
+                    # Publish a fully written inode atomically. The metadata
+                    # guard also prevents another recovery from unlinking this
+                    # inode after it has inspected an older lock.
+                    os.link(candidate_path, INDEXING_LOCK_PATH)
+                except FileExistsError:
+                    pass
+                else:
+                    break
+
+                # Inspection and removal are one critical section. Every
+                # publisher/releaser takes the same stable-inode flock.
+                try:
+                    existing = json.loads(INDEXING_LOCK_PATH.read_text(encoding="utf-8"))
+                except Exception:
+                    existing = {}
+                existing_pid = existing.get("pid")
+                if existing_pid is not None:
+                    try:
+                        os.kill(existing_pid, 0)  # signal 0 = existence check
+                        raise SystemExit(
+                            f"別のインデクサーが実行中です (PID={existing_pid})。\n"
+                            f"ロックファイル: {INDEXING_LOCK_PATH}\n"
+                            "インデクサーの完了を待ってから再実行してください。\n"
+                            "（プロセスが存在しないはずなのにロックが残っている場合は、"
+                            "手動で削除してください）"
+                        )
+                    except OSError:
+                        print(
+                            f"[WARN] 古いロックファイルを削除します（PID={existing_pid} は存在しません）",
+                            file=sys.__stderr__,
+                        )
+                else:
+                    print(
+                        "[WARN] PID情報のない古いロックファイルを削除します",
+                        file=sys.__stderr__,
+                    )
+                try:
+                    INDEXING_LOCK_PATH.unlink()
+                except OSError:
+                    continue
+    finally:
+        try:
+            candidate_path.unlink()
+        except FileNotFoundError:
+            pass
 
     # Ensure the lock is released on normal exit, SystemExit, or KeyboardInterrupt.
-    atexit.register(_release_indexing_lock)
+    atexit.register(_release_indexing_lock, lock_data)
 
     return lock_data
 
 
-def _release_indexing_lock() -> None:
-    """Remove the indexing lock file (best-effort, never raises)."""
+def _release_indexing_lock(lock_data: dict[str, Any] | None = None) -> None:
+    """Remove only a lock owned by this process/run (best-effort)."""
     try:
-        INDEXING_LOCK_PATH.unlink()
+        with _indexing_lock_metadata_guard():
+            if lock_data is not None:
+                try:
+                    current = json.loads(INDEXING_LOCK_PATH.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    return
+                if current.get("token") != lock_data.get("token"):
+                    return
+            INDEXING_LOCK_PATH.unlink()
     except FileNotFoundError:
         pass  # already gone — nothing to do
     except OSError as e:
@@ -220,8 +282,13 @@ def _dedupe_by_id(
     metas: list[dict[str, Any]],
 ) -> tuple[list[str], list[str], list[dict[str, Any]]]:
     """Dedupe records by id, keeping the last occurrence."""
+    if not (len(ids) == len(docs) == len(metas)):
+        raise ValueError(
+            "Chunk arrays must have equal lengths: "
+            f"ids={len(ids)}, documents={len(docs)}, metadatas={len(metas)}"
+        )
     uniq: dict[str, tuple[str, dict[str, Any]]] = {}
-    for cid, doc, md in zip(ids, docs, metas, strict=False):
+    for cid, doc, md in zip(ids, docs, metas, strict=True):
         uniq[cid] = (doc, md)
     out_ids = list(uniq.keys())
     out_docs = [uniq[i][0] for i in out_ids]
@@ -328,6 +395,11 @@ def _upsert_in_subbatches(
     strict_lexical: bool = False,
 ) -> None:
     """Upsert in smaller sub-batches to reduce memory spikes."""
+    if not (len(ids) == len(docs) == len(metas)):
+        raise ValueError(
+            "Chunk arrays must have equal lengths: "
+            f"ids={len(ids)}, documents={len(docs)}, metadatas={len(metas)}"
+        )
     total = len(ids)
     if total == 0:
         return
@@ -368,6 +440,49 @@ def _upsert_in_subbatches(
         relieve_memory_pressure()
 
 
+def _replace_attachment_batch(
+    col: Any,
+    *,
+    attachment_keys: Iterable[str],
+    ids: list[str],
+    documents: list[str],
+    metadatas: list[dict[str, Any]],
+    expected_ids: dict[str, set[str]],
+    attachment_item_keys: dict[str, str],
+    subbatch_size: int,
+    show_progress: bool,
+    label: str,
+    context_label: str,
+    strict_lexical: bool,
+) -> None:
+    """Replace a flush as a compensating unit of work.
+
+    Chroma does not expose a multi-call transaction. Snapshot the active
+    generation before the destructive boundary and restore it if any delete,
+    sub-batch write, lexical write, or post-write validation fails.
+    """
+    batch = AttachmentBatch.create(
+        attachment_keys=attachment_keys,
+        ids=ids,
+        documents=documents,
+        metadatas=metadatas,
+        expected_ids=expected_ids,
+        attachment_item_keys=attachment_item_keys,
+        subbatch_size=subbatch_size,
+        show_progress=show_progress,
+        label=label,
+        context_label=context_label,
+        strict_lexical=strict_lexical,
+    )
+    replace_attachment_batch(
+        col, batch,
+        delete_batch=_delete_by_attachment_keys,
+        upsert_batch=_upsert_in_subbatches,
+        health_check=_fail_flush_on_unhealthy_collection,
+        verify_written=_verify_written_attachments if STRUCTURED_V3_ENABLE else None,
+    )
+
+
 def _fail_flush_on_unhealthy_collection(
     col: Any,
     attachment_item_keys: dict[str, str],
@@ -402,6 +517,82 @@ def _fail_flush_on_unhealthy_collection(
                 retryable=True,
             )
         raise SystemExit(1) from exc
+
+
+def _flush_pending_index_batch(
+    col: Any,
+    pending: PendingIndexBatch,
+    *,
+    manifest: dict[str, Any],
+    files_manifest: dict[str, dict[str, Any]],
+    run_code_fingerprint: str,
+    show_progress: bool,
+    label: str,
+    context_label: str,
+) -> FlushOutcome:
+    """Validate, replace, commit, and clear one accumulated attachment batch."""
+    if not pending.manifest_updates:
+        return FlushOutcome()
+
+    ids, documents, metadatas = _dedupe_by_id(
+        pending.ids, pending.documents, pending.metadatas,
+    )
+    pending.ids[:] = ids
+    pending.documents[:] = documents
+    pending.metadatas[:] = metadatas
+    expected_ids = pending.expected_ids()
+    committed_item_keys = frozenset(pending.item_keys.values())
+
+    if STRUCTURED_V3_ENABLE:
+        assert_code_unchanged(RUN_CODE_PATHS, run_code_fingerprint)
+        inflight = {
+            str(value) for value in manifest.get("inflight_attachments", []) if value
+        }
+        inflight.update(pending.delete_attachment_keys)
+        manifest["inflight_attachments"] = sorted(inflight)
+        save_manifest(MANIFEST_PATH, manifest)
+
+    _replace_attachment_batch(
+        col,
+        attachment_keys=pending.delete_attachment_keys,
+        ids=ids,
+        documents=documents,
+        metadatas=metadatas,
+        expected_ids=expected_ids,
+        attachment_item_keys=dict(pending.item_keys),
+        subbatch_size=UPSERT_BATCH_SIZE,
+        show_progress=show_progress,
+        label=label,
+        context_label=context_label,
+        strict_lexical=STRUCTURED_V3_ENABLE,
+    )
+
+    for item_key, status, status_kwargs in pending.extraction_statuses.values():
+        mark_artifact_status(item_key, "extraction", status, **status_kwargs)
+    files_manifest.update(pending.manifest_updates)
+    if STRUCTURED_V3_ENABLE:
+        manifest["inflight_attachments"] = [
+            value for value in manifest.get("inflight_attachments", [])
+            if value not in pending.delete_attachment_keys
+        ]
+
+    outcome = FlushOutcome(
+        updated_pdf=sum(value == "pdf" for value in pending.source_types.values()),
+        updated_html=sum(value == "html" for value in pending.source_types.values()),
+        updated_epub=sum(value == "epub" for value in pending.source_types.values()),
+        last_written_id=str(ids[-1]) if ids else None,
+        committed_item_keys=committed_item_keys,
+    )
+    save_manifest(MANIFEST_PATH, manifest)
+    if STRUCTURED_V3_ENABLE:
+        _finalize_v3_pending(
+            manifest, set(committed_item_keys),
+            collection_name=str(CHROMA_COLLECTION_ENV or "zotero_paragraphs_v3"),
+            code_paths=RUN_CODE_PATHS,
+            expected_code_fingerprint=run_code_fingerprint,
+        )
+    pending.clear()
+    return outcome
 
 
 def _source_document_chunks(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1367,6 +1558,330 @@ def _validate_zotero_data_dir_or_exit():
         )
 
 
+async def _discover_attachments(
+    args: argparse.Namespace,
+    *,
+    api: ZoteroLocalAPI,
+    manifest: dict[str, Any],
+    files_manifest: dict[str, dict[str, Any]],
+    reocr_routes: dict[str, dict[str, Any]],
+    show_progress: bool,
+) -> DiscoveryResult:
+    """Resolve the immutable source scope before any destructive index action."""
+    zotero_data_dir: Optional[str] = None
+    if _zotero_data_dir_is_valid(ZOTERO_DATA_DIR):
+        zotero_data_dir = ZOTERO_DATA_DIR
+    elif ZOTERO_DATA_DIR:
+        if args.require_data_dir:
+            _validate_zotero_data_dir_or_exit()
+        else:
+            print(
+                f"[WARN] ZOTERO_DATA_DIR looks invalid: {Path(ZOTERO_DATA_DIR).expanduser()}\n"
+                "      Falling back to Zotero Local API file download into PDF_CACHE_DIR.",
+                file=sys.__stderr__,
+            )
+    elif args.require_data_dir:
+        _validate_zotero_data_dir_or_exit()
+    else:
+        print(
+            "[WARN] ZOTERO_DATA_DIR is not set. Falling back to Zotero Local API "
+            "file download into PDF_CACHE_DIR.",
+            file=sys.__stderr__,
+        )
+
+    if show_progress:
+        print(
+            "[PROGRESS] Fetching attachment metadata from Zotero (this may take a minute)...",
+            file=sys.__stderr__,
+        )
+    attachments: List[ZoteroAttachment] = await api.list_normalized_attachments(
+        zotero_data_dir=zotero_data_dir,
+        pdf_cache_dir=str(PDF_CACHE_DIR),
+        collection_key=args.collection,
+        require_complete=bool(args.rebuild),
+    )
+    attachments = [a for a in attachments if getattr(a, "pdf_path", None)]
+    preflight_notes = None
+    if args.rebuild:
+        preflight_notes = await api.list_notes(
+            collection_key=args.collection, require_complete=True,
+        )
+
+    attachments = _select_attachment_scope(attachments, args.attachment)
+    attachments = _select_item_scope(attachments, args.item, 0)
+    if args.retry_failed:
+        inflight = {
+            str(value) for value in manifest.get("inflight_attachments", []) if value
+        }
+        retryable_items = {
+            str(a.parentItemKey or a.attachmentKey) for a in attachments
+            if a.attachmentKey in inflight
+            or _retryable_failed(str(a.parentItemKey or a.attachmentKey))
+        }
+        attachments = [
+            a for a in attachments
+            if str(a.parentItemKey or a.attachmentKey) in retryable_items
+        ]
+    if args.source_type:
+        keep_type = str(args.source_type)
+        attachments = [
+            a for a in attachments
+            if _resolve_source_type(
+                getattr(a, "contentType", None), Path(getattr(a, "pdf_path", "")),
+                getattr(a, "source_type", None),
+            ) == keep_type
+        ]
+    if reocr_routes:
+        attachments = [a for a in attachments if a.attachmentKey in reocr_routes]
+    if args.reparse_corrupted:
+        attachments = [
+            a for a in attachments
+            if (
+                (previous := files_manifest.get(a.attachmentKey))
+                and isinstance(previous.get("quality"), dict)
+                and (
+                    previous["quality"].get("is_scanned")
+                    or previous["quality"].get("is_corrupted")
+                )
+                and previous["quality"].get("parser") != "docling"
+            )
+        ]
+    return DiscoveryResult(attachments=attachments, preflight_notes=preflight_notes)
+
+
+async def _index_notes_phase(
+    args: argparse.Namespace,
+    *,
+    api: ZoteroLocalAPI,
+    col: Any,
+    notes_manifest: dict[str, dict[str, Any]],
+    preflight_notes: list[dict[str, Any]] | None,
+    partial_scope: bool,
+    processing_item_keys: set[str],
+    attachments: list[ZoteroAttachment],
+    show_progress: bool,
+) -> NoteIndexOutcome:
+    """Index the note inventory using the same preflight snapshot as rebuild."""
+    try:
+        notes = (
+            preflight_notes
+            if preflight_notes is not None
+            else await api.list_notes(collection_key=args.collection)
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            f"Failed to enumerate Zotero notes; refusing to treat an unknown inventory as empty: {exc}"
+        ) from exc
+
+    if partial_scope:
+        scoped_item_keys = set(processing_item_keys) if args.limit else {
+            str(attachment.parentItemKey or attachment.attachmentKey)
+            for attachment in attachments
+        }
+        notes = [
+            note for note in notes
+            if str(note.get("parentItemKey") or "") in scoped_item_keys
+        ]
+
+    updated_manifest, stats = index_notes(
+        notes,
+        col=col,
+        notes_manifest=notes_manifest,
+        batch_size=UPSERT_BATCH_SIZE,
+        show_progress=show_progress,
+        dedupe_fn=_dedupe_by_id,
+        upsert_fn=_upsert_in_subbatches,
+        lexical_delete_fn=delete_lexical_note,
+        delete_stale=not partial_scope,
+        strict_lexical=STRUCTURED_V3_ENABLE,
+    )
+    return NoteIndexOutcome(
+        manifest=updated_manifest,
+        updated=int(stats.get("updated_notes", 0)),
+        skipped=int(stats.get("skipped_notes", 0)),
+        deleted_stale=int(stats.get("deleted_stale_notes", 0)),
+    )
+
+
+def _finalize_index_storage(
+    col: Any,
+    *,
+    manifest: dict[str, Any],
+    files_manifest: dict[str, dict[str, Any]],
+    notes_manifest: dict[str, dict[str, Any]],
+    last_written_id: str | None,
+) -> str | None:
+    """Flush and validate the physical index before committing final manifests."""
+    try:
+        if last_written_id is None:
+            sample = col.get(limit=1, include=[])
+            sample_ids = sample.get("ids") or []
+            last_written_id = str(sample_ids[0]) if sample_ids else None
+        _flush_and_verify_hnsw(col, last_written_id)
+        manifest["hnsw_validated"] = True
+        print("[INFO] HNSW final flush and query smoke test complete.", file=sys.__stderr__)
+    except Exception as exc:
+        manifest["hnsw_validated"] = False
+        save_manifest(MANIFEST_PATH, manifest)
+        if STRUCTURED_V3_ENABLE:
+            raise RuntimeError(f"HNSW final validation failed: {exc}") from exc
+        print(f"[WARN] HNSW final flush failed (non-fatal): {exc}", file=sys.__stderr__)
+
+    manifest["notes"] = notes_manifest
+    manifest["files"] = files_manifest
+    save_manifest(MANIFEST_PATH, manifest)
+    return last_written_id
+
+
+def _quality_warnings(
+    files_manifest: dict[str, dict[str, Any]],
+) -> list[QualityWarning]:
+    """Build structured warnings for unresolved extraction-quality damage."""
+    warnings: list[QualityWarning] = []
+    for attachment_key, entry in files_manifest.items():
+        quality = entry.get("quality")
+        if not isinstance(quality, dict):
+            continue
+        is_scanned = bool(quality.get("is_scanned"))
+        is_corrupted = bool(quality.get("is_corrupted"))
+        scanned_pages = quality.get("scanned_pages") or []
+        corrupted_pages = quality.get("corrupted_pages") or []
+        coverage_gap = (
+            quality.get("source_coverage_shortfall")
+            if quality.get("source_coverage_adopted")
+            and isinstance(quality.get("source_coverage_shortfall"), dict)
+            else None
+        )
+        if not (is_scanned or is_corrupted or scanned_pages or corrupted_pages or coverage_gap):
+            continue
+        reasons: list[str] = []
+        if is_scanned:
+            reasons.append("scanned/empty pages")
+        elif scanned_pages:
+            reasons.append(f"{len(scanned_pages)} unresolved scanned page(s) (within tolerance)")
+        if is_corrupted:
+            reasons.append("text layout/character encoding corruption")
+        elif corrupted_pages:
+            reasons.append(
+                f"{len(corrupted_pages)} unresolved corrupted page(s) (within tolerance)"
+            )
+        if coverage_gap:
+            reasons.append(
+                "indexed with partial source coverage "
+                f"({coverage_gap.get('accounted_units')}/{coverage_gap.get('expected_units')} "
+                f"{coverage_gap.get('unit_kind')}s, tagged quality-uncertain)"
+            )
+        warnings.append(QualityWarning(
+            attachment_key=attachment_key,
+            title=str(entry.get("title") or str(entry.get("pdf_path") or "").split("/")[-1]
+                      or attachment_key),
+            reasons=tuple(reasons),
+            quality=quality,
+        ))
+    return warnings
+
+
+def _print_quality_warnings(warnings: list[QualityWarning]) -> None:
+    if not warnings:
+        return
+    print("\n" + "=" * 80, file=sys.__stderr__)
+    print(
+        "⚠️  [RAG QUALITY WARNING] The following files might have poor retrieval quality:",
+        file=sys.__stderr__,
+    )
+    for warning in warnings:
+        print(f'  - [{warning.attachment_key}] "{warning.title}"', file=sys.__stderr__)
+        print(f"    ↳ Issue: {' & '.join(warning.reasons)}", file=sys.__stderr__)
+        if warning.quality.get("scanned_pages"):
+            print(
+                f"      scanned/empty pages: {warning.quality.get('scanned_pages')}",
+                file=sys.__stderr__,
+            )
+        if warning.quality.get("corrupted_pages"):
+            print(
+                f"      corrupted/garbled pages: {warning.quality.get('corrupted_pages')}",
+                file=sys.__stderr__,
+            )
+    print(
+        "\nRecommendation: We highly recommend processing these files using high-fidelity",
+        file=sys.__stderr__,
+    )
+    print(
+        "AI-based document layout parsers like Docling or Marker to improve RAG accuracy.",
+        file=sys.__stderr__,
+    )
+    print("=" * 80 + "\n", file=sys.__stderr__)
+
+
+def _resolve_attachment_source(attachment: ZoteroAttachment) -> ResolvedAttachmentSource | None:
+    """Resolve a Zotero attachment to one stable file and source classification."""
+    file_path = Path(attachment.pdf_path).expanduser()
+    if file_path.is_dir():
+        preferred = [file_path / name for name in ("index.html", "index.htm")]
+        selected = next((path for path in preferred if path.is_file()), None)
+        if selected is None:
+            html_files = sorted(
+                path for path in file_path.iterdir()
+                if path.is_file() and path.suffix.casefold() in {".html", ".htm"}
+            )
+            selected = html_files[0] if html_files else None
+        if selected is None:
+            return None
+        file_path = selected
+    if not file_path.exists():
+        return None
+
+    content_type = getattr(attachment, "contentType", None)
+    source_type = getattr(attachment, "source_type", None) or "pdf"
+    if content_type == "application/epub+zip" or file_path.suffix.casefold() == ".epub":
+        source_type = "epub"
+    elif file_path.suffix.casefold() in {".html", ".htm"}:
+        source_type = "html"
+    elif source_type not in {"pdf", "html", "epub"}:
+        source_type = "pdf"
+    stat = file_path.stat()
+    return ResolvedAttachmentSource(
+        path=file_path,
+        source_type=source_type,
+        mtime=float(stat.st_mtime),
+        size=int(stat.st_size),
+    )
+
+
+def _reparse_decision(
+    args: argparse.Namespace,
+    *,
+    source_type: str,
+    previous: dict[str, Any] | None,
+    reocr_route: dict[str, Any] | None,
+) -> ReparseDecision:
+    """Choose explicit parser overrides without performing extraction."""
+    has_quality = bool(previous and isinstance(previous.get("quality"), dict))
+    target_engine = str((reocr_route or {}).get("target_engine") or "").strip()
+    force_mistral = bool(reocr_route and target_engine == "mistral_ocr")
+    force_ndlocr = False
+    force_docling = False
+    if source_type == "pdf":
+        if reocr_route:
+            force_ndlocr = not force_mistral and str(reocr_route.get("lang") or "") == "ja"
+            force_docling = not force_mistral and not force_ndlocr
+        elif args.use_docling:
+            force_docling = not (
+                has_quality and previous["quality"].get("parser") == "docling"
+            )
+        elif args.reparse_corrupted and has_quality:
+            quality = previous["quality"]
+            force_docling = bool(
+                (quality.get("is_scanned") or quality.get("is_corrupted"))
+                and quality.get("parser") != "docling"
+            )
+    return ReparseDecision(
+        force_docling=force_docling,
+        force_ndlocr=force_ndlocr,
+        force_mistral=force_mistral,
+    )
+
+
 async def main_async(args: argparse.Namespace) -> None:
     PDF_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -1383,7 +1898,7 @@ async def main_async(args: argparse.Namespace) -> None:
         )
 
     if not args.dry_run:
-        _acquire_indexing_lock()
+        lock_data = _acquire_indexing_lock()
 
     run_code_fingerprint = code_fingerprint(RUN_CODE_PATHS)
     # Choice (A) (note 80). Resolved once per run so a mid-run env change
@@ -1429,91 +1944,16 @@ async def main_async(args: argparse.Namespace) -> None:
             file=sys.stderr,
         )
 
-    zotero_data_dir: Optional[str] = None
-    if _zotero_data_dir_is_valid(ZOTERO_DATA_DIR):
-        zotero_data_dir = ZOTERO_DATA_DIR
-    else:
-        if ZOTERO_DATA_DIR:
-            if args.require_data_dir:
-                _validate_zotero_data_dir_or_exit()
-            else:
-                print(
-                    f"[WARN] ZOTERO_DATA_DIR looks invalid: {Path(ZOTERO_DATA_DIR).expanduser()}\n"
-                    "      Falling back to Zotero Local API file download into PDF_CACHE_DIR.",
-                    file=sys.__stderr__,
-                )
-        else:
-            if args.require_data_dir:
-                _validate_zotero_data_dir_or_exit()
-            else:
-                print(
-                    "[WARN] ZOTERO_DATA_DIR is not set. Falling back to Zotero Local API file download into PDF_CACHE_DIR.",
-                    file=sys.__stderr__,
-                )
-
-    if show_progress:
-        print("[PROGRESS] Fetching attachment metadata from Zotero (this may take a minute)...", file=sys.__stderr__)
-
-    attachments: List[ZoteroAttachment] = await api.list_normalized_attachments(
-        zotero_data_dir=zotero_data_dir,
-        pdf_cache_dir=str(PDF_CACHE_DIR),
-        collection_key=args.collection,
-        require_complete=bool(args.rebuild),
+    discovery = await _discover_attachments(
+        args,
+        api=api,
+        manifest=manifest,
+        files_manifest=files_manifest,
+        reocr_routes=reocr_routes,
+        show_progress=show_progress,
     )
-    attachments = [a for a in attachments if getattr(a, "pdf_path", None)]
-    # A clean rebuild destroys the prior target.  Prove both source inventories
-    # complete before that destructive boundary, and reuse the exact note
-    # snapshot later so a second, inconsistent listing cannot redefine scope.
-    preflight_notes: list[dict[str, Any]] | None = None
-    if args.rebuild:
-        preflight_notes = await api.list_notes(
-            collection_key=args.collection, require_complete=True,
-        )
-
-    # Exact attachment selection is deliberately applied before parent-item
-    # selection: --item keeps its normal "all attachments of this parent"
-    # behavior, while a queue worker can constrain that parent to one file.
-    attachments = _select_attachment_scope(attachments, args.attachment)
-    attachments = _select_item_scope(attachments, args.item, 0)
-
-    if args.retry_failed:
-        inflight = {
-            str(value) for value in manifest.get("inflight_attachments", []) if value
-        }
-        retryable_items = {
-            str(a.parentItemKey or a.attachmentKey) for a in attachments
-            if (
-                a.attachmentKey in inflight
-                or _retryable_failed(str(a.parentItemKey or a.attachmentKey))
-            )
-        }
-        attachments = [
-            a for a in attachments
-            if str(a.parentItemKey or a.attachmentKey) in retryable_items
-        ]
-
-    if args.source_type:
-        keep_type = str(args.source_type)
-        attachments = [
-            a for a in attachments
-            if _resolve_source_type(getattr(a, "contentType", None), Path(getattr(a, "pdf_path", "")), getattr(a, "source_type", None)) == keep_type
-        ]
-
-    if reocr_routes:
-        attachments = [a for a in attachments if a.attachmentKey in reocr_routes]
-
-    # If --reparse-corrupted is set, filter attachments upfront to show correct progress
-    if args.reparse_corrupted:
-        corrupted_attachments = []
-        for a in attachments:
-            prev = files_manifest.get(a.attachmentKey)
-            if prev and "quality" in prev:
-                q = prev["quality"]
-                is_problematic = q.get("is_scanned") or q.get("is_corrupted")
-                already_docling = q.get("parser") == "docling"
-                if is_problematic and not already_docling:
-                    corrupted_attachments.append(a)
-        attachments = corrupted_attachments
+    attachments = discovery.attachments
+    preflight_notes = discovery.preflight_notes
 
     total_attachments = len(attachments)
     if show_progress:
@@ -1759,15 +2199,17 @@ async def main_async(args: argparse.Namespace) -> None:
     deferred_extract = 0
     coverage_adopted_extract = 0  # indexed despite a partial-coverage gap
 
-    pending_ids: list[str] = []
-    pending_docs: list[str] = []
-    pending_metas: list[dict[str, Any]] = []
-
-    pending_manifest_updates: dict[str, dict[str, Any]] = {}
-    pending_extraction_statuses: dict[str, tuple[str, str, dict[str, Any]]] = {}
-    pending_delete_attachment_keys: set[str] = set()
-    pending_source_types: dict[str, str] = {}
-    pending_item_keys: dict[str, str] = {}
+    pending = PendingIndexBatch.empty()
+    # Compatibility aliases keep the extraction loop readable while all
+    # mutable flush state now has one owner and one clear/commit operation.
+    pending_ids = pending.ids
+    pending_docs = pending.documents
+    pending_metas = pending.metadatas
+    pending_manifest_updates = pending.manifest_updates
+    pending_extraction_statuses = pending.extraction_statuses
+    pending_delete_attachment_keys = pending.delete_attachment_keys
+    pending_source_types = pending.source_types
+    pending_item_keys = pending.item_keys
     processing_item_keys: set[str] = set()
     last_written_id: str | None = None
 
@@ -1787,41 +2229,21 @@ async def main_async(args: argparse.Namespace) -> None:
     for idx, a in enumerate(attachments, start=1):
         if STRUCTURED_V3_ENABLE:
             assert_code_unchanged(RUN_CODE_PATHS, run_code_fingerprint)
-        file_path = Path(a.pdf_path).expanduser()
-        # Zotero Web Snapshots can be stored as a directory containing an index.html.
-        if file_path.is_dir():
-            for name in ("index.html", "index.htm"):
-                cand = file_path / name
-                if cand.exists() and cand.is_file():
-                    file_path = cand
-                    break
-            else:
-                # Try a shallow search for any html file.
-                htmls = sorted([p for p in file_path.iterdir() if p.is_file() and p.suffix.lower() in {".html", ".htm"}])
-                if htmls:
-                    file_path = htmls[0]
-                else:
-                    print(
-                        f"[WARN] Web snapshot directory has no index.html: attachment={a.attachmentKey} dir={file_path}",
-                        file=sys.__stderr__,
-                    )
-                    continue
-        if not file_path.exists():
+        original_path = Path(a.pdf_path).expanduser()
+        source = _resolve_attachment_source(a)
+        if source is None:
+            if original_path.is_dir():
+                print(
+                    f"[WARN] Web snapshot directory has no index.html: "
+                    f"attachment={a.attachmentKey} dir={original_path}",
+                    file=sys.__stderr__,
+                )
             continue
-
-        # Derive a stable source type early (used for skip counters/logging).
+        file_path = source.path
+        stype = source.source_type
         ctype = getattr(a, "contentType", None)
-        stype = getattr(a, "source_type", None) or "pdf"
-        if (ctype == "application/epub+zip") or (file_path.suffix.lower() == ".epub"):
-            stype = "epub"
-        elif file_path.suffix.lower() in {".html", ".htm"}:
-            stype = "html"
-        elif stype not in {"pdf", "html", "epub"}:
-            stype = "pdf"
-
-        st = file_path.stat()
-        mtime = float(st.st_mtime)
-        size = int(st.st_size)
+        mtime = source.mtime
+        size = source.size
         scope_item_key = str(a.parentItemKey or a.attachmentKey)
 
         # A PDF filed at the top level of Zotero is tracked under its
@@ -1845,29 +2267,13 @@ async def main_async(args: argparse.Namespace) -> None:
         has_quality = prev and "quality" in prev
         quality_check_only = False
 
-        # Decide if we need to force a re-parser for this file.
-        force_docling = False
-        force_ndlocr = False
-        force_mistral = False
         reocr_route = reocr_routes.get(a.attachmentKey)
-        if reocr_route:
-            target_engine = str(reocr_route.get("target_engine") or "").strip()
-            force_mistral = target_engine == "mistral_ocr"
-        if stype == "pdf":
-            if reocr_route:
-                target_engine = str(reocr_route.get("target_engine") or "").strip()
-                force_ndlocr = not force_mistral and str(reocr_route.get("lang") or "") == "ja"
-                force_docling = not force_mistral and not force_ndlocr
-            elif args.use_docling:
-                already_docling = has_quality and prev["quality"].get("parser") == "docling"
-                if not already_docling:
-                    force_docling = True
-            elif args.reparse_corrupted and has_quality:
-                q = prev["quality"]
-                is_problematic = q.get("is_scanned") or q.get("is_corrupted")
-                already_docling = q.get("parser") == "docling"
-                if is_problematic and not already_docling:
-                    force_docling = True
+        reparse = _reparse_decision(
+            args, source_type=stype, previous=prev, reocr_route=reocr_route,
+        )
+        force_docling = reparse.force_docling
+        force_ndlocr = reparse.force_ndlocr
+        force_mistral = reparse.force_mistral
 
         inflight_attachments = {
             str(value) for value in manifest.get("inflight_attachments", []) if value
@@ -3193,231 +3599,58 @@ async def main_async(args: argparse.Namespace) -> None:
         pending_source_types[a.attachmentKey] = stype
         pending_item_keys[a.attachmentKey] = str(a.parentItemKey or a.attachmentKey)
         if len(pending_ids) >= FLUSH_SIZE:
-            ids, docs, metas = _dedupe_by_id(pending_ids, pending_docs, pending_metas)
-            committed_item_keys = set(pending_item_keys.values())
-            expected_ids: dict[str, set[str]] = {
-                key: set() for key in pending_delete_attachment_keys
-            }
-            for chunk_id, metadata in zip(ids, metas, strict=False):
-                attachment_key = str(metadata.get("attachmentKey") or "")
-                if attachment_key in expected_ids:
-                    expected_ids[attachment_key].add(str(chunk_id))
-
-            if STRUCTURED_V3_ENABLE:
-                assert_code_unchanged(RUN_CODE_PATHS, run_code_fingerprint)
-                inflight = {
-                    str(value) for value in manifest.get("inflight_attachments", []) if value
-                }
-                inflight.update(pending_delete_attachment_keys)
-                manifest["inflight_attachments"] = sorted(inflight)
-                save_manifest(MANIFEST_PATH, manifest)
-
-            _delete_by_attachment_keys(
-                col, pending_delete_attachment_keys, strict=STRUCTURED_V3_ENABLE,
-            )
-
-            _upsert_in_subbatches(
-                col,
-                ids,
-                docs,
-                metas,
-                subbatch_size=UPSERT_BATCH_SIZE,
+            outcome = _flush_pending_index_batch(
+                col, pending,
+                manifest=manifest,
+                files_manifest=files_manifest,
+                run_code_fingerprint=run_code_fingerprint,
                 show_progress=show_progress,
                 label="upsert batch",
-                strict_lexical=STRUCTURED_V3_ENABLE,
+                context_label="periodic flush",
             )
-
-            _fail_flush_on_unhealthy_collection(
-                col, dict(pending_item_keys), context_label="periodic flush",
-            )
-            if STRUCTURED_V3_ENABLE:
-                _verify_written_attachments(col, expected_ids)
-
-            for item_key, status, status_kwargs in pending_extraction_statuses.values():
-                mark_artifact_status(
-                    item_key, "extraction", status, **status_kwargs,
-                )
-            for ak, entry in pending_manifest_updates.items():
-                files_manifest[ak] = entry
-            if STRUCTURED_V3_ENABLE:
-                manifest["inflight_attachments"] = [
-                    value for value in manifest.get("inflight_attachments", [])
-                    if value not in pending_delete_attachment_keys
-                ]
-            for t in pending_source_types.values():
-                if t == "html":
-                    updated_html += 1
-                elif t == "epub":
-                    updated_epub += 1
-                else:
-                    updated_pdf += 1
-
-            if ids:
-                last_written_id = str(ids[-1])
-            save_manifest(MANIFEST_PATH, manifest)
-            if STRUCTURED_V3_ENABLE:
-                _finalize_v3_pending(
-                    manifest, committed_item_keys,
-                    collection_name=str(CHROMA_COLLECTION_ENV or "zotero_paragraphs_v3"),
-                    code_paths=RUN_CODE_PATHS,
-                    expected_code_fingerprint=run_code_fingerprint,
-                )
-
-            pending_manifest_updates.clear()
-            pending_extraction_statuses.clear()
-            pending_delete_attachment_keys.clear()
-            pending_source_types.clear()
-            pending_item_keys.clear()
-
-            pending_ids.clear()
-            pending_docs.clear()
-            pending_metas.clear()
-
-    if pending_ids:
-        ids, docs, metas = _dedupe_by_id(pending_ids, pending_docs, pending_metas)
-        committed_item_keys = set(pending_item_keys.values())
-        expected_ids = {key: set() for key in pending_delete_attachment_keys}
-        for chunk_id, metadata in zip(ids, metas, strict=False):
-            attachment_key = str(metadata.get("attachmentKey") or "")
-            if attachment_key in expected_ids:
-                expected_ids[attachment_key].add(str(chunk_id))
-        if STRUCTURED_V3_ENABLE:
-            assert_code_unchanged(RUN_CODE_PATHS, run_code_fingerprint)
-            inflight = {
-                str(value) for value in manifest.get("inflight_attachments", []) if value
-            }
-            inflight.update(pending_delete_attachment_keys)
-            manifest["inflight_attachments"] = sorted(inflight)
-            save_manifest(MANIFEST_PATH, manifest)
-        _delete_by_attachment_keys(
-            col, pending_delete_attachment_keys, strict=STRUCTURED_V3_ENABLE,
-        )
-        _upsert_in_subbatches(
-            col,
-            ids,
-            docs,
-            metas,
-            subbatch_size=UPSERT_BATCH_SIZE,
-            show_progress=show_progress,
-            label="final upsert",
-            strict_lexical=STRUCTURED_V3_ENABLE,
-        )
-
-        _fail_flush_on_unhealthy_collection(
-            col, dict(pending_item_keys), context_label="final flush",
-        )
-        if STRUCTURED_V3_ENABLE:
-            _verify_written_attachments(col, expected_ids)
+            updated_pdf += outcome.updated_pdf
+            updated_html += outcome.updated_html
+            updated_epub += outcome.updated_epub
+            last_written_id = outcome.last_written_id or last_written_id
 
     if pending_manifest_updates:
-        for item_key, status, status_kwargs in pending_extraction_statuses.values():
-            mark_artifact_status(
-                item_key, "extraction", status, **status_kwargs,
-            )
-        for ak, entry in pending_manifest_updates.items():
-            files_manifest[ak] = entry
-        for t in pending_source_types.values():
-            if t == "html":
-                updated_html += 1
-            elif t == "epub":
-                updated_epub += 1
-            else:
-                updated_pdf += 1
-        if STRUCTURED_V3_ENABLE:
-            manifest["inflight_attachments"] = [
-                value for value in manifest.get("inflight_attachments", [])
-                if value not in pending_delete_attachment_keys
-            ]
-        if pending_ids:
-            last_written_id = str(ids[-1])
-        save_manifest(MANIFEST_PATH, manifest)
-        if STRUCTURED_V3_ENABLE:
-            _finalize_v3_pending(
-                manifest, committed_item_keys,
-                collection_name=str(CHROMA_COLLECTION_ENV or "zotero_paragraphs_v3"),
-                code_paths=RUN_CODE_PATHS,
-                expected_code_fingerprint=run_code_fingerprint,
-            )
-        pending_manifest_updates.clear()
-        pending_extraction_statuses.clear()
-        pending_delete_attachment_keys.clear()
-        pending_source_types.clear()
-        pending_item_keys.clear()
-
-    # ------------------------------------------------------------------
-    # Notes -> chunks (indexed, but excluded from rag_search by default)
-    # ----------------------------
-    try:
-        notes = (
-            preflight_notes
-            if preflight_notes is not None
-            else await api.list_notes(collection_key=args.collection)
+        outcome = _flush_pending_index_batch(
+            col, pending,
+            manifest=manifest,
+            files_manifest=files_manifest,
+            run_code_fingerprint=run_code_fingerprint,
+            show_progress=show_progress,
+            label="final upsert",
+            context_label="final flush",
         )
-    except Exception as e:
-        raise RuntimeError(
-            f"Failed to enumerate Zotero notes; refusing to treat an unknown inventory as empty: {e}"
-        ) from e
+        updated_pdf += outcome.updated_pdf
+        updated_html += outcome.updated_html
+        updated_epub += outcome.updated_epub
+        last_written_id = outcome.last_written_id or last_written_id
 
-    if partial_scope:
-        scoped_item_keys = set(processing_item_keys) if args.limit else {
-            str(attachment.parentItemKey or attachment.attachmentKey)
-            for attachment in attachments
-        }
-        notes = [
-            note for note in notes
-            if str(note.get("parentItemKey") or "") in scoped_item_keys
-        ]
-
-    notes_manifest, note_stats = index_notes(
-        notes,
+    note_outcome = await _index_notes_phase(
+        args,
+        api=api,
         col=col,
         notes_manifest=notes_manifest,
-        batch_size=UPSERT_BATCH_SIZE,
+        preflight_notes=preflight_notes,
+        partial_scope=partial_scope,
+        processing_item_keys=processing_item_keys,
+        attachments=attachments,
         show_progress=show_progress,
-        dedupe_fn=_dedupe_by_id,
-        upsert_fn=_upsert_in_subbatches,
-        lexical_delete_fn=delete_lexical_note,
-        delete_stale=not partial_scope,
-        strict_lexical=STRUCTURED_V3_ENABLE,
     )
+    notes_manifest = note_outcome.manifest
+    updated_notes = note_outcome.updated
+    skipped_notes = note_outcome.skipped
+    deleted_stale_notes = note_outcome.deleted_stale
 
-    updated_notes = int(note_stats.get("updated_notes", 0))
-    skipped_notes = int(note_stats.get("skipped_notes", 0))
-    deleted_stale_notes = int(note_stats.get("deleted_stale_notes", 0))
-
-    # ------------------------------------------------------------------
-    # Force a final HNSW flush so the pickle label-map is fully in sync
-    # with all records added during this run.
-    #
-    # Background: ChromaDB only writes index_metadata.pickle every
-    # sync_threshold records. If the total added this run is not a
-    # multiple of sync_threshold, the last N < sync_threshold records
-    # end up in SQLite but NOT in the pickle. On the next query the
-    # Rust HNSW backend tries to look up those IDs and throws
-    # "Error finding id".
-    #
-    # Fix: temporarily lower sync_threshold to 1, upsert multiple
-    # sentinel documents (which triggers an immediate flush of all
-    # pending entries), then delete them.
-    # ------------------------------------------------------------------
-    try:
-        if last_written_id is None:
-            sample = col.get(limit=1, include=[])
-            sample_ids = sample.get("ids") or []
-            last_written_id = str(sample_ids[0]) if sample_ids else None
-        _flush_and_verify_hnsw(col, last_written_id)
-        manifest["hnsw_validated"] = True
-        print("[INFO] HNSW final flush and query smoke test complete.", file=sys.__stderr__)
-    except Exception as e:
-        manifest["hnsw_validated"] = False
-        save_manifest(MANIFEST_PATH, manifest)
-        if STRUCTURED_V3_ENABLE:
-            raise RuntimeError(f"HNSW final validation failed: {e}") from e
-        print(f"[WARN] HNSW final flush failed (non-fatal): {e}", file=sys.__stderr__)
-
-    manifest["notes"] = notes_manifest
-    manifest["files"] = files_manifest
-    save_manifest(MANIFEST_PATH, manifest)
+    last_written_id = _finalize_index_storage(
+        col,
+        manifest=manifest,
+        files_manifest=files_manifest,
+        notes_manifest=notes_manifest,
+        last_written_id=last_written_id,
+    )
 
     print(
         f"Done. Updated PDFs={updated_pdf}, Updated HTML(WebClip)={updated_html}, Updated EPUB={updated_epub}, "
@@ -3438,74 +3671,13 @@ async def main_async(args: argparse.Namespace) -> None:
         "hnsw_validated": bool(manifest.get("hnsw_validated")),
     }, ensure_ascii=False))
 
-    # Compile and print warnings for scanned or corrupted files. Also surface
-    # documents that stayed *under* the is_scanned/is_corrupted thresholds
-    # (including the native-outline tolerance in
-    # extraction_engine.pymupdf_fast_path_rejection_reason) but still have a
-    # nonzero residual scanned_pages/corrupted_pages list -- e.g. a corrupted
-    # page the E2d Docling patch (PDF_CORRUPTED_PAGE_PATCH_ENABLE) couldn't
-    # recover clean text from, left as a corrupted_unresolved marker chunk
-    # rather than silently indexed or dropped. Repair is tried first (see
-    # pymupdf_fast_path_rejection_reason's docstring); this report is where
-    # whatever repair didn't resolve stays visible even when it was small
-    # enough to pass the fast-path tolerance (user decision 2026-07-26).
-    problematic_files = []
-    for k, entry in files_manifest.items():
-        q = entry.get("quality")
-        if q and isinstance(q, dict):
-            is_scanned = q.get("is_scanned", False)
-            is_corrupted = q.get("is_corrupted", False)
-            residual_scanned_pages = q.get("scanned_pages") or []
-            residual_corrupted_pages = q.get("corrupted_pages") or []
-            coverage_gap_entry = (
-                q.get("source_coverage_shortfall")
-                if q.get("source_coverage_adopted")
-                and isinstance(q.get("source_coverage_shortfall"), dict)
-                else None
-            )
-            if (
-                is_scanned or is_corrupted or residual_scanned_pages
-                or residual_corrupted_pages or coverage_gap_entry
-            ):
-                title = entry.get("title") or entry.get("pdf_path", "").split("/")[-1] or k
-                reasons = []
-                if is_scanned:
-                    reasons.append("scanned/empty pages")
-                elif residual_scanned_pages:
-                    reasons.append(f"{len(residual_scanned_pages)} unresolved scanned page(s) (within tolerance)")
-                if is_corrupted:
-                    reasons.append("text layout/character encoding corruption")
-                elif residual_corrupted_pages:
-                    reasons.append(f"{len(residual_corrupted_pages)} unresolved corrupted page(s) (within tolerance)")
-                if coverage_gap_entry:
-                    reasons.append(
-                        f"indexed with partial source coverage "
-                        f"({coverage_gap_entry.get('accounted_units')}/"
-                        f"{coverage_gap_entry.get('expected_units')} "
-                        f"{coverage_gap_entry.get('unit_kind')}s, tagged quality-uncertain)"
-                    )
-                problematic_files.append((k, title, reasons, q))
-
-    if problematic_files:
-        print("\n" + "=" * 80, file=sys.__stderr__)
-        print("⚠️  [RAG QUALITY WARNING] The following files might have poor retrieval quality:", file=sys.__stderr__)
-        for k, title, reasons, q in problematic_files:
-            reasons_str = " & ".join(reasons)
-            print(f"  - [{k}] \"{title}\"", file=sys.__stderr__)
-            print(f"    ↳ Issue: {reasons_str}", file=sys.__stderr__)
-            if q.get("scanned_pages"):
-                print(f"      scanned/empty pages: {q.get('scanned_pages')}", file=sys.__stderr__)
-            if q.get("corrupted_pages"):
-                print(f"      corrupted/garbled pages: {q.get('corrupted_pages')}", file=sys.__stderr__)
-        print("\nRecommendation: We highly recommend processing these files using high-fidelity", file=sys.__stderr__)
-        print("AI-based document layout parsers like Docling or Marker to improve RAG accuracy.", file=sys.__stderr__)
-        print("=" * 80 + "\n", file=sys.__stderr__)
+    _print_quality_warnings(_quality_warnings(files_manifest))
 
     if show_progress:
         print(f"[PROGRESS] Total runtime: {time.perf_counter() - t0:.1f}s", file=sys.__stderr__)
 
     _close_chroma_collection(col)
-    _release_indexing_lock()
+    _release_indexing_lock(locals().get("lock_data"))
 
     if args.rebuild:
         resolved_attachment_keys = {str(row.attachmentKey) for row in attachments}

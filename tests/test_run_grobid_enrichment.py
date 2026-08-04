@@ -54,9 +54,14 @@ def test_a_coherent_configuration_reaches_the_run_loop():
     from scripts import run_grobid_enrichment as worker
 
     counts = {"eligible": 0, "processed": 0, "skipped": 0, "failed": 0, "references": 0}
+    # patch.object auto-selects AsyncMock for this async function. Since
+    # asyncio.run is mocked too, that coroutine would never be awaited and
+    # would leak a RuntimeWarning into an unrelated later test.
     with mock.patch.object(worker, "grobid_enrichment_enabled", return_value=True), \
             mock.patch.object(worker, "verify_enabled_features", return_value=[]), \
-            mock.patch.object(worker, "run", return_value=None), \
+            mock.patch.object(
+                worker, "run", new=mock.Mock(return_value="awaitable-sentinel"),
+            ), \
             mock.patch.object(worker.asyncio, "run", return_value=counts) as run:
         assert worker.main([]) == 0
         assert run.call_count == 1

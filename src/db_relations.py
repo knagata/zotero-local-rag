@@ -4,31 +4,66 @@ import re
 import unicodedata
 import hashlib
 import json
+import threading
 from difflib import SequenceMatcher
 from typing import List, Dict, Any, Iterable, Optional
 
 try:
     from .reference_text import strip_unicode_format_characters
+    from .db_schema import add_column
+    from .cache_repository import CacheRepository, SummaryRepository
+    from .artifact_repository import ArtifactRepository
 except ImportError:  # pragma: no cover - direct src/ entrypoints
     from reference_text import strip_unicode_format_characters
+    from db_schema import add_column
+    from cache_repository import CacheRepository, SummaryRepository
+    from artifact_repository import ArtifactRepository
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DB_PATH = os.environ.get("RELATIONS_DB_PATH", os.path.join(ROOT, "data", "relations.db"))
 _db_initialized = False
+_initialized_db_path: str | None = None
+_db_init_lock = threading.Lock()
+
+
+def _cache_repository() -> CacheRepository:
+    return CacheRepository(get_db_connection)
+
+
+def _summary_repository() -> SummaryRepository:
+    return SummaryRepository(get_db_connection)
+
+
+def _artifact_repository() -> ArtifactRepository:
+    return ArtifactRepository(
+        get_db_connection,
+        artifact_types=_ARTIFACT_TYPES,
+        artifact_statuses=_ARTIFACT_STATUSES,
+    )
 
 
 def get_db_connection():
-    global _db_initialized
+    global _db_initialized, _initialized_db_path
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     conn = sqlite3.connect(DB_PATH, timeout=30)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA busy_timeout = 30000")
-    conn.execute("PRAGMA journal_mode = WAL")
-    conn.execute("PRAGMA foreign_keys = ON")
-    if not _db_initialized:
-        _init_db(conn)
-        _db_initialized = True
-    return conn
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout = 30000")
+        conn.execute("PRAGMA foreign_keys = ON")
+        if not _db_initialized or _initialized_db_path != DB_PATH:
+            with _db_init_lock:
+                if not _db_initialized or _initialized_db_path != DB_PATH:
+                    # journal_mode is persistent database state. Running this on
+                    # several first-use connections before taking the init lock
+                    # makes those connections contend with the schema migration.
+                    conn.execute("PRAGMA journal_mode = WAL")
+                    _init_db(conn)
+                    _db_initialized = True
+                    _initialized_db_path = DB_PATH
+        return conn
+    except BaseException:
+        conn.close()
+        raise
 
 def _init_db(conn: sqlite3.Connection) -> None:
     cursor = conn.cursor()
@@ -106,10 +141,7 @@ def _init_db(conn: sqlite3.Connection) -> None:
         "ALTER TABLE item_citation_status ADD COLUMN abstract TEXT",
     ]
     for sql in _migrations:
-        try:
-            cursor.execute(sql)
-        except sqlite3.OperationalError:
-            pass
+        add_column(cursor, sql)
 
     # SQLite considers every NULL distinct in a UNIQUE constraint.  The
     # original table-level constraints therefore let retries accumulate rows
@@ -223,10 +255,7 @@ def _init_db(conn: sqlite3.Connection) -> None:
         "ALTER TABLE item_summaries ADD COLUMN chunk_count INTEGER",
         "ALTER TABLE item_summaries ADD COLUMN source_mtime REAL",
     ):
-        try:
-            cursor.execute(sql)
-        except sqlite3.OperationalError:
-            pass
+        add_column(cursor, sql)
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS section_summaries (
             item_key TEXT NOT NULL,
@@ -303,10 +332,7 @@ def _init_db(conn: sqlite3.Connection) -> None:
         "ALTER TABLE document_nodes ADD COLUMN extraction_engine TEXT",
         "ALTER TABLE document_nodes ADD COLUMN extraction_version TEXT",
     ):
-        try:
-            cursor.execute(sql)
-        except sqlite3.OperationalError:
-            pass
+        add_column(cursor, sql)
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS document_node_chunks (
             node_id TEXT NOT NULL REFERENCES document_nodes(node_id) ON DELETE CASCADE,
@@ -334,10 +360,7 @@ def _init_db(conn: sqlite3.Connection) -> None:
         )
     ''')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_document_node_summaries_item ON document_node_summaries(item_key, searchable)')
-    try:
-        cursor.execute("ALTER TABLE document_node_summaries ADD COLUMN input_scope_json TEXT")
-    except sqlite3.OperationalError:
-        pass
+    add_column(cursor, "ALTER TABLE document_node_summaries ADD COLUMN input_scope_json TEXT")
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS document_node_summary_parts (
             node_id TEXT NOT NULL REFERENCES document_nodes(node_id) ON DELETE CASCADE,
@@ -619,10 +642,7 @@ def _init_db(conn: sqlite3.Connection) -> None:
         "ALTER TABLE reference_review_queue ADD COLUMN compound_split_model TEXT",
         "ALTER TABLE reference_review_queue ADD COLUMN compound_split_evidence_json TEXT",
     ):
-        try:
-            cursor.execute(sql)
-        except sqlite3.OperationalError:
-            pass
+        add_column(cursor, sql)
     cursor.execute(
         "CREATE INDEX IF NOT EXISTS idx_reference_review_status "
         "ON reference_review_queue(status, item_key)"
@@ -663,10 +683,7 @@ def _init_db(conn: sqlite3.Connection) -> None:
         "ALTER TABLE relation_reports ADD COLUMN triage_model TEXT",
         "ALTER TABLE relation_reports ADD COLUMN triage_evidence_json TEXT",
     ):
-        try:
-            cursor.execute(sql)
-        except sqlite3.OperationalError:
-            pass
+        add_column(cursor, sql)
 
     # Runtime quality reports for LLM summary routing. Reports are tied to a
     # summary fingerprint so regeneration automatically retires stale decisions.
@@ -705,10 +722,7 @@ def _init_db(conn: sqlite3.Connection) -> None:
         "ALTER TABLE summary_quality_reports ADD COLUMN summary_node_id TEXT",
         "ALTER TABLE summary_quality_reports ADD COLUMN prior_quality_status TEXT",
     ):
-        try:
-            cursor.execute(sql)
-        except sqlite3.OperationalError:
-            pass
+        add_column(cursor, sql)
 
     # Runtime quality reports for *source text* rather than summaries (note 79,
     # U0-b). Degraded OCR that reaches a reader is reported here and surfaces as
@@ -1035,57 +1049,20 @@ def get_s2_lookup_candidates(item_key: str) -> List[Dict[str, Any]]:
 
 def get_query_expansion(query_hash: str) -> Optional[str]:
     """Return cached query-expansion JSON, or ``None`` on a cache miss."""
-    conn = get_db_connection()
-    try:
-        row = conn.execute(
-            "SELECT expansions FROM query_expansion_cache WHERE query_hash = ?",
-            (query_hash,),
-        ).fetchone()
-        return row[0] if row else None
-    finally:
-        conn.close()
+    return _cache_repository().get_query_expansion(query_hash)
 
 
 def save_query_expansion(query_hash: str, expansions: str) -> None:
     """Persist a successful query expansion for reuse across MCP sessions."""
-    conn = get_db_connection()
-    try:
-        conn.execute('''
-            INSERT INTO query_expansion_cache (query_hash, expansions, created_at)
-            VALUES (?, ?, CURRENT_TIMESTAMP)
-            ON CONFLICT(query_hash) DO UPDATE SET
-                expansions = excluded.expansions,
-                created_at = CURRENT_TIMESTAMP
-        ''', (query_hash, expansions))
-        conn.commit()
-    finally:
-        conn.close()
+    _cache_repository().save_query_expansion(query_hash, expansions)
 
 
 def get_resolver_cache(query_hash: str, source: str) -> Optional[str]:
-    conn = get_db_connection()
-    try:
-        row = conn.execute(
-            "SELECT response_json FROM resolver_cache WHERE query_hash = ? AND source = ?",
-            (query_hash, source),
-        ).fetchone()
-        return row[0] if row else None
-    finally:
-        conn.close()
+    return _cache_repository().get_resolver(query_hash, source)
 
 
 def save_resolver_cache(query_hash: str, source: str, response_json: str) -> None:
-    conn = get_db_connection()
-    try:
-        conn.execute('''
-            INSERT INTO resolver_cache (query_hash, source, response_json, created_at)
-            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-            ON CONFLICT(query_hash, source) DO UPDATE SET
-                response_json = excluded.response_json, created_at = CURRENT_TIMESTAMP
-        ''', (query_hash, source, response_json))
-        conn.commit()
-    finally:
-        conn.close()
+    _cache_repository().save_resolver(query_hash, source, response_json)
 
 
 def stage_reference_candidates(
@@ -1653,39 +1630,15 @@ def update_item_citation_status(
 
 
 def get_item_abstract(item_key: str) -> Optional[str]:
-    conn = get_db_connection()
-    try:
-        cursor = conn.cursor()
-        cursor.execute('SELECT abstract FROM item_citation_status WHERE item_key = ?', (item_key,))
-        row = cursor.fetchone()
-        return row[0] if row else None
-    finally:
-        conn.close()
+    return _summary_repository().get_item_abstract(item_key)
 
 
 def get_item_summary(item_key: str) -> Optional[dict]:
-    conn = get_db_connection()
-    try:
-        cursor = conn.cursor()
-        cursor.execute('''
-            SELECT summary, summary_en, keywords, model, chunk_count, source_mtime, updated_at
-            FROM item_summaries WHERE item_key = ?
-        ''', (item_key,))
-        row = cursor.fetchone()
-        return dict(row) if row else None
-    finally:
-        conn.close()
+    return _summary_repository().get_item_summary(item_key)
 
 
 def get_section_summaries(item_key: str) -> List[Dict[str, Any]]:
-    conn = get_db_connection()
-    try:
-        rows = conn.execute('''
-            SELECT * FROM section_summaries WHERE item_key = ? ORDER BY section_id
-        ''', (item_key,)).fetchall()
-        return [dict(row) for row in rows]
-    finally:
-        conn.close()
+    return _summary_repository().get_section_summaries(item_key)
 
 
 def reset_ingestion_derived_state() -> Dict[str, int]:
@@ -1737,43 +1690,12 @@ def reset_ingestion_derived_state() -> Dict[str, int]:
 
 def get_external_abstract(paper_id: str) -> Optional[dict]:
     """外部論文の概要キャッシュを返す。未取得なら None。"""
-    conn = get_db_connection()
-    try:
-        cursor = conn.cursor()
-        cursor.execute(
-            'SELECT abstract, tldr, status, updated_at FROM external_abstracts WHERE paper_id = ?',
-            (paper_id,),
-        )
-        row = cursor.fetchone()
-        if not row:
-            return None
-        return {
-            "abstract":   row[0],
-            "tldr":       row[1],
-            "status":     row[2],
-            "updated_at": row[3],
-        }
-    finally:
-        conn.close()
+    return _cache_repository().get_external_abstract(paper_id)
 
 
 def save_external_abstract(paper_id: str, abstract: Optional[str], tldr: Optional[str], status: str) -> None:
     """外部論文の概要をキャッシュに保存する。"""
-    conn = get_db_connection()
-    try:
-        cursor = conn.cursor()
-        cursor.execute('''
-            INSERT INTO external_abstracts (paper_id, abstract, tldr, status, updated_at)
-            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-            ON CONFLICT(paper_id) DO UPDATE SET
-                abstract   = excluded.abstract,
-                tldr       = excluded.tldr,
-                status     = excluded.status,
-                updated_at = CURRENT_TIMESTAMP
-        ''', (paper_id, abstract, tldr, status))
-        conn.commit()
-    finally:
-        conn.close()
+    _cache_repository().save_external_abstract(paper_id, abstract, tldr, status)
 
 
 def get_item_citation_status(item_key: str) -> Optional[str]:
@@ -3654,69 +3576,12 @@ def mark_artifact_status(
     run_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Record a processing state transition and append an audit event."""
-    if not item_key:
-        raise ValueError("item_key is required")
-    if artifact_type not in _ARTIFACT_TYPES:
-        raise ValueError(f"invalid artifact type: {artifact_type}")
-    if status not in _ARTIFACT_STATUSES:
-        raise ValueError(f"invalid artifact status: {status}")
-    attachment = str(attachment_key or "")
-    conn = get_db_connection()
-    try:
-        conn.execute("BEGIN IMMEDIATE")
-        previous = conn.execute('''
-            SELECT status, attempt_count FROM artifact_processing_status
-            WHERE item_key = ? AND attachment_key = ? AND artifact_type = ?
-        ''', (item_key, attachment, artifact_type)).fetchone()
-        previous_status = str(previous["status"]) if previous else None
-        attempts = int(previous["attempt_count"]) if previous else 0
-        if status == "running" and previous_status != "running":
-            attempts += 1
-        started_at = "CURRENT_TIMESTAMP" if status == "running" else "started_at"
-        finished_at = "CURRENT_TIMESTAMP" if status not in {"pending", "running", "stale"} else "NULL"
-        conn.execute(f'''
-            INSERT INTO artifact_processing_status (
-                item_key, attachment_key, artifact_type, status, reason_code, message,
-                retryable, attempt_count, source_fingerprint, processor_version, model,
-                counts_json, fallback_kind, started_at, finished_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                      {started_at if status == 'running' else 'NULL'},
-                      {finished_at}, CURRENT_TIMESTAMP)
-            ON CONFLICT(item_key, attachment_key, artifact_type) DO UPDATE SET
-                status=excluded.status, reason_code=excluded.reason_code, message=excluded.message,
-                retryable=excluded.retryable, attempt_count=excluded.attempt_count,
-                source_fingerprint=COALESCE(excluded.source_fingerprint, artifact_processing_status.source_fingerprint),
-                processor_version=COALESCE(excluded.processor_version, artifact_processing_status.processor_version),
-                model=COALESCE(excluded.model, artifact_processing_status.model),
-                counts_json=COALESCE(excluded.counts_json, artifact_processing_status.counts_json),
-                fallback_kind=excluded.fallback_kind,
-                started_at=CASE WHEN excluded.status = 'running' THEN CURRENT_TIMESTAMP
-                                ELSE artifact_processing_status.started_at END,
-                finished_at=CASE WHEN excluded.status IN ('pending', 'running', 'stale') THEN NULL
-                                 ELSE CURRENT_TIMESTAMP END,
-                updated_at=CURRENT_TIMESTAMP
-        ''', (
-            item_key, attachment, artifact_type, status, reason_code, message,
-            int(bool(retryable)), attempts, source_fingerprint, processor_version, model,
-            _status_counts_json(counts), fallback_kind,
-        ))
-        conn.execute('''
-            INSERT INTO artifact_processing_events
-                (item_key, attachment_key, artifact_type, from_status, to_status,
-                 reason_code, message, run_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (item_key, attachment, artifact_type, previous_status, status, reason_code, message, run_id))
-        row = conn.execute('''
-            SELECT * FROM artifact_processing_status
-            WHERE item_key = ? AND attachment_key = ? AND artifact_type = ?
-        ''', (item_key, attachment, artifact_type)).fetchone()
-        conn.commit()
-        return dict(row)
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
+    return _artifact_repository().mark_status(
+        item_key, artifact_type, status, attachment_key=attachment_key,
+        reason_code=reason_code, message=message, retryable=retryable,
+        source_fingerprint=source_fingerprint, processor_version=processor_version,
+        model=model, counts=counts, fallback_kind=fallback_kind, run_id=run_id,
+    )
 
 
 def drop_stale_identity_rows(stale_item_key: str, current_item_key: str) -> int:
@@ -3817,87 +3682,24 @@ def purge_artifact_status_for_attachments(attachment_keys: Iterable[str]) -> int
 
 
 def get_item_processing_status(item_key: str) -> List[Dict[str, Any]]:
-    conn = get_db_connection()
-    try:
-        rows = conn.execute('''
-            SELECT * FROM artifact_processing_status
-            WHERE item_key = ? ORDER BY attachment_key, artifact_type
-        ''', (item_key,)).fetchall()
-        result = []
-        for row in rows:
-            record = dict(row)
-            try:
-                record["counts"] = json.loads(record.pop("counts_json") or "{}")
-            except (TypeError, ValueError):
-                record["counts"] = {}
-            result.append(record)
-        return result
-    finally:
-        conn.close()
+    return _artifact_repository().list_for_item(item_key)
 
 
 def get_artifact_processing_statuses(
     *, artifact_type: Optional[str] = None, reason_code: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Return artifact states across items for deterministic maintenance queues."""
-    clauses: List[str] = []
-    params: List[Any] = []
-    if artifact_type is not None:
-        clauses.append("artifact_type = ?")
-        params.append(artifact_type)
-    if reason_code is not None:
-        clauses.append("reason_code = ?")
-        params.append(reason_code)
-    where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
-    conn = get_db_connection()
-    try:
-        rows = conn.execute(
-            "SELECT * FROM artifact_processing_status" + where
-            + " ORDER BY item_key, attachment_key, artifact_type",
-            params,
-        ).fetchall()
-        result: List[Dict[str, Any]] = []
-        for row in rows:
-            record = dict(row)
-            try:
-                record["counts"] = json.loads(record.pop("counts_json") or "{}")
-            except (TypeError, ValueError):
-                record["counts"] = {}
-            result.append(record)
-        return result
-    finally:
-        conn.close()
+    return _artifact_repository().list_statuses(
+        artifact_type=artifact_type, reason_code=reason_code,
+    )
 
 
 def get_processing_status_summary() -> List[Dict[str, Any]]:
-    conn = get_db_connection()
-    try:
-        rows = conn.execute('''
-            SELECT artifact_type, status, COUNT(*) AS count
-            FROM artifact_processing_status
-            GROUP BY artifact_type, status ORDER BY artifact_type, status
-        ''').fetchall()
-        return [dict(row) for row in rows]
-    finally:
-        conn.close()
+    return _artifact_repository().status_summary()
 
 
 def recover_interrupted_artifacts(*, older_than_seconds: int = 3600) -> int:
     """Turn abandoned ``running`` rows into retryable failures on startup."""
-    conn = get_db_connection()
-    try:
-        rows = conn.execute('''
-            SELECT item_key, attachment_key, artifact_type FROM artifact_processing_status
-            WHERE status = 'running'
-              AND started_at IS NOT NULL
-              AND CAST(strftime('%s', 'now') AS INTEGER) - CAST(strftime('%s', started_at) AS INTEGER) >= ?
-        ''', (max(0, int(older_than_seconds)),)).fetchall()
-    finally:
-        conn.close()
-    for row in rows:
-        mark_artifact_status(
-            str(row["item_key"]), str(row["artifact_type"]), "failed",
-            attachment_key=str(row["attachment_key"] or ""), reason_code="interrupted",
-            message="Previous maintenance run did not finish.", retryable=True,
-        )
-    return len(rows)
+    return _artifact_repository().recover_interrupted(
+        older_than_seconds=older_than_seconds,
+    )
