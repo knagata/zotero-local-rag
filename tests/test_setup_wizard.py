@@ -371,6 +371,9 @@ class SetupWizardTests(unittest.TestCase):
             }
             written = {}
             with patch.object(
+                setup_wizard.db_lifecycle, "existing_database_state",
+                return_value=setup_wizard.db_lifecycle.DB_STATE_POPULATED,
+            ), patch.object(
                 setup_wizard, "read_env_file", return_value=dict(config),
             ), patch.object(
                 setup_wizard, "write_env_file",
