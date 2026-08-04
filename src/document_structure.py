@@ -105,6 +105,19 @@ def _metadata_path(metadata: Dict[str, Any]) -> List[str]:
     return [value for value in values if value]
 
 
+def _metadata_roles(metadata: Dict[str, Any], path_length: int) -> List[str]:
+    raw = metadata.get("structure_roles")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (TypeError, ValueError):
+            raw = []
+    if not isinstance(raw, (list, tuple)):
+        return []
+    roles = [str(value).strip() for value in raw[:path_length]]
+    return roles if len(roles) == path_length else []
+
+
 def _heading_type(depth: int) -> str:
     if depth == 1:
         return "chapter"
@@ -468,6 +481,7 @@ def build_document_structure(item_key: str, chunks: Sequence[Dict[str, Any]]) ->
             chunk = attachment_chunks[index]
             metadata = chunk.get("metadata") or {}
             path = _metadata_path(metadata)
+            roles = _metadata_roles(metadata, len(path))
             zone = normalise_zone(metadata.get("zone"))
             run = [chunk]
             index += 1
@@ -496,6 +510,7 @@ def build_document_structure(item_key: str, chunks: Sequence[Dict[str, Any]]) ->
                         locator={
                             "attachment_key": attachment_key, "path": path[: path_index + 1],
                             "first_chunk_id": run[0]["id"],
+                            **({"heading_role": roles[path_index]} if roles else {}),
                         }, confidence=0.85,
                     )
                     active_path.append(title)

@@ -13,6 +13,7 @@ EPUB:
 """
 from __future__ import annotations
 
+import re
 import unicodedata
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -243,6 +244,132 @@ def get_epub_toc_tree(epub_path: str) -> List[Dict[str, Any]]:
 
 def get_epub_chapter_index_to_path(epub_path: str) -> Dict[int, List[str]]:
     """Map EPUB spine document indexes to their complete TOC title paths."""
+    entries = get_epub_chapter_index_to_toc_entries(epub_path)
+    return {
+        index: list(records[0]["path"])
+        for index, records in entries.items()
+        if records
+    }
+
+
+_PART_RE = re.compile(
+    r"^(?:第\s*(?:[0-9一二三四五六七八九十百]+|[IVXLCDM]+)\s*部|"
+    r"PART\s+(?:[IVXLCDM]+|ONE|TWO|THREE|FOUR|FIVE|SIX|SEVEN|EIGHT|NINE|TEN)|"
+    r"[IVXLCDM]+\s+THE\s+)", re.IGNORECASE,
+)
+_CHAPTER_RE = re.compile(
+    r"^(?:第?\s*[0-9一二三四五六七八九十百]+\s*(?:章|講)|"
+    r"序章|終章|序論|結論|序\s|はじめに|おわりに|補考(?:\s|$)|[注註](?:\s|$))",
+    re.IGNORECASE,
+)
+_EXPLICIT_SECTION_RE = re.compile(
+    r"^第?\s*[0-9一二三四五六七八九十百]+\s*節(?:\s|$)",
+)
+_NUMBERED_HEADING_RE = re.compile(
+    r"^(?:[0-9]+[.)．。:]?|[一二三四五六七八九十百]+)(?:\s|　)",
+)
+_JAPANESE_NOTE_CHILD_RE = re.compile(
+    r"^[［\[](?:第\s*[0-9０-９一二三四五六七八九十百]+\s*章|序章|終章)[］\]]$",
+)
+_BACK_MATTER_RE = re.compile(
+    r"^(?:あとがき|謝辞|参考文献|主要参考文献|索引|奥付|著者略歴|脚注|"
+    r"ACKNOWLEDGMENTS?|CREDITS?|GLOSSARY|INDEX|NOTES?|ENDNOTES?|FOOTNOTES?|"
+    r"BIBLIOGRAPHY|REFERENCES|FURTHER READING|ABOUT THE AUTHOR|BACK MATTER)$",
+    re.IGNORECASE,
+)
+
+
+def _toc_title_kind(title: str) -> str:
+    value = " ".join(unicodedata.normalize("NFKC", title).split())
+    if _PART_RE.match(value):
+        return "part"
+    if _CHAPTER_RE.match(value):
+        return "chapter"
+    if _EXPLICIT_SECTION_RE.match(value):
+        return "section"
+    if _NUMBERED_HEADING_RE.match(value):
+        return "numbered"
+    if _BACK_MATTER_RE.match(value):
+        return "back_matter"
+    return "other"
+
+
+def _recover_flat_toc_paths(tree: List[Dict[str, Any]]) -> Dict[int, List[str]]:
+    """Recover only unambiguous chapter/section relations in a flat TOC.
+
+    Some Japanese EPUB producers emit every navigation point at depth one even
+    though chapter and section labels are explicit.  Keeping this deliberately
+    narrow avoids inventing hierarchy for ordinary unnumbered navigation lists.
+    Keys are object identities so repeated titles remain independent.
+    """
+    if not tree or any(node.get("children") for node in tree):
+        return {}
+    recovered: Dict[int, List[str]] = {}
+    part: str | None = None
+    chapter: str | None = None
+    section: str | None = None
+    kinds = [_toc_title_kind(str(node.get("title") or "").strip()) for node in tree]
+    for index, node in enumerate(tree):
+        title = str(node.get("title") or "").strip()
+        kind = kinds[index]
+        next_kind = kinds[index + 1] if index + 1 < len(kinds) else ""
+        if kind == "part":
+            part, chapter, section = title, None, None
+            path = [title]
+        elif kind == "chapter":
+            if "講" in unicodedata.normalize("NFKC", title):
+                part = None
+            chapter = title
+            section = None
+            path = [*([part] if part else []), title]
+        elif kind == "section" and chapter:
+            section = title
+            path = [*([part] if part else []), chapter, title]
+        elif kind == "numbered":
+            base = [*([part] if part else []), *([chapter] if chapter else [])]
+            path = [*base, title] if base else [title]
+            # A plain numbered heading is a leaf unless an explicit lower
+            # level follows; keeping it out of state prevents the next sibling
+            # from being nested beneath it.
+            section = None
+        elif chapter == "注" and _JAPANESE_NOTE_CHILD_RE.match(title):
+            path = [*([part] if part else []), chapter, title]
+        elif part and next_kind == "numbered":
+            # Flat English contents commonly express Part -> unnumbered
+            # chapter/layer -> numbered subsection solely through ordering.
+            chapter, section = title, None
+            path = [part, title]
+        elif kind == "back_matter":
+            part = chapter = section = None
+            path = [title]
+        elif section:
+            path = [*([part] if part else []), *([chapter] if chapter else []), section, title]
+        elif chapter:
+            path = [*([part] if part else []), chapter, title]
+        else:
+            # An unnumbered item following a numbered leaf can begin a new
+            # chapter only when the next item proves it by being numbered.
+            # Otherwise it is independent paratext rather than invented
+            # ancestry.
+            if chapter and next_kind == "numbered":
+                chapter, section = title, None
+                path = [*([part] if part else []), title]
+            else:
+                part = chapter = section = None
+                path = [title]
+        recovered[id(node)] = path
+    return recovered
+
+
+def get_epub_chapter_index_to_toc_entries(
+    epub_path: str,
+) -> Dict[int, List[Dict[str, Any]]]:
+    """Map each EPUB document to all TOC paths and fragment anchors it owns.
+
+    Unlike :func:`get_epub_chapter_index_to_path`, this retains multiple
+    navigation points targeting one XHTML document.  Extractors can therefore
+    switch from a chapter path to its section path at the matching element id.
+    """
     if not _HAS_EBOOKLIB or _ebooklib_epub is None or _ITEM_DOCUMENT is None:
         return {}
     try:
@@ -250,31 +377,110 @@ def get_epub_chapter_index_to_path(epub_path: str) -> Dict[int, List[str]]:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             book = _ebooklib_epub.read_epub(str(epub_path))
-        tree = build_epub_toc_tree(list(book.toc or []))
-        path_by_href: Dict[str, List[str]] = {}
-
-        def walk(nodes: List[Dict[str, Any]], prefix: List[str]) -> None:
-            for node in nodes:
-                current = [*prefix, str(node["title"])]
-                href = str(node.get("href") or "")
-                if href and href not in path_by_href:
-                    path_by_href[href] = current
-                walk(list(node.get("children") or []), current)
-
-        walk(tree, [])
-        result: Dict[int, List[str]] = {}
+        entries_by_href = _toc_entries_by_href(build_epub_toc_tree(list(book.toc or [])))
+        result: Dict[int, List[Dict[str, Any]]] = {}
         for index, item in enumerate(book.get_items_of_type(_ITEM_DOCUMENT)):
             name = str(item.get_name() or "")
-            path = path_by_href.get(name)
-            if path is None:
+            records = entries_by_href.get(name)
+            if records is None:
                 basename = name.split("/")[-1]
-                path = next(
-                    (candidate for href, candidate in path_by_href.items() if href.split("/")[-1] == basename),
-                    None,
-                )
-            if path:
-                result[index] = path
+                matches = [
+                    candidate for href, candidate in entries_by_href.items()
+                    if href.split("/")[-1] == basename
+                ]
+                records = matches[0] if len(matches) == 1 else None
+            if records:
+                result[index] = records
         return result
+    except Exception:
+        return {}
+
+
+def _toc_entries_by_href(
+    tree: List[Dict[str, Any]],
+) -> Dict[str, List[Dict[str, Any]]]:
+    flat_recovery = _recover_flat_toc_paths(tree)
+    entries: Dict[str, List[Dict[str, Any]]] = {}
+    roman_root_candidates = [
+        node for node in tree
+        if re.match(r"^[IVXLCDM]+\s+[A-Z]", str(node.get("title") or ""))
+    ]
+    roman_part_root_ids = {
+        id(node) for node in roman_root_candidates
+        if any(
+            _toc_title_kind(str(child.get("title") or "")) == "numbered"
+            for child in node.get("children") or []
+        )
+    }
+
+    def walk(nodes: List[Dict[str, Any]], prefix: List[str], prefix_roles: List[str]) -> None:
+        for node in nodes:
+            current = flat_recovery.get(id(node)) or [*prefix, str(node["title"])]
+            if flat_recovery:
+                current_roles = _roles_for_toc_path(current)
+            else:
+                kind = _toc_title_kind(str(node.get("title") or ""))
+                if not prefix_roles:
+                    role = "part" if kind == "part" or id(node) in roman_part_root_ids else "chapter"
+                elif prefix_roles[-1] == "part":
+                    role = "chapter"
+                elif prefix_roles[-1] == "chapter":
+                    role = "section"
+                else:
+                    role = "subsection"
+                current_roles = [*prefix_roles, role]
+            href = str(node.get("href") or "")
+            if href:
+                entries.setdefault(href, []).append({
+                    "fragment": str(node.get("fragment") or ""),
+                    "path": current,
+                    "roles": current_roles,
+                })
+            walk(list(node.get("children") or []), current, current_roles)
+
+    walk(tree, [], [])
+    return entries
+
+
+def _roles_for_toc_path(path: List[str]) -> List[str]:
+    """Describe semantic heading roles retained alongside a title path."""
+    if not path:
+        return []
+    kinds = [_toc_title_kind(title) for title in path]
+    roles = ["chapter"] * len(path)
+    first_is_part = kinds[0] == "part"
+    # A nested root with numbered children is also a publisher-level Part even
+    # when its title is not literally ``Part`` (for example Cultural Analytics
+    # uses ``I Studying Culture at Scale``).
+    if len(path) >= 3 and kinds[1] in {"numbered", "chapter"}:
+        first_is_part = True
+    if first_is_part:
+        roles[0] = "part"
+    for index in range(1, len(path)):
+        if index == 1 and first_is_part:
+            title = unicodedata.normalize("NFKC", path[index])
+            japanese_direct_section = (
+                kinds[0] == "part" and kinds[index] == "numbered"
+                and "章" not in title and len(path) == 2
+            )
+            roles[index] = "section" if japanese_direct_section else "chapter"
+        elif index == 1:
+            roles[index] = "section"
+        else:
+            roles[index] = "section" if roles[index - 1] == "chapter" else "subsection"
+    return roles
+
+
+def get_epub_href_to_toc_entries(epub_path: str) -> Dict[str, List[Dict[str, Any]]]:
+    """Return fragment-aware TOC entries keyed by their archive document href."""
+    if not _HAS_EBOOKLIB or _ebooklib_epub is None:
+        return {}
+    try:
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            book = _ebooklib_epub.read_epub(str(epub_path))
+        return _toc_entries_by_href(build_epub_toc_tree(list(book.toc or [])))
     except Exception:
         return {}
 

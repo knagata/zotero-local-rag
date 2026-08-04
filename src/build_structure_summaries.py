@@ -11,6 +11,8 @@ from pathlib import Path
 import hashlib
 import json
 import os
+import re
+import unicodedata
 
 try:
     from .summary_core import (
@@ -43,7 +45,7 @@ except ImportError:  # pragma: no cover
 load_dotenv_native(Path(__file__).resolve().parents[1])
 
 
-PROMPT_VERSION = "structure-v3-1"
+PROMPT_VERSION = "structure-v3-2"
 MAX_PARENT_INPUT_CHARS = 30_000
 #: Below this, a summary costs more than it saves. Summary length is nearly
 #: independent of source length (median 248 chars for a 400-1,000 char leaf,
@@ -58,6 +60,104 @@ MAX_PARENT_INPUT_CHARS = 30_000
 MIN_LEAF_CHARS = 1_000
 ROOT = Path(__file__).resolve().parents[1]
 CHROMA_DIR = Path(os.environ.get("CHROMA_DIR", ROOT / "data" / "chroma"))
+
+_PART_TITLE_RE = re.compile(
+    r"^(?:第\s*(?:[0-9一二三四五六七八九十百]+|[IVXLCDM]+)\s*部|"
+    r"PART\s+(?:[IVXLCDM]+|ONE|TWO|THREE|FOUR|FIVE|SIX|SEVEN|EIGHT|NINE|TEN)|"
+    r"[IVXLCDM]+\s+[A-Z])", re.IGNORECASE,
+)
+_NUMBERED_CHAPTER_RE = re.compile(
+    r"^(?:第?\s*[0-9一二三四五六七八九十百]+\s*(?:章|講)|"
+    r"(?:CHAPTER\s+)?[0-9]+(?:\s*[:.]|\s+))", re.IGNORECASE,
+)
+
+
+def _chapter_summary_targets(
+    nodes: List[Dict[str, Any]], children: Dict[str, List[Dict[str, Any]]],
+) -> set[str]:
+    """Choose structural chapter boundaries independently of heading detail.
+
+    Fine-grained headings remain in the canonical tree, but summaries are
+    generated from the raw text below a chapter boundary.  A top-level Part is
+    summarized only when it has no identifiable chapter children.
+    """
+    by_id = {str(node["node_id"]): node for node in nodes}
+    role_by_id = {
+        str(node["node_id"]): str((node.get("source_locator") or {}).get("heading_role") or "")
+        for node in nodes
+    }
+    targets = {node_id for node_id, role in role_by_id.items() if role == "chapter"}
+
+    def has_chapter_descendant(node_id: str) -> bool:
+        for child in children.get(node_id, []):
+            child_id = str(child["node_id"])
+            if role_by_id.get(child_id) == "chapter" or has_chapter_descendant(child_id):
+                return True
+        return False
+
+    targets.update(
+        node_id for node_id, role in role_by_id.items()
+        if role == "part" and not has_chapter_descendant(node_id)
+    )
+    for node in nodes:
+        if node.get("node_type") != "chapter" or not node.get("title"):
+            continue
+        if role_by_id.get(str(node["node_id"])):
+            continue
+        parent = by_id.get(str(node.get("parent_node_id") or ""))
+        if not parent or parent.get("node_type") != "attachment_root":
+            continue
+        title = " ".join(unicodedata.normalize("NFKC", str(node["title"])).split())
+        if not _PART_TITLE_RE.match(title):
+            targets.add(str(node["node_id"]))
+            continue
+        japanese_part = bool(re.match(r"^第\s*", title))
+        candidates: List[Dict[str, Any]] = []
+        for child in children.get(str(node["node_id"]), []):
+            child_title = " ".join(
+                unicodedata.normalize("NFKC", str(child.get("title") or "")).split()
+            )
+            titled_grandchildren = [
+                grandchild for grandchild in children.get(str(child["node_id"]), [])
+                if grandchild.get("title")
+            ]
+            labelled_chapter = bool(
+                re.match(r"^第?\s*[0-9一二三四五六七八九十百]+\s*章", child_title)
+                if japanese_part else _NUMBERED_CHAPTER_RE.match(child_title)
+            )
+            if labelled_chapter or len(titled_grandchildren) >= 2:
+                candidates.append(child)
+        if candidates:
+            targets.update(str(child["node_id"]) for child in candidates)
+        else:
+            targets.add(str(node["node_id"]))
+    return targets
+
+
+def _descendant_chunk_scope(
+    node_id: str,
+    children: Dict[str, List[Dict[str, Any]]],
+) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Collect ordered body chunk refs and explicit exclusions below a node."""
+    included: List[Dict[str, Any]] = []
+    excluded: List[Dict[str, Any]] = []
+
+    def walk(current_id: str) -> None:
+        for child in children.get(current_id, []):
+            direct = list(child.get("chunks") or [])
+            if direct:
+                if child.get("summary_policy", "include") == "include":
+                    included.extend(direct)
+                else:
+                    excluded.append({
+                        "node_id": str(child["node_id"]),
+                        "zone": child.get("zone", "body"),
+                        "reason": "summary_policy_exclude",
+                    })
+            walk(str(child["node_id"]))
+
+    walk(node_id)
+    return included, excluded
 
 
 def _input_fingerprint(payload: Dict[str, Any]) -> str:
@@ -380,6 +480,16 @@ def build_structure_summaries(
     for node in nodes:
         if node.get("parent_node_id"):
             children[str(node["parent_node_id"])].append(node)
+    chapter_targets = _chapter_summary_targets(nodes, children)
+    target_ancestor: Dict[str, str] = {}
+    for node in nodes:
+        current = node
+        while current.get("parent_node_id"):
+            parent_id = str(current["parent_node_id"])
+            if parent_id in chapter_targets:
+                target_ancestor[str(node["node_id"])] = parent_id
+                break
+            current = by_id.get(parent_id) or {}
     generated: Dict[str, Dict[str, Any]] = {}
     excluded_by_node: Dict[str, List[Dict[str, Any]]] = {}
     skipped = 0
@@ -387,7 +497,17 @@ def build_structure_summaries(
     try:
         for node in sorted(nodes, key=lambda row: (int(row["depth"]), str(row.get("first_chunk_id") or "")), reverse=True):
             node_id = str(node["node_id"])
-            direct = node.get("chunks") or []
+            direct = list(node.get("chunks") or [])
+            aggregate_exclusions: List[Dict[str, Any]] = []
+            if node_id in chapter_targets:
+                direct, aggregate_exclusions = _descendant_chunk_scope(node_id, children)
+            elif direct and node_id in target_ancestor:
+                # The raw text is summarized once at its chapter boundary.
+                # Keep the detailed node for navigation/retrieval without
+                # paying for a separate short-section summary.
+                skipped += 1
+                excluded_by_node[node_id] = []
+                continue
             title = _nearest_title(node, by_id)
             if direct:
                 if node.get("summary_policy", "include") != "include":
@@ -463,7 +583,7 @@ def build_structure_summaries(
                     "node_id": node_id, "summary": summary, "kind": kind, "model": model_name,
                     "quality": quality, "source_chunk_count": len(source_chunks), "source_chars": source_chars,
                 }
-                excluded_by_node[node_id] = []
+                excluded_by_node[node_id] = list(aggregate_exclusions)
                 save_document_node_summary(
                     node_id, item_key, summary, summary_kind=kind, model=model_name,
                     prompt_version=PROMPT_VERSION, source_fingerprint=structure["source_fingerprint"],
@@ -471,7 +591,8 @@ def build_structure_summaries(
                     quality_status=quality,
                     input_scope={
                         "included_chunk_ids": [str(row["id"]) for row in source_chunks],
-                        "excluded": [], "input_content_fingerprint": input_fingerprint,
+                        "excluded": list(aggregate_exclusions),
+                        "input_content_fingerprint": input_fingerprint,
                         **({"reused_from_node_id": str(cached.get("node_id"))} if cached else {}),
                     },
                 )

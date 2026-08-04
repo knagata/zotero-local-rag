@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import unittest
 
-from src.chapter_detect import build_epub_toc_tree, build_pdf_outline_tree
+from src.chapter_detect import (
+    _recover_flat_toc_paths,
+    _toc_entries_by_href,
+    build_epub_toc_tree,
+    build_pdf_outline_tree,
+)
 
 
 class _Link:
@@ -32,6 +37,146 @@ class ChapterDetectTests(unittest.TestCase):
         self.assertEqual(child["href"], "chapter.xhtml")
         self.assertEqual(child["fragment"], "start")
         self.assertEqual(child["depth"], 2)
+
+    def test_flat_japanese_toc_recovers_only_explicit_chapter_sections(self):
+        tree = build_epub_toc_tree([
+            _Link("序章", "intro.xhtml"),
+            _Link("一 本書の主題", "intro.xhtml#a"),
+            _Link("二 方法", "intro.xhtml#b"),
+            _Link("第１章 歴史", "one.xhtml"),
+            _Link("一 出発点", "one.xhtml#a"),
+            _Link("注", "notes.xhtml"),
+            _Link("［第１章］", "notes.xhtml#one"),
+            _Link("Notes", "english-notes.xhtml"),
+            _Link("About the Author", "author.xhtml"),
+            _Link("参考文献", "refs.xhtml"),
+        ])
+        paths = _recover_flat_toc_paths(tree)
+        self.assertEqual(paths[id(tree[1])], ["序章", "一 本書の主題"])
+        self.assertEqual(paths[id(tree[4])], ["第１章 歴史", "一 出発点"])
+        self.assertEqual(paths[id(tree[6])], ["注", "［第１章］"])
+        self.assertEqual(paths[id(tree[7])], ["Notes"])
+        self.assertEqual(paths[id(tree[8])], ["About the Author"])
+        self.assertEqual(paths[id(tree[9])], ["参考文献"])
+
+    def test_same_epub_document_keeps_each_nested_fragment_path(self):
+        tree = build_epub_toc_tree([(
+            _Link("I Studying Culture at Scale", "part.xhtml"),
+            [(
+                _Link("2 The Science of Culture?", "chapter.xhtml#chapter"),
+                [_Link("Analyzing and Visualizing", "chapter.xhtml#section")],
+            )],
+        )])
+        entries = _toc_entries_by_href(tree)["chapter.xhtml"]
+        self.assertEqual(entries, [
+            {
+                "fragment": "chapter",
+                "path": ["I Studying Culture at Scale", "2 The Science of Culture?"],
+                "roles": ["part", "chapter"],
+            },
+            {
+                "fragment": "section",
+                "path": [
+                    "I Studying Culture at Scale", "2 The Science of Culture?",
+                    "Analyzing and Visualizing",
+                ],
+                "roles": ["part", "chapter", "section"],
+            },
+        ])
+
+    def test_nested_chapter_with_subsections_is_not_mislabelled_as_part(self):
+        tree = build_epub_toc_tree([(
+            _Link("Chapter 1", "chapter.xhtml#chapter"),
+            [(
+                _Link("Section A", "chapter.xhtml#section"),
+                [_Link("Detail", "chapter.xhtml#detail")],
+            )],
+        )])
+        entries = _toc_entries_by_href(tree)["chapter.xhtml"]
+        self.assertEqual(entries[0]["roles"], ["chapter"])
+        self.assertEqual(entries[1]["roles"], ["chapter", "section"])
+        self.assertEqual(entries[2]["roles"], ["chapter", "section", "subsection"])
+
+    def test_kanji_numbered_direct_part_child_is_a_section_role(self):
+        tree = build_epub_toc_tree([
+            _Link("第Ⅰ部 交換様式", "part.xhtml"),
+            _Link("一 生産から交換へ", "part.xhtml#one"),
+        ])
+        entries = _toc_entries_by_href(tree)["part.xhtml"]
+        self.assertEqual(entries[1]["roles"], ["part", "section"])
+
+    def test_roman_numbered_root_chapters_are_not_automatically_parts(self):
+        tree = build_epub_toc_tree([
+            (_Link("I Introduction", "one.xhtml"), [
+                _Link("Background", "one.xhtml#background"),
+            ]),
+            (_Link("II Methods", "two.xhtml"), [
+                _Link("Sampling", "two.xhtml#sampling"),
+            ]),
+        ])
+        entries = _toc_entries_by_href(tree)
+        self.assertEqual(entries["one.xhtml"][0]["roles"], ["chapter"])
+        self.assertEqual(entries["one.xhtml"][1]["roles"], ["chapter", "section"])
+
+    def test_flat_toc_recovers_part_chapter_section_patterns(self):
+        tree = build_epub_toc_tree([
+            _Link("第Ⅱ部 世界帝国", "part.xhtml"),
+            _Link("１章 共同体と国家", "chapter.xhtml"),
+            _Link("１ 未開社会と戦争", "chapter.xhtml#one"),
+            _Link("２ 国家の誕生", "chapter.xhtml#two"),
+            _Link("第１講 青銅器文化", "lecture.xhtml"),
+            _Link("１ 東南アジア地域の特徴", "lecture.xhtml#one"),
+        ])
+        paths = _recover_flat_toc_paths(tree)
+        self.assertEqual(paths[id(tree[1])], ["第Ⅱ部 世界帝国", "１章 共同体と国家"])
+        self.assertEqual(
+            paths[id(tree[2])],
+            ["第Ⅱ部 世界帝国", "１章 共同体と国家", "１ 未開社会と戦争"],
+        )
+        self.assertEqual(
+            paths[id(tree[5])],
+            ["第１講 青銅器文化", "１ 東南アジア地域の特徴"],
+        )
+
+    def test_flat_toc_recovers_explicit_sections_and_unnumbered_children(self):
+        tree = build_epub_toc_tree([
+            _Link("第一章 渋谷に誕生した盛り", "chapter.xhtml"),
+            _Link("第一節 渋谷に生まれたコミュニティ", "section.xhtml"),
+            _Link("茶髪になった同級生", "section.xhtml#a"),
+            _Link("学校の枠を超えたコミュニティ", "section.xhtml#b"),
+            _Link("第二節 雑誌が作った空間", "section2.xhtml"),
+            _Link("外見を極める女の子", "section2.xhtml#a"),
+        ])
+        paths = _recover_flat_toc_paths(tree)
+        self.assertEqual(
+            paths[id(tree[2])],
+            [
+                "第一章 渋谷に誕生した盛り",
+                "第一節 渋谷に生まれたコミュニティ",
+                "茶髪になった同級生",
+            ],
+        )
+        self.assertEqual(paths[id(tree[5])][-2:], ["第二節 雑誌が作った空間", "外見を極める女の子"])
+
+    def test_flat_english_toc_uses_numbered_followers_to_find_chapters(self):
+        tree = build_epub_toc_tree([
+            _Link("II The Layers", "part.xhtml"),
+            _Link("Earth Layer", "earth.xhtml"),
+            _Link("16. Discovering Computation", "earth.xhtml#s16"),
+            _Link("17. Digestion", "earth.xhtml#s17"),
+            _Link("Cloud Layer", "cloud.xhtml"),
+            _Link("24. Platform Geography", "cloud.xhtml#s24"),
+        ])
+        paths = _recover_flat_toc_paths(tree)
+        self.assertEqual(paths[id(tree[1])], ["II The Layers", "Earth Layer"])
+        self.assertEqual(
+            paths[id(tree[2])],
+            ["II The Layers", "Earth Layer", "16. Discovering Computation"],
+        )
+        self.assertEqual(
+            paths[id(tree[5])],
+            ["II The Layers", "Cloud Layer", "24. Platform Geography"],
+        )
 
 
 if __name__ == "__main__":

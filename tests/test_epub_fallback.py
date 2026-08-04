@@ -74,6 +74,80 @@ def test_leaf_div_fallback_owns_only_leaf_text_and_excludes_navigation():
     assert blocks[0]["extraction_engine"] == "epub_dom_leaf_fallback"
 
 
+def test_epub_fragment_toc_paths_survive_full_extraction(tmp_path: Path):
+    from ebooklib import epub
+
+    path = tmp_path / "fragment-hierarchy.epub"
+    book = epub.EpubBook()
+    book.set_identifier("fragment-hierarchy")
+    book.set_title("Fragment hierarchy")
+    book.set_language("en")
+    chapter = epub.EpubHtml(title="Chapter 1", file_name="chapter.xhtml", lang="en")
+    prose = "Complete scholarly evidence for this hierarchy. " * 20
+    chapter.content = f"""<html><body>
+      <h1 id="chapter">Chapter 1</h1><p>{prose}</p>
+      <h1 id="section-a">Section A</h1><p>{prose}</p>
+      <h1 id="section-b">Section B</h1><p>{prose}</p>
+    </body></html>"""
+    book.add_item(chapter)
+    chapter_link = epub.Link("chapter.xhtml#chapter", "Chapter 1", "chapter-link")
+    book.toc = ((
+        epub.Section("Part I"),
+        ((chapter_link, (
+            epub.Link("chapter.xhtml#section-a", "Section A", "section-a-link"),
+            epub.Link("chapter.xhtml#section-b", "Section B", "section-b-link"),
+        )),),
+    ),)
+    book.add_item(epub.EpubNcx())
+    book.add_item(epub.EpubNav())
+    book.spine = ["nav", chapter]
+    epub.write_epub(str(path), book)
+
+    chunks, quality = extract_chunks_from_epub_snapshot(path, "ATTACH01", {})
+    paths = {tuple(metadata.get("structure_path") or []) for _id, _text, metadata in chunks}
+    assert ("Part I", "Chapter 1") in paths
+    assert ("Part I", "Chapter 1", "Section A") in paths
+    assert ("Part I", "Chapter 1", "Section B") in paths
+    assert quality["text_spines"]
+
+
+def test_epub_carries_toc_parent_across_unlinked_spine_documents(tmp_path: Path):
+    from ebooklib import epub
+
+    path = tmp_path / "split-chapter.epub"
+    book = epub.EpubBook()
+    book.set_identifier("split-chapter")
+    book.set_title("Split chapter")
+    book.set_language("en")
+    prose = "Evidence continuing through one chapter across source files. " * 20
+    first = epub.EpubHtml(title="Chapter", file_name="first.xhtml", lang="en")
+    first.content = f"<html><body><h1 id='chapter'>Chapter 1</h1><p>{prose}</p></body></html>"
+    second = epub.EpubHtml(title="Continuation", file_name="second.xhtml", lang="en")
+    second.content = f"<html><body><h2>Section A</h2><p>{prose}</p></body></html>"
+    bibliography = epub.EpubHtml(title="Bibliography", file_name="bibliography.xhtml", lang="en")
+    bibliography.content = f"<html><body><h1>Bibliography</h1><p>{prose}</p></body></html>"
+    book.add_item(first)
+    book.add_item(second)
+    book.add_item(bibliography)
+    book.toc = ((
+        epub.Section("Part I"),
+        (epub.Link("first.xhtml#chapter", "Chapter 1", "chapter-link"),),
+    ),)
+    book.add_item(epub.EpubNcx())
+    book.add_item(epub.EpubNav())
+    book.spine = ["nav", first, second, bibliography]
+    epub.write_epub(str(path), book)
+
+    chunks, _quality = extract_chunks_from_epub_snapshot(path, "ATTACH02", {})
+    paths = {
+        tuple(metadata.get("structure_path") or [])
+        for _id, _text, metadata in chunks
+    }
+    assert ("Part I", "Chapter 1", "Section A") in paths
+    assert ("Bibliography",) in paths
+    assert not any(path[-1:] == ("Bibliography",) and len(path) > 1 for path in paths)
+
+
 def test_profile_uses_spine_order_and_preserves_rtl(tmp_path: Path):
     path = _epub(
         tmp_path / "rtl.epub",

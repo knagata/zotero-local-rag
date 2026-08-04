@@ -4,10 +4,12 @@ from __future__ import annotations
 import os
 import posixpath
 import re
+import unicodedata
 import zipfile
 from html import unescape
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
+from urllib.parse import unquote
 
 from bs4 import BeautifulSoup  # type: ignore
 
@@ -47,12 +49,12 @@ except Exception:  # pragma: no cover
     ITEM_DOCUMENT = None
 
 try:
-    from .chapter_detect import get_epub_chapter_index_to_path as _get_epub_toc_path_map
+    from .chapter_detect import get_epub_href_to_toc_entries as _get_epub_href_toc_entries
 except Exception:  # pragma: no cover
     try:
-        from chapter_detect import get_epub_chapter_index_to_path as _get_epub_toc_path_map
+        from chapter_detect import get_epub_href_to_toc_entries as _get_epub_href_toc_entries
     except Exception:
-        _get_epub_toc_path_map = None  # type: ignore
+        _get_epub_href_toc_entries = None  # type: ignore
 
 
 HTML_SCRIPT_STYLE_RE = re.compile(r"(?is)<(script|style).*?>.*?(</\1>)")
@@ -70,6 +72,14 @@ _LEAF_CONTAINER_EXCLUDED_TOKENS = {
 # paragraph prose.  A real heading longer than this is not credible; retaining
 # it as body text prevents a malformed tag from deleting an entire chapter.
 _MALFORMED_HEADING_BODY_CHARS = 240
+_INDEPENDENT_HEADING_RE = re.compile(
+    r"^(?:第?\s*[0-9０-９一二三四五六七八九十百]+\s*(?:章|講)|序章|終章|"
+    r"PART\s+(?:[IVXLCDM]+|ONE|TWO|THREE|FOUR|FIVE)|CHAPTER\s+\d+|"
+    r"[IVXLCDM]+\s+THE\s+)", re.IGNORECASE,
+)
+_SUBORDINATE_HEADING_RE = re.compile(
+    r"^(?:▼|[0-9０-９]+[.)．。:]?\s|[一二三四五六七八九十百]+\s)",
+)
 # Vocabulary moved to heading_zone (the single definition, shared with
 # pdf_extract.py and docling_extract.py). Aliased here rather than deleted so
 # existing call sites and tests keep working; _zone_for_element itself now
@@ -394,7 +404,197 @@ def _entry_records(element: Any, zone: str) -> List[Dict[str, Any]]:
     ]
 
 
-def extract_dom_blocks(raw_html: str, *, initial_path: List[str] | None = None) -> List[Dict[str, Any]]:
+def _heading_identity(value: str) -> str:
+    value = unicodedata.normalize("NFKC", str(value or "")).casefold()
+    plain = re.sub(r"[^\w\u3040-\u30ff\u3400-\u9fff]+", "", value)
+    without_number = re.sub(r"^\s*(?:chapter\s+)?\d+[.:：]?\s*", "", value)
+    without_number = re.sub(r"[^\w\u3040-\u30ff\u3400-\u9fff]+", "", without_number)
+    return without_number or plain
+
+
+def _clean_heading_title(value: str) -> str:
+    """Remove publisher decoration that is not part of the visible title."""
+    return re.sub(r"^▼\s*", "", " ".join(str(value or "").split())).strip()
+
+
+def _same_heading(left: str, right: str) -> bool:
+    return bool(_heading_identity(left)) and _heading_identity(left) == _heading_identity(right)
+
+
+def _merge_heading_paths(seed: List[str], headings: List[str]) -> List[str]:
+    """Combine canonical TOC ancestry with DOM headings without duplicates."""
+    if not seed:
+        return list(headings)
+    if not headings:
+        return list(seed)
+    limit = min(len(seed), len(headings))
+    for overlap in range(limit, 0, -1):
+        if all(
+            _same_heading(seed[len(seed) - overlap + index], headings[index])
+            for index in range(overlap)
+        ):
+            return [*seed, *headings[overlap:]]
+    # A publisher can retain an ancestor in the DOM stack after the TOC has
+    # advanced at an inline/non-heading anchor.  Align the longest DOM prefix
+    # represented anywhere in the canonical TOC path, then append only new
+    # descendants.
+    represented = 0
+    for seed_index in range(len(seed)):
+        matched = 0
+        while (
+            seed_index + matched < len(seed)
+            and matched < len(headings)
+            and _same_heading(seed[seed_index + matched], headings[matched])
+        ):
+            matched += 1
+        represented = max(represented, matched)
+    if represented:
+        return [*seed, *headings[represented:]]
+    return [*seed, *headings]
+
+
+def _toc_paths_by_position(
+    root: Any,
+    toc_entries: List[Dict[str, Any]] | None,
+) -> tuple[List[str], List[tuple[int, List[str]]]]:
+    """Resolve TOC fragments to source-order DOM positions."""
+    default_path: List[str] = []
+    anchors: List[tuple[int, int, List[str]]] = []
+    positions: Dict[str, int] = {}
+    for position, element in enumerate(root.find_all(True)):
+        element_id = str(element.get("id") or "")
+        if element_id and element_id not in positions:
+            positions[element_id] = position
+    for ordinal, entry in enumerate(toc_entries or []):
+        path = [str(part).strip() for part in entry.get("path") or [] if str(part).strip()]
+        fragment = unquote(str(entry.get("fragment") or "").lstrip("#"))
+        if not path:
+            continue
+        if not fragment and not default_path:
+            default_path = path
+        elif fragment in positions:
+            anchors.append((positions[fragment], ordinal, path))
+    anchors.sort(key=lambda value: (value[0], value[1]))
+    return default_path, [(position, path) for position, _ordinal, path in anchors]
+
+
+def _matching_toc_entries(
+    entries_by_href: Dict[str, List[Dict[str, Any]]],
+    document_path: str,
+) -> List[Dict[str, Any]]:
+    """Match a spine path exactly, using basename only when unambiguous."""
+    normalised = posixpath.normpath(unquote(document_path))
+    exact = [
+        records for href, records in entries_by_href.items()
+        if posixpath.normpath(unquote(href)) == normalised
+    ]
+    if exact:
+        return list(exact[0])
+    basename = posixpath.basename(normalised)
+    basename_matches = [
+        records for href, records in entries_by_href.items()
+        if posixpath.basename(posixpath.normpath(unquote(href))) == basename
+    ]
+    return list(basename_matches[0]) if len(basename_matches) == 1 else []
+
+
+def _structure_roles_for_path(
+    path: List[str], entries: List[Dict[str, Any]],
+) -> List[str]:
+    best_path: List[str] = []
+    best_roles: List[str] = []
+    for entry in entries:
+        candidate = [str(value) for value in entry.get("path") or []]
+        if len(candidate) <= len(path) and path[:len(candidate)] == candidate and len(candidate) > len(best_path):
+            best_path = candidate
+            best_roles = [str(value) for value in entry.get("roles") or []]
+    if not best_path:
+        return []
+    roles = best_roles[:len(best_path)]
+    while len(roles) < len(path):
+        roles.append("section" if roles and roles[-1] == "chapter" else "subsection")
+    return roles
+
+
+def _safe_carried_path(
+    raw_html: str, carried_path: List[str], carried_roles: List[str] | None = None,
+) -> List[str]:
+    """Carry a TOC parent only across a plausible continuation document."""
+    if not carried_path:
+        return []
+    soup = BeautifulSoup(raw_html, "html.parser")
+    if soup.title:
+        document_title = " ".join(soup.title.get_text(" ", strip=True).split())
+        if document_title and classify_heading_path([document_title]) != "body":
+            return []
+    first_heading = soup.find(list(_HEADING_TAGS))
+    if first_heading:
+        raw_title = " ".join(first_heading.get_text(" ", strip=True).split())
+        title = _clean_heading_title(raw_title)
+        subordinate = bool(_SUBORDINATE_HEADING_RE.match(
+            unicodedata.normalize("NFKC", raw_title),
+        ))
+        if classify_heading_path([title]) != "body" or _INDEPENDENT_HEADING_RE.match(
+            unicodedata.normalize("NFKC", title),
+        ):
+            return []
+        carried_titles = {
+            _heading_identity(value) for value in carried_path if _heading_identity(value)
+        }
+        if (
+            first_heading.name == "h1"
+            and _heading_identity(title) not in carried_titles
+            and not subordinate
+        ):
+            return []
+        carried_leaf_is_detail = bool(
+            carried_roles and carried_roles[-1:] in (["section"], ["subsection"])
+        )
+        if (
+            first_heading.name == "h1" and subordinate and len(carried_path) > 1
+            and carried_leaf_is_detail
+        ):
+            return list(carried_path[:-1])
+        # A heading at the start of the next spine normally replaces the
+        # previous heading at the same HTML level.  Retain only its ancestors;
+        # otherwise Section 2 becomes a child of the carried Section 1.
+        level = int(first_heading.name[1])
+        if level > 1 and len(carried_path) > 1 and carried_leaf_is_detail:
+            return list(carried_path[:-1])
+    return list(carried_path)
+
+
+def _remove_linked_noteref_suffixes(
+    raw_html: str, entries: List[Dict[str, Any]],
+) -> None:
+    """Correct a TOC title only when its target DOM proves a linked suffix."""
+    soup = BeautifulSoup(raw_html, "html.parser")
+    for entry in entries:
+        fragment = unquote(str(entry.get("fragment") or "").lstrip("#"))
+        path = list(entry.get("path") or [])
+        if not fragment or not path:
+            continue
+        target = soup.find(id=fragment)
+        if target is None:
+            continue
+        links = target.find_all("a")
+        if not links:
+            continue
+        suffix = "".join(link.get_text(" ", strip=True) for link in links[-1:]).strip()
+        title = str(path[-1])
+        if suffix.isdigit() and title.endswith(suffix):
+            visible_without_suffix = title[:-len(suffix)].rstrip()
+            if visible_without_suffix.endswith(("?", "!", "？", "！")):
+                path[-1] = visible_without_suffix
+                entry["path"] = path
+
+
+def extract_dom_blocks(
+    raw_html: str,
+    *,
+    initial_path: List[str] | None = None,
+    toc_entries: List[Dict[str, Any]] | None = None,
+) -> List[Dict[str, Any]]:
     """Return source-order blocks without flattening HTML/EPUB semantics.
 
     The result is intentionally small and JSON-like so EPUB and HTML callers
@@ -405,19 +605,25 @@ def extract_dom_blocks(raw_html: str, *, initial_path: List[str] | None = None) 
     root = soup.body or soup
     heading_stack: List[str] = []
     heading_levels: List[int] = []
-    seed = [part.strip() for part in (initial_path or []) if str(part).strip()]
+    toc_default, toc_anchors = _toc_paths_by_position(root, toc_entries)
+    seed = toc_default or [part.strip() for part in (initial_path or []) if str(part).strip()]
+    active_seed = list(seed)
+    anchor_index = 0
+    element_positions = {id(element): position for position, element in enumerate(root.find_all(True))}
     blocks: List[Dict[str, Any]] = []
     for element in root.find_all(list(_HEADING_TAGS | _BLOCK_TAGS)):
+        position = element_positions.get(id(element), -1)
+        while anchor_index < len(toc_anchors) and toc_anchors[anchor_index][0] <= position:
+            active_seed = list(toc_anchors[anchor_index][1])
+            anchor_index += 1
         if element.find_parent(["script", "style", "nav"]):
             continue
         if element.name in _HEADING_TAGS:
-            title = " ".join(element.get_text(" ", strip=True).split())
+            title = _clean_heading_title(element.get_text(" ", strip=True))
             if not title:
                 continue
             if len(title) > _MALFORMED_HEADING_BODY_CHARS:
-                path = list(heading_stack)
-                if seed and (not path or path[0] != seed[-1]):
-                    path = seed + path
+                path = _merge_heading_paths(active_seed, heading_stack)
                 zone = _zone_for_element(element, path)
                 for record in _entry_records(element, zone):
                     blocks.append({
@@ -440,9 +646,7 @@ def extract_dom_blocks(raw_html: str, *, initial_path: List[str] | None = None) 
         if element.find_parent(list(_BLOCK_TAGS)):
             # A table owns its cell text; a list item owns nested paragraphs.
             continue
-        path = list(heading_stack)
-        if seed and (not path or path[0] != seed[-1]):
-            path = seed + path
+        path = _merge_heading_paths(active_seed, heading_stack)
         zone = _zone_for_element(element, path)
         block_type = "table" if element.name == "table" else element.name
         # Reference/note blocks are split on <br/> so each entry is its own block
@@ -464,6 +668,7 @@ def extract_leaf_container_blocks(
     raw_html: str,
     *,
     initial_path: List[str] | None = None,
+    toc_entries: List[Dict[str, Any]] | None = None,
 ) -> List[Dict[str, Any]]:
     """Extract text owned by leaf ``div`` containers.
 
@@ -475,12 +680,20 @@ def extract_leaf_container_blocks(
     """
     soup = BeautifulSoup(raw_html, "html.parser")
     root = soup.body or soup
-    seed = [part.strip() for part in (initial_path or []) if str(part).strip()]
+    toc_default, toc_anchors = _toc_paths_by_position(root, toc_entries)
+    seed = toc_default or [part.strip() for part in (initial_path or []) if str(part).strip()]
+    active_seed = list(seed)
+    anchor_index = 0
+    element_positions = {id(element): position for position, element in enumerate(root.find_all(True))}
     blocks: List[Dict[str, Any]] = []
     heading_stack: List[str] = []
     heading_levels: List[int] = []
 
     for element in root.find_all(list(_HEADING_TAGS | {"div"})):
+        position = element_positions.get(id(element), -1)
+        while anchor_index < len(toc_anchors) and toc_anchors[anchor_index][0] <= position:
+            active_seed = list(toc_anchors[anchor_index][1])
+            anchor_index += 1
         if element.find_parent(["script", "style", "nav"]):
             continue
         if element.name in _HEADING_TAGS:
@@ -505,9 +718,7 @@ def extract_leaf_container_blocks(
         tokens = _semantic_tokens(element)
         if tokens & _LEAF_CONTAINER_EXCLUDED_TOKENS:
             continue
-        path = list(heading_stack)
-        if seed and (not path or path[0] != seed[-1]):
-            path = seed + path
+        path = _merge_heading_paths(active_seed, heading_stack)
         zone = _zone_for_element(element, path)
         for record in _entry_records(element, zone):
             if len(record["text"]) < 2:
@@ -529,6 +740,7 @@ def _extract_epub_document_blocks(
     raw_html: str,
     *,
     initial_path: List[str] | None = None,
+    toc_entries: List[Dict[str, Any]] | None = None,
 ) -> List[Dict[str, Any]]:
     """Extract one EPUB spine document without retaining a token fragment.
 
@@ -540,14 +752,18 @@ def _extract_epub_document_blocks(
     when leaf containers provide decisively more text.  Documents that already
     have substantive semantic blocks keep their richer tag/zone semantics.
     """
-    semantic_blocks = extract_dom_blocks(raw_html, initial_path=initial_path)
+    semantic_blocks = extract_dom_blocks(
+        raw_html, initial_path=initial_path, toc_entries=toc_entries,
+    )
     semantic_chars = sum(len(str(block.get("text") or "")) for block in semantic_blocks)
     # Avoid parsing ordinary substantive chapters twice.  The value is only a
     # probe threshold; replacement still requires a large relative advantage.
     if semantic_chars >= 2_000:
         return semantic_blocks
 
-    leaf_blocks = extract_leaf_container_blocks(raw_html, initial_path=initial_path)
+    leaf_blocks = extract_leaf_container_blocks(
+        raw_html, initial_path=initial_path, toc_entries=toc_entries,
+    )
     leaf_chars = sum(len(str(block.get("text") or "")) for block in leaf_blocks)
     if leaf_chars >= 500 and leaf_chars > max(semantic_chars * 3, semantic_chars + 1_000):
         return leaf_blocks
@@ -891,13 +1107,19 @@ def extract_chunks_from_epub_snapshot(
         })
         return [], default_quality
 
-    # 章タイトルマップ（失敗しても処理続行）
-    _epub_toc_path_map: Dict[int, List[str]] = {}
-    if _get_epub_toc_path_map is not None:
+    # Fragment-aware TOC paths (failure is non-fatal; DOM headings remain).
+    _epub_href_entries: Dict[str, List[Dict[str, Any]]] = {}
+    if _get_epub_href_toc_entries is not None:
         try:
-            _epub_toc_path_map = _get_epub_toc_path_map(str(epub_path))
+            _epub_href_entries = _get_epub_href_toc_entries(str(epub_path))
         except Exception:
             pass
+    all_toc_role_entries = [
+        entry for records in _epub_href_entries.values() for entry in records
+    ]
+
+    def toc_entries_for(document_path: str) -> List[Dict[str, Any]]:
+        return _matching_toc_entries(_epub_href_entries, document_path)
 
     all_blocks: List[Dict[str, Any]] = []
     block_spines: set[int] = set()
@@ -908,6 +1130,8 @@ def extract_chunks_from_epub_snapshot(
     image_primary = {
         int(index) + 1 for index in profile.get("image_primary_spine_indices") or []
     }
+    carried_toc_path: List[str] = []
+    carried_toc_roles: List[str] = []
     try:
         with zipfile.ZipFile(epub_path, "r") as archive:
             names = set(archive.namelist())
@@ -920,9 +1144,45 @@ def extract_chunks_from_epub_snapshot(
                         raise FileNotFoundError(document_path or "missing OPF spine href")
                     raw = archive.read(document_path)
                     html = _decode_html_bytes(raw)
-                    document_blocks = _extract_epub_document_blocks(
-                        html, initial_path=_epub_toc_path_map.get(chap_idx, []),
+                    document_toc_entries = toc_entries_for(document_path)
+                    _remove_linked_noteref_suffixes(html, document_toc_entries)
+                    initial_toc_path = (
+                        list(document_toc_entries[0].get("path") or [])
+                        if document_toc_entries else _safe_carried_path(
+                            html, carried_toc_path, carried_toc_roles,
+                        )
                     )
+                    if not document_toc_entries and carried_toc_path and not initial_toc_path:
+                        carried_toc_path = []
+                        carried_toc_roles = []
+                    document_blocks = _extract_epub_document_blocks(
+                        html,
+                        initial_path=initial_toc_path,
+                        toc_entries=document_toc_entries,
+                    )
+                    for block in document_blocks:
+                        structure_path = [str(value) for value in block.get("structure_path") or []]
+                        roles = _structure_roles_for_path(structure_path, all_toc_role_entries)
+                        if roles:
+                            block["structure_roles"] = roles
+                    if document_toc_entries:
+                        carried_toc_path = list(document_toc_entries[-1].get("path") or [])
+                        carried_toc_roles = list(document_toc_entries[-1].get("roles") or [])
+                    elif document_blocks:
+                        # Preserve a DOM-derived chapter across later unlinked
+                        # continuation spines.  The next document still passes
+                        # through _safe_carried_path before this is accepted.
+                        for block in reversed(document_blocks):
+                            candidate = [
+                                str(value) for value in block.get("structure_path") or []
+                                if str(value).strip()
+                            ]
+                            if candidate:
+                                carried_toc_path = candidate
+                                carried_toc_roles = [
+                                    str(value) for value in block.get("structure_roles") or []
+                                ]
+                                break
                     if not document_blocks:
                         # Blank is a positive finding only for a document with
                         # neither visible text nor an image wrapper.  Navigation
@@ -1037,6 +1297,8 @@ def extract_chunks_from_epub_snapshot(
                     "extraction_engine": str(block.get("extraction_engine") or "epub_dom"),
                     "extraction_version": "3",
                     **(({"structure_path": structure_path}) if structure_path else {}),
+                    **(({"structure_roles": list(block.get("structure_roles") or [])})
+                       if block.get("structure_roles") else {}),
                     **(({"chapter": chapter_title}) if chapter_title else {}),
                 }
             )

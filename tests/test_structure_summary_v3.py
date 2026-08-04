@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import unittest
 import tempfile
+from collections import defaultdict
 from pathlib import Path
 from unittest.mock import patch
 
 from src import db_relations
 from src.build_structure_summaries import (
     MAX_PARENT_INPUT_CHARS, _chunk_groups, _select_searchable_summary_rows,
-    adds_nothing_over_its_children, build_structure_summaries,
+    _chapter_summary_targets, adds_nothing_over_its_children, build_structure_summaries,
 )
 from src.document_structure import build_document_structure
 
@@ -31,7 +32,41 @@ class StructureSummaryV3Tests(unittest.TestCase):
         self.assertEqual([[row["id"] for row in group] for group in groups], [["c0"], ["c1"], ["c2"]])
         self.assertTrue(all(sum(len(row["text"]) for row in group) <= MAX_PARENT_INPUT_CHARS for group in groups))
 
-    def test_parent_scope_excludes_notes_and_short_display_only_leaves(self):
+    def test_japanese_part_distinguishes_direct_sections_from_labelled_chapters(self):
+        chunks = [
+            {"id": "A:p1", "text": "one", "metadata": {"attachmentKey": "A",
+             "structure_path": ["第Ⅰ部 交換様式", "１ 生産から交換へ"], "zone": "body"}},
+            {"id": "A:p2", "text": "two", "metadata": {"attachmentKey": "A",
+             "structure_path": ["第Ⅱ部 世界帝国", "１章 共同体と国家", "１ 未開社会"], "zone": "body"}},
+        ]
+        built = build_document_structure("ITEM", chunks)
+        children = defaultdict(list)
+        for node in built["nodes"]:
+            if node.get("parent_node_id"):
+                children[str(node["parent_node_id"])].append(node)
+        targets = _chapter_summary_targets(built["nodes"], children)
+        titles = {node.get("title") for node in built["nodes"] if node["node_id"] in targets}
+        self.assertIn("第Ⅰ部 交換様式", titles)
+        self.assertIn("１章 共同体と国家", titles)
+        self.assertNotIn("１ 生産から交換へ", titles)
+
+    def test_role_annotated_attachment_does_not_disable_unannotated_attachment(self):
+        chunks = [
+            {"id": "A:p1", "text": "a", "metadata": {"attachmentKey": "A",
+             "structure_path": ["Chapter A"], "structure_roles": ["chapter"], "zone": "body"}},
+            {"id": "B:p1", "text": "b", "metadata": {"attachmentKey": "B",
+             "structure_path": ["Chapter B"], "zone": "body"}},
+        ]
+        built = build_document_structure("ITEM", chunks)
+        children = defaultdict(list)
+        for node in built["nodes"]:
+            if node.get("parent_node_id"):
+                children[str(node["parent_node_id"])].append(node)
+        targets = _chapter_summary_targets(built["nodes"], children)
+        titles = {node.get("title") for node in built["nodes"] if node["node_id"] in targets}
+        self.assertEqual(titles, {"Chapter A", "Chapter B"})
+
+    def test_chapter_scope_excludes_notes_but_includes_short_body_leaves(self):
         chunks = [
             # Must clear MIN_LEAF_CHARS (1,000): this case is about which
             # leaves are excluded and why, not about the size threshold.
@@ -52,8 +87,42 @@ class StructureSummaryV3Tests(unittest.TestCase):
             build_structure_summaries("ITEM", mode="extractive")
         chapter = next(row for row in db_relations.get_document_node_summaries("ITEM") if row.get("title") == "Chapter")
         reasons = {row["reason"] for row in chapter["input_scope"]["excluded"]}
-        self.assertEqual(reasons, {"summary_policy_exclude", "below_min_chars"})
-        self.assertEqual(chapter["source_chars"], len(chunks[0]["text"]))
+        self.assertEqual(reasons, {"summary_policy_exclude"})
+        self.assertEqual(chapter["source_chars"], len(chunks[0]["text"]) + len(chunks[2]["text"]))
+
+    def test_short_sections_are_summarized_once_as_one_chapter(self):
+        chunks = [
+            {"id": f"A:p{index}", "text": letter * 600,
+             "metadata": {"attachmentKey": "A", "structure_path": ["Chapter", f"Section {index}"],
+                          "zone": "body"}}
+            for index, letter in enumerate("abc", start=1)
+        ]
+        built = build_document_structure("ITEM", chunks)
+        db_relations.replace_document_structure(
+            "ITEM", source_fingerprint=built["source_fingerprint"],
+            structure_version=built["structure_version"], status=built["status"],
+            confidence=built["confidence"], nodes=built["nodes"], diagnostics=built["diagnostics"],
+        )
+        calls = []
+
+        def fake_section(section, **kwargs):
+            calls.append([row["id"] for row in section["chunks"]])
+            return {"summary": "one chapter summary"}, "deepseek:cheap"
+
+        with patch("src.build_structure_summaries.get_item_chunks", return_value=chunks), \
+                patch("src.build_structure_summaries._deepseek_model", return_value="deepseek-chat"), \
+                patch("src.build_structure_summaries._llm_summary_only_section", side_effect=fake_section):
+            result = build_structure_summaries("ITEM", mode="llm")
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(calls, [["A:p1", "A:p2", "A:p3"]])
+        summaries = db_relations.get_document_node_summaries("ITEM")
+        chapter = next(row for row in summaries if row.get("title") == "Chapter")
+        self.assertEqual(chapter["source_chars"], 1_800)
+        self.assertEqual(
+            chapter["input_scope"]["included_chunk_ids"], ["A:p1", "A:p2", "A:p3"],
+        )
+        self.assertFalse(any(str(row.get("title") or "").startswith("Section") for row in summaries))
 
     def test_search_index_suppresses_one_child_parent_duplicate(self):
         rows = [
@@ -284,12 +353,9 @@ class StructureSummaryV3Tests(unittest.TestCase):
              patch("src.build_structure_summaries.get_item_chunks", return_value=chunks):
             build_structure_summaries("ITEM", mode="llm")
             # Generation followed the redefinition and paid for the parent.
-            # A single-attachment, single-chapter document is a genuine
-            # three-level single-child chain (item_root -> attachment_root ->
-            # chapter, each with exactly one child), so inverting "single
-            # child" to mean "pays" pays at every level of that chain, not
-            # just one.
-            self.assertEqual(len(parent_calls), 3)
+            # The chapter is now summarized directly from its raw descendants;
+            # only attachment_root and item_root are parent reductions.
+            self.assertEqual(len(parent_calls), 2)
             # The index must follow the very same redefinition and keep it.
             rows = [
                 {"node_id": "root", "parent_node_id": None},

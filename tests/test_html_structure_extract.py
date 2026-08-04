@@ -5,6 +5,9 @@ import unittest
 from pathlib import Path
 
 from src.html_extract import (
+    _matching_toc_entries,
+    _remove_linked_noteref_suffixes,
+    _safe_carried_path,
     _read_html_skip_styles,
     _extract_epub_document_blocks,
     _resolve_note_citations,
@@ -63,6 +66,114 @@ class HtmlStructureExtractionTests(unittest.TestCase):
     def test_uses_initial_toc_path_when_file_has_no_heading(self):
         blocks = extract_dom_blocks("<body><p>Content.</p></body>", initial_path=["Part", "Chapter"])
         self.assertEqual(blocks[0]["structure_path"], ["Part", "Chapter"])
+
+    def test_switches_complete_toc_path_at_fragment_anchors(self):
+        blocks = extract_dom_blocks(
+            """<body>
+              <h1 id="chapter">Chapter 1</h1><p>Chapter introduction.</p>
+              <h1 id="section-a">Section A</h1><p>First section.</p>
+              <h1 id="section-b">Section B</h1><p>Second section.</p>
+            </body>""",
+            toc_entries=[
+                {"fragment": "chapter", "path": ["Part I", "Chapter 1"]},
+                {"fragment": "section-a", "path": ["Part I", "Chapter 1", "Section A"]},
+                {"fragment": "section-b", "path": ["Part I", "Chapter 1", "Section B"]},
+            ],
+        )
+        self.assertEqual(
+            [block["structure_path"] for block in blocks],
+            [
+                ["Part I", "Chapter 1"],
+                ["Part I", "Chapter 1", "Section A"],
+                ["Part I", "Chapter 1", "Section B"],
+            ],
+        )
+
+    def test_missing_toc_fragment_does_not_change_document_path(self):
+        blocks = extract_dom_blocks(
+            "<body><h1 id='chapter'>Chapter 1</h1><p>Content.</p></body>",
+            toc_entries=[
+                {"fragment": "", "path": ["Part I", "Chapter 1"]},
+                {"fragment": "missing", "path": ["Part I", "Wrong Section"]},
+            ],
+        )
+        self.assertEqual(blocks[0]["structure_path"], ["Part I", "Chapter 1"])
+
+    def test_inline_child_anchor_does_not_reappend_dom_ancestor(self):
+        blocks = extract_dom_blocks(
+            """<body><h1 id="chapter">Chapter 1</h1>
+            <p>Introduction <span id="section-a">begins here.</span></p>
+            <p>Section body.</p></body>""",
+            toc_entries=[
+                {"fragment": "chapter", "path": ["Part I", "Chapter 1"]},
+                {"fragment": "section-a", "path": ["Part I", "Chapter 1", "Section A"]},
+            ],
+        )
+        self.assertEqual(
+            blocks[-1]["structure_path"], ["Part I", "Chapter 1", "Section A"],
+        )
+
+    def test_basename_toc_fallback_requires_a_unique_document(self):
+        first = [{"fragment": "a", "path": ["First"]}]
+        second = [{"fragment": "b", "path": ["Second"]}]
+        entries = {"OPS/one/ch.xhtml": first, "OPS/two/ch.xhtml": second}
+        self.assertEqual(_matching_toc_entries(entries, "OPS/one/ch.xhtml"), first)
+        self.assertEqual(_matching_toc_entries(entries, "ch.xhtml"), [])
+
+    def test_toc_numeric_suffix_is_removed_only_when_dom_proves_a_linked_noteref(self):
+        linked = [{"fragment": "heading", "path": ["Why Leviathan?9"]}]
+        _remove_linked_noteref_suffixes(
+            "<body><p id='heading'>Why Leviathan?<a href='note.xhtml'>9</a></p></body>", linked,
+        )
+        self.assertEqual(linked[0]["path"], ["Why Leviathan?"])
+
+        legitimate = [{"fragment": "heading", "path": ["Why?9"]}]
+        _remove_linked_noteref_suffixes("<body><h1 id='heading'>Why?9</h1></body>", legitimate)
+        self.assertEqual(legitimate[0]["path"], ["Why?9"])
+
+    def test_carry_rejects_independent_unnumbered_h1_but_keeps_subordinate_h2(self):
+        carried = ["Part I", "Chapter 1"]
+        self.assertEqual(
+            _safe_carried_path("<body><h1>Methods</h1><p>New chapter.</p></body>", carried),
+            [],
+        )
+        self.assertEqual(
+            _safe_carried_path("<body><h2>Methods</h2><p>Continuation.</p></body>", carried),
+            carried,
+        )
+
+    def test_carried_section_is_replaced_by_sibling_h2(self):
+        carried = ["Part I", "Chapter 1", "Section 1"]
+        self.assertEqual(
+            _safe_carried_path(
+                "<body><h2>Section 2</h2><p>Next section.</p></body>", carried,
+                ["part", "chapter", "section"],
+            ),
+            ["Part I", "Chapter 1"],
+        )
+        self.assertEqual(
+            _safe_carried_path(
+                "<body><h2>Section 2</h2><p>Next section.</p></body>",
+                ["Chapter 1", "Section 1"],
+                ["chapter", "section"],
+            ),
+            ["Chapter 1"],
+        )
+
+    def test_decorated_h1_section_replaces_carried_sibling(self):
+        carried = ["第一章", "前の節"]
+        self.assertEqual(
+            _safe_carried_path(
+                "<body><h1>▼次の節</h1><p>本文</p></body>", carried,
+                ["chapter", "section"],
+            ),
+            ["第一章"],
+        )
+        blocks = extract_dom_blocks(
+            "<body><h1>▼次の節</h1><p>本文です。</p></body>",
+            initial_path=["第一章"],
+        )
+        self.assertEqual(blocks[0]["structure_path"], ["第一章", "次の節"])
 
     def test_br_separated_references_split_into_one_block_per_entry(self):
         # A bibliography packed into one <p> with <br/> separators must yield one

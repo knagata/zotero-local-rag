@@ -10,6 +10,22 @@ def _chunk(chunk_id: str, text: str, **metadata: object) -> dict:
 
 
 class DocumentStructureV3Tests(unittest.TestCase):
+    def test_hierarchical_paths_roll_section_content_into_chapter(self):
+        chunks = [
+            _chunk("A:p1", "intro", attachmentKey="A",
+                   structure_path=["Part I", "Chapter 1"], zone="body"),
+            _chunk("A:p2", "section body", attachmentKey="A",
+                   structure_path=["Part I", "Chapter 1", "Section A"], zone="body"),
+        ]
+        result = build_document_structure("ITEM", chunks)
+        by_title = {node.get("title"): node for node in result["nodes"] if node.get("title")}
+        part = by_title["Part I"]
+        chapter = by_title["Chapter 1"]
+        section = by_title["Section A"]
+        self.assertEqual(chapter["parent_node_id"], part["node_id"])
+        self.assertEqual(section["parent_node_id"], chapter["node_id"])
+        self.assertEqual(chapter["content_chars"], len("intro") + len("section body"))
+
     def test_attaches_leaf_policy_and_provenance_to_every_chunk(self):
         chunks = [
             _chunk("A:p1", "body", attachmentKey="A", structure_path=["One"], zone="body",
