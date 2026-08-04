@@ -3,10 +3,12 @@ from __future__ import annotations
 import unittest
 
 from src.chapter_detect import (
+    _recover_flat_pdf_toc,
     _recover_flat_toc_paths,
     _toc_entries_by_href,
     build_epub_toc_tree,
     build_pdf_outline_tree,
+    infer_structure_roles,
 )
 
 
@@ -17,6 +19,44 @@ class _Link:
 
 
 class ChapterDetectTests(unittest.TestCase):
+    def test_flat_pdf_parts_recover_chapter_levels(self):
+        recovered = _recover_flat_pdf_toc([
+            (1, "Introduction", 1),
+            (1, "Part I. Foundations", 10),
+            (1, "1. First Essay", 10),
+            (1, "2. Second Essay", 20),
+            (1, "III. Contemporary Positions", 30),
+            (1, "9. Later Essay", 30),
+            (1, "Bibliography", 40),
+        ])
+        self.assertEqual([level for level, _title, _page in recovered], [1, 1, 2, 2, 1, 2, 1])
+
+    def test_flat_pdf_recovers_standalone_roman_container(self):
+        recovered = _recover_flat_pdf_toc([
+            (1, "III. Contemporary Positions", 30),
+            (1, "9. Later Essay", 30),
+            (1, "10. Final Essay", 40),
+            (1, "Bibliography", 50),
+        ])
+        self.assertEqual([level for level, _title, _page in recovered], [1, 2, 2, 1])
+
+    def test_flat_pdf_does_not_promote_unpunctuated_roman_chapter(self):
+        recovered = _recover_flat_pdf_toc([
+            (1, "I Introduction", 1),
+            (1, "1. Background", 2),
+        ])
+        self.assertEqual([level for level, _title, _page in recovered], [1, 1])
+
+    def test_pdf_roles_distinguish_part_chapter_and_section(self):
+        self.assertEqual(
+            infer_structure_roles(["Part One", "Chapter 1", "Methods"]),
+            ["part", "chapter", "section"],
+        )
+        self.assertEqual(
+            infer_structure_roles(["III. Contemporary Positions", "9. Later Essay"]),
+            ["part", "chapter"],
+        )
+
     def test_pdf_outline_keeps_all_levels(self):
         tree = build_pdf_outline_tree([
             (1, "Part I", 1), (2, "Chapter 1", 3), (3, "Methods", 5),

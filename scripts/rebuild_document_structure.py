@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build or refresh canonical document structures from locally indexed chunks."""
+"""Build canonical structures from indexed chunks without re-embedding text."""
 from __future__ import annotations
 
 import argparse
@@ -141,11 +141,15 @@ def rebuild_item(
             run_id=run_id,
         )
         if not unchanged:
-            for artifact_type in ("summary", "embeddings"):
+            # A structure generation changes node membership and summary
+            # boundaries, not chunk text or vectors. Chroma metadata above is
+            # updated in place; the existing paragraph embeddings remain valid.
+            for artifact_type in ("summary", "summary_index"):
                 mark_artifact_status(
                     item_key, artifact_type, "stale", reason_code="structure_changed",
                     source_fingerprint=built["source_fingerprint"], run_id=run_id,
                 )
+        result["embeddings_unchanged"] = True
         result["action"] = "rebuilt"
         return result
     except Exception as exc:
@@ -161,7 +165,10 @@ def main() -> None:
     selector = parser.add_mutually_exclusive_group(required=True)
     selector.add_argument("--item", action="append", help="Zotero parent item key; repeatable")
     selector.add_argument("--all", action="store_true", help="Process every item with indexed chunks")
-    parser.add_argument("--dry-run", action="store_true", help="Build and validate without writing derived data")
+    parser.add_argument(
+        "--dry-run", action="store_true",
+        help="Build and validate without writing structure or chunk metadata",
+    )
     parser.add_argument("--force", action="store_true", help="Rebuild even when source fingerprint is unchanged")
     parser.add_argument("--limit", type=int, default=0, help="Maximum number of selected items (0 = all)")
     parser.add_argument("--retry-failed", action="store_true", help="Select retryable failed structure items only")

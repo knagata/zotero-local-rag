@@ -12,6 +12,7 @@ import fitz
 try:
     from .chapter_detect import (
         build_pdf_page_chapter_lookup, build_pdf_page_structure_path_lookup, get_pdf_toc,
+        infer_structure_roles,
     )
     from .text_utils import (
         MAX_CHARS, MAX_CHARS_CJK, TARGET_CHARS, TARGET_CHARS_CJK,
@@ -20,6 +21,7 @@ try:
 except ImportError:  # direct `python src/index_from_zotero.py` execution
     from chapter_detect import (
         build_pdf_page_chapter_lookup, build_pdf_page_structure_path_lookup, get_pdf_toc,
+        infer_structure_roles,
     )
     from text_utils import (
         MAX_CHARS, MAX_CHARS_CJK, TARGET_CHARS, TARGET_CHARS_CJK,
@@ -262,6 +264,7 @@ def extract_chunks_from_pdf_with_yomitoku(
                 })
                 if active_path:
                     metadata["structure_path"] = list(active_path)
+                    metadata["structure_roles"] = infer_structure_roles(active_path)
                 if block["bbox"]:
                     metadata["bbox"] = json.dumps(block["bbox"], ensure_ascii=False, separators=(",", ":"))
                     for axis in ("l", "t", "r", "b"):

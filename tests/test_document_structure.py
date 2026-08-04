@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from src import db_relations
 from src.build_structure_summaries import build_structure_summaries
-from src.document_structure import build_document_structure
+from src.document_structure import build_document_structure, source_fingerprint
 
 
 def _chunk(chunk_id: str, text: str, **metadata: str):
@@ -25,6 +25,29 @@ class DocumentStructureTests(unittest.TestCase):
         self.db_patch.stop()
         db_relations._db_initialized = False
         self.tempdir.cleanup()
+
+    def test_structure_fingerprint_tracks_path_roles_and_zone(self):
+        base = _chunk(
+            "ABCD1234:p1", "same text", attachmentKey="ABCD1234",
+            structure_path=["Part I", "1. Chapter"],
+            structure_roles=["part", "chapter"], zone="body",
+        )
+        baseline = source_fingerprint([base])
+        for changed_metadata in (
+            {"structure_path": ["Part II", "1. Chapter"]},
+            {"structure_roles": ["chapter", "section"]},
+            {"zone": "bibliography"},
+        ):
+            changed = {**base, "metadata": {**base["metadata"], **changed_metadata}}
+            self.assertNotEqual(source_fingerprint([changed]), baseline)
+
+    def test_structure_fingerprint_ignores_unrelated_metadata(self):
+        base = _chunk(
+            "ABCD1234:p1", "same text", attachmentKey="ABCD1234",
+            structure_path=["Chapter"], structure_roles=["chapter"],
+        )
+        changed = {**base, "metadata": {**base["metadata"], "ui_color": "blue"}}
+        self.assertEqual(source_fingerprint([changed]), source_fingerprint([base]))
 
     def test_preserves_nested_order_and_never_merges_noncontiguous_same_heading(self):
         chunks = [
@@ -92,6 +115,47 @@ class DocumentStructureTests(unittest.TestCase):
         leaf = next(node for node in db_relations.get_document_nodes("ITEM", include_chunks=True) if node["chunks"])
         self.assertEqual((leaf["zone"], leaf["summary_policy"], leaf["retrieval_policy"]),
                          ("footnote", "exclude", "explicit_only"))
+
+    def test_exact_paratext_heading_repairs_default_body_zone(self):
+        chunks = [
+            _chunk("A:p1", "chapter list", attachmentKey="A", structure_path=["Contents"]),
+            _chunk("A:p2", "argument", attachmentKey="A", structure_path=["Introduction"]),
+            _chunk("A:p3", "source note", attachmentKey="A", structure_path=["Notes"]),
+        ]
+        result = build_document_structure("ITEM", chunks)
+        leaves = {node["source_locator"]["path"][-1]: node for node in result["nodes"] if node["chunks"]}
+        self.assertEqual(
+            (leaves["Contents"]["zone"], leaves["Contents"]["summary_policy"]),
+            ("toc", "exclude"),
+        )
+        self.assertEqual(
+            (leaves["Introduction"]["zone"], leaves["Introduction"]["summary_policy"]),
+            ("body", "include"),
+        )
+        self.assertEqual(
+            (leaves["Notes"]["zone"], leaves["Notes"]["summary_policy"]),
+            ("endnote", "exclude"),
+        )
+
+    def test_thin_parent_is_diagnosed_without_flattening(self):
+        chunks = [
+            _chunk("A:p1", "preface", attachmentKey="A",
+                   structure_path=["Part I", "Chapter 1"]),
+            _chunk("A:p2", "first argument " * 100, attachmentKey="A",
+                   structure_path=["Part I", "Chapter 1", "Section 1"]),
+            _chunk("A:p3", "second argument " * 100, attachmentKey="A",
+                   structure_path=["Part I", "Chapter 1", "Section 2"]),
+        ]
+        result = build_document_structure("ITEM", chunks)
+        diagnosed = {row["title"]: row for row in result["diagnostics"]["thin_containers"]}
+        self.assertIn("Chapter 1", diagnosed)
+        self.assertLessEqual(diagnosed["Chapter 1"]["direct_content_chars"], 300)
+        chapter = next(node for node in result["nodes"] if node.get("title") == "Chapter 1")
+        sections = [
+            node["title"] for node in result["nodes"]
+            if node.get("parent_node_id") == chapter["node_id"] and node.get("title")
+        ]
+        self.assertEqual(sections, ["Section 1", "Section 2"])
 
     def test_processing_state_keeps_empty_and_blocked_distinct(self):
         db_relations.mark_artifact_status("ITEM", "references", "empty", reason_code="no_references")

@@ -60,7 +60,7 @@ def get_pdf_toc(pdf_path: str) -> List[Tuple[int, str, int]]:
         level, title, page = int(entry[0]), str(entry[1]).strip(), int(entry[2])
         title = "".join(
             character for character in unicodedata.normalize("NFKC", title)
-            if unicodedata.category(character) != "Cf"
+            if unicodedata.category(character) not in {"Cf", "Cc"}
         ).strip()
         if page < 1:
             page = 1
@@ -68,7 +68,7 @@ def get_pdf_toc(pdf_path: str) -> List[Tuple[int, str, int]]:
             result.append((level, title, page))
 
     result.sort(key=lambda x: x[2])
-    return result
+    return _recover_flat_pdf_toc(result)
 
 
 def build_pdf_outline_tree(toc: List[Tuple[int, str, int]]) -> List[Dict[str, Any]]:
@@ -277,6 +277,30 @@ _BACK_MATTER_RE = re.compile(
     r"BIBLIOGRAPHY|REFERENCES|FURTHER READING|ABOUT THE AUTHOR|BACK MATTER)$",
     re.IGNORECASE,
 )
+_ROMAN_CONTAINER_RE = re.compile(r"^[IVXLCDM]+[.)]\s+", re.IGNORECASE)
+
+
+def _recover_flat_pdf_toc(
+    toc: List[Tuple[int, str, int]],
+) -> List[Tuple[int, str, int]]:
+    """Recover explicit Part/chapter relations from a level-one PDF outline."""
+    if not toc or any(int(level) != 1 for level, _title, _page in toc):
+        return list(toc)
+    nodes = [
+        {"title": title, "children": []}
+        for _level, title, _page in toc
+    ]
+    kinds = [_toc_title_kind(title) for _level, title, _page in toc]
+    for index, node in enumerate(nodes[:-1]):
+        title = str(node["title"])
+        if _ROMAN_CONTAINER_RE.match(title) and kinds[index + 1] == "numbered":
+            node["title"] = f"PART {title}"
+    recovered = _recover_flat_toc_paths(nodes)
+    output: List[Tuple[int, str, int]] = []
+    for node, (_level, original_title, page) in zip(nodes, toc):
+        path = recovered.get(id(node)) or [str(node["title"])]
+        output.append((len(path), original_title, page))
+    return output
 
 
 def _toc_title_kind(title: str) -> str:
@@ -449,10 +473,19 @@ def _roles_for_toc_path(path: List[str]) -> List[str]:
     kinds = [_toc_title_kind(title) for title in path]
     roles = ["chapter"] * len(path)
     first_is_part = kinds[0] == "part"
+    if (
+        len(path) >= 2 and _ROMAN_CONTAINER_RE.match(
+            " ".join(unicodedata.normalize("NFKC", path[0]).split())
+        ) and kinds[1] == "numbered"
+    ):
+        first_is_part = True
     # A nested root with numbered children is also a publisher-level Part even
     # when its title is not literally ``Part`` (for example Cultural Analytics
     # uses ``I Studying Culture at Scale``).
-    if len(path) >= 3 and kinds[1] in {"numbered", "chapter"}:
+    if (
+        len(path) >= 3 and kinds[1] in {"numbered", "chapter"}
+        and re.match(r"^[IVXLCDM]+\s+[A-Z]", path[0])
+    ):
         first_is_part = True
     if first_is_part:
         roles[0] = "part"
@@ -460,7 +493,10 @@ def _roles_for_toc_path(path: List[str]) -> List[str]:
         if index == 1 and first_is_part:
             title = unicodedata.normalize("NFKC", path[index])
             japanese_direct_section = (
-                kinds[0] == "part" and kinds[index] == "numbered"
+                kinds[0] == "part" and bool(re.match(
+                    r"^第\s*(?:[0-9一二三四五六七八九十百]+|[IVXLCDM]+)\s*部",
+                    unicodedata.normalize("NFKC", path[0]), re.IGNORECASE,
+                )) and kinds[index] == "numbered"
                 and "章" not in title and len(path) == 2
             )
             roles[index] = "section" if japanese_direct_section else "chapter"
@@ -469,6 +505,11 @@ def _roles_for_toc_path(path: List[str]) -> List[str]:
         else:
             roles[index] = "section" if roles[index - 1] == "chapter" else "subsection"
     return roles
+
+
+def infer_structure_roles(path: List[str]) -> List[str]:
+    """Infer stable Part/chapter/section roles for a canonical heading path."""
+    return _roles_for_toc_path([str(value) for value in path if str(value).strip()])
 
 
 def get_epub_href_to_toc_entries(epub_path: str) -> Dict[str, List[Dict[str, Any]]]:

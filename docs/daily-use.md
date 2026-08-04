@@ -49,7 +49,10 @@ AI目次なしの別仕様になるため、最終DBでは通常設定に戻し�
 # ライブラリ差分更新
 uv run src/index_from_zotero.py --progress
 
-# 文書構造V3の差分更新
+# 文書構造だけを検証（本文チャンク・埋め込みは変更しない）
+uv run python scripts/rebuild_document_structure.py --all --dry-run
+
+# 文書構造だけを差分更新（Chromaは構造メタデータのみ更新し、再埋め込みしない）
 uv run python scripts/rebuild_document_structure.py --all
 
 # 要約（LLM）。全件backfillは承認後、通常は --limit で限定実行

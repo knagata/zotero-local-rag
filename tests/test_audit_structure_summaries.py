@@ -41,7 +41,8 @@ def test_summary_audit_passes_when_db_and_index_match():
         "metadatas": [{
             "itemKey": "ITEM", "attachmentKey": "ATT", "node_id": "node-1",
             "parent_node_id": "", "node_type": "semantic_segment", "depth": 2,
-            "title": "Chapter", "summary_kind": "llm", "structure_version": "3",
+            "title": "Chapter", "summary_kind": "llm",
+            "structure_version": audit_structure_summaries.STRUCTURE_VERSION,
             "source_fingerprint": "sha256:source",
         }],
     }
@@ -88,7 +89,8 @@ def test_summary_audit_rejects_stale_index_content_with_same_id():
         "metadatas": [{
             "itemKey": "ITEM", "attachmentKey": "ATT", "node_id": "node-1",
             "parent_node_id": "", "node_type": "semantic_segment", "depth": 2,
-            "title": "Chapter", "summary_kind": "llm", "structure_version": "3",
+            "title": "Chapter", "summary_kind": "llm",
+            "structure_version": audit_structure_summaries.STRUCTURE_VERSION,
             "source_fingerprint": "sha256:source",
         }],
     }

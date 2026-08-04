@@ -66,6 +66,93 @@ class StructureSummaryV3Tests(unittest.TestCase):
         titles = {node.get("title") for node in built["nodes"] if node["node_id"] in targets}
         self.assertEqual(titles, {"Chapter A", "Chapter B"})
 
+    def test_short_pdf_uses_attachment_summary_without_flattening_outline(self):
+        chunks = [
+            {"id": f"A:p{index}", "text": "argument " * 100,
+             "metadata": {"attachmentKey": "A", "source_type": "pdf",
+                          "structure_path": [f"Section {index}"],
+                          "structure_roles": ["chapter"], "zone": "body"}}
+            for index in range(1, 5)
+        ]
+        built = build_document_structure("ITEM", chunks)
+        children = defaultdict(list)
+        for node in built["nodes"]:
+            if node.get("parent_node_id"):
+                children[str(node["parent_node_id"])].append(node)
+        chunk_map = {str(row["id"]): row for row in chunks}
+        targets = _chapter_summary_targets(built["nodes"], children, chunk_map)
+        target_nodes = [node for node in built["nodes"] if node["node_id"] in targets]
+        self.assertEqual([node["node_type"] for node in target_nodes], ["attachment_root"])
+        self.assertTrue(any(node.get("title") == "Section 1" for node in built["nodes"]))
+
+    def test_short_legacy_pdf_recovers_attachment_key_from_chunk_id(self):
+        chunks = [
+            {"id": f"ABCD1234:p{index}", "text": "argument " * 100,
+             "metadata": {"source_type": "pdf", "structure_path": [f"Section {index}"],
+                          "structure_roles": ["chapter"], "zone": "body"}}
+            for index in range(1, 5)
+        ]
+        built = build_document_structure("ITEM", chunks)
+        children = defaultdict(list)
+        for node in built["nodes"]:
+            if node.get("parent_node_id"):
+                children[str(node["parent_node_id"])].append(node)
+        targets = _chapter_summary_targets(
+            built["nodes"], children, {str(row["id"]): row for row in chunks},
+        )
+        target_nodes = [node for node in built["nodes"] if node["node_id"] in targets]
+        self.assertEqual([node["node_type"] for node in target_nodes], ["attachment_root"])
+        self.assertEqual(target_nodes[0]["attachment_key"], "ABCD1234")
+
+    def test_short_pdf_aggregation_does_not_cross_repeated_attachment_runs(self):
+        chunks = [
+            {"id": "01:first", "text": "a" * 90_000,
+             "metadata": {"attachmentKey": "SAMEKEY1", "source_type": "pdf",
+                          "structure_path": ["First run"],
+                          "structure_roles": ["chapter"], "zone": "body"}},
+            {"id": "02:middle", "text": "middle",
+             "metadata": {"attachmentKey": "OTHER001", "source_type": "html",
+                          "structure_path": ["Intervening document"], "zone": "body"}},
+            {"id": "03:last", "text": "b" * 90_000,
+             "metadata": {"attachmentKey": "SAMEKEY1", "source_type": "pdf",
+                          "structure_path": ["Second run"],
+                          "structure_roles": ["chapter"], "zone": "body"}},
+        ]
+        built = build_document_structure("ITEM", chunks)
+        children = defaultdict(list)
+        for node in built["nodes"]:
+            if node.get("parent_node_id"):
+                children[str(node["parent_node_id"])].append(node)
+        targets = _chapter_summary_targets(
+            built["nodes"], children, {str(row["id"]): row for row in chunks},
+        )
+        repeated_roots = [
+            node for node in built["nodes"]
+            if node.get("node_type") == "attachment_root"
+            and node.get("attachment_key") == "SAMEKEY1"
+        ]
+        self.assertEqual(len(repeated_roots), 2)
+        self.assertTrue(all(node["node_id"] in targets for node in repeated_roots))
+
+    def test_many_page_pdf_keeps_chapter_summary_boundaries(self):
+        chunks = [
+            {"id": f"A:p{page}", "text": "argument ",
+             "metadata": {"attachmentKey": "A", "source_type": "pdf", "page": page,
+                          "structure_path": [f"Chapter {1 if page <= 20 else 2}"],
+                          "structure_roles": ["chapter"], "zone": "body"}}
+            for page in range(1, 41)
+        ]
+        built = build_document_structure("ITEM", chunks)
+        children = defaultdict(list)
+        for node in built["nodes"]:
+            if node.get("parent_node_id"):
+                children[str(node["parent_node_id"])].append(node)
+        targets = _chapter_summary_targets(
+            built["nodes"], children, {str(row["id"]): row for row in chunks},
+        )
+        titles = {node.get("title") for node in built["nodes"] if node["node_id"] in targets}
+        self.assertEqual(titles, {"Chapter 1", "Chapter 2"})
+
     def test_chapter_scope_excludes_notes_but_includes_short_body_leaves(self):
         chunks = [
             # Must clear MIN_LEAF_CHARS (1,000): this case is about which

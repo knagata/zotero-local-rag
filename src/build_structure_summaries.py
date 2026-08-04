@@ -20,6 +20,7 @@ try:
         classify_section_content, is_meta_summary,
     )
     from .chunk_store import get_item_chunks
+    from .document_structure import STRUCTURE_VERSION
     from .db_relations import (
         get_all_document_node_summaries, get_document_node_summary_reuse_cache, get_document_nodes, get_document_structure,
         get_item_processing_status, mark_artifact_status,
@@ -33,6 +34,7 @@ try:
 except ImportError:  # pragma: no cover
     from summary_core import _extractive_section, _llm_summary_only_item, _llm_summary_only_section, classify_section_content, is_meta_summary
     from chunk_store import get_item_chunks
+    from document_structure import STRUCTURE_VERSION
     from db_relations import get_all_document_node_summaries, get_document_node_summary_reuse_cache, get_document_nodes, get_document_structure, get_item_processing_status, mark_artifact_status, replace_document_node_summary_parts, save_document_node_summary
     from embedder import create_embedding_function, open_chroma_collection, resolve_embedder_settings
     from chunk_store import active_collection_name
@@ -46,6 +48,8 @@ load_dotenv_native(Path(__file__).resolve().parents[1])
 
 
 PROMPT_VERSION = "structure-v3-2"
+SHORT_PDF_DOCUMENT_SUMMARY_MAX_CHARS = 160_000
+SHORT_PDF_DOCUMENT_SUMMARY_MAX_PAGES = 32
 MAX_PARENT_INPUT_CHARS = 30_000
 #: Below this, a summary costs more than it saves. Summary length is nearly
 #: independent of source length (median 248 chars for a 400-1,000 char leaf,
@@ -74,6 +78,7 @@ _NUMBERED_CHAPTER_RE = re.compile(
 
 def _chapter_summary_targets(
     nodes: List[Dict[str, Any]], children: Dict[str, List[Dict[str, Any]]],
+    chunks: Dict[str, Dict[str, Any]] | None = None,
 ) -> set[str]:
     """Choose structural chapter boundaries independently of heading detail.
 
@@ -131,6 +136,50 @@ def _chapter_summary_targets(
             targets.update(str(child["node_id"]) for child in candidates)
         else:
             targets.add(str(node["node_id"]))
+    # Short papers keep their detailed outline for navigation and retrieval,
+    # but paying for one LLM summary per small section fragments the argument.
+    # Aggregate their raw body once at the attachment boundary instead.
+    if chunks:
+        for root in nodes:
+            if root.get("node_type") != "attachment_root":
+                continue
+            # One attachment key may occur in several non-contiguous source
+            # runs, each represented by its own attachment_root.  Measure only
+            # the chunks canonically owned by this root; grouping by key would
+            # cross those run boundaries.
+            root_id = str(root["node_id"])
+            descendants: set[str] = set()
+            root_chunk_ids: List[str] = []
+            stack = [root_id]
+            while stack:
+                parent_id = stack.pop()
+                for child in children.get(parent_id, []):
+                    child_id = str(child["node_id"])
+                    descendants.add(child_id)
+                    root_chunk_ids.extend(
+                        str(ref.get("chunk_id") if isinstance(ref, dict) else ref)
+                        for ref in child.get("chunks") or []
+                    )
+                    stack.append(child_id)
+            source_rows = [chunks[chunk_id] for chunk_id in root_chunk_ids if chunk_id in chunks]
+            if not source_rows or any(
+                str((row.get("metadata") or {}).get("source_type") or "") != "pdf"
+                for row in source_rows
+            ):
+                continue
+            source_chars = sum(len(str(row.get("text") or "")) for row in source_rows)
+            source_pages = {
+                int((row.get("metadata") or {}).get("page"))
+                for row in source_rows
+                if str((row.get("metadata") or {}).get("page") or "").isdigit()
+            }
+            if (
+                source_chars > SHORT_PDF_DOCUMENT_SUMMARY_MAX_CHARS
+                or len(source_pages) > SHORT_PDF_DOCUMENT_SUMMARY_MAX_PAGES
+            ):
+                continue
+            targets.difference_update(descendants)
+            targets.add(root_id)
     return targets
 
 
@@ -480,7 +529,7 @@ def build_structure_summaries(
     for node in nodes:
         if node.get("parent_node_id"):
             children[str(node["parent_node_id"])].append(node)
-    chapter_targets = _chapter_summary_targets(nodes, children)
+    chapter_targets = _chapter_summary_targets(nodes, children, chunks)
     target_ancestor: Dict[str, str] = {}
     for node in nodes:
         current = node
@@ -731,7 +780,8 @@ def embed_structure_summaries(
             "node_id": str(row["node_id"]), "parent_node_id": str(row.get("parent_node_id") or ""),
             "node_type": str(row.get("node_type") or ""), "depth": int(row.get("depth") or 0),
             "title": heading, "summary_kind": "llm",
-            "structure_version": "3", "source_fingerprint": str(row.get("source_fingerprint") or ""),
+            "structure_version": STRUCTURE_VERSION,
+            "source_fingerprint": str(row.get("source_fingerprint") or ""),
         })
     batch_size = max(1, int(os.environ.get("SUMMARY_EMBED_BATCH_SIZE", "16")))
     for start in range(0, len(ids), batch_size):

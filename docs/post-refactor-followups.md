@@ -73,6 +73,23 @@ changes rather than as another large refactoring batch.
 
 ## Longer-term maintainability
 
+### Per-attachment chunk generations
+
+- Current constraint: `chunk_scheme` is bound to the whole Chroma collection by
+  the pipeline fingerprint. A chunk-boundary change therefore requires a new
+  homogeneous collection and a full rebuild, even though only attachment-level
+  old/new generation mixing must strictly be prevented.
+- Proposal: store `chunk_generation`, `chunk_scheme_version`, and a content
+  fingerprint per attachment; build a candidate generation, verify its Chroma,
+  lexical, structure, and summary artifacts, then atomically switch the active
+  generation. Keep the prior generation available for rollback.
+- Migration rule: embedding-model or vector-dimension changes still require a
+  separate collection and full re-embedding. Chunking changes should permit
+  attachment-at-a-time migration followed by an eventual background convergence.
+- Do not relax the current collection fingerprint until generation-aware search,
+  deletion, crash recovery, and audits are implemented; merely allowing mixed
+  rows would reintroduce duplicate and orphaned chunks.
+
 - Continue splitting `index_from_zotero.main_async` by attachment processing
   phase.
 - Split `db_relations._init_db` into versioned migrations.

@@ -272,6 +272,10 @@ flowchart LR
 - 文書構造は `document_structure.py` がchunkのzone/structure_pathから
   canonical tree（node/zone/policy）を構築し、`validate_structure` で親子順序・
   coverage・境界跨ぎ0を検証します。
+- `rebuild_document_structure.py` は保存済み本文チャンクから構造だけを再構築します。
+  本文・チャンク境界・ベクトルは変更せず、検索に必要な `node_id` / zone / policy
+  メタデータだけをChroma上で同期します。構造変更時にstaleになるのは構造要約と
+  要約索引であり、本文埋め込みではありません。
 - 要約はbottom-upで、leafは`cheap`役、親ノード（章・item root）の還元は仕様通り
   `standard`役（DeepSeek）です。`source_fingerprint`/`prompt_version`が現行構造と
   一致すればLLMを呼ばずにskipします（`--force`で再生成）。

@@ -17,6 +17,7 @@ from src.build_structure_summaries import (
     CHROMA_DIR, PROMPT_VERSION, _select_searchable_summary_rows, inherited_title,
 )
 from src.db_relations import get_all_document_node_summaries, get_db_connection
+from src.document_structure import STRUCTURE_VERSION
 from src.summary_core import is_meta_summary
 from src.v3_data_plane import V3_COLLECTION
 
@@ -102,7 +103,7 @@ def build_report(*, collection_name: str) -> dict:
                 "depth": int(row.get("depth") or 0),
                 "title": heading,
                 "summary_kind": "llm",
-                "structure_version": "3",
+                "structure_version": STRUCTURE_VERSION,
                 "source_fingerprint": str(row.get("source_fingerprint") or ""),
             },
         }

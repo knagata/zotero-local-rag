@@ -19,9 +19,11 @@ except ImportError:  # pragma: no cover - direct src entrypoint
     from chunk_store import natural_chunk_key
 
 
-STRUCTURE_VERSION = "3"
+STRUCTURE_VERSION = "4"
 TARGET_SEGMENT_CHARS = 18_000
 MAX_SEGMENT_CHARS = 30_000
+THIN_CONTAINER_MAX_DIRECT_CHARS = 300
+THIN_CONTAINER_MIN_DESCENDANT_CHARS = 1_000
 
 ZONE_POLICIES = {
     "body": ("include", "normal", "none"),
@@ -55,15 +57,44 @@ def normalise_zone(value: Any) -> str:
     return zone if zone in ZONE_POLICIES else "body"
 
 
+_PARATEXT_TITLE_ZONES = (
+    (re.compile(r"^(?:contents|table of contents|目次)$", re.IGNORECASE), "toc"),
+    (re.compile(r"^(?:cover|title page|half[ -]?title|扉)$", re.IGNORECASE), "other_paratext"),
+    (re.compile(r"^(?:copyright(?: page)?|colophon|奥付)$", re.IGNORECASE), "colophon"),
+    (re.compile(r"^(?:bibliography|references|参考文献|文献一覧)$", re.IGNORECASE), "bibliography"),
+    (re.compile(r"^(?:index|索引)$", re.IGNORECASE), "index"),
+    (re.compile(r"^(?:notes|endnotes|注)$", re.IGNORECASE), "endnote"),
+)
+
+
+def _heading_zone(path: Sequence[str], supplied_zone: Any) -> str:
+    """Use an exact heading title to repair only an otherwise-body zone."""
+    zone = normalise_zone(supplied_zone)
+    if zone != "body" or not path:
+        return zone
+    title = _normalise_title(path[-1])
+    for pattern, inferred in _PARATEXT_TITLE_ZONES:
+        if pattern.fullmatch(title):
+            return inferred
+    return zone
+
+
 def source_fingerprint(chunks: Sequence[Dict[str, Any]]) -> str:
-    """Return a stable fingerprint for ordered chunk text and source metadata."""
+    """Fingerprint text plus every normalized input that can change the tree."""
     digest = hashlib.sha256()
     for chunk in sorted(chunks, key=lambda value: natural_chunk_key(str(value.get("id") or ""))):
         metadata = chunk.get("metadata") or {}
+        path = _metadata_path(metadata)
         payload = {
             "id": str(chunk.get("id") or ""),
-            "attachment": str(metadata.get("attachmentKey") or ""),
+            "attachment": _attachment_key(chunk),
+            "attachment_title": _normalise_title(
+                metadata.get("filename") or metadata.get("title")
+            ),
             "locator": str(metadata.get("locator") or ""),
+            "path": path,
+            "roles": _metadata_roles(metadata, len(path)),
+            "zone": _heading_zone(path, metadata.get("zone")),
             "text": str(chunk.get("text") or ""),
         }
         digest.update(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8"))
@@ -248,6 +279,41 @@ def _roll_up_content(nodes: List[Dict[str, Any]]) -> None:
             parent_last is None or natural_chunk_key(str(child_last)) > natural_chunk_key(str(parent_last))
         ):
             parent["last_chunk_id"] = child_last
+
+
+def _thin_container_diagnostics(nodes: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Report heading-only containers without flattening their children."""
+    children: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for node in nodes:
+        if node.get("parent_node_id"):
+            children[str(node["parent_node_id"])].append(node)
+    output: List[Dict[str, Any]] = []
+    for node in nodes:
+        if node.get("node_type") not in {"chapter", "section", "subsection"}:
+            continue
+        if _heading_zone([str(node.get("title") or "")], "body") != "body":
+            continue
+        node_children = children.get(str(node["node_id"]), [])
+        heading_children = [child for child in node_children if child.get("title")]
+        if not heading_children:
+            continue
+        direct_chars = sum(
+            int(child.get("content_chars") or 0) for child in node_children if child.get("chunks")
+        )
+        descendant_chars = int(node.get("content_chars") or 0) - direct_chars
+        if (
+            direct_chars <= THIN_CONTAINER_MAX_DIRECT_CHARS
+            and descendant_chars >= THIN_CONTAINER_MIN_DESCENDANT_CHARS
+        ):
+            output.append({
+                "node_id": str(node["node_id"]),
+                "title": node.get("title"),
+                "direct_content_chars": direct_chars,
+                "descendant_content_chars": descendant_chars,
+                "heading_child_count": len(heading_children),
+                "classification": "heading_container",
+            })
+    return output
 
 
 def validate_structure(nodes: Sequence[Dict[str, Any]], chunks: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
@@ -482,13 +548,13 @@ def build_document_structure(item_key: str, chunks: Sequence[Dict[str, Any]]) ->
             metadata = chunk.get("metadata") or {}
             path = _metadata_path(metadata)
             roles = _metadata_roles(metadata, len(path))
-            zone = normalise_zone(metadata.get("zone"))
+            zone = _heading_zone(path, metadata.get("zone"))
             run = [chunk]
             index += 1
             while index < len(attachment_chunks):
                 next_metadata = attachment_chunks[index].get("metadata") or {}
                 next_path = _metadata_path(next_metadata)
-                if next_path != path or normalise_zone(next_metadata.get("zone")) != zone:
+                if next_path != path or _heading_zone(next_path, next_metadata.get("zone")) != zone:
                     break
                 run.append(attachment_chunks[index])
                 index += 1
@@ -549,6 +615,9 @@ def build_document_structure(item_key: str, chunks: Sequence[Dict[str, Any]]) ->
         "explicit_runs": explicit_runs,
         "fallback_runs": fallback_runs,
     })
+    thin_containers = _thin_container_diagnostics(nodes)
+    diagnostics["thin_container_count"] = len(thin_containers)
+    diagnostics["thin_containers"] = thin_containers
     if not diagnostics["valid"]:
         raise ValueError(f"invalid generated document structure: {diagnostics['errors']}")
     reclaimed = _reclaim_fully_excluded_document(nodes)
@@ -569,6 +638,7 @@ def build_document_structure(item_key: str, chunks: Sequence[Dict[str, Any]]) ->
 
 __all__ = [
     "MAX_SEGMENT_CHARS", "STRUCTURE_VERSION", "TARGET_SEGMENT_CHARS",
+    "THIN_CONTAINER_MAX_DIRECT_CHARS", "THIN_CONTAINER_MIN_DESCENDANT_CHARS",
     "ZONE_POLICIES", "attach_structure_metadata", "build_document_structure", "normalise_zone",
     "source_fingerprint", "validate_structure",
 ]

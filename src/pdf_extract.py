@@ -22,6 +22,7 @@ try:
     )
     from .chapter_detect import (
         get_pdf_toc, build_pdf_page_chapter_lookup, build_pdf_page_structure_path_lookup,
+        infer_structure_roles,
     )
     from .pdf_provenance import classify_pdf_source, detect_text_defects
     from .heading_zone import classify_heading_path
@@ -35,6 +36,7 @@ except ImportError:  # direct execution with src/ on sys.path
     )
     from chapter_detect import (
         get_pdf_toc, build_pdf_page_chapter_lookup, build_pdf_page_structure_path_lookup,
+        infer_structure_roles,
     )
     from pdf_provenance import classify_pdf_source, detect_text_defects
     from heading_zone import classify_heading_path
@@ -1387,6 +1389,8 @@ def extract_chunks_from_pdf(
                                 or [value for value in (chapter_info.get("chapter"), chapter_info.get("section")) if value]
                             )
                             heading_zone = classify_heading_path(heading_path) if heading_path else "body"
+                            if heading_path:
+                                chapter_info["structure_roles"] = infer_structure_roles(heading_path)
                             md.update(
                                 {
                                     "source_type": "pdf",

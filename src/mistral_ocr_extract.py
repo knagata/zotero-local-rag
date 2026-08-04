@@ -13,6 +13,7 @@ import httpx
 try:
     from .chapter_detect import (
         build_pdf_page_chapter_lookup, build_pdf_page_structure_path_lookup, get_pdf_toc,
+        infer_structure_roles,
     )
     from .env_utils import load_dotenv_native
     from .ocr_cache import (
@@ -26,6 +27,7 @@ try:
 except ImportError:  # direct `python src/index_from_zotero.py` execution
     from chapter_detect import (
         build_pdf_page_chapter_lookup, build_pdf_page_structure_path_lookup, get_pdf_toc,
+        infer_structure_roles,
     )
     from env_utils import load_dotenv_native
     from ocr_cache import (
@@ -405,6 +407,7 @@ def extract_chunks_from_mistral_ocr_result(
                     metadata["quality_uncertain_reason"] = ",".join(normalized_problem_pages[page_no])
                 if active_path:
                     metadata["structure_path"] = list(active_path)
+                    metadata["structure_roles"] = infer_structure_roles(active_path)
                 if block.get("bbox"):
                     metadata["bbox"] = json.dumps(block["bbox"], ensure_ascii=False, separators=(",", ":"))
                     for axis in ("l", "t", "r", "b"):
