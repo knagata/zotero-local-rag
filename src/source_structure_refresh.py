@@ -2,28 +2,53 @@
 from __future__ import annotations
 
 import os
+import json
 import re
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Dict, Sequence
 
 try:
-    from .chapter_detect import build_pdf_page_structure_path_lookup, get_pdf_toc, infer_structure_roles
+    from .chapter_detect import (
+        build_pdf_page_structure_path_lookup, get_epub_chapter_index_to_toc_entries,
+        get_pdf_toc, infer_structure_roles,
+    )
     from .document_structure import _attachment_key
     from .heading_zone import classify_heading_path
     from .html_extract import extract_chunks_from_epub_snapshot
+    from .manifest import load_manifest
     from .pdf_extract import _outline_events_by_page, _resolve_record_structure_paths
+    from .pdf_toc_recovery import HeadingAnchor, apply_anchors
+    from .v3_data_plane import manifest_path
 except ImportError:  # pragma: no cover
-    from chapter_detect import build_pdf_page_structure_path_lookup, get_pdf_toc, infer_structure_roles
+    from chapter_detect import (
+        build_pdf_page_structure_path_lookup, get_epub_chapter_index_to_toc_entries,
+        get_pdf_toc, infer_structure_roles,
+    )
     from document_structure import _attachment_key
     from heading_zone import classify_heading_path
     from html_extract import extract_chunks_from_epub_snapshot
+    from manifest import load_manifest
     from pdf_extract import _outline_events_by_page, _resolve_record_structure_paths
+    from pdf_toc_recovery import HeadingAnchor, apply_anchors
+    from v3_data_plane import manifest_path
 
 
 _EPUB_LOCATOR_RE = re.compile(r"^epub:spine(?P<spine>\d+):block(?P<block>\d+)$")
+_EPUB_SPINE_RE = re.compile(r"^epub:spine(?P<spine>\d+)(?::|$)")
 STRUCTURE_METADATA_KEYS = ("structure_path", "structure_roles", "chapter", "section", "zone")
 INTRINSIC_ZONES = {"corrupted", "footnote"}
+_JP_PART_RE = re.compile(r"^第[一二三四五六七八九十百]+部")
+_JP_CHAPTER_RE = re.compile(r"^(?:第[一二三四五六七八九十百]+章|序章|結論)(?:\s|$)")
+_JP_SECTION_RE = re.compile(r"^第[一二三四五六七八九十百]+節")
+_ROMAN_SUBHEADING_RE = re.compile(r"^(?:[IVXLCDM]+|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+)(?:\s|$)", re.IGNORECASE)
+_JP_INDEX_GROUP_RE = re.compile(r"^[ァ-ヶ一-龠々]+\s*行$")
+_TOP_LEVEL_HEADING_RE = re.compile(
+    r"^(?:(?:序言|はじめに|訳者あとがき|終章|補論)(?:\s|$)|"
+    r"(?:初出一覧|参考文献|謝辞|索引|人名索引)$)"
+)
+_FUNCTIONAL_BODY_HEADINGS = {"参考文献", "初出一覧", "謝辞", "索引", "人名索引"}
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _clear_source_structure_metadata(metadata: Dict[str, Any]) -> None:
@@ -32,6 +57,232 @@ def _clear_source_structure_metadata(metadata: Dict[str, Any]) -> None:
         metadata.pop(key, None)
     if str(metadata.get("zone") or "body") not in INTRINSIC_ZONES:
         metadata.pop("zone", None)
+
+
+def _set_structure_metadata(
+    metadata: Dict[str, Any], path: Sequence[str], roles: Sequence[str] | None = None,
+) -> None:
+    """Set path-derived fields without confusing a section with its chapter."""
+    clean_path = [str(value).strip() for value in path if str(value).strip()]
+    clean_roles = [str(value).strip() for value in (roles or []) if str(value).strip()]
+    if len(clean_roles) != len(clean_path):
+        clean_roles = infer_structure_roles(clean_path)
+    metadata["structure_path"] = clean_path
+    metadata["structure_roles"] = clean_roles
+    for field, role in (("chapter", "chapter"), ("section", "section")):
+        value = next((title for title, kind in zip(clean_path, clean_roles) if kind == role), None)
+        if value is None:
+            metadata.pop(field, None)
+        else:
+            metadata[field] = value
+
+
+def _body_heading_title(row: Dict[str, Any]) -> str:
+    text = " ".join(str(row.get("text") or "").replace("#", " ").split()).strip()
+    return text if 0 < len(text) <= 180 else ""
+
+
+def _row_page(row: Dict[str, Any]) -> int:
+    try:
+        return int((row.get("metadata") or {}).get("page") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _persisted_ai_toc_anchors(attachment_key: str) -> list[HeadingAnchor]:
+    """Load previously accepted AI-TOC anchors without invoking an LLM."""
+    entry = (load_manifest(manifest_path(_PROJECT_ROOT)).get("files") or {}).get(
+        attachment_key, {}
+    )
+    quality = entry.get("quality") if isinstance(entry, dict) else {}
+    diagnostics = quality.get("ai_toc_diagnostics") if isinstance(quality, dict) else {}
+    if not isinstance(diagnostics, dict) or diagnostics.get("accepted") is not True:
+        return []
+    payload = diagnostics.get("anchor_payload")
+    try:
+        values = json.loads(payload) if isinstance(payload, str) else payload
+        anchors = [HeadingAnchor(**value) for value in values if isinstance(value, dict)]
+    except (TypeError, ValueError):
+        return []
+    return anchors if len(anchors) >= 2 else []
+
+
+def _refresh_pdf_rows_from_persisted_anchors(
+    rows: Sequence[Dict[str, Any]], attachment_key: str, source_path: Path,
+) -> tuple[list[Dict[str, Any]], Dict[str, Any]] | None:
+    """Reapply accepted, persisted AI-TOC boundaries to unchanged chunks."""
+    anchors = _persisted_ai_toc_anchors(attachment_key)
+    if not anchors:
+        return None
+    cleared: list[tuple[str, str, Dict[str, Any]]] = []
+    for row in rows:
+        metadata = dict(row.get("metadata") or {})
+        _clear_source_structure_metadata(metadata)
+        cleared.append((str(row.get("id") or ""), str(row.get("text") or ""), metadata))
+    structured = apply_anchors(cleared, anchors)
+    output: list[Dict[str, Any]] = []
+    changed = mapped = 0
+    for row, (_chunk_id, _text, metadata) in zip(rows, structured, strict=True):
+        before = {key: (row.get("metadata") or {}).get(key) for key in STRUCTURE_METADATA_KEYS}
+        path = metadata.get("structure_path") or []
+        if path:
+            _set_structure_metadata(metadata, path)
+            mapped += 1
+        after = {key: metadata.get(key) for key in STRUCTURE_METADATA_KEYS}
+        changed += before != after
+        output.append({**row, "metadata": metadata})
+    if mapped / max(1, len(output)) < 0.8:
+        return None
+    return output, {
+        "attachment_key": attachment_key, "source_type": "pdf",
+        "source_path": str(source_path), "chunks": len(output),
+        "metadata_changed": changed, "outline_entries": len(anchors),
+        "mapping_mode": "persisted_ai_toc_anchors", "mapped_chunks": mapped,
+    }
+
+
+def _refresh_pdf_rows_from_numbered_body_headings(
+    rows: Sequence[Dict[str, Any]], attachment_key: str, source_path: Path,
+) -> tuple[list[Dict[str, Any]], Dict[str, Any]] | None:
+    """Recover conservative Japanese TOC-level hierarchy from body headings."""
+    events: dict[int, tuple[list[str], list[str]]] = {}
+    part_path: list[str] = []
+    chapter_path: list[str] = []
+    section_path: list[str] = []
+    functional_scope = False
+    inside_printed_toc = False
+    printed_toc_page = 0
+    remaining_heading_titles = Counter(
+        _body_heading_title(row)
+        for row in rows
+        if str((row.get("metadata") or {}).get("block_type") or "").casefold() == "heading"
+    )
+    part_count = chapter_count = section_count = roman_count = 0
+    for index, row in enumerate(rows):
+        title = _body_heading_title(row)
+        if not title:
+            continue
+        block_type = str((row.get("metadata") or {}).get("block_type") or "").casefold()
+        if block_type == "heading":
+            remaining_heading_titles[title] -= 1
+        if title == "目次":
+            inside_printed_toc = True
+            printed_toc_page = _row_page(row)
+            continue
+        if inside_printed_toc:
+            numbered_opener = bool(_JP_PART_RE.match(title) or _JP_CHAPTER_RE.match(title))
+            repeated_later = remaining_heading_titles[title] > 0
+            explicit_opener_later = any(
+                remaining_heading_titles[value] > 0 for value in ("はじめに", "序章")
+            )
+            body_opener = (
+                title in {"はじめに", "序章"}
+                or (
+                    numbered_opener and _row_page(row) > printed_toc_page
+                    and not repeated_later and not explicit_opener_later
+                )
+            )
+            if body_opener and block_type == "heading":
+                inside_printed_toc = False
+            else:
+                continue
+        # OCR/layout extractors often label a genuine Part opener as text, but
+        # all other canonical boundaries must be explicit headings. This also
+        # excludes repeating page furniture and incidental prose references.
+        if block_type != "heading" and not _JP_PART_RE.match(title):
+            continue
+        if _JP_INDEX_GROUP_RE.match(title) and not functional_scope:
+            # Multi-column indexes sometimes expose their first kana-group
+            # heading but lose the section title. Start at that PDF page's
+            # first chunk so entries preceding the group are not assigned to
+            # the previous chapter. A later running ``人名索引`` header is
+            # treated as the same functional region below.
+            page = _row_page(row)
+            page_start = next((
+                candidate for candidate, value in enumerate(rows)
+                if _row_page(value) == page
+            ), index)
+            part_path = []
+            chapter_path = ["索引"]
+            section_path = []
+            functional_scope = True
+            events[page_start] = (["索引"], ["chapter"])
+            continue
+        if _TOP_LEVEL_HEADING_RE.match(title):
+            if title in {"索引", "人名索引"} and chapter_path == ["索引"]:
+                continue
+            part_path = []
+            chapter_path = [title]
+            section_path = []
+            functional_scope = title in _FUNCTIONAL_BODY_HEADINGS
+            events[index] = ([title], ["chapter"])
+        elif _JP_PART_RE.match(title):
+            part_path = [title]
+            chapter_path = []
+            section_path = []
+            functional_scope = False
+            part_count += 1
+            events[index] = (list(part_path), ["part"])
+        elif _JP_CHAPTER_RE.match(title):
+            chapter_path = [*part_path, title]
+            section_path = []
+            functional_scope = False
+            chapter_count += 1
+            roles = ["part", "chapter"] if part_path else ["chapter"]
+            events[index] = (list(chapter_path), roles)
+        elif _JP_SECTION_RE.match(title) and chapter_path:
+            section_path = [*chapter_path, title]
+            functional_scope = False
+            section_count += 1
+            roles = infer_structure_roles(section_path)
+            events[index] = (list(section_path), roles)
+        elif _ROMAN_SUBHEADING_RE.match(title) and not functional_scope:
+            parent = section_path or chapter_path
+            if parent:
+                roman_count += 1
+                path = [*parent, title]
+                events[index] = (path, infer_structure_roles(path))
+
+    # Avoid promoting incidental numbered phrases. A usable book/thesis tree
+    # needs either explicit Parts or several Chapters, plus multiple boundaries.
+    if not ((part_count >= 1 or chapter_count >= 3) and len(events) >= 5):
+        return None
+
+    output: list[Dict[str, Any]] = []
+    active_path: list[str] = []
+    active_roles: list[str] = []
+    changed = 0
+    mapped = 0
+    for index, row in enumerate(rows):
+        if index in events:
+            active_path, active_roles = events[index]
+        metadata = dict(row.get("metadata") or {})
+        before = {key: metadata.get(key) for key in STRUCTURE_METADATA_KEYS}
+        if active_path:
+            _set_structure_metadata(metadata, active_path, active_roles)
+            zone = classify_heading_path(active_path)
+            if str(metadata.get("zone") or "body") not in INTRINSIC_ZONES:
+                if zone == "body":
+                    metadata.pop("zone", None)
+                else:
+                    metadata["zone"] = zone
+            mapped += 1
+        else:
+            _clear_source_structure_metadata(metadata)
+        after = {key: metadata.get(key) for key in STRUCTURE_METADATA_KEYS}
+        changed += before != after
+        output.append({**row, "metadata": metadata})
+    return output, {
+        "attachment_key": attachment_key, "source_type": "pdf",
+        "source_path": str(source_path), "chunks": len(output),
+        "metadata_changed": changed, "outline_entries": 0,
+        "mapping_mode": "numbered_body_headings", "mapped_chunks": mapped,
+        "heading_counts": {
+            "parts": part_count, "chapters": chapter_count,
+            "sections": section_count, "roman_subheadings": roman_count,
+            "total": len(events),
+        },
+    }
 
 
 def _epub_source_path(rows: Sequence[Dict[str, Any]], attachment_key: str) -> Path:
@@ -89,6 +340,70 @@ def _locator_blocks(metadata: Dict[str, Any]) -> list[tuple[int, int]]:
     return [(spine, block) for block in range(first, max(first, last) + 1)]
 
 
+def _refresh_epub_rows_from_spine_toc(
+    rows: Sequence[Dict[str, Any]], attachment_key: str, source_path: Path,
+) -> tuple[list[Dict[str, Any]], Dict[str, Any]]:
+    """Project TOC paths onto fixed-layout/OCR chunks using stable spine IDs."""
+    entries = get_epub_chapter_index_to_toc_entries(str(source_path))
+    if sum(len(values) for values in entries.values()) < 2:
+        raise RuntimeError(
+            f"EPUB spine TOC has fewer than two usable entries for {attachment_key}"
+        )
+    starts = sorted(entries)
+    output: list[Dict[str, Any]] = []
+    changed = 0
+    mapped = 0
+    for row in rows:
+        metadata = dict(row.get("metadata") or {})
+        match = _EPUB_SPINE_RE.match(str(metadata.get("locator") or ""))
+        spine = int(match.group("spine")) if match else -1
+        active = max((value for value in starts if value <= spine), default=None)
+        before = {key: metadata.get(key) for key in STRUCTURE_METADATA_KEYS}
+        if active is None:
+            _clear_source_structure_metadata(metadata)
+        else:
+            candidates = entries[active]
+            candidate_paths = [
+                [str(value).strip() for value in candidate.get("path") or [] if str(value).strip()]
+                for candidate in candidates
+            ]
+            path = list(candidate_paths[0]) if candidate_paths else []
+            for candidate_path in candidate_paths[1:]:
+                common = 0
+                while (
+                    common < len(path) and common < len(candidate_path)
+                    and path[common] == candidate_path[common]
+                ):
+                    common += 1
+                path = path[:common]
+            if len(candidate_paths) > 1 and not path:
+                raise RuntimeError(
+                    f"ambiguous spine TOC has no common parent for {attachment_key} spine {active}"
+                )
+            if path:
+                _set_structure_metadata(metadata, path)
+                zone = classify_heading_path(path)
+                if str(metadata.get("zone") or "body") not in INTRINSIC_ZONES:
+                    if zone == "body":
+                        metadata.pop("zone", None)
+                    else:
+                        metadata["zone"] = zone
+                mapped += 1
+            else:
+                _clear_source_structure_metadata(metadata)
+        after = {key: metadata.get(key) for key in STRUCTURE_METADATA_KEYS}
+        changed += before != after
+        output.append({**row, "metadata": metadata})
+    if not mapped:
+        raise RuntimeError(f"no existing EPUB chunks map to spine TOC for {attachment_key}")
+    return output, {
+        "attachment_key": attachment_key, "source_type": "epub",
+        "source_path": str(source_path), "chunks": len(output),
+        "metadata_changed": changed, "mapping_mode": "spine_toc",
+        "toc_entries": len(entries), "mapped_chunks": mapped,
+    }
+
+
 def _refresh_epub_rows(
     rows: Sequence[Dict[str, Any]], attachment_key: str,
 ) -> tuple[list[Dict[str, Any]], Dict[str, Any]]:
@@ -100,6 +415,8 @@ def _refresh_epub_rows(
         if key in first_metadata
     }
     fresh, _quality = extract_chunks_from_epub_snapshot(source_path, attachment_key, meta_base)
+    if not fresh:
+        return _refresh_epub_rows_from_spine_toc(rows, attachment_key, source_path)
     by_block: dict[tuple[int, int], list[Dict[str, Any]]] = defaultdict(list)
     for _chunk_id, _text, metadata in fresh:
         for block in _locator_blocks(metadata):
@@ -135,6 +452,9 @@ def _refresh_epub_rows(
                 metadata[key] = source_metadata[key]
             else:
                 metadata.pop(key, None)
+        path = metadata.get("structure_path") or []
+        if path:
+            _set_structure_metadata(metadata, path, metadata.get("structure_roles") or [])
         after = {key: metadata.get(key) for key in STRUCTURE_METADATA_KEYS}
         changed += before != after
         output.append({**row, "metadata": metadata})
@@ -153,6 +473,16 @@ def _refresh_pdf_rows(
     source_path = _pdf_source_path(rows, attachment_key)
     toc = get_pdf_toc(str(source_path))
     if not toc:
+        persisted = _refresh_pdf_rows_from_persisted_anchors(
+            rows, attachment_key, source_path,
+        )
+        if persisted is not None:
+            return persisted
+        recovered = _refresh_pdf_rows_from_numbered_body_headings(
+            rows, attachment_key, source_path,
+        )
+        if recovered is not None:
+            return recovered
         output = []
         changed = 0
         for row in rows:
@@ -200,13 +530,7 @@ def _refresh_pdf_rows(
             metadata = dict(row.get("metadata") or {})
             before = {key: metadata.get(key) for key in STRUCTURE_METADATA_KEYS}
             if path:
-                metadata["structure_path"] = path
-                metadata["structure_roles"] = infer_structure_roles(path)
-                metadata["chapter"] = path[0]
-                if len(path) > 1:
-                    metadata["section"] = path[1]
-                else:
-                    metadata.pop("section", None)
+                _set_structure_metadata(metadata, path)
                 inferred_zone = classify_heading_path(path)
                 if str(metadata.get("zone") or "body") not in {"corrupted", "footnote"}:
                     if inferred_zone == "body":

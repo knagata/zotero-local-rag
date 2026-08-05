@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 from src.chapter_detect import (
     _recover_flat_pdf_toc,
@@ -8,6 +9,7 @@ from src.chapter_detect import (
     _toc_entries_by_href,
     build_epub_toc_tree,
     build_pdf_outline_tree,
+    get_epub_chapter_index_to_toc_entries,
     infer_structure_roles,
 )
 
@@ -18,7 +20,32 @@ class _Link:
         self.href = href
 
 
+class _EpubItem:
+    def __init__(self, name: str):
+        self._name = name
+
+    def get_name(self):
+        return self._name
+
+
 class ChapterDetectTests(unittest.TestCase):
+    def test_epub_toc_mapping_uses_opf_spine_indices_not_all_documents(self):
+        class Book:
+            toc = [_Link("Chapter", "Text/chapter.xhtml")]
+            spine = [("cover", "yes"), ("chapter", "yes")]
+
+            def get_item_with_id(self, idref):
+                return {
+                    "cover": _EpubItem("Text/cover.xhtml"),
+                    "chapter": _EpubItem("Text/chapter.xhtml"),
+                }.get(idref)
+
+        with patch("src.chapter_detect._ebooklib_epub.read_epub", return_value=Book()):
+            entries = get_epub_chapter_index_to_toc_entries("book.epub")
+
+        self.assertNotIn(0, entries)
+        self.assertEqual(entries[1][0]["path"], ["Chapter"])
+
     def test_flat_pdf_parts_recover_chapter_levels(self):
         recovered = _recover_flat_pdf_toc([
             (1, "Introduction", 1),

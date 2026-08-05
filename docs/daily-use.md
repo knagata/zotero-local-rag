@@ -69,6 +69,10 @@ uv run python scripts/review_summary_quality_reports.py
 
 # 未解決の処理状態を確認（read-only）
 uv run python scripts/list_artifact_status.py --unresolved-only
+
+# flat_fallback資料を原因別に診断（read-only、原本・索引を変更しない）
+uv run python scripts/diagnose_flat_structures.py --format markdown \
+  --output data/flat_structure_diagnostics.md
 ```
 
 ## Zoteroタグで添付ファイルをRAGから除外する

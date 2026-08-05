@@ -403,7 +403,14 @@ def get_epub_chapter_index_to_toc_entries(
             book = _ebooklib_epub.read_epub(str(epub_path))
         entries_by_href = _toc_entries_by_href(build_epub_toc_tree(list(book.toc or [])))
         result: Dict[int, List[Dict[str, Any]]] = {}
-        for index, item in enumerate(book.get_items_of_type(_ITEM_DOCUMENT)):
+        # OCR/fixed-layout locators use the OPF spine ordinal. Enumerating all
+        # document manifest items shifts that ordinal whenever a nav or other
+        # non-spine XHTML item exists.
+        for index, spine_entry in enumerate(book.spine or []):
+            idref = spine_entry[0] if isinstance(spine_entry, (list, tuple)) else spine_entry
+            item = book.get_item_with_id(str(idref))
+            if item is None:
+                continue
             name = str(item.get_name() or "")
             records = entries_by_href.get(name)
             if records is None:
