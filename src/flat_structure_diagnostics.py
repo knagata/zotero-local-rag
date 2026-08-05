@@ -20,7 +20,7 @@ LONG_PDF_PAGES = 30
 _HEADING_NUMBER_RE = re.compile(
     r"^(?:第[0-9一二三四五六七八九十百]+[章節部編]|"
     r"(?:chapter|part|section)\s+[0-9ivxlcdm]+\b|"
-    r"[0-9]+(?:\.[0-9]+){1,3}[.)]?\s+\S|"
+    r"[0-9]{1,2}(?:\.[0-9]{1,2}){1,3}[.)]?\s+\S|"
     r"[ivxlcdm]+[.)]\s+\S)",
     re.IGNORECASE,
 )

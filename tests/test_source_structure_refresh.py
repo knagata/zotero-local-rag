@@ -398,6 +398,66 @@ def test_pdf_heading_recovery_fails_closed_for_too_few_chapters():
     assert "heading_counts" not in reports[0]
 
 
+def test_pdf_heading_recovery_index_group_requires_kana_not_any_kanji_row():
+    titles = [
+        "第一章 一般の見出し", "第二章 もう一つの見出し", "五行",
+        "第三章 三つ目の見出し", "第四章 四つ目の見出し", "第五章 五つ目の見出し",
+    ]
+    rows = [
+        {"id": f"PDF:{index}", "text": title,
+         "metadata": {"attachmentKey": "PDF", "source_type": "pdf", "page": index + 1,
+                      "block_type": "heading"}}
+        for index, title in enumerate(titles)
+    ]
+    with patch("src.source_structure_refresh._pdf_source_path", return_value=Path("paper.pdf")), \
+            patch("src.source_structure_refresh.get_pdf_toc", return_value=[]):
+        refreshed, _reports = refresh_source_structure_metadata(rows)
+
+    # "五行" is an ordinary kanji heading, not a kana index-row marker, so it
+    # must not be reclassified into the excluded "索引" zone.
+    assert refreshed[2]["metadata"]["structure_path"] == ["第二章 もう一つの見出し"]
+    assert "索引" not in refreshed[2]["metadata"]["structure_path"]
+
+
+def test_pdf_heading_recovery_index_group_still_matches_real_kana_row():
+    titles = [
+        "第一章 一般の見出し", "第二章 もう一つの見出し", "第三章 三つ目の見出し",
+        "第四章 四つ目の見出し", "第五章 五つ目の見出し", "ア行",
+    ]
+    rows = [
+        {"id": f"PDF:{index}", "text": title,
+         "metadata": {"attachmentKey": "PDF", "source_type": "pdf", "page": index + 1,
+                      "block_type": "heading"}}
+        for index, title in enumerate(titles)
+    ]
+    with patch("src.source_structure_refresh._pdf_source_path", return_value=Path("paper.pdf")), \
+            patch("src.source_structure_refresh.get_pdf_toc", return_value=[]):
+        refreshed, _reports = refresh_source_structure_metadata(rows)
+
+    assert refreshed[5]["metadata"]["structure_path"] == ["索引"]
+
+
+def test_pdf_heading_recovery_index_group_page_start_ignores_missing_page():
+    titles = [
+        "第一章 一般の見出し", "第二章 もう一つの見出し", "第三章 三つ目の見出し",
+        "第四章 四つ目の見出し", "第五章 五つ目の見出し", "ア行",
+    ]
+    rows = [
+        {"id": f"PDF:{index}", "text": title,
+         "metadata": {"attachmentKey": "PDF", "source_type": "pdf",
+                      "block_type": "heading"}}
+        for index, title in enumerate(titles)
+    ]
+    with patch("src.source_structure_refresh._pdf_source_path", return_value=Path("paper.pdf")), \
+            patch("src.source_structure_refresh.get_pdf_toc", return_value=[]):
+        refreshed, _reports = refresh_source_structure_metadata(rows)
+
+    # Without page metadata, the missing-page fallback must not anchor the
+    # synthesized "索引" boundary back at the start of the document.
+    assert refreshed[0]["metadata"]["structure_path"] == ["第一章 一般の見出し"]
+    assert refreshed[5]["metadata"]["structure_path"] == ["索引"]
+
+
 @pytest.mark.parametrize("intrinsic_zone", ["corrupted", "footnote"])
 def test_pdf_refresh_preserves_intrinsic_zone_without_toc(intrinsic_zone):
     rows = [{

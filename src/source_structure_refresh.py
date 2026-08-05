@@ -42,7 +42,7 @@ _JP_PART_RE = re.compile(r"^第[一二三四五六七八九十百]+部")
 _JP_CHAPTER_RE = re.compile(r"^(?:第[一二三四五六七八九十百]+章|序章|結論)(?:\s|$)")
 _JP_SECTION_RE = re.compile(r"^第[一二三四五六七八九十百]+節")
 _ROMAN_SUBHEADING_RE = re.compile(r"^(?:[IVXLCDM]+|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+)(?:\s|$)", re.IGNORECASE)
-_JP_INDEX_GROUP_RE = re.compile(r"^[ァ-ヶ一-龠々]+\s*行$")
+_JP_INDEX_GROUP_RE = re.compile(r"^[ァ-ヶぁ-ん]+\s*行$")
 _TOP_LEVEL_HEADING_RE = re.compile(
     r"^(?:(?:序言|はじめに|訳者あとがき|終章|補論)(?:\s|$)|"
     r"(?:初出一覧|参考文献|謝辞|索引|人名索引)$)"
@@ -198,7 +198,7 @@ def _refresh_pdf_rows_from_numbered_body_headings(
             # the previous chapter. A later running ``人名索引`` header is
             # treated as the same functional region below.
             page = _row_page(row)
-            page_start = next((
+            page_start = index if not page else next((
                 candidate for candidate, value in enumerate(rows)
                 if _row_page(value) == page
             ), index)

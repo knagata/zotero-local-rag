@@ -102,6 +102,32 @@ def test_footnote_numbers_and_repeated_ocr_digits_are_not_headings():
     assert result["reason_code"] == "flat_likely_appropriate_short_document"
 
 
+def test_ocr_record_numbers_are_not_counted_as_numbered_headings():
+    rows = _rows(texts=[
+        "1.150131 ]Jf-51061 Internees Hut at Barmera",
+        "1.150483 Indonesia KANG, Ping Hoo May 07, 1942 1308-10 (IOmths)",
+        "1.150774 Indonesia LIE, In Dai August 11, 1944 1302-04 (65)",
+    ])
+    result = classify_flat_attachment(
+        "ATT", rows,
+        source_inspector=lambda *_: {"source_available": True, "toc_entries": 0},
+    )
+    assert result["numbered_short_blocks"] == 0
+    assert result["reason_code"] == "flat_likely_appropriate_short_document"
+    assert result["gold_recommended"] is False
+
+
+def test_genuine_multilevel_numbered_headings_are_still_detected():
+    rows = _rows(texts=[
+        "1.2 Introduction", "1.2.1 Background", "2.1 Method",
+    ])
+    result = classify_flat_attachment(
+        "ATT", rows,
+        source_inspector=lambda *_: {"source_available": True, "toc_entries": 0},
+    )
+    assert result["numbered_short_blocks"] == 3
+
+
 def test_single_epub_title_toc_is_not_treated_as_a_recovered_hierarchy():
     result = classify_flat_attachment(
         "ATT", _rows("epub"),
