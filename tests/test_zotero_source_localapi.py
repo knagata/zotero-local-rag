@@ -22,12 +22,13 @@ from zotero_source_localapi import ZoteroLocalAPI  # noqa: E402
 
 
 def _attachment(key, *, link_mode="imported_file", content_type="application/pdf",
-                 filename="doc.pdf", parent_item="ITEM"):
+                 filename="doc.pdf", parent_item="ITEM", tags=None):
     return {
         "key": key,
         "data": {
             "key": key, "itemType": "attachment", "linkMode": link_mode,
             "contentType": content_type, "filename": filename, "parentItem": parent_item,
+            "tags": tags or [],
         },
     }
 
@@ -72,6 +73,31 @@ class LinkedUrlSkipTests(unittest.TestCase):
         raw = [_attachment("A2", link_mode="imported_file")]
         yielded, _ = self._run(raw, resolve_returns="/tmp/zotero/storage/A2/doc.pdf")
         self.assertEqual([attachment.attachmentKey for attachment in yielded], ["A2"])
+
+    def test_attachment_and_parent_tags_are_normalized(self):
+        raw = [_attachment("A2", tags=[{"tag": " RAG:Exclude "}])]
+        api = ZoteroLocalAPI()
+        yielded = []
+
+        async def go():
+            with patch.object(api, "list_pdf_attachments", return_value=raw), \
+                 patch.object(api, "get_item", return_value={
+                     "key": "ITEM", "data": {
+                         "key": "ITEM", "title": "Parent",
+                         "tags": [{"tag": "RAG:Prefer-EPUB"}],
+                     },
+                 }), patch.object(
+                     api, "resolve_pdf_path_from_attachment",
+                     return_value="/tmp/zotero/storage/A2/doc.pdf",
+                 ):
+                async for attachment in api.iter_normalized_attachments(
+                    zotero_data_dir="/tmp/zotero", pdf_cache_dir="/tmp/cache",
+                ):
+                    yielded.append(attachment)
+
+        asyncio.run(go())
+        self.assertEqual(yielded[0].tags, ("rag:exclude",))
+        self.assertEqual(yielded[0].parentTags, ("rag:prefer-epub",))
 
     def test_a_genuine_resolution_failure_stops_incomplete_enumeration(self):
         # The other half of the same defect: a failed download for a non-

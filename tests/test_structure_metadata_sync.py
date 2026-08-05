@@ -50,6 +50,20 @@ class SyncTests(unittest.TestCase):
         updates = stale_chunk_updates(current, desired_chunk_metadata(NODES, MAPPING))
         self.assertEqual(updates["c1"]["retrieval_policy"], "normal")
 
+    def test_extended_source_metadata_drift_is_repaired(self):
+        current = {"c1": {
+            "node_id": "dn:new", "zone": "endnote", "summary_policy": "exclude",
+            "retrieval_policy": "normal", "citation_policy": "extract",
+            "structure_path": '["Old"]', "chapter": "Old",
+        }}
+        desired = desired_chunk_metadata(NODES, MAPPING)
+        desired["c1"].update({
+            "structure_path": '["Corrected"]', "chapter": "Corrected",
+        })
+        updates = stale_chunk_updates(current, desired)
+        self.assertEqual(updates["c1"]["structure_path"], '["Corrected"]')
+        self.assertEqual(updates["c1"]["chapter"], "Corrected")
+
     def test_unrelated_metadata_is_preserved(self):
         current = {"c1": {"node_id": "dn:old", "title": "Chapter One", "page": 4,
                           "zone": "endnote", "summary_policy": "exclude",

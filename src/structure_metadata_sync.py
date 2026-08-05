@@ -65,7 +65,13 @@ def stale_chunk_updates(
         stored = current.get(chunk_id)
         if stored is None:
             continue
-        if any(str(stored.get(key) or "") != str(wanted[key]) for key in SYNCED_KEYS):
+        # Callers may extend the canonical routing payload with refreshed
+        # source fields (structure_path/chapter/etc.). Comparing only the five
+        # base routing keys silently discarded those metadata-only repairs.
+        if any(
+            str(stored.get(key) or "") != str(value or "")
+            for key, value in wanted.items()
+        ):
             merged = dict(stored)
             merged.update(wanted)
             updates[chunk_id] = merged

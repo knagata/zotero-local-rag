@@ -128,6 +128,11 @@ CHROMA_COLLECTION_DEFAULT = V3_COLLECTION
 STALE_DELETE_MAX_RATIO = 0.05
 STALE_DELETE_MIN_KEYS = 10
 
+RAG_EXCLUDE_TAG = (os.environ.get("ZOTERO_RAG_EXCLUDE_TAG") or "rag:exclude").strip().casefold()
+RAG_PREFER_EPUB_TAG = (
+    os.environ.get("ZOTERO_RAG_PREFER_EPUB_TAG") or "rag:prefer-epub"
+).strip().casefold()
+
 
 RUN_CODE_PATHS = tuple(
     PROJECT_ROOT / "src" / name for name in (
@@ -660,6 +665,88 @@ def _finalize_v3_pending(
         save_manifest(MANIFEST_PATH, manifest)
 
 
+def _retire_indexed_attachments(
+    col: Any, manifest: dict[str, Any], files_manifest: dict[str, dict[str, Any]],
+    attachments: Iterable[ZoteroAttachment], *, collection_name: str,
+    summary_client: Any = None, code_paths: Iterable[Path] | None = None,
+    expected_code_fingerprint: str | None = None,
+) -> tuple[int, set[str]]:
+    """Atomically retire committed attachment rows, then refresh their items."""
+    rows_by_key = {
+        row.attachmentKey: row for row in attachments
+        if row.attachmentKey in files_manifest
+    }
+    affected_items: set[str] = set()
+    deleted = 0
+    for attachment_key, row in rows_by_key.items():
+        _delete_by_attachment_keys(col, [attachment_key], strict=True)
+        files_manifest.pop(attachment_key, None)
+        purge_artifact_status_for_attachments([attachment_key])
+        affected_items.add(str(row.parentItemKey or row.attachmentKey))
+        deleted += 1
+    save_manifest(MANIFEST_PATH, manifest)
+    if affected_items:
+        _finalize_v3_pending(
+            manifest, affected_items, collection_name=collection_name,
+            code_paths=code_paths,
+            expected_code_fingerprint=expected_code_fingerprint,
+        )
+        _delete_summary_embeddings_for_items(
+            affected_items, collection_name=collection_name, client=summary_client,
+        )
+    return deleted, affected_items
+
+
+def _sync_tag_exclusions_without_embedding_runtime(
+    manifest: dict[str, Any], files_manifest: dict[str, dict[str, Any]],
+    excluded_attachments: Iterable[ZoteroAttachment], *,
+    preferred_pdf_attachments: Iterable[ZoteroAttachment],
+    inventory_attachments: Iterable[ZoteroAttachment], show_progress: bool,
+) -> int:
+    """Retire safely tagged rows without loading or validating an embedder."""
+    import chromadb
+
+    collection_name = str(CHROMA_COLLECTION_ENV or "zotero_paragraphs_v3")
+    client = chromadb.PersistentClient(path=str(CHROMA_DIR))
+    col = client.get_collection(collection_name)
+    ready_preferred = _ready_preferred_pdfs(
+        preferred_pdf_attachments, inventory_attachments, files_manifest,
+    )
+    deleted, affected_items = _retire_indexed_attachments(
+        col, manifest, files_manifest,
+        [*excluded_attachments, *ready_preferred],
+        collection_name=collection_name, summary_client=client,
+    )
+    if show_progress:
+        print(
+            f"[PROGRESS] Tag exclusions synchronized: attachments={deleted}, "
+            f"structures={len(affected_items)}",
+            file=sys.__stderr__,
+        )
+    return deleted
+
+
+def _delete_summary_embeddings_for_items(
+    item_keys: Iterable[str], *, collection_name: str, client: Any = None,
+) -> None:
+    """Remove vectors derived from an item's pre-exclusion source scope."""
+    if client is None:
+        import chromadb
+        client = chromadb.PersistentClient(path=str(CHROMA_DIR))
+    try:
+        summary_collection = client.get_collection(f"{collection_name}__sum_node")
+    except Exception:
+        return
+    for item_key in set(item_keys):
+        try:
+            summary_collection.delete(where={"itemKey": item_key})
+        except Exception as exc:
+            print(
+                f"[WARN] Failed to delete stale summary vectors for {item_key}: {exc}",
+                file=sys.stderr,
+            )
+
+
 def _verify_written_attachments(
     col: Any, expected: dict[str, set[str]],
 ) -> None:
@@ -766,6 +853,11 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--limit", type=int, default=0, help="Maximum number of parent items (0 = all).")
     p.add_argument("--dry-run", action="store_true", help="Resolve and report scope without changing indexes or ledgers.")
+    p.add_argument(
+        "--sync-rag-exclusions-only", action="store_true",
+        help="Remove currently tag-excluded attachments and rebuild affected structures "
+             "without loading or validating the embedding model.",
+    )
     p.add_argument("--retry-failed", action="store_true", help="Process only items with retryable failed artifacts.")
     p.add_argument(
         "--force-reparse", action="store_true",
@@ -831,6 +923,12 @@ def parse_args() -> argparse.Namespace:
         p.error("--limit must be zero or positive")
     if args.force_reparse and not (args.item or args.attachment or args.limit or args.source_type or args.reocr_candidates):
         p.error("--force-reparse requires a scope (--item, --attachment, --limit, or --source-type) to avoid re-parsing the whole corpus")
+    if args.sync_rag_exclusions_only and any((
+        args.rebuild, args.item, args.attachment, args.limit, args.collection,
+        args.source_type, args.reocr_candidates, args.retry_failed,
+        args.reparse_corrupted, args.force_reparse,
+    )):
+        p.error("--sync-rag-exclusions-only cannot be combined with indexing or scope options")
     rebuild_scoped = bool(
         args.item or args.attachment or args.limit or args.collection
         or args.source_type or args.reocr_candidates or args.reocr_limit
@@ -1558,6 +1656,64 @@ def _validate_zotero_data_dir_or_exit():
         )
 
 
+def _apply_rag_tag_policy(
+    attachments: Iterable[ZoteroAttachment],
+) -> tuple[list[ZoteroAttachment], list[ZoteroAttachment], list[ZoteroAttachment]]:
+    """Split indexable and explicitly excluded Zotero attachments.
+
+    ``rag:exclude`` is attachment-local: putting it on a parent must not
+    accidentally suppress every format. ``rag:prefer-epub`` is parent-local
+    marks PDF siblings as retirement candidates. Candidates stay indexable
+    until a sibling EPUB has an extraction committed in the manifest.
+    """
+    rows = list(attachments)
+    epub_parents = {
+        str(row.parentItemKey)
+        for row in rows
+        if row.parentItemKey and row.source_type == "epub"
+        and RAG_EXCLUDE_TAG not in set(getattr(row, "tags", ()))
+    }
+    included: list[ZoteroAttachment] = []
+    excluded: list[ZoteroAttachment] = []
+    preferred_pdfs: list[ZoteroAttachment] = []
+    for row in rows:
+        tags = set(getattr(row, "tags", ()))
+        parent_tags = set(getattr(row, "parentTags", ()))
+        explicitly_excluded = RAG_EXCLUDE_TAG in tags
+        prefer_epub_pdf = (
+            row.source_type == "pdf"
+            and bool(row.parentItemKey)
+            and str(row.parentItemKey) in epub_parents
+            and RAG_PREFER_EPUB_TAG in parent_tags
+        )
+        if explicitly_excluded:
+            excluded.append(row)
+        else:
+            included.append(row)
+            if prefer_epub_pdf:
+                preferred_pdfs.append(row)
+    return included, excluded, preferred_pdfs
+
+
+def _ready_preferred_pdfs(
+    candidates: Iterable[ZoteroAttachment],
+    inventory: Iterable[ZoteroAttachment],
+    files_manifest: dict[str, dict[str, Any]],
+) -> list[ZoteroAttachment]:
+    """PDF candidates whose usable EPUB sibling is durably committed."""
+    committed_epub_parents = {
+        str(row.parentItemKey)
+        for row in inventory
+        if row.parentItemKey and row.source_type == "epub"
+        and RAG_EXCLUDE_TAG not in set(getattr(row, "tags", ()))
+        and row.attachmentKey in files_manifest
+    }
+    return [
+        row for row in candidates
+        if row.parentItemKey and str(row.parentItemKey) in committed_epub_parents
+    ]
+
+
 async def _discover_attachments(
     args: argparse.Namespace,
     *,
@@ -1601,6 +1757,23 @@ async def _discover_attachments(
         require_complete=bool(args.rebuild),
     )
     attachments = [a for a in attachments if getattr(a, "pdf_path", None)]
+    inventory_attachments = list(attachments)
+    attachments, excluded_attachments, preferred_pdf_attachments = (
+        _apply_rag_tag_policy(attachments)
+    )
+    already_ready_pdfs = _ready_preferred_pdfs(
+        preferred_pdf_attachments, inventory_attachments, files_manifest,
+    )
+    already_ready_keys = {row.attachmentKey for row in already_ready_pdfs}
+    if already_ready_keys:
+        attachments = [
+            row for row in attachments if row.attachmentKey not in already_ready_keys
+        ]
+        excluded_attachments.extend(already_ready_pdfs)
+        preferred_pdf_attachments = [
+            row for row in preferred_pdf_attachments
+            if row.attachmentKey not in already_ready_keys
+        ]
     preflight_notes = None
     if args.rebuild:
         preflight_notes = await api.list_notes(
@@ -1646,7 +1819,13 @@ async def _discover_attachments(
                 and previous["quality"].get("parser") != "docling"
             )
         ]
-    return DiscoveryResult(attachments=attachments, preflight_notes=preflight_notes)
+    return DiscoveryResult(
+        attachments=attachments,
+        preflight_notes=preflight_notes,
+        excluded_attachments=excluded_attachments,
+        inventory_attachments=inventory_attachments,
+        preferred_pdf_attachments=preferred_pdf_attachments,
+    )
 
 
 async def _index_notes_phase(
@@ -1954,6 +2133,9 @@ async def main_async(args: argparse.Namespace) -> None:
     )
     attachments = discovery.attachments
     preflight_notes = discovery.preflight_notes
+    excluded_attachments = discovery.excluded_attachments
+    inventory_attachments = discovery.inventory_attachments
+    preferred_pdf_attachments = discovery.preferred_pdf_attachments
 
     total_attachments = len(attachments)
     if show_progress:
@@ -1969,7 +2151,8 @@ async def main_async(args: argparse.Namespace) -> None:
             )
         else:
             print(
-                f"[PROGRESS] Attachments resolved: {total_attachments} (collection={args.collection or 'ALL'})",
+                f"[PROGRESS] Attachments resolved: {total_attachments} "
+                f"(tag-excluded={len(excluded_attachments)}, collection={args.collection or 'ALL'})",
                 file=sys.__stderr__,
             )
 
@@ -2010,6 +2193,15 @@ async def main_async(args: argparse.Namespace) -> None:
             "legacy_ocr_reuse_candidates": 0,
             "canonical_data_modified": False,
         }, ensure_ascii=False, indent=2))
+        return
+
+    if args.sync_rag_exclusions_only:
+        _sync_tag_exclusions_without_embedding_runtime(
+            manifest, files_manifest, excluded_attachments,
+            preferred_pdf_attachments=preferred_pdf_attachments,
+            inventory_attachments=inventory_attachments,
+            show_progress=show_progress,
+        )
         return
 
     if args.rebuild:
@@ -2080,7 +2272,10 @@ async def main_async(args: argparse.Namespace) -> None:
     )
     if not args.reparse_corrupted and not reocr_routes and not partial_scope:
         current_keys = {a.attachmentKey for a in attachments}
-        stale_keys = set(files_manifest.keys()) - current_keys
+        inventory_keys = {a.attachmentKey for a in inventory_attachments}
+        excluded_by_key = {a.attachmentKey: a for a in excluded_attachments}
+        excluded_keys = set(files_manifest).intersection(excluded_by_key)
+        stale_keys = set(files_manifest.keys()) - inventory_keys
 
         # A routine sync retires the few attachments actually removed from
         # Zotero. A wholesale disappearance means the *enumeration* came back
@@ -2105,7 +2300,10 @@ async def main_async(args: argparse.Namespace) -> None:
             )
             stale_keys = set()
 
-        for stale_key in stale_keys:
+        deletion_keys = stale_keys | excluded_keys
+        excluded_parent_rebuilds: set[str] = set()
+
+        for stale_key in deletion_keys:
             # Reuses the same helper the other three deletion call sites in
             # this file use, rather than a hand-rolled copy: a copy here built
             # its own lexical path from LEXICAL_DB_PATH with a data/lexical_v3
@@ -2129,6 +2327,11 @@ async def main_async(args: argparse.Namespace) -> None:
                 continue
             deleted_stale += 1
             files_manifest.pop(stale_key, None)
+            excluded_row = excluded_by_key.get(stale_key)
+            if excluded_row is not None:
+                excluded_parent_rebuilds.add(str(
+                    excluded_row.parentItemKey or excluded_row.attachmentKey
+                ))
             # This is the one place that has already confirmed stale_key is
             # gone from Zotero. Without this, an attachment deleted and
             # replaced under the same still-live parent item leaves its old
@@ -2150,6 +2353,17 @@ async def main_async(args: argparse.Namespace) -> None:
                     f"{stale_key}: {exc}",
                     file=sys.stderr,
                 )
+
+        if excluded_parent_rebuilds and STRUCTURED_V3_ENABLE:
+            _finalize_v3_pending(
+                manifest, excluded_parent_rebuilds,
+                collection_name=collection_name,
+                code_paths=RUN_CODE_PATHS,
+                expected_code_fingerprint=run_code_fingerprint,
+            )
+            _delete_summary_embeddings_for_items(
+                excluded_parent_rebuilds, collection_name=collection_name,
+            )
 
         # relations.db からも削除済みアイテムのレコードをパージ。
         #
@@ -2177,7 +2391,7 @@ async def main_async(args: argparse.Namespace) -> None:
                 file=sys.__stderr__,
             )
         current_item_keys = (
-            live_item_keys(attachments, purge_notes) if purge_notes is not None else None
+            live_item_keys(inventory_attachments, purge_notes) if purge_notes is not None else None
         )
         purge_counts = (
             purge_removed_items(current_item_keys) if current_item_keys is not None
@@ -3627,6 +3841,18 @@ async def main_async(args: argparse.Namespace) -> None:
         updated_html += outcome.updated_html
         updated_epub += outcome.updated_epub
         last_written_id = outcome.last_written_id or last_written_id
+
+    newly_ready_preferred_pdfs = _ready_preferred_pdfs(
+        preferred_pdf_attachments, inventory_attachments, files_manifest,
+    )
+    if newly_ready_preferred_pdfs:
+        retired, _affected_items = _retire_indexed_attachments(
+            col, manifest, files_manifest, newly_ready_preferred_pdfs,
+            collection_name=collection_name,
+            code_paths=RUN_CODE_PATHS,
+            expected_code_fingerprint=run_code_fingerprint,
+        )
+        deleted_stale += retired
 
     note_outcome = await _index_notes_phase(
         args,

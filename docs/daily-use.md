@@ -52,7 +52,7 @@ uv run src/index_from_zotero.py --progress
 # 文書構造だけを検証（本文チャンク・埋め込みは変更しない）
 uv run python scripts/rebuild_document_structure.py --all --dry-run
 
-# 文書構造だけを差分更新（Chromaは構造メタデータのみ更新し、再埋め込みしない）
+# 文書構造だけを差分更新（EPUB原本の目次を再読込し、再埋め込みしない）
 uv run python scripts/rebuild_document_structure.py --all
 
 # 要約（LLM）。全件backfillは承認後、通常は --limit で限定実行
@@ -69,6 +69,24 @@ uv run python scripts/review_summary_quality_reports.py
 
 # 未解決の処理状態を確認（read-only）
 uv run python scripts/list_artifact_status.py --unresolved-only
+```
+
+## Zoteroタグで添付ファイルをRAGから除外する
+
+- 添付ファイル自体に `rag:exclude`: その添付だけを除外します。
+- 親アイテムに `rag:prefer-epub`: 正常に抽出・索引登録できたEPUB添付が同じ親にある場合だけ、PDF添付を除外します。
+
+タグを付けた後に通常の「ライブラリ差分更新」を実行すると、既存の本文・埋め込み・語彙索引から
+対象添付を削除し、親資料の階層構造も更新します。Zotero内の原本ファイルは削除しません。
+タグを外すと次回の差分更新で再び取り込み対象になります。EPUBが見つからない、抽出に失敗する、
+またはEPUB自体が `rag:exclude` の場合、`rag:prefer-epub` はPDFを残します。PDFの削除はEPUBの
+索引登録がmanifestへ正常にコミットされた後に行われます。
+
+埋め込み設定を変更済みで通常同期の安全ゲートが止まる端末でも、除外だけは再埋め込みなしで
+反映できます（タグ解除後の再取り込みは通常同期が必要です）。
+
+```bash
+uv run src/index_from_zotero.py --sync-rag-exclusions-only --progress
 ```
 
 ## 基本的な検索の頼み方

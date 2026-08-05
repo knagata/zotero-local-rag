@@ -1,7 +1,7 @@
 """Explicit state boundaries for the Zotero indexing workflow."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +10,9 @@ from typing import Any
 class DiscoveryResult:
     attachments: list[Any]
     preflight_notes: list[dict[str, Any]] | None
+    excluded_attachments: list[Any] = field(default_factory=list)
+    inventory_attachments: list[Any] = field(default_factory=list)
+    preferred_pdf_attachments: list[Any] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

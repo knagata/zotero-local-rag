@@ -100,8 +100,25 @@ def get_document_outline(item_key: str) -> dict[str, Any]:
     summary_parts = db_relations.get_document_node_summary_parts_for_nodes(
         list(summaries),
     )
+    stored_nodes = db_relations.get_document_nodes(key)
+    structured_attachments = {
+        str(node.get("attachment_key") or "")
+        for node in stored_nodes
+        if node.get("node_type") in {"chapter", "section", "subsection"}
+    }
     nodes = []
-    for node in db_relations.get_document_nodes(key):
+    for node in stored_nodes:
+        # item_root and semantic_segment are storage/routing implementation
+        # nodes, not headings. Exposing every untitled segment as "本文範囲"
+        # turns an outline-less attachment into dozens of apparent garbage
+        # entries and obscures the real chapter/section hierarchy.
+        if node.get("node_type") in {"item_root", "semantic_segment"}:
+            continue
+        if (
+            node.get("node_type") == "attachment_root"
+            and str(node.get("attachment_key") or "") not in structured_attachments
+        ):
+            continue
         summary = summaries.get(str(node["node_id"]))
         nodes.append({
             "node_id": node["node_id"], "parent_node_id": node.get("parent_node_id"),

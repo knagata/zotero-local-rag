@@ -93,6 +93,14 @@ class CitationInsightsTests(unittest.TestCase):
         row = next(node for node in outline["nodes"] if node["node_id"] == section_id)
         self.assertEqual(row["summary_parts"][0]["child_node_ids"], ["child-a"])
 
+    def test_outline_hides_internal_roots_and_untitled_segments(self):
+        outline = citation_insights.get_document_outline("ITEM")
+        self.assertTrue(outline["nodes"])
+        self.assertFalse(any(
+            node["node_type"] in {"item_root", "semantic_segment"}
+            for node in outline["nodes"]
+        ))
+
 
 if __name__ == "__main__":
     unittest.main()

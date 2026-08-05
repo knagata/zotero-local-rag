@@ -254,7 +254,7 @@ def get_epub_chapter_index_to_path(epub_path: str) -> Dict[int, List[str]]:
 
 _PART_RE = re.compile(
     r"^(?:第\s*(?:[0-9一二三四五六七八九十百]+|[IVXLCDM]+)\s*部|"
-    r"PART\s+(?:[IVXLCDM]+|ONE|TWO|THREE|FOUR|FIVE|SIX|SEVEN|EIGHT|NINE|TEN)|"
+    r"PART\s+(?:[0-9]+|[IVXLCDM]+|ONE|TWO|THREE|FOUR|FIVE|SIX|SEVEN|EIGHT|NINE|TEN)|"
     r"[IVXLCDM]+\s+THE\s+)", re.IGNORECASE,
 )
 _CHAPTER_RE = re.compile(
@@ -424,6 +424,18 @@ def _toc_entries_by_href(
     tree: List[Dict[str, Any]],
 ) -> Dict[str, List[Dict[str, Any]]]:
     flat_recovery = _recover_flat_toc_paths(tree)
+    root_part_recovery: Dict[int, List[str]] = {}
+    active_root_part: str | None = None
+    for node in tree:
+        title = str(node.get("title") or "").strip()
+        kind = _toc_title_kind(title)
+        if kind == "part":
+            active_root_part = title
+            root_part_recovery[id(node)] = [title]
+        elif active_root_part and kind in {"numbered", "chapter"}:
+            root_part_recovery[id(node)] = [active_root_part, title]
+        else:
+            active_root_part = None
     entries: Dict[str, List[Dict[str, Any]]] = {}
     roman_root_candidates = [
         node for node in tree
@@ -439,8 +451,9 @@ def _toc_entries_by_href(
 
     def walk(nodes: List[Dict[str, Any]], prefix: List[str], prefix_roles: List[str]) -> None:
         for node in nodes:
-            current = flat_recovery.get(id(node)) or [*prefix, str(node["title"])]
-            if flat_recovery:
+            recovered = flat_recovery.get(id(node)) or root_part_recovery.get(id(node))
+            current = recovered or [*prefix, str(node["title"])]
+            if recovered:
                 current_roles = _roles_for_toc_path(current)
             else:
                 kind = _toc_title_kind(str(node.get("title") or ""))

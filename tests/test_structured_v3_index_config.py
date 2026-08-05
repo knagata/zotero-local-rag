@@ -89,6 +89,76 @@ class StructuredV3IndexConfigTests(unittest.TestCase):
         selected = _select_item_scope(scoped, ["PARENT"], 0)
         self.assertEqual([row.attachmentKey for row in selected], ["PDF2"])
 
+    def test_attachment_exclude_tag_is_local_to_that_attachment(self):
+        attachments = [
+            SimpleNamespace(
+                parentItemKey="PARENT", attachmentKey="PDF", source_type="pdf",
+                tags=("rag:exclude",), parentTags=(),
+            ),
+            SimpleNamespace(
+                parentItemKey="PARENT", attachmentKey="EPUB", source_type="epub",
+                tags=(), parentTags=(),
+            ),
+        ]
+        included, excluded, preferred = module._apply_rag_tag_policy(attachments)
+        self.assertEqual([row.attachmentKey for row in included], ["EPUB"])
+        self.assertEqual([row.attachmentKey for row in excluded], ["PDF"])
+        self.assertEqual(preferred, [])
+
+    def test_parent_prefer_epub_excludes_pdf_only_with_usable_epub_sibling(self):
+        pdf = SimpleNamespace(
+            parentItemKey="PARENT", attachmentKey="PDF", source_type="pdf",
+            tags=(), parentTags=("rag:prefer-epub",),
+        )
+        epub = SimpleNamespace(
+            parentItemKey="PARENT", attachmentKey="EPUB", source_type="epub",
+            tags=(), parentTags=("rag:prefer-epub",),
+        )
+        included, excluded, preferred = module._apply_rag_tag_policy([pdf, epub])
+        self.assertEqual([row.attachmentKey for row in included], ["PDF", "EPUB"])
+        self.assertEqual(excluded, [])
+        self.assertEqual([row.attachmentKey for row in preferred], ["PDF"])
+
+        included, excluded, preferred = module._apply_rag_tag_policy([pdf])
+        self.assertEqual([row.attachmentKey for row in included], ["PDF"])
+        self.assertEqual(excluded, [])
+        self.assertEqual(preferred, [])
+
+    def test_excluded_epub_does_not_retire_pdf_fallback(self):
+        rows = [
+            SimpleNamespace(
+                parentItemKey="PARENT", attachmentKey="PDF", source_type="pdf",
+                tags=(), parentTags=("rag:prefer-epub",),
+            ),
+            SimpleNamespace(
+                parentItemKey="PARENT", attachmentKey="EPUB", source_type="epub",
+                tags=("rag:exclude",), parentTags=("rag:prefer-epub",),
+            ),
+        ]
+        included, excluded, preferred = module._apply_rag_tag_policy(rows)
+        self.assertEqual([row.attachmentKey for row in included], ["PDF"])
+        self.assertEqual([row.attachmentKey for row in excluded], ["EPUB"])
+        self.assertEqual(preferred, [])
+
+    def test_preferred_pdf_is_ready_only_after_epub_manifest_commit(self):
+        pdf = SimpleNamespace(
+            parentItemKey="PARENT", attachmentKey="PDF", source_type="pdf",
+            tags=(), parentTags=("rag:prefer-epub",),
+        )
+        epub = SimpleNamespace(
+            parentItemKey="PARENT", attachmentKey="EPUB", source_type="epub",
+            tags=(), parentTags=("rag:prefer-epub",),
+        )
+        self.assertEqual(
+            module._ready_preferred_pdfs([pdf], [pdf, epub], {}), [],
+        )
+        self.assertEqual(
+            module._ready_preferred_pdfs(
+                [pdf], [pdf, epub], {"EPUB": {"size": 10}},
+            ),
+            [pdf],
+        )
+
     def test_retryable_failed_requires_both_fields(self):
         with patch.object(module, "get_item_processing_status", return_value=[
             {"status": "failed", "retryable": 0},

@@ -56,6 +56,10 @@ class ChapterDetectTests(unittest.TestCase):
             infer_structure_roles(["III. Contemporary Positions", "9. Later Essay"]),
             ["part", "chapter"],
         )
+        self.assertEqual(
+            infer_structure_roles(["PART 1 Inventing media software", "1 Alan Kay"]),
+            ["part", "chapter"],
+        )
 
     def test_pdf_outline_keeps_all_levels(self):
         tree = build_pdf_outline_tree([
@@ -77,6 +81,24 @@ class ChapterDetectTests(unittest.TestCase):
         self.assertEqual(child["href"], "chapter.xhtml")
         self.assertEqual(child["fragment"], "start")
         self.assertEqual(child["depth"], 2)
+
+    def test_part_and_chapter_root_siblings_recover_with_nested_sections(self):
+        tree = build_epub_toc_tree([
+            _Link("PART 1 Inventing media software", "part.xhtml"),
+            (_Link("1 Alan Kay", "chapter.xhtml"), [
+                _Link("Appearance versus function", "chapter.xhtml#appearance"),
+            ]),
+            _Link("Conclusion", "conclusion.xhtml"),
+        ])
+        entries = _toc_entries_by_href(tree)
+        self.assertEqual(entries["chapter.xhtml"][0]["path"], [
+            "PART 1 Inventing media software", "1 Alan Kay",
+        ])
+        self.assertEqual(entries["chapter.xhtml"][0]["roles"], ["part", "chapter"])
+        self.assertEqual(entries["chapter.xhtml"][1]["path"], [
+            "PART 1 Inventing media software", "1 Alan Kay", "Appearance versus function",
+        ])
+        self.assertEqual(entries["conclusion.xhtml"][0]["path"], ["Conclusion"])
 
     def test_flat_japanese_toc_recovers_only_explicit_chapter_sections(self):
         tree = build_epub_toc_tree([

@@ -26,9 +26,25 @@ from src.db_relations import (
 from src.v3_data_plane import V3_COLLECTION
 from src.document_structure import STRUCTURE_VERSION, build_document_structure
 from src.orphan_cleanup import note_only_item
+from src.source_structure_refresh import refresh_source_structure_metadata
 
 
-def _resync_chunk_metadata(item_key: str, collection_name: str | None) -> int:
+def _stored_sequence(value: object, *, plain_string_is_value: bool) -> list[object]:
+    """Normalize Chroma's JSON-string metadata and freshly produced lists."""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (TypeError, ValueError):
+            return [value] if plain_string_is_value and value.strip() else []
+    if isinstance(value, (list, tuple)):
+        return list(value)
+    return []
+
+
+def _resync_chunk_metadata(
+    item_key: str, collection_name: str | None,
+    source_chunks: list[dict[str, object]] | None = None,
+) -> int:
     """Copy the new leaf identity and policies back onto the item's chunks."""
     import chromadb
 
@@ -46,6 +62,24 @@ def _resync_chunk_metadata(item_key: str, collection_name: str | None) -> int:
     ):
         mapping.setdefault(str(node_id), []).append(str(chunk_id))
     desired = desired_chunk_metadata(nodes, mapping)
+    for row in source_chunks or []:
+        chunk_id = str(row.get("id") or "")
+        if chunk_id not in desired:
+            continue
+        metadata = row.get("metadata") or {}
+        path = _stored_sequence(
+            metadata.get("structure_path") or metadata.get("heading_path") or [],
+            plain_string_is_value=True,
+        )
+        roles = _stored_sequence(
+            metadata.get("structure_roles") or [], plain_string_is_value=False,
+        )
+        desired[chunk_id].update({
+            "structure_path": json.dumps(path, ensure_ascii=False),
+            "structure_roles": json.dumps(roles, ensure_ascii=False),
+            "chapter": str(metadata.get("chapter") or ""),
+            "section": str(metadata.get("section") or ""),
+        })
     if not desired:
         return 0
     name = collection_name or active_collection_name()
@@ -66,7 +100,7 @@ def _resync_chunk_metadata(item_key: str, collection_name: str | None) -> int:
 
 def rebuild_item(
     item_key: str, *, dry_run: bool, force: bool, run_id: str,
-    collection_name: str | None = None,
+    collection_name: str | None = None, refresh_source: bool = True,
 ) -> dict:
     all_chunks = get_item_chunks(item_key, collection_name=collection_name)
     chunks = [
@@ -96,6 +130,9 @@ def rebuild_item(
             )
         return {"item_key": item_key, "status": "blocked", "reason_code": "no_chunks"}
 
+    refresh_reports: list[dict] = []
+    if refresh_source:
+        chunks, refresh_reports = refresh_source_structure_metadata(chunks)
     built = build_document_structure(item_key, chunks)
     previous = get_document_structure(item_key)
     unchanged = bool(
@@ -107,9 +144,30 @@ def rebuild_item(
         "item_key": item_key, "status": built["status"], "confidence": built["confidence"],
         "node_count": len(built["nodes"]), "diagnostics": built["diagnostics"],
         "changed": not unchanged,
+        "source_structure_refresh": refresh_reports,
     }
-    if dry_run or (unchanged and not force):
-        result["action"] = "dry_run" if dry_run else "skipped_unchanged"
+    if dry_run:
+        result["action"] = "dry_run"
+        return result
+    refreshed_metadata_changed = sum(
+        int(report.get("metadata_changed") or 0) for report in refresh_reports
+    )
+    if unchanged and not force:
+        if not refreshed_metadata_changed:
+            result["action"] = "skipped_unchanged"
+            return result
+        try:
+            resynced = _resync_chunk_metadata(item_key, collection_name, chunks)
+        except Exception as exc:
+            mark_artifact_status(
+                item_key, "structure", "failed",
+                reason_code="structure_metadata_sync_failed",
+                message=str(exc)[:1000], retryable=True, run_id=run_id,
+            )
+            raise
+        result["chunk_metadata_resynced"] = resynced
+        result["embeddings_unchanged"] = True
+        result["action"] = "metadata_resynced"
         return result
 
     mark_artifact_status(
@@ -129,7 +187,9 @@ def rebuild_item(
         # and return silently empty: 213,748 chunks (44.7%) were in that state
         # before this call existed (2026-07-28). The structure and the chunks
         # that point at it have to be written in the same breath.
-        resynced = _resync_chunk_metadata(item_key, collection_name) if not dry_run else 0
+        resynced = _resync_chunk_metadata(
+            item_key, collection_name, chunks,
+        ) if not dry_run else 0
         result["chunk_metadata_resynced"] = resynced
         artifact_status = "success" if built["status"] in {"exact", "recovered"} else "degraded"
         mark_artifact_status(
@@ -173,6 +233,10 @@ def main() -> None:
     parser.add_argument("--limit", type=int, default=0, help="Maximum number of selected items (0 = all)")
     parser.add_argument("--retry-failed", action="store_true", help="Select retryable failed structure items only")
     parser.add_argument(
+        "--no-source-refresh", action="store_true",
+        help="Do not re-read supported source files for heading metadata",
+    )
+    parser.add_argument(
         "--collection", default=V3_COLLECTION,
         help="Source Chroma collection (V3 only).",
     )
@@ -198,7 +262,7 @@ def main() -> None:
         try:
             results.append(rebuild_item(
                 item_key, dry_run=args.dry_run, force=args.force, run_id=run_id,
-                collection_name=args.collection,
+                collection_name=args.collection, refresh_source=not args.no_source_refresh,
             ))
         except Exception as exc:  # continue so one bad document does not stop maintenance
             failed += 1

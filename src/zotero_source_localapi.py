@@ -27,6 +27,20 @@ class ZoteroAttachment:
     filename: Optional[str] = None
     language: Optional[str] = None
     parentItemType: Optional[str] = None
+    tags: tuple[str, ...] = ()
+    parentTags: tuple[str, ...] = ()
+
+
+def _normalized_tags(value: Any) -> tuple[str, ...]:
+    """Return Zotero tag names in a stable, case-insensitive form."""
+    if not isinstance(value, list):
+        return ()
+    tags = {
+        str(row.get("tag") or "").strip().casefold()
+        for row in value
+        if isinstance(row, dict) and str(row.get("tag") or "").strip()
+    }
+    return tuple(sorted(tags))
 
 
 def classify_attachment_source_type(content_type: Optional[str], filename: Optional[str]) -> Optional[str]:
@@ -312,6 +326,7 @@ class ZoteroLocalAPI:
             parent_creators = None
             parent_language = None
             parent_item_type = None
+            parent_tags: tuple[str, ...] = ()
 
             if isinstance(parent_key, str) and parent_key:
                 parent_obj = await self.get_item(parent_key)
@@ -319,6 +334,7 @@ class ZoteroLocalAPI:
                 _, parent_data = self._unwrap_item(parent_obj)
                 parent_language = parent_data.get("language")
                 parent_item_type = parent_data.get("itemType")
+                parent_tags = _normalized_tags(parent_data.get("tags"))
 
                 if collection_key:
                     _, pd = self._unwrap_item(parent_obj)
@@ -382,6 +398,8 @@ class ZoteroLocalAPI:
                 filename=fn if isinstance(fn, str) else None,
                 language=parent_language if isinstance(parent_language, str) else None,
                 parentItemType=parent_item_type if isinstance(parent_item_type, str) else None,
+                tags=_normalized_tags(ad.get("tags")),
+                parentTags=parent_tags,
             )
 
     async def list_normalized_attachments(

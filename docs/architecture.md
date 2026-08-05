@@ -276,6 +276,8 @@ flowchart LR
   本文・チャンク境界・ベクトルは変更せず、検索に必要な `node_id` / zone / policy
   メタデータだけをChroma上で同期します。構造変更時にstaleになるのは構造要約と
   要約索引であり、本文埋め込みではありません。
+  EPUBは原本を再読込して新しい見出し構造を安定locator（spine/block）で既存
+  チャンクへ対応付けます。全チャンクを一意に対応できない場合は更新を拒否します。
 - 要約はbottom-upで、leafは`cheap`役、親ノード（章・item root）の還元は仕様通り
   `standard`役（DeepSeek）です。`source_fingerprint`/`prompt_version`が現行構造と
   一致すればLLMを呼ばずにskipします（`--force`で再生成）。
