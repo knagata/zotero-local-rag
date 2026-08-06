@@ -27,6 +27,12 @@ API_BASE = os.environ.get("ZOTERO_LOCAL_API_BASE", "http://127.0.0.1:23119/api")
 API_PREFIX = os.environ.get("ZOTERO_LOCAL_API_PREFIX", "users/0").strip("/")
 API_KEY = os.environ.get("ZOTERO_API_KEY", "")
 
+#: 両ステップを走り切った状態。通常更新ではスキップし、--force でのみ再処理する。
+#: "not_found" もここに含める: S2 に無い資料を毎回問い合わせ直すのは無駄であり、
+#: 検索ロジックを改善したときは --force で再走査する運用にする。
+TERMINAL_STATUSES = frozenset({"mapped", "not_found"})
+
+
 def _zotero_request(endpoint: str, params: dict = None, method: str = "GET", data: dict = None, headers: dict = None):
     url = f"{API_BASE}/{API_PREFIX}/{endpoint}"
     if params:
@@ -118,7 +124,29 @@ def get_all_items():
     print(f"[PROGRESS] Found {len(all_items)} potential items.", file=sys.stderr)
     return all_items
 
-def query_openalex(title: str, author: str):
+def _openalex_author_tokens(work: dict) -> set:
+    """Surnames OpenAlex lists for a work, comparable to Zotero's creator tokens."""
+    from citation_mapper import _external_surnames
+    return _external_surnames(
+        ((authorship.get("author") or {}).get("display_name") or "")
+        for authorship in work.get("authorships") or []
+    )
+
+
+def query_openalex(title: str, author: str, creators: str = ""):
+    """Resolve a DOI for a work, or None when no candidate can be verified.
+
+    A title-similarity match alone is not enough to accept a DOI here: OpenAlex
+    indexes *book reviews* under titles nearly identical to the book's, and the
+    resolved DOI is both stored locally and PATCHed into the user's Zotero
+    library. Adopting a reviewer's DOI mislabels the user's own bibliographic
+    record and then makes find_s2_paper_id import the review's citations as the
+    book's (observed for Pratt "Imperial Eyes" -> Lorimer's review
+    10.1086/600773, and Preziosi "Grasping the World" -> Hooper-Greenhill's
+    10.1093/jdh/epi034).
+    """
+    from citation_mapper import _creator_name_tokens
+
     # Skip if title is mostly non-ASCII (Japanese etc.) — OpenAlex search unreliable
     non_ascii_ratio = sum(1 for c in title if ord(c) > 0x7F) / max(len(title), 1)
     if non_ascii_ratio > 0.3:
@@ -143,9 +171,22 @@ def query_openalex(title: str, author: str):
             t = (work.get("title") or "").lower()
             return difflib.SequenceMatcher(None, title_lower[:120], t[:120]).ratio()
 
-        best_match = max(results, key=_sim)
-        if _sim(best_match) < 0.6:
+        wanted = _creator_name_tokens(creators or author)
+        candidates = [w for w in results if _sim(w) >= 0.6]
+        # A review is never the work itself, whatever its title says.
+        candidates = [w for w in candidates if str(w.get("type") or "").casefold() != "review"]
+        if wanted:
+            # Records listing no author at all cannot be checked either way, so
+            # they stay eligible; a record naming *different* people is rejected.
+            candidates = [
+                w for w in candidates
+                if not _openalex_author_tokens(w) or (wanted & _openalex_author_tokens(w))
+            ]
+        if not candidates:
+            print("    -> [OpenAlex] No candidate passed title/author verification.", file=sys.stderr)
             return None
+
+        best_match = max(candidates, key=_sim)
 
         doi = best_match.get("doi")
         if doi:
@@ -220,15 +261,20 @@ def _run_epub_step(item_key: str, item_data: dict, zotero_data_dir: str, epub_bu
         print(f"        -> Exception: {e}", file=sys.stderr)
 
 
-def process_item(item_key: str, item_data: dict, zotero_data_dir: str, skip_s2: bool = False, epub_budget: int = 50) -> bool:
+def process_item(item_key: str, item_data: dict, zotero_data_dir: str, skip_s2: bool = False, epub_budget: int = 50) -> tuple:
     """
     1アイテムの引用ネットワーク構築を実行する。
     skip_s2=True の場合は S2 API ステップをスキップし EPUB 抽出のみ実行。
-    完了ステータス ("mapped") の書き込みは呼び出し元が行う。
+    完了ステータスの書き込みは呼び出し元が行う。
 
     Returns:
-        S2 ステップが正常終了したら True。429 リトライ枯渇などで失敗したら False
-        （呼び出し元は "mapped" ではなく "error" を記録し、次回再処理させること）。
+        ``(s2_ok, s2_resolved)``。
+
+        - ``s2_ok``: S2 ステップが正常終了したら True。429 リトライ枯渇などで
+          失敗したら False（呼び出し元は "error" を記録し、次回再処理させる）。
+        - ``s2_resolved``: S2 が実際にこの資料を同定できたら True。False の場合
+          "mapped" を書いてはいけない（S2上の身元が無いのに mapped と記録すると、
+          以後 --all から永久にスキップされ、再検索の機会が失われる）。
     """
     title = item_data.get("title", "")
     year = item_data.get("date", "")[:4] if item_data.get("date") else ""
@@ -244,13 +290,15 @@ def process_item(item_key: str, item_data: dict, zotero_data_dir: str, skip_s2: 
 
     # ── Step 1: S2 API（被引用取得） ──────────────────────────
     s2_ok = True
+    # skip_s2 は "s2_done"（S2が同定済みで関係も保存済み）からの再開なので解決済み扱い。
+    s2_resolved = True
     if skip_s2:
         print("  [1/2] S2 step: skipped (already done).", file=sys.stderr)
     else:
         # DOI Lookup & Write-back via Zotero Web API
         if not doi and not isbn and title:
             author = creators_list[0].get("lastName", "") if creators_list else ""
-            resolved_doi = query_openalex(title, author)
+            resolved_doi = query_openalex(title, author, creators)
             if resolved_doi:
                 doi = resolved_doi
                 print(f"    -> Resolved DOI: {resolved_doi}.", file=sys.stderr)
@@ -271,6 +319,7 @@ def process_item(item_key: str, item_data: dict, zotero_data_dir: str, skip_s2: 
             s1_status = res1.get('status')
             msg = res1.get('message', '')
             if s1_status == "success":
+                s2_resolved = bool(res1.get("s2_resolved", True))
                 print(f"        -> Success: {msg}", file=sys.stderr)
             else:
                 print(f"        -> {s1_status}: {msg}", file=sys.stderr)
@@ -282,7 +331,7 @@ def process_item(item_key: str, item_data: dict, zotero_data_dir: str, skip_s2: 
     # ── Step 2: EPUB参照抽出 ─────────────────────────────────
     print("  [2/2] Extracting references from EPUB...", file=sys.stderr)
     _run_epub_step(item_key, item_data, zotero_data_dir, epub_budget=epub_budget)
-    return s2_ok
+    return s2_ok, s2_resolved
 
 def _fmt_duration(seconds: float) -> str:
     """Format seconds into a human-readable duration string."""
@@ -386,17 +435,18 @@ def main():
         if raw:
             _, item_data = _unwrap_item(raw)
             status = get_item_citation_status(args.item)
-            if status == "mapped" and not args.force:
-                print(f"[SKIP] Item {args.item} is already fully mapped. Use --force to re-process.", file=sys.stderr)
+            if status in TERMINAL_STATUSES and not args.force:
+                print(f"[SKIP] Item {args.item} already processed (status={status}). Use --force to re-process.", file=sys.stderr)
             else:
                 skip_s2 = (status == "s2_done" and not args.force)
                 if skip_s2:
                     print("[RESUME] S2 step already done. Running EPUB step only.", file=sys.stderr)
-                s2_ok = process_item(args.item, item_data, zotero_data_dir, skip_s2=skip_s2,
-                                     epub_budget=args.epub_budget or 50)
+                s2_ok, s2_resolved = process_item(args.item, item_data, zotero_data_dir, skip_s2=skip_s2,
+                                                  epub_budget=args.epub_budget or 50)
                 if s2_ok:
-                    update_item_citation_status(args.item, "mapped")
-                    print(f"[DONE] Item {args.item} marked as fully mapped.", file=sys.stderr)
+                    final = "mapped" if s2_resolved else "not_found"
+                    update_item_citation_status(args.item, final)
+                    print(f"[DONE] Item {args.item} marked as '{final}'.", file=sys.stderr)
                 else:
                     update_item_citation_status(args.item, "error")
                     print(f"[WARN] S2 step failed for {args.item}; status set to 'error' (will retry next run).", file=sys.stderr)
@@ -432,12 +482,13 @@ def main():
 
             # ── ステータス確認 ───────────────────────────────────
             status = get_item_citation_status(key)
-            if status == "mapped" and not args.force:
-                # 両ステップ完了済み → S2 はスキップするが isbn/doi は Zotero から同期
+            if status in TERMINAL_STATUSES and not args.force:
+                # 両ステップ完了済み → S2 はスキップするが isbn/doi は Zotero から同期。
+                # 既存ステータスは保持する（not_found を mapped に昇格させない）。
                 new_doi  = item_data.get("DOI",  "") or None
                 new_isbn = item_data.get("ISBN", "") or None
                 from db_relations import update_item_citation_status as _uics
-                _uics(key, "mapped", doi=new_doi, isbn=new_isbn)
+                _uics(key, status, doi=new_doi, isbn=new_isbn)
                 if new_doi or new_isbn:
                     stats["meta_updated"] += 1
                 stats["skipped"] += 1
@@ -475,10 +526,10 @@ def main():
             # ── 処理・計測 ───────────────────────────────────────
             item_start = time.time()
             try:
-                s2_ok = process_item(key, item_data, zotero_data_dir, skip_s2=skip_s2,
-                                     epub_budget=args.epub_budget or 50)
+                s2_ok, s2_resolved = process_item(key, item_data, zotero_data_dir, skip_s2=skip_s2,
+                                                  epub_budget=args.epub_budget or 50)
                 if s2_ok:
-                    update_item_citation_status(key, "mapped")
+                    update_item_citation_status(key, "mapped" if s2_resolved else "not_found")
                     if skip_s2:
                         stats["resumed"] += 1
                     else:

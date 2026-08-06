@@ -17,6 +17,8 @@ from pathlib import Path
 
 if __package__:
     from .db_relations import (
+        clear_s2_relations_for_item,
+        get_item_s2_paper_id,
         get_s2_lookup_candidates,
         insert_citation,
         update_item_citation_status,
@@ -29,6 +31,8 @@ if __package__:
     from .env_utils import load_dotenv_native as _load_dotenv
 else:  # pragma: no cover - direct script imports
     from db_relations import (
+        clear_s2_relations_for_item,
+        get_item_s2_paper_id,
         get_s2_lookup_candidates,
         insert_citation,
         update_item_citation_status,
@@ -537,6 +541,104 @@ def s2_request(url: str, max_retries: int = 10) -> Optional[Dict[str, Any]]:
     print(f"[S2] Gave up after {max_retries} retries: {url}", file=sys.stderr)
     raise S2RetryExhaustedError(url)
 
+def _clean_query_text(value: str) -> str:
+    """Strip punctuation and collapse spaces so S2's tokenizer sees plain words."""
+    return re.sub(r'\s+', ' ', re.sub(r'[^\w\s]', ' ', value)).strip()
+
+
+#: Single letters are initials ("B." in "B. Bratton") and carry no identity, but
+#: two-letter tokens are real romanized surnames (Xu, Li, Ng, Wu). Dropping those
+#: emptied the token set for such names, which silently disabled the whole
+#: review-rejection check below.
+_MIN_NAME_TOKEN_CHARS = 2
+
+
+def _creator_name_tokens(creators: str) -> set:
+    """Every name token in Zotero's ``"Last First, Last First"`` creator string.
+
+    Deliberately not just the leading surname: compound and particled surnames
+    ("Hartman Davies", "Von Essen") are split differently by Zotero and by S2,
+    and a first-token-only comparison misses those. Reviewers' names are wholly
+    disjoint from the author's, so the extra tokens do not weaken the check.
+    """
+    return {
+        token.casefold()
+        for token in _clean_query_text(creators).split()
+        if len(token) >= _MIN_NAME_TOKEN_CHARS
+    }
+
+
+#: Generational suffixes sit after the surname and must not be mistaken for it.
+_NAME_SUFFIXES = {"jr", "sr", "ii", "iii", "iv"}
+
+
+def _external_surnames(names) -> set:
+    """Surname of each externally-listed author (``"B. Bratton"`` -> ``{"bratton"}``).
+
+    Only the surname is taken, because a shared *given* name is not evidence of
+    identity: a review of Pratt's "Imperial Eyes" written by Mary Baine Campbell
+    shares "Mary" with the Zotero creator "Pratt Mary Louise" and would pass an
+    any-token comparison. External sources render names "First Last", so the
+    surname is the trailing token.
+    """
+    surnames = set()
+    for name in names:
+        tokens = [
+            token.casefold()
+            for token in _clean_query_text(str(name or "")).split()
+            if len(token) >= _MIN_NAME_TOKEN_CHARS
+        ]
+        while len(tokens) > 1 and tokens[-1] in _NAME_SUFFIXES:
+            tokens.pop()
+        if tokens:
+            surnames.add(tokens[-1])
+    return surnames
+
+
+def _s2_name_tokens(paper: Dict[str, Any]) -> set:
+    """Surnames S2 lists for a paper, comparable to Zotero's creator tokens."""
+    return _external_surnames(
+        (author.get("name") or "") for author in paper.get("authors") or []
+    )
+
+
+def _select_s2_title_match(
+    results: List[Dict[str, Any]], full_title: str, main_title: str, creators: str,
+) -> Optional[Dict[str, Any]]:
+    """Choose the S2 record that is the same work, or None when none qualifies."""
+    def _sim(paper: Dict[str, Any]) -> float:
+        s2_title = (paper.get("title") or "").casefold()
+        # Compare against both forms: S2 stores some works with their subtitle
+        # and some without, and either shape is a legitimate match.
+        return max(
+            difflib.SequenceMatcher(None, full_title.casefold(), s2_title).ratio(),
+            difflib.SequenceMatcher(None, main_title.casefold(), s2_title).ratio(),
+        )
+
+    similar = [p for p in results if _sim(p) >= 0.5]
+    if not similar:
+        return None
+
+    wanted = _creator_name_tokens(creators)
+    if wanted:
+        # A title alone cannot separate a work from a same-titled different work,
+        # or from a *review* of the work written by someone else -- and adopting
+        # a review's paperId would attach its whole citation graph to the book.
+        # Records for which S2 lists no author at all cannot be checked either
+        # way, so they stay eligible rather than being silently dropped.
+        similar = [
+            p for p in similar
+            if not _s2_name_tokens(p) or (wanted & _s2_name_tokens(p))
+        ]
+        if not similar:
+            return None
+
+    # Rank by similarity tier first so a near-exact title beats a merely close
+    # one, then by citation count so the canonical record wins over stub
+    # duplicates of the same work.
+    return max(similar, key=lambda p: (round(_sim(p), 1), p.get("citationCount", 0) or 0))
+
+
 def find_s2_paper_id(title: str, year: Optional[int] = None, creators: str = "", doi: str = "", isbn: str = "") -> Optional[Dict[str, Any]]:
     # 1. Try DOI/ISBN exact lookup first
     # Zotero's ISBN field may contain multiple ISBNs separated by spaces; use only the first.
@@ -550,61 +652,57 @@ def find_s2_paper_id(title: str, year: Optional[int] = None, creators: str = "",
             return res
         print("        -> S2 exact lookup failed, falling back to title search...", file=sys.stderr)
 
-    # 2. Fallback to Title + Author search
-    import re
-
+    # 2. Fallback to title search.
     # S2 indexes primarily English papers; skip search if title is mostly non-ASCII (e.g. Japanese)
     non_ascii_ratio = sum(1 for c in title if ord(c) > 0x7F) / max(len(title), 1)
     if non_ascii_ratio > 0.3:
         return None
 
-    # Use only the main title (before the colon) because S2 often omits subtitles.
-    main_title = title.split(':')[0]
+    full_title = _clean_query_text(title)
+    main_title = _clean_query_text(title.split(':')[0])
 
-    # Strip special characters
-    clean_title = re.sub(r'[^\w\s]', ' ', main_title).strip()
+    # Query with the title alone first. Appending the author and the year --
+    # which this used to do as its *only* query -- poisons S2's relevance
+    # ranking: the year matches thousands of unrelated papers, and an author can
+    # empty the result set outright. The year is never a query term nor a
+    # filter, because Zotero records the edition year, which for reprints and
+    # translations differs from S2's original by decades.
+    queries = [full_title]
+    if main_title and main_title != full_title:
+        queries.append(main_title)
+    # Last resort: a short or generic title ("Biopiracy") gives S2's ranking
+    # nothing to discriminate on, and there the author is the only usable
+    # signal. Reached only when the title-only queries found nothing, so the
+    # extra call is spent on items that would otherwise stay unresolved.
+    lead_author = _clean_query_text(creators.split(',')[0]) if creators else ""
+    if lead_author:
+        queries.append(f"{full_title} {lead_author}".strip())
 
-    author = creators.split(',')[0].strip() if creators else ""
-    clean_author = re.sub(r'[^\w\s]', ' ', author).strip()
+    seen_queries = set()
 
-    query_parts = [clean_title]
-    if clean_author:
-        query_parts.append(clean_author)
-    if year:
-        query_parts.append(str(year))
+    for query in queries:
+        if len(query) < 4 or query in seen_queries:
+            continue
+        seen_queries.add(query)
+        url = (
+            "https://api.semanticscholar.org/graph/v1/paper/search"
+            f"?query={urllib.parse.quote(query)}&limit=20"
+            "&fields=paperId,title,authors,year,citationCount"
+        )
+        res = s2_request(url)
+        best_match = _select_s2_title_match(
+            (res or {}).get("data") or [], full_title, main_title, creators,
+        )
+        if best_match:
+            print(
+                f"        -> Best Match: '{best_match.get('title')}' "
+                f"(query='{query}', Citations: {best_match.get('citationCount', 0)})",
+                file=sys.stderr,
+            )
+            return best_match
 
-    query = " ".join(query_parts)
-    # Collapse multiple spaces
-    query = re.sub(r'\s+', ' ', query).strip()
-    encoded_query = urllib.parse.quote(query)
-
-    url = f"https://api.semanticscholar.org/graph/v1/paper/search?query={encoded_query}&limit=20&fields=paperId,title,authors,year,citationCount"
-
-    res = s2_request(url)
-    if not res or not res.get("data"):
-        return None
-
-    results = res["data"]
-
-    # Filter by title similarity before ranking by citation count.
-    # This prevents matching a famous paper with a similar but different title.
-    query_title_lower = clean_title.lower()
-    def _sim(paper: Dict[str, Any]) -> float:
-        s2_title = (paper.get("title") or "").lower()
-        return difflib.SequenceMatcher(None, query_title_lower, s2_title).ratio()
-
-    similar = [p for p in results if _sim(p) >= 0.5]
-    if not similar:
-        print("        -> No S2 results passed title similarity threshold; returning None.", file=sys.stderr)
-        return None
-
-    best_match = max(similar, key=lambda x: x.get("citationCount", 0))
-    print(
-        f"        -> Best Match: '{best_match.get('title')}' "
-        f"(similarity={_sim(best_match):.2f}, Citations: {best_match.get('citationCount', 0)})",
-        file=sys.stderr,
-    )
-    return best_match
+    print("        -> No S2 results passed title/author verification; returning None.", file=sys.stderr)
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -663,15 +761,34 @@ def map_item_global_citations(item_key: str, title: str = "", year: str = "", cr
                 cr_year = meta.get("year")
                 cr_cc = meta.get("citation_count")
                 print(f"        -> Crossref fallback: year={cr_year}, citations={cr_cc}", file=sys.stderr)
+        # "not_found", not "s2_done": s2_done means the S2 step *identified* the
+        # work and saved its relations, which is what the resume path relies on.
         update_item_citation_status(
-            item_key, "s2_done",
+            item_key, "not_found",
             s2_year=cr_year,            # S2 列だが Crossref 由来の年を補完保存
             s2_citation_count=cr_cc,    # 同上（is-referenced-by-count）
         )
         suffix = " (Crossref 書誌フォールバック適用)" if (cr_year or cr_cc) else ""
+        # "success" here means the step ran to completion, not that the work was
+        # identified. s2_resolved is what callers must branch on: recording this
+        # outcome as "mapped" would claim an S2 identity the item does not have.
         return {"status": "success",
+                "s2_resolved": False,
                 "message": "Item not found on Semantic Scholar." + suffix,
                 "mapped_count": 0}
+
+    # 同定先が前回と変わったなら、旧同定先由来の関係を先に落とす。global_citations
+    # は citing_paper_id を含む一意キーなので、旧行は新行と衝突せず生き残り、
+    # 1つの資料が2つの別作品の被引用を併せ持つ状態になる。
+    previous_paper_id = get_item_s2_paper_id(item_key)
+    if previous_paper_id and previous_paper_id != s2_paper.get("paperId"):
+        removed = clear_s2_relations_for_item(item_key)
+        print(
+            f"        -> S2 identity changed ({previous_paper_id} -> "
+            f"{s2_paper.get('paperId')}); cleared {removed['global_citations']} citation "
+            f"and {removed['global_references']} S2 reference rows from the previous match.",
+            file=sys.stderr,
+        )
 
     # S2 メタ情報を DB に保存（以降の処理でも参照できるよう早めに記録）
     # 注: Citation Network更新ではアブストラクトを取得しない（S2依存・API制限回避）。
@@ -979,6 +1096,7 @@ def map_item_global_citations(item_key: str, title: str = "", year: str = "", cr
         
     return {
         "status": "success",
+        "s2_resolved": True,
         "message": msg,
         "s2_paper": s2_paper,
         "total_contexts_analyzed": total_contexts,

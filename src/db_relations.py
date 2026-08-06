@@ -1714,6 +1714,49 @@ def get_item_citation_status(item_key: str) -> Optional[str]:
     finally:
         conn.close()
 
+
+def get_item_s2_paper_id(item_key: str) -> Optional[str]:
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute('SELECT s2_paper_id FROM item_citation_status WHERE item_key = ?', (item_key,))
+        row = cursor.fetchone()
+        return (row['s2_paper_id'] or None) if row else None
+    finally:
+        conn.close()
+
+
+def clear_s2_relations_for_item(item_key: str) -> Dict[str, int]:
+    """Drop the relations an earlier S2 identity produced for one item.
+
+    Needed when a re-run resolves the item to a *different* S2 paper: the
+    citation rows are keyed by ``UNIQUE(citing_paper_id, cited_item_key,
+    context_snippet)``, so rows fetched under the old paper never collide with
+    the new ones and would otherwise survive, leaving the item carrying two
+    different works' citations at once.
+
+    Only S2-sourced rows are removed. References extracted locally from the
+    item's own EPUB/PDF (``source='epub'``) are independent evidence and are
+    left untouched.
+    """
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM global_citations WHERE cited_item_key = ?', (item_key,))
+        removed_citations = cursor.rowcount
+        cursor.execute(
+            "DELETE FROM global_references WHERE citing_item_key = ? AND source = 's2'",
+            (item_key,),
+        )
+        removed_references = cursor.rowcount
+        conn.commit()
+        return {
+            "global_citations": removed_citations,
+            "global_references": removed_references,
+        }
+    finally:
+        conn.close()
+
 def insert_citation(
     citing_paper_id: str,
     citing_title: str,

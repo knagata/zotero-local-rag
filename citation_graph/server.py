@@ -1532,7 +1532,6 @@ def build_graph_data(
 
     C_ZOTERO   = PALETTE["nodeZotero"]
     C_EXTERNAL = PALETTE["nodeExternal"]
-    C_UNK      = PALETTE["nodeUnknown"]
 
     # ── Server-side layout (FA2 + sector placement) ─────────────────────────
     import sys as _sys, time as _time, hashlib as _hashlib
@@ -1659,6 +1658,11 @@ def build_graph_data(
     # ── DOI / ISBN → item:KEY マップ（外部論文との重複排除に使用）─────────
     doi_to_item_nid: dict[str, str] = {}
     isbn_to_item_nid: dict[str, str] = {}
+    # S2 paper ID → item:KEY マップ。DOI/ISBN より強い同一性の証拠であり、かつ
+    # S2 の書籍レコードは DOI も ISBN も持たないことが多い（例: Bratton "The
+    # Stack" は externalIds が MAG/CorpusId のみ）。これが無いと、所蔵資料が
+    # 自分のノードと外部ノードの二重で描画される。
+    paper_to_item_nid: dict[str, str] = {}
     for d in items:
         item_nid = f"item:{d['item_key']}"
         # overrides が適用されたDOI/ISBNを使う
@@ -1672,16 +1676,31 @@ def build_graph_data(
             nk = _norm_isbn(isbn_part)
             if nk:
                 isbn_to_item_nid[nk] = item_nid
+        pid_own = str(d.get("s2_paper_id") or "").strip()
+        if pid_own:
+            paper_to_item_nid[pid_own] = item_nid
 
     # 外部論文間のDOI/ISBN重複排除マップ（初出のnidを正規IDとして記録）
     doi_to_ext_nid:  dict[str, str] = {}
     isbn_to_ext_nid: dict[str, str] = {}
 
-    def _resolve_external_nid(nid_candidate: str, doi_raw: str, isbn_raw: str = "") -> str:
+    # paper ID 経由で所蔵ノードに吸収された外部論文の記録。s2_paper_id は検証を
+    # 経ていない保存値なので、誤同定なら「別作品を丸ごと飲み込む」形になり、しかも
+    # 統合前なら見えていた重複ノードという症状ごと消える。何を吸収したかを必ず
+    # 残し、ノード側からも stderr からも確認できるようにする。
+    absorbed_by_item: dict[str, dict[str, str]] = {}
+
+    def _resolve_external_nid(
+        nid_candidate: str, doi_raw: str, isbn_raw: str = "", paper_id: str = ""
+    ) -> str:
         """外部論文のノードIDを返す。
-        1. DOI/ISBNがZoteroアイテムと一致 → item:KEY に統合
-        2. DOI/ISBNが既出の外部論文と一致 → 先に追加された外部論文のnidに統合
+        1. S2 paper IDがZoteroアイテムのs2_paper_idと一致 → item:KEY に統合
+        2. DOI/ISBNがZoteroアイテムと一致 → item:KEY に統合
+        3. DOI/ISBNが既出の外部論文と一致 → 先に追加された外部論文のnidに統合
         """
+        if paper_id:
+            owned = paper_to_item_nid.get(paper_id.strip())
+            if owned: return owned
         if doi_raw:
             doi_key = doi_raw.strip().lower()
             if doi_key in doi_to_item_nid: return doi_to_item_nid[doi_key]
@@ -1707,7 +1726,13 @@ def build_graph_data(
         # S2 総被引用数（s2_citation_count）が取得済みならそちらを表示
         s2_cc    = d.get("s2_citation_count")
         rcount   = item_rcnt.get(key, 0)
-        color    = C_ZOTERO if status in ("mapped", "s2_done") else C_UNK
+        # Every row here is a Zotero-owned item, so it gets the "Zotero アイテム"
+        # colour the legend names. Whether S2 could identify the work is a
+        # property of S2's coverage, not of ownership; greying those items out
+        # made owned books look like they belonged to no category at all (the
+        # legend has no entry for grey).  The S2 outcome stays visible in the
+        # tooltip's Status row.
+        color    = C_ZOTERO
 
         _cc_str = str(s2_cc) if s2_cc is not None else str(count)
         doi_val, isbn_val, title_ov_z, year_ov_z, authors_ov_z, citations_ov_z = _apply_id_override(
@@ -1772,7 +1797,7 @@ def build_graph_data(
         if citations_ov:
             try: cc = int(citations_ov)
             except ValueError: pass
-        nid   = _resolve_external_nid(f"paper:{pid}", raw_doi, raw_isbn)
+        nid   = _resolve_external_nid(f"paper:{pid}", raw_doi, raw_isbn, pid)
 
         if nid not in added_papers and not nid.startswith("item:"):
             added_papers.add(nid)
@@ -1805,6 +1830,8 @@ def build_graph_data(
             })
         elif nid.startswith("item:"):
             added_papers.add(f"paper:{pid}")  # paper:PID は処理済みとしてマーク
+            if paper_to_item_nid.get(pid) == nid:
+                absorbed_by_item.setdefault(nid, {})[pid] = title
 
         target_nid = f"item:{d['cited_item_key']}"
         if nid != target_nid:  # 自己ループを防止
@@ -1843,7 +1870,7 @@ def build_graph_data(
         if citations_ov:
             try: cc = int(citations_ov)
             except ValueError: pass
-        nid      = _resolve_external_nid(base_nid, raw_doi, raw_isbn)
+        nid      = _resolve_external_nid(base_nid, raw_doi, raw_isbn, pid)
 
         if nid not in added_papers and not nid.startswith("item:"):
             added_papers.add(nid)
@@ -1877,6 +1904,8 @@ def build_graph_data(
             })
         elif nid.startswith("item:"):
             added_papers.add(base_nid)  # 元のIDを処理済みとしてマーク
+            if paper_to_item_nid.get(pid) == nid:
+                absorbed_by_item.setdefault(nid, {})[pid] = title
 
         source_nid = f"item:{d['citing_item_key']}"
         if nid != source_nid:  # 自己ループを防止
@@ -1893,6 +1922,26 @@ def build_graph_data(
                 "externalTitle": title,
                 "relationKey": f"references:{d['citing_item_key']}:{pid}",
             })
+
+    # 吸収された外部論文を所蔵ノードに残す。s2_paper_id が誤っていた場合、ここが
+    # 「なぜこの資料が別作品の引用を持っているのか」を辿れる唯一の手掛かりになる。
+    if absorbed_by_item:
+        node_by_id = {n["id"]: n for n in nodes}
+        for item_nid, absorbed in absorbed_by_item.items():
+            node = node_by_id.get(item_nid)
+            if node is None:
+                continue
+            node["absorbedPapers"] = [
+                {"paperId": pid_a, "title": title_a}
+                for pid_a, title_a in sorted(absorbed.items())
+            ]
+        _print(
+            f"   Merged by s2_paper_id: {sum(len(v) for v in absorbed_by_item.values())} "
+            f"external paper(s) into {len(absorbed_by_item)} owned item(s)"
+        )
+        for item_nid, absorbed in sorted(absorbed_by_item.items()):
+            for pid_a, title_a in sorted(absorbed.items()):
+                _print(f"     {item_nid} <- {pid_a[:12]} {title_a[:60]!r}")
 
     n_nodes = len(nodes)
     n_edges = len(edges)
@@ -2459,7 +2508,9 @@ def _route_fetch_abstract(body: _FetchAbstractRequest) -> JSONResponse:
     Zotero 起動中のみ利用可能（SQLite は起動中ロックされるため HTTP API を使う）。
     取得できた概要は item_citation_status.abstract に保存し、以降は DB から表示する。
     """
-    from src.db_relations import get_item_abstract, update_item_citation_status
+    from src.db_relations import (
+        get_item_abstract, get_item_citation_status, update_item_citation_status,
+    )
 
     # 既にキャッシュ済みなら即返す
     cached = get_item_abstract(body.item_key)
@@ -2489,7 +2540,15 @@ def _route_fetch_abstract(body: _FetchAbstractRequest) -> JSONResponse:
     item = data.get("data", data) if isinstance(data, dict) else {}
     abstract = (item.get("abstractNote") or "").strip() or None
     if abstract:
-        update_item_citation_status(body.item_key, "mapped", abstract=abstract)
+        # Caching an abstract must not restate the S2 outcome. Passing a literal
+        # "mapped" here promoted items S2 had never identified, which then made
+        # update_citations.py skip them forever. Keep whatever status the
+        # citation pipeline recorded.
+        update_item_citation_status(
+            body.item_key,
+            get_item_citation_status(body.item_key) or "pending",
+            abstract=abstract,
+        )
         return JSONResponse({"abstract": abstract, "cached": False})
     return JSONResponse({"abstract": None, "found": False})
 
