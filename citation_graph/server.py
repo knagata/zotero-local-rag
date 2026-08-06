@@ -1663,6 +1663,7 @@ def build_graph_data(
     # Stack" は externalIds が MAG/CorpusId のみ）。これが無いと、所蔵資料が
     # 自分のノードと外部ノードの二重で描画される。
     paper_to_item_nid: dict[str, str] = {}
+    ambiguous_paper_ids: set[str] = set()
     for d in items:
         item_nid = f"item:{d['item_key']}"
         # overrides が適用されたDOI/ISBNを使う
@@ -1678,7 +1679,20 @@ def build_graph_data(
                 isbn_to_item_nid[nk] = item_nid
         pid_own = str(d.get("s2_paper_id") or "").strip()
         if pid_own:
-            paper_to_item_nid[pid_own] = item_nid
+            if pid_own in paper_to_item_nid and paper_to_item_nid[pid_own] != item_nid:
+                # 2件以上の所蔵資料が同じ paper ID を主張している（原著と翻訳が
+                # 同じS2レコードに解決された等）。どちらへ寄せても他方から辺が
+                # 消えるので、この paper ID は統合に使わない。外部ノードとして
+                # 残れば重複が見えるため、原因側を直す手掛かりになる。
+                ambiguous_paper_ids.add(pid_own)
+            else:
+                paper_to_item_nid[pid_own] = item_nid
+    for pid_own in ambiguous_paper_ids:
+        owner = paper_to_item_nid.pop(pid_own, None)
+        _print(
+            f"   [warn] s2_paper_id {pid_own[:12]} is claimed by more than one owned "
+            f"item (first was {owner}); not merging it into any of them"
+        )
 
     # 外部論文間のDOI/ISBN重複排除マップ（初出のnidを正規IDとして記録）
     doi_to_ext_nid:  dict[str, str] = {}

@@ -129,6 +129,18 @@ class OwnedWorkMergeTests(unittest.TestCase):
 
         self.assertNotIn("absorbedPapers", node)
 
+    def test_paper_id_claimed_by_two_items_merges_into_neither(self):
+        # An original and its translation can resolve to the same S2 paper.
+        # Letting the last one win routes every edge to it and silently strips
+        # them from the other, so the ambiguous id is left unmerged instead and
+        # the external node stays visible.
+        graph = _build([self._item("AAAAAAAA"), self._item("BBBBBBBB")], refs=[self._ref()])
+        ids = [n["id"] for n in graph["nodes"]]
+
+        self.assertIn(f"ref:{PID}", ids)
+        for node in graph["nodes"]:
+            self.assertNotIn("absorbedPapers", node)
+
     def test_owned_item_keeps_the_zotero_colour_whatever_s2_reported(self):
         # The legend calls this colour "Zotero アイテム" and has no entry for
         # grey, so coluring an owned work grey put it in no category at all.

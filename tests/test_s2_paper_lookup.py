@@ -129,6 +129,25 @@ class SelectS2TitleMatchTests(unittest.TestCase):
                     _paper("t", [s2_name]), creators,
                 ))
 
+    def test_two_word_name_matches_whichever_way_it_is_ordered(self):
+        # S2 carries CJK authors both as "Keiichi Omura" and "Omura Keiichi";
+        # taking only the trailing token made the given name the comparison key
+        # and rejected the author's own work.
+        self.assertEqual(
+            citation_mapper._external_surnames(["Keiichi Omura"]),
+            citation_mapper._external_surnames(["Omura Keiichi"]),
+        )
+        self.assertTrue(citation_mapper._record_names_a_creator(
+            _paper("t", ["Omura Keiichi"]), "Omura",
+        ))
+
+    def test_three_word_name_still_compares_on_the_surname_only(self):
+        # The ambiguity allowance must not reach names that are unambiguous, or
+        # "Mary Baine Campbell" would match "Pratt Mary Louise" on the given name.
+        self.assertEqual(
+            citation_mapper._external_surnames(["Mary Baine Campbell"]), {"campbell"},
+        )
+
     def test_generational_suffix_is_not_mistaken_for_the_surname(self):
         self.assertEqual(
             citation_mapper._external_surnames(["John Smith Jr."]), {"smith"},
@@ -340,8 +359,13 @@ class StaleRelationsAreClearedOnIdentityChangeTests(unittest.TestCase):
         # with the new ones and would otherwise accumulate.
         self.assertEqual(self._map_resolving_to("NEW", "OLD"), ["ITEM"])
 
-    def test_nothing_is_dropped_when_the_paper_is_unchanged(self):
-        self.assertEqual(self._map_resolving_to("SAME", "SAME"), [])
+    def test_rows_are_dropped_even_when_the_paper_is_unchanged(self):
+        # A run that resolved the paper and then died mid-pagination leaves
+        # partial rows behind; re-running lands on the same id, so a
+        # changed-identity-only condition would keep them forever. The same
+        # applies to citers S2 has stopped reporting, which an upsert on
+        # (citing_paper_id, cited_item_key, context_snippet) never removes.
+        self.assertEqual(self._map_resolving_to("SAME", "SAME"), ["ITEM"])
 
     def test_nothing_is_dropped_on_a_first_ever_resolution(self):
         self.assertEqual(self._map_resolving_to("NEW", None), [])

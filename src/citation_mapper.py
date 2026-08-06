@@ -593,20 +593,27 @@ def _external_surnames(names) -> set:
     Only the surname is taken, because a shared *given* name is not evidence of
     identity: a review of Pratt's "Imperial Eyes" written by Mary Baine Campbell
     shares "Mary" with the Zotero creator "Pratt Mary Louise" and would pass an
-    any-token comparison. External sources render names "First Last", so the
-    surname is the trailing token.
+    any-token comparison. External sources usually render names "First Last", so
+    the surname is the trailing token.
+
+    A bare two-word name is the exception: S2 carries CJK authors both ways
+    ("Keiichi Omura" and "Omura Keiichi"), and there is nothing in the string to
+    say which token is the surname, so both are kept and the comparison becomes
+    order-independent. An initial ("B." in "B. Bratton") does mark the given-name
+    position, and three-or-more-token names keep the trailing token alone, so
+    neither of those loses the precision the check depends on.
     """
     surnames = set()
     for name in names:
-        tokens = [
-            token.casefold()
-            for token in _clean_query_text(_fold_diacritics(str(name or ""))).split()
-            if len(token) >= _MIN_NAME_TOKEN_CHARS
-        ]
+        raw = _clean_query_text(_fold_diacritics(str(name or ""))).split()
+        tokens = [token.casefold() for token in raw if len(token) >= _MIN_NAME_TOKEN_CHARS]
         while len(tokens) > 1 and tokens[-1] in _NAME_SUFFIXES:
             tokens.pop()
-        if tokens:
-            surnames.add(tokens[-1])
+        if not tokens:
+            continue
+        surnames.add(tokens[-1])
+        if len(tokens) == 2 and len(raw) == 2:
+            surnames.add(tokens[0])
     return surnames
 
 
@@ -822,18 +829,24 @@ def map_item_global_citations(item_key: str, title: str = "", year: str = "", cr
                 "message": "Item not found on Semantic Scholar." + suffix,
                 "mapped_count": 0}
 
-    # 同定先が前回と変わったなら、旧同定先由来の関係を先に落とす。global_citations
-    # は citing_paper_id を含む一意キーなので、旧行は新行と衝突せず生き残り、
-    # 1つの資料が2つの別作品の被引用を併せ持つ状態になる。
+    # この直後に S2 の関係を取り直すので、先に既存の S2 由来行を落とす。
+    # global_citations の一意キーは citing_paper_id を含むため、上書きでは消えない
+    # 行が二種類ある: (a) 同定先が変わったときの旧作品の被引用、(b) 前回が
+    # ページング途中で失敗して残った部分行や、S2 がもう報告しなくなった引用元。
+    # 「同定先が変わったときだけ」消す条件では (b) が永久に残り、新旧が混ざる。
     previous_paper_id = get_item_s2_paper_id(item_key)
-    if previous_paper_id and previous_paper_id != s2_paper.get("paperId"):
+    if previous_paper_id:
         removed = clear_s2_relations_for_item(item_key)
-        print(
-            f"        -> S2 identity changed ({previous_paper_id} -> "
-            f"{s2_paper.get('paperId')}); cleared {removed['global_citations']} citation "
-            f"and {removed['global_references']} S2 reference rows from the previous match.",
-            file=sys.stderr,
-        )
+        if removed["global_citations"] or removed["global_references"]:
+            changed = (
+                f"identity changed ({previous_paper_id} -> {s2_paper.get('paperId')}); "
+                if previous_paper_id != s2_paper.get("paperId") else "re-fetching; "
+            )
+            print(
+                f"        -> S2 {changed}cleared {removed['global_citations']} citation "
+                f"and {removed['global_references']} S2 reference rows from the previous run.",
+                file=sys.stderr,
+            )
 
     # S2 メタ情報を DB に保存（以降の処理でも参照できるよう早めに記録）
     # 注: Citation Network更新ではアブストラクトを取得しない（S2依存・API制限回避）。
