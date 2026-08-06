@@ -338,26 +338,94 @@ class UnresolvedItemStatusTests(unittest.TestCase):
 class StaleRelationsAreClearedOnIdentityChangeTests(unittest.TestCase):
     """A re-run that lands on a different S2 paper must not keep the old one's rows."""
 
-    def _map_resolving_to(self, new_pid, stored_pid):
+    def _map_resolving_to(self, new_pid, stored_pid, responses=None, max_citations=50):
         cleared = []
+
+        def _record(key, **scope):
+            effective = {"citations": True, "references": True}
+            effective.update(scope)
+            cleared.append({half for half, on in effective.items() if on})
+            return {"global_citations": 6, "global_references": 0}
+
         with patch.object(citation_mapper, "find_s2_paper_id",
                           return_value={"paperId": new_pid, "year": 2016, "citationCount": 1}), \
              patch.object(citation_mapper, "get_item_s2_paper_id", return_value=stored_pid), \
-             patch.object(citation_mapper, "clear_s2_relations_for_item",
-                          side_effect=lambda k: (cleared.append(k),
-                                                 {"global_citations": 6, "global_references": 0})[1]), \
-             patch.object(citation_mapper, "s2_request", side_effect=[{"data": []}, {"data": []}]), \
+             patch.object(citation_mapper, "clear_s2_relations_for_item", side_effect=_record), \
+             patch.object(citation_mapper, "s2_request",
+                          side_effect=responses or [{"data": []}, {"data": []}]), \
              patch.object(citation_mapper, "insert_citation"), \
              patch.object(db_relations, "insert_reference"), \
              patch.object(citation_mapper, "update_item_citation_status"):
-            citation_mapper.map_item_global_citations("ITEM", title="Some Work")
+            citation_mapper.map_item_global_citations(
+                "ITEM", title="Some Work", max_citations=max_citations,
+            )
         return cleared
+
+    def test_nothing_is_cleared_when_the_first_citation_page_fails(self):
+        # The replacement never arrives, so deleting first would leave the item
+        # with no citations at all and drop it out of the Citation Graph.
+        cleared = self._map_resolving_to(
+            "SAME", "SAME", responses=[citation_mapper.S2RetryExhaustedError("u")],
+        )
+        self.assertEqual(cleared, [])
+
+    def test_references_survive_when_their_first_page_fails(self):
+        # Citations came back fine, so those are replaced; the reference fetch
+        # died before returning anything, so the previous rows must stay.
+        cleared = self._map_resolving_to(
+            "SAME", "SAME",
+            responses=[{"data": [{"citingPaper": {"paperId": "C"}, "contexts": ["x"]}]},
+                       citation_mapper.S2RetryExhaustedError("u")],
+        )
+        self.assertEqual(cleared, [{"citations"}])
+
+    def _page(self, kind, pid, *, next_offset=None):
+        page = {"data": [{kind: {"paperId": pid}, "contexts": ["x"]}]}
+        if next_offset is not None:
+            page["next"] = next_offset
+        return page
+
+    def test_citations_survive_when_a_later_citation_page_fails(self):
+        # Page 1 arrives, page 2 dies. What is in hand is a partial set, so
+        # clearing would replace a complete citation list with a truncated one
+        # until the retry succeeds -- the same loss, one page later. The
+        # reference half completed on its own and is replaced as usual.
+        cleared = self._map_resolving_to(
+            "SAME", "SAME",
+            responses=[self._page("citingPaper", "C", next_offset=1000),
+                       citation_mapper.S2RetryExhaustedError("u"),
+                       {"data": []}],
+        )
+        self.assertFalse(any("citations" in scope for scope in cleared))
+
+    def test_references_survive_when_a_later_reference_page_fails(self):
+        cleared = self._map_resolving_to(
+            "SAME", "SAME",
+            responses=[{"data": []},
+                       self._page("citedPaper", "R", next_offset=1000),
+                       citation_mapper.S2RetryExhaustedError("u")],
+        )
+        self.assertEqual(cleared, [{"citations"}])
+
+    def test_citations_survive_when_the_cap_truncates_the_set(self):
+        # max_citations stops pagination with "next" still set, so the rows in
+        # hand are a deliberate prefix, not the whole list.
+        cleared = self._map_resolving_to(
+            "SAME", "SAME",
+            responses=[self._page("citingPaper", "C", next_offset=1),
+                       {"data": []}],
+            max_citations=1,
+        )
+        self.assertFalse(any("citations" in scope for scope in cleared))
 
     def test_previous_identitys_rows_are_dropped_when_the_paper_changes(self):
         # global_citations is UNIQUE(citing_paper_id, cited_item_key,
         # context_snippet), so rows fetched under the old paper never collide
-        # with the new ones and would otherwise accumulate.
-        self.assertEqual(self._map_resolving_to("NEW", "OLD"), ["ITEM"])
+        # with the new ones and would otherwise accumulate. Each half is cleared
+        # once its own replacement has been fetched.
+        self.assertEqual(
+            self._map_resolving_to("NEW", "OLD"), [{"citations"}, {"references"}],
+        )
 
     def test_rows_are_dropped_even_when_the_paper_is_unchanged(self):
         # A run that resolved the paper and then died mid-pagination leaves
@@ -365,7 +433,9 @@ class StaleRelationsAreClearedOnIdentityChangeTests(unittest.TestCase):
         # changed-identity-only condition would keep them forever. The same
         # applies to citers S2 has stopped reporting, which an upsert on
         # (citing_paper_id, cited_item_key, context_snippet) never removes.
-        self.assertEqual(self._map_resolving_to("SAME", "SAME"), ["ITEM"])
+        self.assertEqual(
+            self._map_resolving_to("SAME", "SAME"), [{"citations"}, {"references"}],
+        )
 
     def test_nothing_is_dropped_on_a_first_ever_resolution(self):
         self.assertEqual(self._map_resolving_to("NEW", None), [])

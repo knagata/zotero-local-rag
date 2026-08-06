@@ -655,19 +655,15 @@ def _select_s2_title_match(
     if not similar:
         return None
 
-    wanted = _creator_name_tokens(creators)
-    if wanted:
-        # A title alone cannot separate a work from a same-titled different work,
-        # or from a *review* of the work written by someone else -- and adopting
-        # a review's paperId would attach its whole citation graph to the book.
-        # Records for which S2 lists no author at all cannot be checked either
-        # way, so they stay eligible rather than being silently dropped.
-        similar = [
-            p for p in similar
-            if not _s2_name_tokens(p) or (wanted & _s2_name_tokens(p))
-        ]
-        if not similar:
-            return None
+    # A title alone cannot separate a work from a same-titled different work, or
+    # from a *review* of the work written by someone else -- and adopting a
+    # review's paperId would attach its whole citation graph to the book. This is
+    # the same rule the DOI/ISBN path applies, so both go through one helper:
+    # each is the only guard on its own path, and a rule change that reached just
+    # one of them would make the two paths disagree about the same record.
+    similar = [p for p in similar if _record_names_a_creator(p, creators)]
+    if not similar:
+        return None
 
     # Rank by similarity tier first so a near-exact title beats a merely close
     # one, then by citation count so the canonical record wins over stub
@@ -829,14 +825,16 @@ def map_item_global_citations(item_key: str, title: str = "", year: str = "", cr
                 "message": "Item not found on Semantic Scholar." + suffix,
                 "mapped_count": 0}
 
-    # この直後に S2 の関係を取り直すので、先に既存の S2 由来行を落とす。
-    # global_citations の一意キーは citing_paper_id を含むため、上書きでは消えない
-    # 行が二種類ある: (a) 同定先が変わったときの旧作品の被引用、(b) 前回が
-    # ページング途中で失敗して残った部分行や、S2 がもう報告しなくなった引用元。
-    # 「同定先が変わったときだけ」消す条件では (b) が永久に残り、新旧が混ざる。
+    # 旧行はこの後それぞれの取得が終わってから落とす（下の二箇所）。ここで消すと、
+    # 最初のページが 429 で枯渇したときに、置き換えるものが無いまま正常だった
+    # 被引用ごと消えてしまう。同定先が変わったかどうかはログ用に保持しておく。
     previous_paper_id = get_item_s2_paper_id(item_key)
-    if previous_paper_id:
-        removed = clear_s2_relations_for_item(item_key)
+
+    def _clear_previous(**scope) -> None:
+        """Drop the previous run's rows now that their replacement is in hand."""
+        if not previous_paper_id:
+            return
+        removed = clear_s2_relations_for_item(item_key, **scope)
         if removed["global_citations"] or removed["global_references"]:
             changed = (
                 f"identity changed ({previous_paper_id} -> {s2_paper.get('paperId')}); "
@@ -904,6 +902,13 @@ def map_item_global_citations(item_key: str, title: str = "", year: str = "", cr
 
     mapped_count = 0
     total_contexts = 0
+
+    # 旧行を落としてよいのは、手元のデータが完全な置き換えになるときだけ。
+    # 1ページ目の失敗は上で早期 return 済みだが、2ページ目以降で失敗した場合や
+    # max_citations で打ち切った場合は部分集合しかないので、消すと完全だった
+    # 一覧が黙って短くなる（次回の再試行まで戻らない）。
+    if not (citation_pages_incomplete or citation_limit_reached):
+        _clear_previous(references=False)
 
     n_cit = len(data_items)
     if n_cit:
@@ -1016,6 +1021,11 @@ def map_item_global_citations(item_key: str, title: str = "", year: str = "", cr
 
     ref_mapped_count = 0
     ref_total_contexts = 0
+
+    # 参照側も同じ条件。0件で完走した場合（S2 が本当に参照を持たない）は消すのが
+    # 正しく、途中失敗や打ち切りによる0件・部分集合とは区別する。
+    if not (reference_pages_incomplete or reference_limit_reached):
+        _clear_previous(citations=False)
 
     if r_data_items:
         n_ref = len(r_data_items)

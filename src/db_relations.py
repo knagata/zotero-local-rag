@@ -1726,14 +1726,20 @@ def get_item_s2_paper_id(item_key: str) -> Optional[str]:
         conn.close()
 
 
-def clear_s2_relations_for_item(item_key: str) -> Dict[str, int]:
-    """Drop the relations an earlier S2 identity produced for one item.
+def clear_s2_relations_for_item(
+    item_key: str, *, citations: bool = True, references: bool = True,
+) -> Dict[str, int]:
+    """Drop the S2-derived relations of one item, so a re-fetch can replace them.
 
-    Needed when a re-run resolves the item to a *different* S2 paper: the
-    citation rows are keyed by ``UNIQUE(citing_paper_id, cited_item_key,
-    context_snippet)``, so rows fetched under the old paper never collide with
-    the new ones and would otherwise survive, leaving the item carrying two
-    different works' citations at once.
+    Needed because the rows are keyed by the *external* paper -- citations by
+    ``UNIQUE(citing_paper_id, cited_item_key, context_snippet)`` -- so a re-run
+    never overwrites rows fetched under a different identity, or under the same
+    identity for citers S2 has since stopped reporting. They would otherwise
+    survive and mix with the new ones.
+
+    ``citations`` and ``references`` select which half to clear. Callers replace
+    the two at different points and must not delete either before the data that
+    replaces it is in hand, or a failed fetch leaves the item with nothing.
 
     Only S2-sourced rows are removed. References extracted locally from the
     item's own EPUB/PDF (``source='epub'``) are independent evidence and are
@@ -1742,13 +1748,16 @@ def clear_s2_relations_for_item(item_key: str) -> Dict[str, int]:
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
-        cursor.execute('DELETE FROM global_citations WHERE cited_item_key = ?', (item_key,))
-        removed_citations = cursor.rowcount
-        cursor.execute(
-            "DELETE FROM global_references WHERE citing_item_key = ? AND source = 's2'",
-            (item_key,),
-        )
-        removed_references = cursor.rowcount
+        removed_citations = removed_references = 0
+        if citations:
+            cursor.execute('DELETE FROM global_citations WHERE cited_item_key = ?', (item_key,))
+            removed_citations = cursor.rowcount
+        if references:
+            cursor.execute(
+                "DELETE FROM global_references WHERE citing_item_key = ? AND source = 's2'",
+                (item_key,),
+            )
+            removed_references = cursor.rowcount
         conn.commit()
         return {
             "global_citations": removed_citations,
