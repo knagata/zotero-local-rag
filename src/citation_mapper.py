@@ -10,6 +10,7 @@ import time
 import fcntl
 import sqlite3
 import difflib
+import unicodedata
 import numpy as np
 from typing import Dict, Any, Optional, List, Tuple
 
@@ -546,6 +547,20 @@ def _clean_query_text(value: str) -> str:
     return re.sub(r'\s+', ' ', re.sub(r'[^\w\s]', ' ', value)).strip()
 
 
+def _fold_diacritics(value: str) -> str:
+    """Drop combining marks so accented and plain spellings of a name compare equal.
+
+    Zotero keeps the author's own orthography while S2 and OpenAlex routinely
+    strip it, so "Żylinska"/"Zylinska", "Fáber"/"Faber" and "Ōmura"/"Omura" are
+    the same person written two ways. Without folding, the authorship check
+    rejects a work in favour of nobody.
+    """
+    return "".join(
+        char for char in unicodedata.normalize("NFKD", value)
+        if not unicodedata.combining(char)
+    )
+
+
 #: Single letters are initials ("B." in "B. Bratton") and carry no identity, but
 #: two-letter tokens are real romanized surnames (Xu, Li, Ng, Wu). Dropping those
 #: emptied the token set for such names, which silently disabled the whole
@@ -563,7 +578,7 @@ def _creator_name_tokens(creators: str) -> set:
     """
     return {
         token.casefold()
-        for token in _clean_query_text(creators).split()
+        for token in _clean_query_text(_fold_diacritics(creators)).split()
         if len(token) >= _MIN_NAME_TOKEN_CHARS
     }
 
@@ -585,7 +600,7 @@ def _external_surnames(names) -> set:
     for name in names:
         tokens = [
             token.casefold()
-            for token in _clean_query_text(str(name or "")).split()
+            for token in _clean_query_text(_fold_diacritics(str(name or ""))).split()
             if len(token) >= _MIN_NAME_TOKEN_CHARS
         ]
         while len(tokens) > 1 and tokens[-1] in _NAME_SUFFIXES:
@@ -600,6 +615,20 @@ def _s2_name_tokens(paper: Dict[str, Any]) -> set:
     return _external_surnames(
         (author.get("name") or "") for author in paper.get("authors") or []
     )
+
+
+def _record_names_a_creator(paper: Dict[str, Any], creators: str) -> bool:
+    """Whether an S2 record credits any of the item's Zotero creators.
+
+    Missing evidence counts as a pass: an item with no creators recorded, or an
+    S2 record listing no author, cannot be judged either way and must not be
+    rejected on that basis. Only a record naming *different* people is refused.
+    """
+    wanted = _creator_name_tokens(creators)
+    listed = _s2_name_tokens(paper)
+    if not wanted or not listed:
+        return True
+    return bool(wanted & listed)
 
 
 def _select_s2_title_match(
@@ -649,8 +678,24 @@ def find_s2_paper_id(title: str, year: Optional[int] = None, creators: str = "",
         print(f"        -> Querying S2 by {prefix}{identifier}...", file=sys.stderr)
         res = s2_request(url)
         if res and "paperId" in res:
-            return res
-        print("        -> S2 exact lookup failed, falling back to title search...", file=sys.stderr)
+            # An identifier is strong evidence, but not proof of *whose* work
+            # this is. A DOI can point at a review of the book rather than the
+            # book (Pratt "Imperial Eyes" carried 10.1086/600773, Lorimer's
+            # review), and returning it unchecked imported the review's
+            # citations. Only a record crediting different people is refused;
+            # the title is not compared, because a legitimate identifier match
+            # may carry a translated or differently-subtitled title.
+            if _record_names_a_creator(res, creators):
+                return res
+            print(
+                f"        -> {prefix}{identifier} resolves to "
+                f"'{(res.get('title') or '')[:60]}' by "
+                f"{', '.join(sorted(_s2_name_tokens(res)))}, which does not name "
+                f"this item's creators; falling back to title search...",
+                file=sys.stderr,
+            )
+        else:
+            print("        -> S2 exact lookup failed, falling back to title search...", file=sys.stderr)
 
     # 2. Fallback to title search.
     # S2 indexes primarily English papers; skip search if title is mostly non-ASCII (e.g. Japanese)

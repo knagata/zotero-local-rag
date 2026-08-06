@@ -71,6 +71,33 @@ changes rather than as another large refactoring batch.
   duplicate-column error, and keep the HTTP handler limited to validation and
   the update transaction.
 
+### 7. Decide what to do with context-less incoming citations
+
+- Location: `src/citation_mapper.py` (`map_item_global_citations`)
+- Observation (2026-08-06): the citations loop does `if not contexts: continue`,
+  so every citing paper S2 reports without an extracted context snippet is
+  discarded. The references loop, a few hundred lines below, keeps the
+  equivalent rows as `s2_status='no_context'`. The asymmetry looks unintended.
+- Impact: the graph holds roughly 37% of the citations S2 knows about
+  (`s2_citation_count` totals 54,132 against 20,188 stored citing papers).
+  Per item the gap can be far larger — V2ESRAMA shows "Citations: 4,188" in its
+  tooltip while contributing 191 citing nodes. Knowing *who* cited a work is
+  useful even with no quotable context, so the discard also costs real signal.
+- Why this is not a one-line mirror of the references branch:
+  - `global_citations` is `UNIQUE(citing_paper_id, cited_item_key,
+    context_snippet)` and SQLite treats NULL as distinct, so inserting
+    context-less rows with a NULL snippet would never conflict and every re-run
+    would duplicate them. The references table already has this defect: 1,622
+    `no_context` rows cover only 1,095 distinct (paper, item) pairs. A sentinel
+    empty string, plus a decision about repairing the existing reference rows,
+    is needed first.
+  - Keeping them would add roughly 34,000 nodes and edges (currently ~21,000
+    nodes), which is a deliberate call about graph size and layout cost.
+- Proposal: store them as `chunk_status='no_context'` with an empty-string
+  snippet, repair the duplicated reference rows in the same change, and decide
+  whether the graph renders them by default or only on request. At minimum,
+  label the tooltip so "Citations" is not read as the number of edges present.
+
 ## Longer-term maintainability
 
 ### Per-attachment chunk generations

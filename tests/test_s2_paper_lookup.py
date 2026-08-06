@@ -115,6 +115,20 @@ class SelectS2TitleMatchTests(unittest.TestCase):
             creators="Pratt Mary Louise",
         ))
 
+    def test_accented_and_plain_spellings_of_a_name_compare_equal(self):
+        # Zotero keeps the author's own orthography, S2 and OpenAlex strip it.
+        # Measured live: Żylinska/Zylinska, Fáber/Faber and Ōmura/Omura were the
+        # only false rejections among 43 items the authorship check refused.
+        for creators, s2_name in (
+            ("Żylinska, Joanna", "J. Zylinska"),
+            ("Faber, Agoston", "Á. Fáber"),
+            ("Ōmura, Keiichi", "K. Omura"),
+        ):
+            with self.subTest(creators=creators):
+                self.assertTrue(citation_mapper._record_names_a_creator(
+                    _paper("t", [s2_name]), creators,
+                ))
+
     def test_generational_suffix_is_not_mistaken_for_the_surname(self):
         self.assertEqual(
             citation_mapper._external_surnames(["John Smith Jr."]), {"smith"},
@@ -212,6 +226,64 @@ class FindS2PaperIdQueryTests(unittest.TestCase):
     def test_non_english_title_skips_the_search_entirely(self):
         _match, urls = self._queries_for("日本語のタイトルのみの資料", "山田 太郎")
         self.assertEqual(urls, [])
+
+
+class IdentifierLookupVerificationTests(unittest.TestCase):
+    """A DOI/ISBN hit is strong evidence, but not proof of whose work it is."""
+
+    def _find(self, exact_result, *, creators, title="Imperial Eyes: Travel Writing", doi="10.1/x"):
+        seen = []
+
+        def _fake_request(url):
+            seen.append(url)
+            if url.startswith("https://api.semanticscholar.org/graph/v1/paper/DOI:"):
+                return exact_result
+            return {"data": []}
+
+        with patch.object(citation_mapper, "s2_request", side_effect=_fake_request):
+            match = citation_mapper.find_s2_paper_id(title, "1992", creators, doi, "")
+        return match, seen
+
+    def test_doi_pointing_at_someone_elses_review_is_refused(self):
+        # Observed live: Zotero item 7BAT48CH (Pratt) carried 10.1086/600773,
+        # which is Douglas A. Lorimer's review, and the unchecked return
+        # adopted the review's paperId as the book's identity.
+        review = _paper("Imperial Eyes: Travel Writing and Transculturation",
+                        ["Douglas A. Lorimer"], cc=4, pid="REVIEW")
+        match, seen = self._find(review, creators="Pratt Mary Louise")
+
+        self.assertIsNone(match)
+        self.assertGreater(len(seen), 1, "should fall back to the title search")
+
+    def test_identifier_hit_naming_the_creator_is_accepted(self):
+        book = _paper("Imperial Eyes: Travel Writing and Transculturation",
+                      ["M. Pratt"], cc=3770, pid="BOOK")
+        match, seen = self._find(book, creators="Pratt Mary Louise")
+
+        self.assertEqual(match["paperId"], "BOOK")
+        self.assertEqual(len(seen), 1, "a verified identifier hit needs no further query")
+
+    def test_identifier_hit_without_authors_is_still_accepted(self):
+        # S2 lists no author for many book records; that is missing evidence,
+        # not contrary evidence.
+        record = _paper("Imperial Eyes", [], cc=10, pid="NOAUTHORS")
+        match, _seen = self._find(record, creators="Pratt Mary Louise")
+
+        self.assertEqual(match["paperId"], "NOAUTHORS")
+
+    def test_item_without_creators_keeps_the_identifier_hit(self):
+        record = _paper("Some Report", ["Someone Else"], cc=1, pid="KEEP")
+        match, _seen = self._find(record, creators="")
+
+        self.assertEqual(match["paperId"], "KEEP")
+
+    def test_a_translated_title_does_not_by_itself_reject_the_identifier(self):
+        # Only authorship is compared on this path, so an identifier hit whose
+        # title differs (translation, other edition) still resolves.
+        record = _paper("Ojos imperiales", ["M. Pratt"], cc=50, pid="ES")
+        match, _seen = self._find(record, creators="Pratt Mary Louise")
+
+        self.assertEqual(match["paperId"], "ES")
 
 
 class UnresolvedItemStatusTests(unittest.TestCase):
