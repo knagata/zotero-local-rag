@@ -1196,6 +1196,37 @@ def _merge_deferred_ocr_audit_quality(
     return merged
 
 
+def _deferred_manifest_entry(
+    previous: dict | None, *, mtime: float, size: int, source_path: Any,
+    title: Any, quality: dict[str, Any], content_signature_value: str | None = None,
+    pipeline_fingerprint: str | None = None,
+) -> dict[str, Any]:
+    """Build the manifest row for an attachment handed to the Mistral OCR batch.
+
+    Every deferral path must write one. An attachment missing from
+    ``files_manifest`` is reported by ``--rebuild``'s completeness check under
+    ``missing_manifest_attachments`` *in addition to* being counted in
+    ``deferred_extract`` -- the same queued file named twice, as if it had
+    vanished rather than been handed to the batch. The EPUB path used to skip
+    this while the PDF path did it inline, which is exactly how that happened.
+    """
+    # A manifest row that is not a dict (hand-edited or truncated file) is
+    # already tolerated when copying it forward; pass the same guarded value to
+    # the audit merge, which would otherwise raise on .get and abort the run.
+    prior = previous if isinstance(previous, dict) else None
+    entry = dict(prior) if prior else {}
+    entry.update({
+        "mtime": mtime, "size": size, "pdf_path": str(source_path),
+        "title": title,
+        "quality": _merge_deferred_ocr_audit_quality(prior, quality),
+    })
+    if content_signature_value:
+        entry["content_signature"] = content_signature_value
+    if pipeline_fingerprint is not None:
+        entry["pipeline_fingerprint"] = pipeline_fingerprint
+    return entry
+
+
 def _cached_ocr_layer_audit(
     prev: dict | None, *, mtime: float, size: int,
 ) -> dict[str, Any] | None:
@@ -3312,16 +3343,14 @@ async def main_async(args: argparse.Namespace) -> None:
                         # Its stage-2 audit is still final for this exact
                         # source fingerprint, so persist just that cache and
                         # provenance (not the transient extraction quality).
-                        deferred_entry = dict(prev) if isinstance(prev, dict) else {}
-                        deferred_entry.update({
-                            "mtime": mtime, "size": size, "pdf_path": str(file_path),
-                            "title": a.title,
-                            "quality": _merge_deferred_ocr_audit_quality(prev, quality_info),
-                            **({"content_signature": stored_signature} if stored_signature else {}),
-                        })
-                        if STRUCTURED_V3_ENABLE:
-                            deferred_entry["pipeline_fingerprint"] = v3_pipeline_fingerprint
-                        files_manifest[a.attachmentKey] = deferred_entry
+                        files_manifest[a.attachmentKey] = _deferred_manifest_entry(
+                            prev, mtime=mtime, size=size, source_path=file_path,
+                            title=a.title, quality=quality_info,
+                            content_signature_value=stored_signature,
+                            pipeline_fingerprint=(
+                                v3_pipeline_fingerprint if STRUCTURED_V3_ENABLE else None
+                            ),
+                        )
                         save_manifest(MANIFEST_PATH, manifest)
                         skipped_pdf += 1
                         deferred_extract += 1
@@ -3535,6 +3564,15 @@ async def main_async(args: argparse.Namespace) -> None:
                             },
                             fallback_kind="mistral_ocr",
                         )
+                        files_manifest[a.attachmentKey] = _deferred_manifest_entry(
+                            prev, mtime=mtime, size=size, source_path=file_path,
+                            title=a.title, quality=quality_info,
+                            content_signature_value=stored_signature,
+                            pipeline_fingerprint=(
+                                v3_pipeline_fingerprint if STRUCTURED_V3_ENABLE else None
+                            ),
+                        )
+                        save_manifest(MANIFEST_PATH, manifest)
                         deferred_extract += 1
                         if show_progress:
                             print(

@@ -149,3 +149,75 @@ def test_metadata_refresh_is_persisted_when_tree_is_unchanged():
     assert result["chunk_metadata_resynced"] == 1
     assert result["changed"] is False
     assert result["embeddings_unchanged"] is True
+
+
+def test_a_failed_source_refresh_does_not_abandon_the_rebuild():
+    # Re-reading the original file improves heading metadata; it is not a
+    # precondition for building the structure. Letting it abort the item also
+    # abandoned unrelated work: a ZONE_POLICIES migration stalled on four EPUBs
+    # whose fresh extraction no longer mapped onto their indexed chunks, so
+    # those items kept the old retrieval_policy for an unrelated reason.
+    with patch.object(rebuild_document_structure, "get_item_chunks", return_value=_chunks()), \
+            patch.object(
+                rebuild_document_structure, "refresh_source_structure_metadata",
+                side_effect=RuntimeError("no fresh EPUB structure match for chunk X"),
+            ), \
+            patch.object(rebuild_document_structure, "get_document_structure", return_value=None), \
+            patch.object(rebuild_document_structure, "replace_document_structure") as replace, \
+            patch.object(rebuild_document_structure, "_resync_chunk_metadata", return_value=7), \
+            patch.object(rebuild_document_structure, "mark_artifact_status"):
+        result = rebuild_document_structure.rebuild_item(
+            "ITEM", dry_run=False, force=True, run_id="test", collection_name="test",
+        )
+
+    replace.assert_called_once()
+    assert result["action"] == "rebuilt"
+    assert result["chunk_metadata_resynced"] == 7
+
+
+def test_a_failed_source_refresh_is_reported_not_swallowed():
+    with patch.object(rebuild_document_structure, "get_item_chunks", return_value=_chunks()), \
+            patch.object(
+                rebuild_document_structure, "refresh_source_structure_metadata",
+                side_effect=RuntimeError("no fresh EPUB structure match for chunk X"),
+            ), \
+            patch.object(rebuild_document_structure, "get_document_structure", return_value=None), \
+            patch.object(rebuild_document_structure, "replace_document_structure"), \
+            patch.object(rebuild_document_structure, "_resync_chunk_metadata", return_value=0), \
+            patch.object(rebuild_document_structure, "mark_artifact_status"):
+        result = rebuild_document_structure.rebuild_item(
+            "ITEM", dry_run=False, force=True, run_id="test", collection_name="test",
+        )
+
+    assert "no fresh EPUB structure match" in result["source_refresh_error"]
+
+
+def test_a_successful_refresh_records_no_error():
+    with patch.object(rebuild_document_structure, "get_item_chunks", return_value=_chunks()), \
+            patch.object(
+                rebuild_document_structure, "refresh_source_structure_metadata",
+                return_value=(_chunks(), []),
+            ), \
+            patch.object(rebuild_document_structure, "get_document_structure", return_value=None), \
+            patch.object(rebuild_document_structure, "replace_document_structure"), \
+            patch.object(rebuild_document_structure, "_resync_chunk_metadata", return_value=0), \
+            patch.object(rebuild_document_structure, "mark_artifact_status"):
+        result = rebuild_document_structure.rebuild_item(
+            "ITEM", dry_run=False, force=True, run_id="test", collection_name="test",
+        )
+
+    assert "source_refresh_error" not in result
+
+
+def test_report_only_stdout_keeps_c_level_noise_off_the_report(capfd):
+    # MuPDF writes its parse complaints straight to fd 1 from C, which put 1.3 MB
+    # of them ahead of the JSON report and made the run unparseable.
+    import os
+
+    with rebuild_document_structure._report_only_stdout():
+        os.write(1, b"MuPDF error: syntax error: invalid key in dict\n")
+    print('{"run_id": "x"}')
+
+    captured = capfd.readouterr()
+    assert captured.out.strip() == '{"run_id": "x"}'
+    assert "MuPDF error" in captured.err

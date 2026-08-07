@@ -37,7 +37,17 @@ ZONE_POLICIES = {
     # so a reader can still see that a passage came from the notes.
     # summary_policy stays "exclude": notes must not feed a section's summary.
     "endnote": ("exclude", "normal", "extract"),
-    "bibliography": ("exclude", "exclude", "extract"),
+    # A bibliography is a distant-reading surface: it is where a reader sees
+    # what a work points at, and browsing one is how a specific case buried in
+    # an off-topic book gets found. Unreachable at "exclude", the same 22,267
+    # chunks that the endnote decision was about. The structured route
+    # (citation_policy="extract") only covers what Semantic Scholar could
+    # resolve, so it drops exactly the Japanese and book-length references this
+    # library is mostly made of -- full text is the only way to reach those.
+    # "explicit_only" rather than "normal" because the content is reference
+    # entries, not argument: it surfaces when the query names 参考文献 /
+    # references / 出典 and stays out of ordinary results otherwise.
+    "bibliography": ("exclude", "explicit_only", "extract"),
     "toc": ("exclude", "exclude", "none"),
     "index": ("exclude", "exclude", "none"),
     "colophon": ("exclude", "exclude", "none"),

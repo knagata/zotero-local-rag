@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
+import os
 import sys
 import uuid
 from pathlib import Path
@@ -27,6 +29,26 @@ from src.v3_data_plane import V3_COLLECTION
 from src.document_structure import STRUCTURE_VERSION, build_document_structure
 from src.orphan_cleanup import note_only_item
 from src.source_structure_refresh import refresh_source_structure_metadata
+
+
+@contextlib.contextmanager
+def _report_only_stdout():
+    """Keep stdout for the JSON report while the run is working.
+
+    MuPDF writes its parse complaints ("syntax error: invalid key in dict")
+    straight to file descriptor 1 from C, so they land ahead of the report and
+    make it unparseable -- a 1.3 MB run whose summary no tool could read. The
+    lines are still worth seeing, so fd 1 is pointed at stderr for the duration
+    rather than discarded, and restored before the report is printed.
+    """
+    saved_fd = os.dup(1)
+    try:
+        os.dup2(2, 1)
+        yield
+    finally:
+        sys.stdout.flush()
+        os.dup2(saved_fd, 1)
+        os.close(saved_fd)
 
 
 def _stored_sequence(value: object, *, plain_string_is_value: bool) -> list[object]:
@@ -131,8 +153,21 @@ def rebuild_item(
         return {"item_key": item_key, "status": "blocked", "reason_code": "no_chunks"}
 
     refresh_reports: list[dict] = []
+    refresh_error: str | None = None
     if refresh_source:
-        chunks, refresh_reports = refresh_source_structure_metadata(chunks)
+        try:
+            chunks, refresh_reports = refresh_source_structure_metadata(chunks)
+        except Exception as exc:
+            # Re-reading the original file improves heading metadata; it is not
+            # a precondition for building the structure, which the indexed
+            # chunks already support on their own. Letting it abort the item
+            # also abandons everything else the rebuild does: a ZONE_POLICIES
+            # migration stalled on four EPUBs whose fresh extraction no longer
+            # lines up with their indexed chunks, leaving those items on the
+            # old retrieval policy for reasons unrelated to the policy.
+            # refresh_source_structure_metadata copies every row before
+            # touching it, so `chunks` is untouched here.
+            refresh_error = f"{type(exc).__name__}: {exc}"
     built = build_document_structure(item_key, chunks)
     previous = get_document_structure(item_key)
     unchanged = bool(
@@ -145,6 +180,9 @@ def rebuild_item(
         "node_count": len(built["nodes"]), "diagnostics": built["diagnostics"],
         "changed": not unchanged,
         "source_structure_refresh": refresh_reports,
+        # Surfaced, never swallowed: the structure below was built from the
+        # chunks as indexed, without the source's current headings.
+        **({"source_refresh_error": refresh_error} if refresh_error else {}),
     }
     if dry_run:
         result["action"] = "dry_run"
@@ -258,16 +296,31 @@ def main() -> None:
     run_id = f"structure-v3-{uuid.uuid4().hex[:12]}"
     results = []
     failed = 0
-    for item_key in keys:
-        try:
-            results.append(rebuild_item(
-                item_key, dry_run=args.dry_run, force=args.force, run_id=run_id,
-                collection_name=args.collection, refresh_source=not args.no_source_refresh,
-            ))
-        except Exception as exc:  # continue so one bad document does not stop maintenance
-            failed += 1
-            results.append({"item_key": item_key, "status": "failed", "error": str(exc)})
-    print(json.dumps({"run_id": run_id, "dry_run": args.dry_run, "failed": failed, "items": results}, ensure_ascii=False, indent=2))
+    with _report_only_stdout():
+        for item_key in keys:
+            try:
+                results.append(rebuild_item(
+                    item_key, dry_run=args.dry_run, force=args.force, run_id=run_id,
+                    collection_name=args.collection, refresh_source=not args.no_source_refresh,
+                ))
+            except Exception as exc:  # continue so one bad document does not stop maintenance
+                failed += 1
+                results.append({"item_key": item_key, "status": "failed", "error": str(exc)})
+    stale_source = [row["item_key"] for row in results if row.get("source_refresh_error")]
+    if stale_source:
+        # These items were rebuilt, but from the chunks as indexed: their source
+        # file no longer maps onto them. Worth attention, yet not a failure of
+        # this run, so it is reported rather than folded into the exit code.
+        print(
+            f"[WARN] source refresh failed for {len(stale_source)} item(s); "
+            f"their structure was rebuilt from the indexed chunks: "
+            f"{', '.join(stale_source[:20])}",
+            file=sys.stderr,
+        )
+    print(json.dumps({
+        "run_id": run_id, "dry_run": args.dry_run, "failed": failed,
+        "source_refresh_failed": len(stale_source), "items": results,
+    }, ensure_ascii=False, indent=2))
     if failed:
         raise SystemExit(1)
 

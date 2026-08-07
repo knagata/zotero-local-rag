@@ -55,6 +55,11 @@ uv run python scripts/rebuild_document_structure.py --all --dry-run
 # 文書構造だけを差分更新（EPUB原本の目次を再読込し、再埋め込みしない）
 uv run python scripts/rebuild_document_structure.py --all
 
+# ゾーン方針（ZONE_POLICIES）を変更したあとの反映。retrieval_policy は
+# ノードとチャンクメタデータに焼き込まれているため、コード変更だけでは
+# 既存資料に反映されない。--force で全件の構造とメタデータを再同期する
+uv run python scripts/rebuild_document_structure.py --all --force
+
 # 要約（LLM）。全件backfillは承認後、通常は --limit で限定実行
 uv run python scripts/build_structure_summaries.py --all --mode llm --limit 10 --embed \
   --database-gate data/quality/server_database_gate.json

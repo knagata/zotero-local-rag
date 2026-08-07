@@ -20,6 +20,34 @@ class HierarchicalRetrievalTests(unittest.TestCase):
         self.assertTrue(retrieval_policy_allowed({"retrieval_policy": "explicit_only"}, allow_explicit=True))
         self.assertFalse(retrieval_policy_allowed({"retrieval_policy": "exclude"}, allow_explicit=True))
 
+    def test_bibliography_is_reachable_when_a_query_asks_for_references(self):
+        # A bibliography is where a reader sees what a work points at, so it
+        # has to be reachable; "exclude" made 22,267 chunks unsearchable. It
+        # stays explicit_only rather than normal because the content is
+        # reference entries, not argument.
+        from src.document_structure import ZONE_POLICIES
+
+        policy = ZONE_POLICIES["bibliography"][1]
+        self.assertEqual(policy, "explicit_only")
+        metadata = {"zone": "bibliography", "retrieval_policy": policy}
+        for query in ("この本の参考文献", "references on infrastructure", "出典を教えて"):
+            with self.subTest(query=query):
+                self.assertTrue(retrieval_policy_allowed(
+                    metadata, allow_explicit=explicit_note_intent(query),
+                ))
+        self.assertFalse(retrieval_policy_allowed(
+            metadata, allow_explicit=explicit_note_intent("ケアの倫理について"),
+        ))
+
+    def test_bibliography_still_never_feeds_a_summary(self):
+        # Reachable in search is not the same as quotable evidence for a
+        # summary: a section summary built from a reference list would describe
+        # the list, not the work.
+        from src.document_structure import ZONE_POLICIES
+
+        self.assertEqual(ZONE_POLICIES["bibliography"][0], "exclude")
+        self.assertEqual(ZONE_POLICIES["bibliography"][2], "extract")
+
     def test_rrf_uses_specified_path_weights_and_retains_provenance(self):
         fused = fuse_retrieval_paths([
             ("leaf", [{"id": "a"}, {"id": "b"}]),
