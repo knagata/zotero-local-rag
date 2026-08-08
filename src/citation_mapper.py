@@ -138,7 +138,19 @@ _S2_RATE_FILE = str(ROOT / "data" / "s2_rate.lock")
 
 _EMB_FN_CACHE = None
 _SEGMENT_META: Optional[Dict[str, Any]] = None  # cached segment info
-_ITEM_CHUNKS_CACHE: Dict[str, List[Tuple[str, np.ndarray]]] = {}  # item_key → [(emb_id, vec)]
+
+#: Chunk vectors for the *one* item being processed: its ids, and their unit
+#: vectors as a single (N, dim) matrix.
+#:
+#: This used to be a dict keyed by item_key that was never evicted, so a run
+#: over the library accumulated every item it had already finished with. At
+#: 513,683 chunks held as individual small arrays that reached a 26 GB
+#: footprint and drove the machine into swap. Items are processed one after
+#: another and a finished item is never revisited, so one item's worth is all
+#: that is ever needed.
+_ITEM_CHUNKS_CACHE_KEY: Optional[str] = None
+_ITEM_CHUNK_IDS: List[str] = []
+_ITEM_CHUNK_MATRIX: Optional[np.ndarray] = None
 
 # Path for debug logs (relative to project root, not CWD)
 _DEBUG_LOG = str(ROOT / "data" / "mapping_debug.log")
@@ -282,7 +294,8 @@ def _get_segment_meta() -> Dict[str, Any]:
 
     # Item vectors are tied to both the collection UUID and the exact set of
     # chunks.  Clear them before accepting a changed generation.
-    _ITEM_CHUNKS_CACHE.clear()
+    global _ITEM_CHUNKS_CACHE_KEY, _ITEM_CHUNK_IDS, _ITEM_CHUNK_MATRIX
+    _ITEM_CHUNKS_CACHE_KEY, _ITEM_CHUNK_IDS, _ITEM_CHUNK_MATRIX = None, [], None
     _SEGMENT_META = snapshot
     print(
         f"[citation_mapper] Using collection '{snapshot['collection_name']}' "
@@ -291,18 +304,84 @@ def _get_segment_meta() -> Dict[str, Any]:
     return _SEGMENT_META
 
 
-def _load_chunks_for_item(item_key: str) -> List[Tuple[str, np.ndarray]]:
-    """
-    Load chunk vectors for a given item_key by embedding their text from ChromaDB SQLite.
+def _unit_rows(vectors) -> np.ndarray:
+    """Stack vectors into one (N, dim) matrix whose rows are unit length.
 
-    ChromaDB 1.5+ no longer persists index_metadata.pickle; the id→label mapping
-    lives in-memory only.  We read document texts directly from chroma.sqlite3 and
-    embed them with the cached model.  Results are cached per item_key so repeated
-    calls from search_chunks() within the same process incur no extra embedding cost.
+    Always copies: np.asarray would hand back the caller's own array when it is
+    already float32, and the normalisation below would then rewrite it in place.
     """
+    matrix = np.array(vectors, dtype=np.float32, copy=True)
+    if matrix.ndim == 1:
+        matrix = matrix.reshape(1, -1)
+    norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+    # A zero vector has no direction. Dividing by its norm would make every
+    # component inf or NaN, which then propagates through the dot product and
+    # corrupts the ranking of *every* chunk; leaving it at zero keeps its
+    # similarity at 0, which is what "no direction" should score.
+    #
+    # Substituting 1 rather than masking with ``where=``: the masked lanes are
+    # still evaluated in SIMD, so the divide-by-zero raises the FPU flag even
+    # though its result is discarded, and numpy reports it against whatever
+    # operation runs next -- a RuntimeWarning apparently coming from the matmul.
+    np.divide(matrix, np.where(norms > 0, norms, np.float32(1.0)), out=matrix)
+    return matrix
+
+
+def _stored_item_vectors(item_key: str) -> Optional[Tuple[List[str], np.ndarray]]:
+    """Read one item's already-indexed vectors out of Chroma, or None."""
+    try:
+        import chromadb
+
+        collection = chromadb.PersistentClient(
+            path=str(CHROMA_DIR),
+        ).get_collection(_configured_collection_name())
+        stored = collection.get(where={"itemKey": item_key}, include=["embeddings"])
+    except Exception as exc:
+        print(
+            f"[citation_mapper] Could not read stored vectors for {item_key} "
+            f"({type(exc).__name__}: {str(exc)[:120]}); re-embedding instead.",
+            file=sys.stderr,
+        )
+        return None
+    ids = list(stored.get("ids") or [])
+    vectors = stored.get("embeddings")
+    if not ids or vectors is None or len(vectors) != len(ids):
+        return None
+    return ids, _unit_rows(vectors)
+
+
+def _load_chunks_for_item(item_key: str) -> Tuple[List[str], Optional[np.ndarray]]:
+    """Chunk ids and unit vectors for one item, as ``(ids, (N, dim) matrix)``.
+
+    The vectors are read back from Chroma, which already holds them: this used
+    to re-embed every chunk's text from scratch on the belief that ChromaDB 1.5+
+    no longer persists the id→label mapping. It does -- index_metadata.pickle is
+    present with all 513,683 entries -- and re-embedding cost 134s and 3.8 GB for
+    one 2,861-chunk item where reading takes 0.9s and 2.6 GB. Embedding remains
+    as a fallback so a missing or stale index still yields an answer.
+
+    Only the item currently being processed is held. Caching every item, as this
+    used to, accumulated the whole library: 513,683 chunks as individual small
+    arrays reached a 26 GB footprint and pushed the machine into swap. Items are
+    processed one after another and never revisited, so the previous item's
+    vectors are dead weight the moment the next one starts.
+    """
+    global _ITEM_CHUNKS_CACHE_KEY, _ITEM_CHUNK_IDS, _ITEM_CHUNK_MATRIX
+
     seg = _get_segment_meta()
-    if item_key in _ITEM_CHUNKS_CACHE:
-        return _ITEM_CHUNKS_CACHE[item_key]
+    if item_key == _ITEM_CHUNKS_CACHE_KEY:
+        return _ITEM_CHUNK_IDS, _ITEM_CHUNK_MATRIX
+
+    # Drop the previous item before loading the next one, so the two are never
+    # resident at once.
+    _ITEM_CHUNKS_CACHE_KEY, _ITEM_CHUNK_IDS, _ITEM_CHUNK_MATRIX = None, [], None
+
+    stored = _stored_item_vectors(item_key)
+    if stored is not None:
+        _ITEM_CHUNK_IDS, _ITEM_CHUNK_MATRIX = stored
+        _ITEM_CHUNKS_CACHE_KEY = item_key
+        return _ITEM_CHUNK_IDS, _ITEM_CHUNK_MATRIX
+
     db_path = str(CHROMA_DIR / "chroma.sqlite3")
     conn = sqlite3.connect(db_path, timeout=10)
     try:
@@ -320,8 +399,8 @@ def _load_chunks_for_item(item_key: str) -> List[Tuple[str, np.ndarray]]:
         conn.close()
 
     if not rows:
-        _ITEM_CHUNKS_CACHE[item_key] = []
-        return []
+        _ITEM_CHUNKS_CACHE_KEY = item_key
+        return [], None
 
     ef = _get_emb_fn()
     embedding_ids = [r[0] for r in rows]
@@ -331,15 +410,16 @@ def _load_chunks_for_item(item_key: str) -> List[Tuple[str, np.ndarray]]:
         vectors = ef(texts)
     except Exception as e:
         print(f"[citation_mapper] Embedding failed for {item_key}: {e}", file=sys.stderr)
-        return []
+        return [], None
 
-    result = [
-        (emb_id, np.array(vec, dtype=np.float32))
-        for emb_id, vec in zip(embedding_ids, vectors, strict=False)
-    ]
-    _ITEM_CHUNKS_CACHE[item_key] = result
-    print(f"[citation_mapper] Embedded {len(result)} chunks for item {item_key}", file=sys.stderr)
-    return result
+    # Normalized once here rather than on every search: the vectors do not
+    # change, and re-normalizing them per query context allocated one temporary
+    # array per chunk per context.
+    _ITEM_CHUNK_IDS = embedding_ids
+    _ITEM_CHUNK_MATRIX = _unit_rows(vectors)
+    _ITEM_CHUNKS_CACHE_KEY = item_key
+    print(f"[citation_mapper] Embedded {len(embedding_ids)} chunks for item {item_key}", file=sys.stderr)
+    return _ITEM_CHUNK_IDS, _ITEM_CHUNK_MATRIX
 
 
 def search_chunks(query_text: str, item_key: str, n_results: int = 1) -> List[Dict[str, Any]]:
@@ -349,29 +429,33 @@ def search_chunks(query_text: str, item_key: str, n_results: int = 1) -> List[Di
     """
     ef = _get_emb_fn()
 
-    # Embed the query
-    query_emb = np.array(ef([query_text])[0], dtype=np.float32)
-    norm = np.linalg.norm(query_emb)
-    if norm > 0:
-        query_emb = query_emb / norm
-
-    # Load chunks for item
-    chunks = _load_chunks_for_item(item_key)
-    if not chunks:
+    chunk_ids, matrix = _load_chunks_for_item(item_key)
+    if matrix is None or not chunk_ids:
         return []
 
-    # Compute cosine similarity (embeddings are already normalized by the model)
-    results = []
-    for emb_id, vec in chunks:
-        vec_norm = np.linalg.norm(vec)
-        if vec_norm > 0:
-            vec = vec / vec_norm
-        similarity = float(np.dot(query_emb, vec))
-        distance = 1.0 - similarity  # cosine distance
-        results.append({"id": emb_id, "distance": distance})
+    query_emb = _unit_rows(ef([query_text])[0])[0]
 
-    results.sort(key=lambda x: x["distance"])
-    return results[:n_results]
+    # One matmul over the item's whole matrix. This was a Python loop that
+    # re-normalized every chunk on every call -- for an item with a thousand
+    # chunks and several hundred citation contexts that is a million throwaway
+    # arrays, and it dominated the runtime of a full citation refresh.
+    # numpy 2.2 on macOS/Accelerate raises divide-by-zero, overflow and invalid
+    # RuntimeWarnings from matmul even for two arrays that are entirely finite
+    # -- reproducible with freshly generated random unit vectors and no code of
+    # ours involved. The results are correct; only the FPU flags are spurious,
+    # and left alone they print three warnings per citation context.
+    with np.errstate(divide="ignore", over="ignore", invalid="ignore"):
+        similarities = matrix @ query_emb
+    if n_results >= len(chunk_ids):
+        order = np.argsort(-similarities)
+    else:
+        # Only the top n need to be in order; the rest do not need sorting.
+        top = np.argpartition(-similarities, n_results - 1)[:n_results]
+        order = top[np.argsort(-similarities[top])]
+    return [
+        {"id": chunk_ids[i], "distance": float(1.0 - similarities[i])}
+        for i in order
+    ]
 
 
 # ---------------------------------------------------------------------------

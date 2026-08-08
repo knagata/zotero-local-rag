@@ -53,15 +53,23 @@ class CitationMapperCollectionTests(unittest.TestCase):
         self.chroma_dir = Path(self.tempdir.name)
         self.original_dir = citation_mapper.CHROMA_DIR
         self.original_segment = citation_mapper._SEGMENT_META
-        self.original_item_cache = citation_mapper._ITEM_CHUNKS_CACHE
+        self.original_item_cache = (
+            citation_mapper._ITEM_CHUNKS_CACHE_KEY,
+            citation_mapper._ITEM_CHUNK_IDS,
+            citation_mapper._ITEM_CHUNK_MATRIX,
+        )
         citation_mapper.CHROMA_DIR = self.chroma_dir
         citation_mapper._SEGMENT_META = None
-        citation_mapper._ITEM_CHUNKS_CACHE = {}
+        citation_mapper._ITEM_CHUNKS_CACHE_KEY = None
+        citation_mapper._ITEM_CHUNK_IDS = []
+        citation_mapper._ITEM_CHUNK_MATRIX = None
 
     def tearDown(self):
         citation_mapper.CHROMA_DIR = self.original_dir
         citation_mapper._SEGMENT_META = self.original_segment
-        citation_mapper._ITEM_CHUNKS_CACHE = self.original_item_cache
+        (citation_mapper._ITEM_CHUNKS_CACHE_KEY,
+         citation_mapper._ITEM_CHUNK_IDS,
+         citation_mapper._ITEM_CHUNK_MATRIX) = self.original_item_cache
         self.tempdir.cleanup()
 
     def test_explicit_collection_wins_over_larger_legacy_collection(self):
@@ -143,8 +151,8 @@ class CitationMapperCollectionTests(unittest.TestCase):
 
         with patch.dict(os.environ, {"CHROMA_COLLECTION": "zotero_paragraphs_v3"}, clear=False), \
              patch.object(citation_mapper, "_get_emb_fn", return_value=fake_embed):
-            first = citation_mapper._load_chunks_for_item("ITEM")
-            self.assertEqual([row[0] for row in first], ["old-chunk"])
+            first_ids, _matrix = citation_mapper._load_chunks_for_item("ITEM")
+            self.assertEqual(first_ids, ["old-chunk"])
 
             # Same collection name and row count, but the rebuild allocated a
             # new collection UUID.  Returning old-chunk here would map a new
@@ -163,9 +171,9 @@ class CitationMapperCollectionTests(unittest.TestCase):
             connection.commit()
             connection.close()
 
-            second = citation_mapper._load_chunks_for_item("ITEM")
+            second_ids, _matrix = citation_mapper._load_chunks_for_item("ITEM")
 
-        self.assertEqual([row[0] for row in second], ["new-chunk"])
+        self.assertEqual(second_ids, ["new-chunk"])
 
 
 if __name__ == "__main__":

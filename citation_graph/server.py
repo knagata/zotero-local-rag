@@ -257,13 +257,48 @@ def get_item_row(conn: sqlite3.Connection, item_key: str) -> dict | None:
     return dict(row) if row else None
 
 
+#: Whether an external paper is itself one of the Zotero items. An edge between
+#: two owned works is the library citing itself -- the relation the user is best
+#: placed to judge and least able to get anywhere else -- so it survives both the
+#: per-item cut and the citation-count floor. Owned works are often lightly cited
+#: elsewhere (Japanese and book-length scholarship especially), which is exactly
+#: what a citation-count ranking pushes off the end.
+_OWNED_PAPER_SQL = """
+    EXISTS (
+        SELECT 1 FROM item_citation_status ics
+        WHERE ics.s2_paper_id = {column}
+          AND COALESCE(ics.s2_paper_id, '') <> ''
+    )
+"""
+
+
+def _capped_by_item(rows, *, key_column: str, per_item: int) -> list[dict]:
+    """Keep every owned-work row, then the top ``per_item`` of the rest."""
+    seen: dict[str, int] = {}
+    result: list[dict] = []
+    for row in rows:
+        if row["is_owned"]:
+            result.append(dict(row))
+            continue
+        key = row[key_column]
+        seen[key] = seen.get(key, 0) + 1
+        if seen[key] <= per_item:
+            result.append(dict(row))
+    return result
+
+
 def get_citers(conn: sqlite3.Connection, item_keys: list[str], per_item: int,
                min_cc: int = 0) -> list[dict]:
     """各アイテムについて、被引用数の多い外部論文を返す（per_item 件まで）。
     min_cc: 外部論文自身の被引用数の下限（0=フィルタなし）。
+    所蔵資料同士の引用は per_item / min_cc のどちらでも落とさない。
     """
     placeholders = ",".join("?" * len(item_keys))
-    cc_filter = f"AND (citing_citation_count IS NOT NULL AND citing_citation_count >= {min_cc})" if min_cc > 0 else ""
+    owned = _OWNED_PAPER_SQL.format(column="global_citations.citing_paper_id")
+    cc_filter = (
+        f"AND (({owned}) OR (citing_citation_count IS NOT NULL "
+        f"AND citing_citation_count >= {min_cc}))"
+    ) if min_cc > 0 else ""
     rows = conn.execute(f"""
         SELECT
             cited_item_key,
@@ -273,7 +308,8 @@ def get_citers(conn: sqlite3.Connection, item_keys: list[str], per_item: int,
             citing_citation_count,
             MAX(citing_doi) AS citing_doi,
             MAX(citing_authors) AS citing_authors,
-            COUNT(*) AS context_count
+            COUNT(*) AS context_count,
+            ({owned}) AS is_owned
         FROM global_citations
         WHERE cited_item_key IN ({placeholders})
           AND citing_paper_id IS NOT NULL
@@ -286,26 +322,24 @@ def get_citers(conn: sqlite3.Connection, item_keys: list[str], per_item: int,
           )
           {cc_filter}
         GROUP BY cited_item_key, citing_paper_id
-        ORDER BY cited_item_key, citing_citation_count DESC, context_count DESC
+        ORDER BY cited_item_key, is_owned DESC, citing_citation_count DESC, context_count DESC
     """, item_keys).fetchall()
 
-    seen: dict[str, int] = {}
-    result = []
-    for row in rows:
-        key = row[0]
-        seen[key] = seen.get(key, 0) + 1
-        if seen[key] <= per_item:
-            result.append(dict(row))
-    return result
+    return _capped_by_item(rows, key_column="cited_item_key", per_item=per_item)
 
 
 def get_refs(conn: sqlite3.Connection, item_keys: list[str], per_item: int,
              min_cc: int = 0) -> list[dict]:
     """各アイテムの参照先論文を返す（per_item 件まで）。
     min_cc: 参照先論文自身の被引用数の下限（0=フィルタなし）。
+    所蔵資料同士の参照は per_item / min_cc のどちらでも落とさない。
     """
     placeholders = ",".join("?" * len(item_keys))
-    cc_filter = f"AND (cited_citation_count IS NOT NULL AND cited_citation_count >= {min_cc})" if min_cc > 0 else ""
+    owned = _OWNED_PAPER_SQL.format(column="global_references.cited_paper_id")
+    cc_filter = (
+        f"AND (({owned}) OR (cited_citation_count IS NOT NULL "
+        f"AND cited_citation_count >= {min_cc}))"
+    ) if min_cc > 0 else ""
     rows = conn.execute(f"""
         SELECT
             citing_item_key,
@@ -315,7 +349,8 @@ def get_refs(conn: sqlite3.Connection, item_keys: list[str], per_item: int,
             cited_citation_count,
             MAX(cited_doi) AS cited_doi,
             MAX(cited_authors) AS cited_authors,
-            COUNT(*) AS context_count
+            COUNT(*) AS context_count,
+            ({owned}) AS is_owned
         FROM global_references
         WHERE citing_item_key IN ({placeholders})
           AND cited_paper_id IS NOT NULL
@@ -328,17 +363,10 @@ def get_refs(conn: sqlite3.Connection, item_keys: list[str], per_item: int,
           )
           {cc_filter}
         GROUP BY citing_item_key, cited_paper_id
-        ORDER BY citing_item_key, cited_citation_count DESC, context_count DESC
+        ORDER BY citing_item_key, is_owned DESC, cited_citation_count DESC, context_count DESC
     """, item_keys).fetchall()
 
-    seen: dict[str, int] = {}
-    result = []
-    for row in rows:
-        key = row[0]
-        seen[key] = seen.get(key, 0) + 1
-        if seen[key] <= per_item:
-            result.append(dict(row))
-    return result
+    return _capped_by_item(rows, key_column="citing_item_key", per_item=per_item)
 
 
 def get_contexts_for_edge(db_path: str, src_id: str, tgt_id: str) -> list[dict]:
