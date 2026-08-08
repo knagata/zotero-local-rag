@@ -126,9 +126,11 @@ changes rather than as another large refactoring batch.
 - Flat-PDF structure recovery: a book whose printed contents page lost its own
   "Contents"/"目次" heading during extraction has nothing for the contents guard
   to key on, so its contents lines are read as part openers. One item is in this
-  state (N6RU3QQG, *Japan-ness in Architecture*): four of its five recovered
-  boundaries are contents lines. Every such line ends in a folio while a real
-  opener does not, which is a possible discriminator if more cases appear.
+  state (N6RU3QQG, *Japan-ness in Architecture*). It no longer produces a wrong
+  tree — the promotion gate refuses divisions that hold almost none of the
+  document — but it stays flat, and the structure is really there in the book.
+  Every contents line ends in a folio while a real opener does not, which is a
+  possible discriminator if more cases appear.
 - Flat-PDF structure recovery: a book that yields only part openers, with no
   chapter headings the extractor kept, fails the `len(events) >= 5` promotion
   gate and stays flat. 4GPDN33D (*The Spectre of Comparisons*) has four real

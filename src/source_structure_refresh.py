@@ -193,6 +193,48 @@ def _repetition_key(title: str) -> str:
     return folded if folded != title and _is_structural(folded) else title
 
 
+#: A top-level division holding this share of a document, while another holds
+#: almost nothing, is what divisions read off a contents page look like.
+_DOMINANT_SHARE = 0.90
+_NEGLIGIBLE_CHUNKS = 5
+
+
+def _divides_the_document(
+    events: Dict[int, tuple[list[str], list[str]]], total_rows: int,
+) -> bool:
+    """Whether the boundaries actually divide the document between them.
+
+    A book's divisions divide it. When one holds nearly everything and its
+    siblings hold a handful of chunks each, those siblings are not divisions of
+    the body -- they are the lines of a printed contents page, and the one that
+    swallowed the rest is simply the last of them before the body began.
+
+    Japan-ness in Architecture is in that state: its contents page lost its own
+    "Contents" heading during extraction, so nothing marks the region, and the
+    four part titles it lists were read as the parts themselves. 1,711 of 1,718
+    chunks land under the fourth while the other three hold two or three each.
+    The list of parts looks right; only the weights show it is one part wearing
+    the name of the fourth, which is worse than leaving the document flat.
+
+    Chunks are counted against the top-level division they sit under, since a
+    chunk inside a subsection is just as much inside the chapter above it.
+    """
+    if len(events) < 2:
+        return True
+    weights: Dict[str, int] = {}
+    boundaries = sorted(events)
+    for position, index in enumerate(boundaries):
+        end = boundaries[position + 1] if position + 1 < len(boundaries) else total_rows
+        division = events[index][0][0]
+        weights[division] = weights.get(division, 0) + max(0, end - index)
+    total = sum(weights.values())
+    if total <= 0 or len(weights) < 2:
+        return True
+    if max(weights.values()) / total < _DOMINANT_SHARE:
+        return True
+    return not any(chunks <= _NEGLIGIBLE_CHUNKS for chunks in weights.values())
+
+
 def _numbering_is_contiguous(ordinals: Sequence[int]) -> bool:
     """Whether a run of part/chapter numbers is a complete 1..n.
 
@@ -431,6 +473,9 @@ def _refresh_pdf_rows_from_numbered_body_headings(
     # Avoid promoting incidental numbered phrases. A usable book/thesis tree
     # needs either explicit Parts or several Chapters, plus multiple boundaries.
     if not ((part_count >= 1 or chapter_count >= 3) and len(events) >= 5):
+        return None
+
+    if not _divides_the_document(events, len(rows)):
         return None
 
     output: list[Dict[str, Any]] = []

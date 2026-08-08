@@ -48,10 +48,10 @@ def _baseline() -> dict:
     return json.loads(BASELINE_PATH.read_text(encoding="utf-8"))
 
 
-def _render(paths: list[list[str]] | None) -> str:
+def _render(paths: list[list] | None) -> str:
     if paths is None:
         return "      (flat -- recovery declined)"
-    return "\n".join(f"      {' / '.join(path)}" for path in paths)
+    return "\n".join(f"      {chunks:5}  {' / '.join(path)}" for path, chunks in paths)
 
 
 @pytest.mark.skipif(
@@ -116,13 +116,73 @@ def test_no_recovered_tree_repeats_a_boundary():
     """
     offenders = []
     for entry in _baseline()["items"]:
-        paths = entry["paths"]
-        if not paths:
+        boundaries = entry["paths"]
+        if not boundaries:
             continue
-        seen = [tuple(path) for path in paths]
+        seen = [tuple(path) for path, _chunks in boundaries]
         repeated = {path for path in seen if seen.count(path) > 1}
         if repeated:
             offenders.append(f"  {entry['item_key']}: {sorted(repeated)}")
     if offenders:
         pytest.fail("\n".join(["a boundary is claimed twice:"] + offenders),
                     pytrace=False)
+
+
+#: A boundary holding this share of the document, while another holds almost
+#: nothing, is the signature of divisions that were read off a contents page
+#: instead of the body.
+_DOMINANT_SHARE = 0.90
+_NEGLIGIBLE_CHUNKS = 5
+
+
+def test_no_recovered_tree_hangs_the_whole_book_off_one_boundary():
+    """A book's divisions divide it.
+
+    Japan-ness in Architecture recovers four parts, and 99% of its 1,730 chunks
+    land under the fourth while the other three hold two or three chunks each --
+    the chunks of their own lines on the contents page, which is where all four
+    were read from. The list of paths looks like a four-part book; only the
+    weights show that it is one part wearing the name of the fourth.
+
+    This is the check that would have refused it without anyone reading the
+    tree, and the reason the baseline records how much of the document sits
+    under each boundary rather than the shape alone.
+    """
+    offenders = []
+    for entry in _baseline()["items"]:
+        boundaries = entry["paths"]
+        if not boundaries:
+            continue
+        # Weighed by top-level division, not by boundary. Two things otherwise
+        # split a division's share and hide it: a path that recurs after a gap is
+        # recorded twice, and a chunk under a subsection is recorded against the
+        # subsection though it is just as much inside the chapter above it.
+        # Japan-ness in Architecture came to 62% rather than 99% and slipped
+        # through -- its dominant part was split between itself and its one
+        # child.
+        weights: dict[str, int] = {}
+        for path, chunks in boundaries:
+            weights[path[0]] = weights.get(path[0], 0) + chunks
+        total = sum(weights.values())
+        if not total or len(weights) < 2:
+            continue
+        largest = max(weights.values())
+        starved = [
+            division for division, chunks in weights.items()
+            if chunks <= _NEGLIGIBLE_CHUNKS
+        ]
+        if largest / total >= _DOMINANT_SHARE and starved:
+            offenders.append(
+                f"  {entry['item_key']}  {entry['title'][:44]}\n"
+                f"    {largest}/{total} chunks ({largest / total:.0%}) under one "
+                f"boundary, while {len(starved)} hold "
+                f"{_NEGLIGIBLE_CHUNKS} or fewer:\n"
+                + "\n".join(f"      {division}" for division in starved[:6])
+            )
+    if offenders:
+        pytest.fail(
+            "a recovered tree does not divide its document; these divisions "
+            "were most likely read off a printed contents page:\n"
+            + "\n".join(offenders),
+            pytrace=False,
+        )

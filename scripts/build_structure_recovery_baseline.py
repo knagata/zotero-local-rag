@@ -51,11 +51,16 @@ BASELINE_PATH = ROOT / "tests" / "baselines" / "structure_recovery.json"
 CORPUS_REASON = "pdf_body_heading_recovery_candidate"
 
 
-def recovered_paths(rows: list[dict], attachment_key: str) -> list[list[str]] | None:
-    """The boundaries the recovery would lay down, in order, or None if it declines.
+def recovered_paths(rows: list[dict], attachment_key: str) -> list[list] | None:
+    """The boundaries the recovery lays down, with their weight, or None.
 
-    Consecutive chunks carrying the same path collapse to one entry: the shape of
-    the tree is what matters here, not how many chunks each node holds.
+    Each entry is ``[path, chunks]``. Consecutive chunks carrying the same path
+    collapse into one boundary, and the count is how much of the document ends
+    up under it. The weights are what make a tree judgeable without reading it:
+    Japan-ness in Architecture recovers four parts, and 99% of its 1,730 chunks
+    land under the fourth while the other three hold the two or three chunks of
+    their own contents lines. The shape alone looks like a book with four parts.
+
     ``source_path`` reaches only the report dict, never a decision, so a
     placeholder keeps this independent of whether the PDF is still on disk.
     """
@@ -64,14 +69,16 @@ def recovered_paths(rows: list[dict], attachment_key: str) -> list[list[str]] | 
     )
     if not result:
         return None
-    paths: list[list[str]] = []
+    boundaries: list[list] = []
     previous: tuple[str, ...] | None = None
     for row in result[0]:
         current = tuple((row.get("metadata") or {}).get("structure_path") or ())
         if current and current != previous:
-            paths.append(list(current))
+            boundaries.append([list(current), 0])
+        if current and boundaries:
+            boundaries[-1][1] += 1
         previous = current
-    return paths
+    return boundaries
 
 
 def _attachment_rows(item_key: str, attachment_key: str) -> list[dict]:
@@ -148,9 +155,22 @@ def discover(recorded: list[dict]) -> list[dict]:
 
 
 def describe(row: dict) -> str:
+    """Render one book's tree, tolerating a baseline written before the weights.
+
+    Reading the previous file must never fail. It did once: the entry shape
+    gained a chunk count, describe() unpacked the old shape and raised, and the
+    write never happened -- so the recorded entries were not carried forward and
+    six books silently left the corpus, which is the one thing discover() exists
+    to prevent.
+    """
     if row["paths"] is None:
         return "        (flat -- recovery declined)"
-    return "\n".join(f"        {' / '.join(path)}" for path in row["paths"])
+    lines = []
+    for boundary in row["paths"]:
+        path, chunks = boundary if len(boundary) == 2 else (boundary, None)
+        weight = f"{chunks:5}" if isinstance(chunks, int) else "    ?"
+        lines.append(f"        {weight}  {' / '.join(path)}")
+    return "\n".join(lines)
 
 
 def diff(previous: list[dict], current: list[dict]) -> list[str]:

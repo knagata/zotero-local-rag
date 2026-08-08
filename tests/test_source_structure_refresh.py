@@ -754,3 +754,38 @@ def test_the_contents_region_does_not_advance_with_the_rows_it_skips():
     paths = _recovered_paths(rows)
     assert paths[0] == ("CHAPTER ONE",)
     assert ("CHAPTER FIVE",) in paths
+
+
+def test_divisions_that_do_not_divide_the_document_are_refused():
+    # A contents page whose own "Contents" heading was lost during extraction
+    # leaves nothing to mark the region, so its lines are read as the divisions
+    # they name. Japan-ness in Architecture came out with four parts, of which
+    # three held two or three chunks -- their own contents lines -- while the
+    # fourth held 1,711 of 1,718. The names look right; the weights show it is
+    # one part wearing the name of the fourth.
+    rows = _pdf_rows(
+        [("PART ONE THE MYSTERY 11", "heading", 1),
+         ("PART TWO FROM MYTH 87", "heading", 1),
+         ("PART THREE THE JOURNEY 153", "heading", 1),
+         ("PART FOUR LITTLE GIRLS 221", "heading", 1),
+         ("PART FIVE AN EVEN BALANCE 305", "heading", 1)]
+        + [(f"body {index}", "text", 2 + index // 20) for index in range(200)]
+    )
+    assert _recovered_paths(rows) == []
+
+
+def test_a_book_whose_divisions_share_the_text_is_still_recovered():
+    # The refusal is aimed at divisions that hold nothing, not at uneven ones:
+    # a long first chapter followed by short ones is an ordinary book.
+    rows = _pdf_rows(
+        [("CHAPTER ONE", "heading", 1)]
+        + [(f"long first chapter {index}", "text", 2 + index // 20) for index in range(100)]
+        + [entry for chapter, name in enumerate(
+            ["TWO", "THREE", "FOUR", "FIVE"], start=8)
+           for entry in ([(f"CHAPTER {name}", "heading", chapter)]
+                         + [(f"body {chapter}-{index}", "text", chapter) for index in range(10)])]
+    )
+    paths = _recovered_paths(rows)
+    assert [path[0] for path in paths] == [
+        "CHAPTER ONE", "CHAPTER TWO", "CHAPTER THREE", "CHAPTER FOUR", "CHAPTER FIVE",
+    ]
