@@ -90,3 +90,33 @@ class OwnedEdgesSurviveReductionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RenderCapDefaultsTests(unittest.TestCase):
+    """No single owned item should dominate the overview.
+
+    Uncapped, one item carried 2,644 edges against a median of 26 -- a hundred
+    times the typical node. Owned items are all equally the user's own library;
+    how heavily the outside world cites one of them should not decide how big
+    its node is.
+    """
+
+    def test_per_item_caps_are_bounded_by_default(self):
+        import pathlib
+        import subprocess
+        import sys as _sys
+
+        root = pathlib.Path(__file__).resolve().parents[1]
+        result = subprocess.run(
+            [_sys.executable, "citation_graph/server.py", "--help"],
+            capture_output=True, text=True, cwd=str(root),
+        )
+        self.assertEqual(result.returncode, 0, result.stderr[:400])
+        for flag in ("--citers", "--refs"):
+            with self.subTest(flag=flag):
+                line = next(
+                    ln for ln in result.stdout.splitlines() if flag in ln
+                    or (ln.strip().startswith("1アイテム") and flag in result.stdout)
+                )
+                self.assertIn("default: 100", result.stdout)
+                self.assertTrue(line)

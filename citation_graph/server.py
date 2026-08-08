@@ -2760,10 +2760,15 @@ def main() -> None:
         description="Visualize citation network – serves at http://localhost:PORT")
     parser.add_argument("--top",     type=int, default=9999,
                         help="表示する上位アイテム数 (default: 全件)")
-    parser.add_argument("--citers",  type=int, default=9999,
-                        help="1アイテムあたりの被引用論文数 (default: 全件)")
-    parser.add_argument("--refs",    type=int, default=9999,
-                        help="1アイテムあたりの参照先論文数 (default: 全件)")
+    # 1アイテムあたりの上限。全体を眺めるとき、所蔵資料はどれも等しく本人の蔵書
+    # であって、外部での引用され方でノードの太さが決まるべきではない。無制限だと
+    # 1件が2,644本の辺を持ち、中央値26件の資料の100倍になる。100なら最大201本に
+    # 収まり、資料間の差が2桁から1桁になる。密に見たいときは引き上げる。
+    # 所蔵資料同士の辺はこの上限の対象外（get_citers / get_refs を参照）。
+    parser.add_argument("--citers",  type=int, default=100,
+                        help="1アイテムあたりの被引用論文数 (default: 100, 大きくすると密になる)")
+    parser.add_argument("--refs",    type=int, default=100,
+                        help="1アイテムあたりの参照先論文数 (default: 100, 大きくすると密になる)")
     parser.add_argument("--min-cc",  type=int, default=10,
                         help="引用元・参照先の最低被引用数フィルタ (default: 10, 0=フィルタなし)")
     parser.add_argument("--item",    type=str, default=None,
