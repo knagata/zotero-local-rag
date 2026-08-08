@@ -83,20 +83,26 @@ changes rather than as another large refactoring batch.
   Per item the gap can be far larger — V2ESRAMA shows "Citations: 4,188" in its
   tooltip while contributing 191 citing nodes. Knowing *who* cited a work is
   useful even with no quotable context, so the discard also costs real signal.
-- Why this is not a one-line mirror of the references branch:
-  - `global_citations` is `UNIQUE(citing_paper_id, cited_item_key,
-    context_snippet)` and SQLite treats NULL as distinct, so inserting
-    context-less rows with a NULL snippet would never conflict and every re-run
-    would duplicate them. The references table already has this defect: 1,622
-    `no_context` rows cover only 1,095 distinct (paper, item) pairs. A sentinel
-    empty string, plus a decision about repairing the existing reference rows,
-    is needed first.
-  - Keeping them would add roughly 34,000 nodes and edges (currently ~21,000
-    nodes), which is a deliberate call about graph size and layout cost.
-- Proposal: store them as `chunk_status='no_context'` with an empty-string
-  snippet, repair the duplicated reference rows in the same change, and decide
-  whether the graph renders them by default or only on request. At minimum,
-  label the tooltip so "Citations" is not read as the number of edges present.
+- Resolved 2026-08-07: the citations loop now stores them as
+  `chunk_status='no_context'` with an empty-string snippet, matching the
+  references loop.
+- Two objections recorded here on 2026-08-06 turned out not to hold:
+  - *"A NULL snippet would never conflict, so every re-run would duplicate."*
+    Wrong. Rows collide on `uq_global_citations_identity`, a partial expression
+    index that COALESCEs the snippet, not on the table-level UNIQUE. Inserting
+    the same context-less citation three times leaves one row with either NULL
+    or `''`.
+  - *"The references table already has this defect: 1,622 `no_context` rows
+    cover only 1,095 distinct (paper, item) pairs."* That count used (paper,
+    item) alone. The index identity also spans `raw_reference_text` and falls
+    back to title+year+authors when there is no paper id; measured against the
+    real expression the 1,622 rows are 1,622 distinct entries. No repair
+    migration was needed.
+  - What remains true is the graph-size question. It is bounded by the existing
+    `max_citations` cap (5,000/item, which only 6 of 574 items reach), so the
+    growth lands on a handful of heavily cited works rather than the library.
+- Still open: the tooltip labels the S2 total as "Citations" while the graph
+  draws a subset, so the number should say which it is.
 
 ## Longer-term maintainability
 

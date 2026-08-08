@@ -482,5 +482,66 @@ class AbstractCachingDoesNotRestateS2StatusTests(unittest.TestCase):
         self.assertEqual(written[-1], ("ITEM", "mapped"))
 
 
+
+
+class ContextLessCitationsAreKeptTests(unittest.TestCase):
+    """S2 names a citing paper far more often than it extracts a quote from it.
+
+    Discarding those left the Citation Graph holding roughly a third of the
+    citations S2 knows about (38,013 stored against 118,592 reported). Knowing
+    *who* cited a work does not require a quotable context, and the references
+    loop has always kept its equivalents as 'no_context'.
+    """
+
+    def _map(self, citation_page):
+        saved = []
+        with patch.object(citation_mapper, "find_s2_paper_id",
+                          return_value={"paperId": "TARGET"}), \
+             patch.object(citation_mapper, "get_item_s2_paper_id", return_value=None), \
+             patch.object(citation_mapper, "s2_request",
+                          side_effect=[citation_page, {"data": []}]), \
+             patch.object(citation_mapper, "search_chunks", return_value=[]), \
+             patch.object(citation_mapper, "insert_citation",
+                          side_effect=lambda **kw: saved.append(kw)), \
+             patch.object(db_relations, "insert_reference"), \
+             patch.object(citation_mapper, "update_item_citation_status"):
+            citation_mapper.map_item_global_citations("ITEM", title="Target")
+        return saved
+
+    def test_a_citing_paper_without_a_context_is_still_recorded(self):
+        saved = self._map({"data": [{
+            "citingPaper": {"paperId": "CITER", "title": "Citing Work",
+                            "year": 2020, "authors": [{"name": "A. Author"}]},
+            "contexts": [],
+        }]})
+
+        self.assertEqual(len(saved), 1)
+        self.assertEqual(saved[0]["citing_paper_id"], "CITER")
+        self.assertEqual(saved[0]["citing_title"], "Citing Work")
+        self.assertEqual(saved[0]["chunk_status"], "no_context")
+        self.assertIsNone(saved[0]["cited_chunk_id"])
+
+    def test_the_snippet_is_an_empty_string_not_null(self):
+        # Matches what the references loop stores, so both halves of a relation
+        # read the same way. Either would dedupe -- rows collide on
+        # uq_global_citations_identity, which COALESCEs the snippet.
+        saved = self._map({"data": [{
+            "citingPaper": {"paperId": "CITER", "title": "T", "authors": []},
+            "contexts": [],
+        }]})
+
+        self.assertEqual(saved[0]["context_snippet"], "")
+
+    def test_a_cited_context_is_still_stored_as_before(self):
+        saved = self._map({"data": [{
+            "citingPaper": {"paperId": "CITER", "title": "T", "authors": []},
+            "contexts": ["a quotable sentence"],
+        }]})
+
+        self.assertEqual(len(saved), 1)
+        self.assertEqual(saved[0]["context_snippet"], "a quotable sentence")
+        self.assertEqual(saved[0]["chunk_status"], "no_chunk")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -921,8 +921,6 @@ def map_item_global_citations(item_key: str, title: str = "", year: str = "", cr
 
         citing_paper = item.get("citingPaper", {})
         contexts = item.get("contexts", [])
-        if not contexts:
-            continue
 
         c_paper_id = citing_paper.get("paperId", "")
         c_title = citing_paper.get("title", "")
@@ -931,6 +929,34 @@ def map_item_global_citations(item_key: str, title: str = "", year: str = "", cr
         c_influential_count = citing_paper.get("influentialCitationCount", 0)
         c_doi = (citing_paper.get("externalIds") or {}).get("DOI")
         c_authors = _fmt_authors(citing_paper.get("authors") or [])
+
+        if not contexts:
+            # S2 often reports a citing paper without extracting a quotable
+            # sentence from it; discarding those lost roughly two thirds of the
+            # citation graph, because knowing *who* cited a work does not
+            # require a quotable context. The references loop below has always
+            # kept its equivalents as 'no_context', so this is the same rule on
+            # both sides. The empty string matches what that loop stores; either
+            # it or NULL would dedupe correctly, because the identity these rows
+            # collide on is uq_global_citations_identity, whose expression
+            # COALESCEs the snippet rather than relying on the table-level
+            # UNIQUE (SQLite would treat NULL snippets as distinct there).
+            insert_citation(
+                citing_paper_id=c_paper_id,
+                citing_title=c_title,
+                citing_year=c_year,
+                context_snippet="",
+                cited_item_key=item_key,
+                cited_chunk_id=None,
+                similarity_distance=None,
+                page_hint=None,
+                citing_citation_count=c_citation_count,
+                citing_influential_count=c_influential_count,
+                chunk_status='no_context',
+                citing_doi=c_doi,
+                citing_authors=c_authors or None,
+            )
+            continue
 
         for ctx in contexts:
             total_contexts += 1
@@ -1049,12 +1075,15 @@ def map_item_global_citations(item_key: str, title: str = "", year: str = "", cr
             c_authors = _fmt_authors(cited_paper.get("authors") or [])
 
             if not contexts:
-                # S2にコンテキストなし → 論文情報だけ記録・AI解析候補としてマーク
+                # S2にコンテキストなし → 論文情報だけ記録・AI解析候補としてマーク。
+                # 空文字は引用側と揃えるためで、重複防止のためではない。照合は
+                # uq_global_references_identity（snippetをCOALESCEする式索引）で
+                # 行われるため、NULLでも空文字でも再実行で重複しない。
                 insert_reference(
                     cited_paper_id=c_paper_id,
                     cited_title=c_title,
                     cited_year=c_year,
-                    context_snippet=None,
+                    context_snippet="",
                     citing_item_key=item_key,
                     citing_chunk_id=None,
                     similarity_distance=None,
