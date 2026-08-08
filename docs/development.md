@@ -9,6 +9,35 @@ uv run pytest -q
 uv run python -m compileall -q src scripts tests
 ```
 
+### 構造復元ベースライン
+
+フラットPDFの見出しから木を復元する規則は、どれも実際の蔵書に合わせて調整した
+経験則で、良し悪しは実物の本にどう効くかでしか決まらない。この判断をこれまで
+「復元できた件数」でやってきたが、その数字は誤った木も正しい木も1件と数える。
+実際、**目次領域が本文を171ページ分飲み込んだ版のほうが、その前の版より件数が
+良かった**。口述史料のインタビュー質問3件が小見出しに昇格した変更も、件数上は
+無害に見えた。
+
+そこで84冊の復元結果を `tests/baselines/structure_recovery.json` に記録し、
+`tests/test_structure_recovery_corpus.py` が毎回引き直して照合する。
+
+```bash
+uv run python scripts/build_structure_recovery_baseline.py          # 差分を見る
+uv run python scripts/build_structure_recovery_baseline.py --write  # 採択する
+```
+
+差分は**読んでから**採択する。件数が増える変更でも、ある本が自分の巻末注に章を
+明け渡した結果ということがある。
+
+この網が守らない範囲は3つ。**コーパスに無い形式**（部ごとに章番号がリセットされ
+る本は84冊に含まれない）は `tests/test_source_structure_refresh.py` の手書き
+テストが受け持ち、そちらがCIで強制される部分になる。**記録時点で既に誤っていた
+木**はスナップショットでは検出できず、ベースライン自体を検査するのは
+`test_no_recovered_tree_repeats_a_boundary`（1つの境界を二度主張しない）だけ。
+**ライブラリが無い環境**では照合をスキップする（入力行の凍結は31,068行・2.5MBで
+リポジトリ最大ファイルの5倍になり、縮めるには普通の本文行を捨てるしかない。直近
+の不具合はまさにそこに潜んでいた）。
+
 ## 引用関係レポート
 
 ```bash
