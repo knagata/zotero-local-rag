@@ -39,7 +39,7 @@ _BARE_MODULE = re.compile(r"`([A-Za-z0-9_-]+\.py)`")
 
 #: Trees whose contents are generated or deliberately untracked, so a reference
 #: into them describes a runtime location rather than a file in the repository.
-_GENERATED = ("data/", "dev-notes/", "evaluations/")
+_GENERATED = ("data/", "dev-notes/", "evaluations/", "tests/baselines/")
 
 #: Names that are not repository files despite matching the pattern.
 _NOT_REPOSITORY_FILES = frozenset({

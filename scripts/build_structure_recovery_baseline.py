@@ -20,6 +20,11 @@ is to drop the ordinary body-text rows, which is exactly where the last round of
 faults lived (a plain sentence reading as a part opener). A baseline of trees is
 20 KB and costs nothing.
 
+The baseline is not committed. It names 84 of the library's books, with their
+Zotero keys and headings taken from their text -- an inventory of what its owner
+reads -- and this repository is public. It is ignored for the same reason
+``evaluations/`` is, and regenerated locally.
+
     uv run python scripts/build_structure_recovery_baseline.py            # diff
     uv run python scripts/build_structure_recovery_baseline.py --write    # adopt
 """

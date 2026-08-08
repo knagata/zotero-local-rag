@@ -13,6 +13,10 @@ So the trees themselves are recorded, in
 ``tests/baselines/structure_recovery.json``, and re-derived here.
 A rule change now has to show what it did to 84 books before it can pass.
 
+That file is generated locally and is not in the repository: it names 84 of the
+library's books, with their Zotero keys and headings taken from their text, and
+this repository is public.
+
 Regenerate with::
 
     uv run python scripts/build_structure_recovery_baseline.py            # diff
@@ -43,9 +47,18 @@ def _library_is_available() -> bool:
 
 
 def _baseline() -> dict:
-    if not BASELINE_PATH.exists():  # pragma: no cover -- committed alongside this test
-        pytest.fail(f"{BASELINE_PATH} is missing; run the builder with --write")
     return json.loads(BASELINE_PATH.read_text(encoding="utf-8"))
+
+
+#: The baseline is not in the repository. It lists 84 of the library's books by
+#: title, with their Zotero keys and the headings recovered from their text --
+#: an inventory of what the user owns, and this repository is public. It is
+#: ignored for the same reason ``evaluations/`` is, and rebuilt locally with
+#: ``scripts/build_structure_recovery_baseline.py --write``.
+_needs_baseline = pytest.mark.skipif(
+    not BASELINE_PATH.exists(),
+    reason=f"{BASELINE_PATH.name} is generated locally; run the builder with --write",
+)
 
 
 def _render(paths: list[list] | None) -> str:
@@ -54,6 +67,7 @@ def _render(paths: list[list] | None) -> str:
     return "\n".join(f"      {chunks:5}  {' / '.join(path)}" for path, chunks in paths)
 
 
+@_needs_baseline
 @pytest.mark.skipif(
     not _library_is_available(),
     reason="needs the indexed Zotero library; the hand-built rule tests cover CI",
@@ -101,6 +115,7 @@ def test_the_recovered_trees_are_the_ones_that_were_reviewed():
         )
 
 
+@_needs_baseline
 def test_no_recovered_tree_repeats_a_boundary():
     """A book opens each of its divisions once.
 
@@ -135,6 +150,7 @@ _DOMINANT_SHARE = 0.90
 _NEGLIGIBLE_CHUNKS = 5
 
 
+@_needs_baseline
 def test_no_recovered_tree_hangs_the_whole_book_off_one_boundary():
     """A book's divisions divide it.
 

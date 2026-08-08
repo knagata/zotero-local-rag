@@ -21,6 +21,11 @@ uv run python -m compileall -q src scripts tests
 そこで84冊の復元結果を `tests/baselines/structure_recovery.json` に記録し、
 `tests/test_structure_recovery_corpus.py` が毎回引き直して照合する。
 
+このベースラインは**Git追跡対象外**。84冊分のZotero item_key・書名・本文から抽出
+した章見出しを含み、蔵書そのものの目録に近い。このリポジトリは公開されているので、
+`evaluations/` と同じ理由で追跡しない。手元に無ければ照合テストはスキップされるので、
+まず `--write` で生成する。
+
 ```bash
 uv run python scripts/build_structure_recovery_baseline.py          # 差分を見る
 uv run python scripts/build_structure_recovery_baseline.py --write  # 採択する

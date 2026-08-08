@@ -75,3 +75,9 @@ data.backup.*/
 .env.bak*
 .env.*.bak
 .env.backup*
+
+# 構造復元ベースライン。84冊分のZotero item_key・書名・本文から抽出した章見出しを
+# 含む、蔵書そのものの目録に近い生成物。このリポジトリは公開されているため、
+# evaluations/ と同じ理由で追跡しない。
+# scripts/build_structure_recovery_baseline.py --write で手元に再生成する。
+tests/baselines/
