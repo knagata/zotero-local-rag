@@ -161,3 +161,47 @@ def test_item_diagnosis_ignores_notes_and_sorts_attachments_by_priority():
     assert len(result["attachments"]) == 1
     assert result["title"] == ""
     assert result["attachments"][0]["reason_code"] == "epub_toc_refresh_candidate"
+
+
+def _html_rows(count=3, chars=400):
+    return [
+        {"id": f"ATT:{i}", "text": "x" * chars,
+         "metadata": {"attachmentKey": "ATT", "itemKey": "ITEM", "source_type": "html"}}
+        for i in range(count)
+    ]
+
+
+def test_a_web_clipping_is_not_reported_as_a_missing_source():
+    # inspect_source_structure had no html branch, so every clipping fell
+    # through to source_available=False and 41 ordinary articles were ranked at
+    # priority 45 as if their file could not be found.
+    result = classify_flat_attachment("ATT", _html_rows())
+    assert result["reason_code"] == "html_snapshot_is_inherently_flat"
+    assert result["priority"] == 15
+    assert result["gold_recommended"] is False
+
+
+def test_a_long_web_clipping_is_still_inherently_flat():
+    # Length is not evidence of structure for a web article; the 41 measured
+    # here ran to 288,442 characters with no heading block at all.
+    result = classify_flat_attachment("ATT", _html_rows(count=200, chars=2000))
+    assert result["reason_code"] == "html_snapshot_is_inherently_flat"
+
+
+def test_a_clipping_with_real_headings_is_still_a_recovery_candidate():
+    rows = _html_rows(count=3)
+    rows[0]["text"] = "1. Introduction"
+    rows[1]["text"] = "2. Method"
+    for row in rows[:2]:
+        row["metadata"]["block_type"] = "heading"
+    result = classify_flat_attachment("ATT", rows)
+    assert result["reason_code"] == "html_body_heading_recovery_candidate"
+
+
+def test_inspect_reports_html_as_present_rather_than_unavailable():
+    from src.flat_structure_diagnostics import inspect_source_structure
+
+    info = inspect_source_structure("html", _html_rows(), "ATT")
+    assert info["source_available"] is True
+    assert info["source_kind"] == "html_snapshot"
+    assert "source_error" not in info

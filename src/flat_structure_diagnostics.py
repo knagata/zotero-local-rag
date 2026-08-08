@@ -90,6 +90,13 @@ def inspect_source_structure(
             except Exception as exc:
                 result["refresh_error"] = f"{type(exc).__name__}: {str(exc)[:240]}"
             return result
+        if source_type == "html":
+            # A web clipping has no separate source file carrying a table of
+            # contents -- the snapshot *is* the document. Saying so is not the
+            # same as failing to find a file, and conflating the two ranked 41
+            # ordinary articles as "source unavailable" (priority 45) when they
+            # were simply never examined.
+            return {"source_available": True, "toc_entries": 0, "source_kind": "html_snapshot"}
     except Exception as exc:
         return {
             "source_available": False, "toc_entries": 0,
@@ -129,6 +136,12 @@ def classify_flat_attachment(
         reason, priority = "pdf_printed_toc_or_layout_candidate", 65
     elif not source.get("source_available"):
         reason, priority = "source_unavailable_for_diagnosis", 45
+    elif source_type == "html":
+        # A web article is one continuous piece of prose; flat is the shape it
+        # has, not a failure to recover one. Measured across the 41 clippings
+        # here, none carried two or more heading blocks, so anything reaching
+        # this branch has no structure to find however long it is.
+        reason, priority = "html_snapshot_is_inherently_flat", 15
     elif chars <= SHORT_DOCUMENT_CHARS:
         reason, priority = "flat_likely_appropriate_short_document", 20
     elif source_type == "epub" and locator_count:
