@@ -324,8 +324,16 @@ def test_pdf_heading_recovery_ignores_printed_toc_until_real_body_opener():
     }
 
 
-@pytest.mark.parametrize("opener", ["第一部 本論", "第一章 本論"])
-def test_pdf_heading_recovery_exits_printed_toc_at_numbered_body_opener(opener):
+# The body numbering has to continue from the opener rather than restart: a
+# printed contents entry is now recognised by the level and number it carries,
+# because a book that lists "PART II" and prints "PART TWO" shares no text
+# between the two. A fixture with two chapter ones therefore describes a
+# document no book has, and the second one reads as another contents entry.
+@pytest.mark.parametrize("opener, body", [
+    ("第一部 本論", ["第一章 導入", "第二章 展開", "第三章 展開", "第四章 結論"]),
+    ("第一章 本論", ["第二章 展開", "第三章 展開", "第四章 結論", "第五章 総括"]),
+])
+def test_pdf_heading_recovery_exits_printed_toc_at_numbered_body_opener(opener, body):
     rows = [
         {"id": "PDF:toc", "text": "目次",
          "metadata": {"attachmentKey": "PDF", "source_type": "pdf", "page": 1,
@@ -334,9 +342,7 @@ def test_pdf_heading_recovery_exits_printed_toc_at_numbered_body_opener(opener):
          "metadata": {"attachmentKey": "PDF", "source_type": "pdf", "page": 1,
                       "block_type": "text"}},
     ]
-    for index, title in enumerate([
-        opener, "第一章 導入", "第二章 展開", "第三章 展開", "第四章 結論",
-    ]):
+    for index, title in enumerate([opener, *body]):
         rows.append({
             "id": f"PDF:body:{index}", "text": title,
             "metadata": {"attachmentKey": "PDF", "source_type": "pdf", "page": index + 2,
@@ -523,3 +529,153 @@ def test_too_few_numbers_to_judge_are_left_alone():
     assert _numbering_is_contiguous([])
     assert _numbering_is_contiguous([0, 0])
     assert _numbering_is_contiguous([5])
+
+
+def _pdf_rows(entries):
+    """(text, block_type, page) triples as PDF chunks of one attachment."""
+    return [
+        {"id": f"PDF:{index}", "text": text,
+         "metadata": {"attachmentKey": "PDF", "source_type": "pdf",
+                      "page": page, "block_type": block_type}}
+        for index, (text, block_type, page) in enumerate(entries)
+    ]
+
+
+def _recovered_paths(rows):
+    with patch("src.source_structure_refresh._pdf_source_path", return_value=Path("b.pdf")), \
+            patch("src.source_structure_refresh.get_pdf_toc", return_value=[]):
+        refreshed, _reports = refresh_source_structure_metadata(rows)
+    seen, last = [], None
+    for row in refreshed:
+        path = tuple((row.get("metadata") or {}).get("structure_path") or ())
+        if path and path != last:
+            seen.append(path)
+        last = path
+    return seen
+
+
+def test_a_chapter_opener_labelled_page_furniture_is_still_a_boundary():
+    # Layout extraction labels chapter openers "page_furniture" as readily as
+    # "heading" -- in one book here five of fifteen landed in each -- and the
+    # module only ever looked at headings, so the book came out flat.
+    rows = _pdf_rows([
+        ("CHAPTER ONE", "page_furniture", 1), ("body", "text", 1),
+        ("CHAPTER TWO", "heading", 2), ("body", "text", 2),
+        ("CHAPTER THREE", "page_furniture", 3), ("body", "text", 3),
+        ("CHAPTER FOUR", "heading", 4), ("body", "text", 4),
+        ("CHAPTER FIVE", "page_furniture", 5), ("body", "text", 5),
+    ])
+    assert _recovered_paths(rows) == [
+        ("CHAPTER ONE",), ("CHAPTER TWO",), ("CHAPTER THREE",),
+        ("CHAPTER FOUR",), ("CHAPTER FIVE",),
+    ]
+
+
+def test_a_running_header_repeating_the_chapter_name_is_not_a_boundary():
+    # The header at the top of every page of chapter one carries the same words
+    # as its opener. Admitting furniture without asking how often the document
+    # repeats it would open a new chapter on every page.
+    rows = _pdf_rows(
+        [("CHAPTER ONE", "page_furniture", 1), ("body", "text", 1)]
+        + [(text, kind, page) for page in range(2, 8)
+           for text, kind in (("CHAPTER ONE", "page_furniture"), ("body", "text"))]
+        + [("CHAPTER TWO", "heading", 8), ("body", "text", 8),
+           ("CHAPTER THREE", "heading", 9), ("body", "text", 9),
+           ("CHAPTER FOUR", "heading", 10), ("body", "text", 10),
+           ("CHAPTER FIVE", "heading", 11), ("body", "text", 11)]
+    )
+    assert ("CHAPTER ONE",) not in _recovered_paths(rows)
+
+
+def test_a_running_header_is_recognised_through_the_folio_it_prints():
+    # "序章] 13", "序章] 15" -- the printed page number makes every occurrence
+    # textually unique, so counting the raw text can never see the repetition.
+    rows = _pdf_rows(
+        [("第一章 誤解", "page_furniture", 1), ("body", "text", 1)]
+        + [(f"第一章 誤解 | {page * 2}", "page_furniture", page)
+           for page in range(2, 9)]
+        + [("第二章 脱走", "heading", 9), ("body", "text", 9),
+           ("第三章 結果", "heading", 10), ("body", "text", 10),
+           ("第四章 和解", "heading", 11), ("body", "text", 11),
+           ("第五章 現在", "heading", 12), ("body", "text", 12)]
+    )
+    paths = _recovered_paths(rows)
+    assert not [path for path in paths if path[0].startswith("第一章 誤解 |")]
+
+
+def test_a_printed_contents_is_recognised_when_it_numbers_differently():
+    # The contents page says "PART II" where the body page says "PART TWO".
+    # Matching on text alone found no repetition, so every contents line became
+    # a part and the book got a spurious copy of its own hierarchy in front.
+    rows = _pdf_rows([
+        ("Contents", "heading", 1),
+        ("PART I THE MYSTERY 11", "heading", 1),
+        ("PART II FROM MYTH 87", "heading", 1),
+        ("PART III THE JOURNEY 153", "heading", 1),
+        ("PART IV LITTLE GIRLS 221", "heading", 2),
+        ("PART V AN EVEN BALANCE 305", "heading", 2),
+        ("PART ONE THE MYSTERY", "heading", 5), ("body", "text", 5),
+        ("PART TWO FROM MYTH", "heading", 6), ("body", "text", 6),
+        ("PART THREE THE JOURNEY", "heading", 7), ("body", "text", 7),
+        ("PART FOUR LITTLE GIRLS", "heading", 8), ("body", "text", 8),
+        ("PART FIVE AN EVEN BALANCE", "heading", 9), ("body", "text", 9),
+    ])
+    paths = _recovered_paths(rows)
+    assert paths == [
+        ("PART ONE THE MYSTERY",), ("PART TWO FROM MYTH",),
+        ("PART THREE THE JOURNEY",), ("PART FOUR LITTLE GIRLS",),
+        ("PART FIVE AN EVEN BALANCE",),
+    ]
+
+
+def test_the_contents_region_ends_with_the_contents_pages():
+    # Without a bound the region can swallow the book: a chapter opener whose
+    # number recurs in the back-of-book notes looks like a contents entry, and
+    # then nothing ever ends the contents.
+    rows = _pdf_rows([
+        ("Contents", "heading", 1),
+        ("CHAPTER ONE EPISTEMOLOGIES 17", "heading", 1),
+        ("CHAPTER ONE", "page_furniture", 9), ("body", "text", 9),
+        ("CHAPTER TWO", "page_furniture", 10), ("body", "text", 10),
+        ("CHAPTER THREE", "page_furniture", 11), ("body", "text", 11),
+        ("CHAPTER FOUR", "page_furniture", 12), ("body", "text", 12),
+        ("CHAPTER FIVE", "page_furniture", 13), ("body", "text", 13),
+    ])
+    assert _recovered_paths(rows)[0] == ("CHAPTER ONE",)
+
+
+def test_notes_grouped_by_chapter_do_not_open_those_chapters_again():
+    # Notes collected at the back repeat every chapter heading to say which
+    # chapter they serve. Read as openers they gave a five-chapter book ten.
+    rows = _pdf_rows([
+        ("CHAPTER ONE", "heading", 1), ("body", "text", 1),
+        ("CHAPTER TWO", "heading", 2), ("body", "text", 2),
+        ("CHAPTER THREE", "heading", 3), ("body", "text", 3),
+        ("CHAPTER FOUR", "heading", 4), ("body", "text", 4),
+        ("CHAPTER FIVE", "heading", 5), ("body", "text", 5),
+        ("Notes", "heading", 6),
+        ("CHAPTER ONE: EPISTEMOLOGIES", "heading", 6), ("note", "text", 6),
+        ("CHAPTER TWO: TRUTH-TO-NATURE", "heading", 7), ("note", "text", 7),
+    ])
+    paths = _recovered_paths(rows)
+    assert paths.count(("CHAPTER ONE",)) == 1
+    assert ("CHAPTER FIVE", "Notes", "CHAPTER ONE: EPISTEMOLOGIES") in paths
+
+
+def test_chapter_end_notes_do_not_stop_the_next_chapter_opening():
+    # An edited collection puts notes at the end of every chapter. Folding all
+    # later chapter headings under the notes region -- the first attempt at the
+    # rule above -- left an eleven-chapter book with one chapter.
+    rows = _pdf_rows([
+        ("CHAPTER ONE", "heading", 1), ("body", "text", 1),
+        ("Notes", "heading", 2), ("note", "text", 2),
+        ("CHAPTER TWO", "heading", 3), ("body", "text", 3),
+        ("Notes", "heading", 4), ("note", "text", 4),
+        ("CHAPTER THREE", "heading", 5), ("body", "text", 5),
+        ("CHAPTER FOUR", "heading", 6), ("body", "text", 6),
+        ("CHAPTER FIVE", "heading", 7), ("body", "text", 7),
+    ])
+    paths = _recovered_paths(rows)
+    assert ("CHAPTER TWO",) in paths
+    assert ("CHAPTER ONE", "Notes") in paths
+    assert ("CHAPTER TWO", "Notes") in paths

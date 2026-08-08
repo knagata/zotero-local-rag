@@ -123,6 +123,12 @@ changes rather than as another large refactoring batch.
   deletion, crash recovery, and audits are implemented; merely allowing mixed
   rows would reintroduce duplicate and orphaned chunks.
 
+- Flat-PDF structure recovery: a book whose printed contents page lost its own
+  "Contents"/"目次" heading during extraction has nothing for the contents guard
+  to key on, so its contents lines are read as part openers. One item is in this
+  state (N6RU3QQG, *Japan-ness in Architecture*): four of its six recovered
+  boundaries are contents lines. Every such line ends in a folio while a real
+  opener does not, which is a possible discriminator if more cases appear.
 - Continue splitting `index_from_zotero.main_async` by attachment processing
   phase.
 - Split `db_relations._init_db` into versioned migrations.
