@@ -15,6 +15,16 @@ sys.path.insert(0, str(ROOT / "src"))
 import index_from_zotero as module  # noqa: E402
 
 
+def _reported(result) -> str:
+    """The line the child process printed, without whatever a library said first.
+
+    PyMuPDF's ``fitz`` shim prints a deprecation notice to stdout on import, so
+    comparing the whole of stdout compares the notice too and breaks whenever a
+    dependency starts or stops emitting one.
+    """
+    return result.stdout.strip().splitlines()[-1].strip()
+
+
 class StructuredV3IndexConfigTests(unittest.TestCase):
     def test_v3_defaults_are_isolated(self):
         env = os.environ.copy()
@@ -28,7 +38,7 @@ class StructuredV3IndexConfigTests(unittest.TestCase):
                 "os.environ['LEXICAL_DB_PATH'].split('/')[-1])"
             )], cwd=ROOT, env=env, text=True, capture_output=True, check=True,
         )
-        self.assertEqual(result.stdout.strip(), "manifest_v3.json zotero_paragraphs_v3 lexical_v3.sqlite3")
+        self.assertEqual(_reported(result), "manifest_v3.json zotero_paragraphs_v3 lexical_v3.sqlite3")
 
     def test_empty_data_plane_environment_still_defaults_to_v3(self):
         env = os.environ.copy()
@@ -45,7 +55,7 @@ class StructuredV3IndexConfigTests(unittest.TestCase):
             )], cwd=ROOT, env=env, text=True, capture_output=True, check=True,
         )
         self.assertEqual(
-            result.stdout.strip(),
+            _reported(result),
             "True manifest_v3.json zotero_paragraphs_v3 lexical_v3.sqlite3",
         )
 

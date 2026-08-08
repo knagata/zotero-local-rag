@@ -355,7 +355,8 @@ class StaleRelationsAreClearedOnIdentityChangeTests(unittest.TestCase):
                           side_effect=responses or [{"data": []}, {"data": []}]), \
              patch.object(citation_mapper, "insert_citation"), \
              patch.object(db_relations, "insert_reference"), \
-             patch.object(citation_mapper, "update_item_citation_status"):
+             patch.object(citation_mapper, "update_item_citation_status"), \
+             patch.object(citation_mapper, "search_chunks", return_value=[]):
             citation_mapper.map_item_global_citations(
                 "ITEM", title="Some Work", max_citations=max_citations,
             )

@@ -20,6 +20,7 @@ file that was since removed is correct there rather than wrong.
 from __future__ import annotations
 
 import re
+import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -39,7 +40,29 @@ _BARE_MODULE = re.compile(r"`([A-Za-z0-9_-]+\.py)`")
 
 #: Trees whose contents are generated or deliberately untracked, so a reference
 #: into them describes a runtime location rather than a file in the repository.
+#: Used only when git cannot be consulted; ``_ignored`` is the real answer.
 _GENERATED = ("data/", "dev-notes/", "evaluations/", "tests/baselines/")
+
+
+def _ignored(references: set[str]) -> set[str]:
+    """Which of these paths the repository deliberately does not track.
+
+    Asked of git rather than of a list here. Checking only that a path exists
+    passes on a developer's machine and fails in CI, where the ignored files are
+    simply absent: this test named `.claude/STATE.md` and `.claude/settings.json`
+    as missing on its first run in CI, having passed locally, which is the exact
+    failure it exists to catch in documents.
+    """
+    if not references:
+        return set()
+    try:
+        result = subprocess.run(
+            ["git", "check-ignore", "--stdin"], cwd=ROOT, text=True,
+            input="\n".join(sorted(references)), capture_output=True, timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):  # pragma: no cover -- no git
+        return {r for r in references if r.startswith(_GENERATED)}
+    return set(result.stdout.split())
 
 #: Names that are not repository files despite matching the pattern.
 _NOT_REPOSITORY_FILES = frozenset({
@@ -48,10 +71,8 @@ _NOT_REPOSITORY_FILES = frozenset({
 
 
 def _referenced_paths(text: str) -> set[str]:
-    return {
-        reference for reference in _QUALIFIED.findall(text)
-        if not reference.startswith(_GENERATED)
-    }
+    references = set(_QUALIFIED.findall(text))
+    return references - _ignored(references)
 
 
 def _referenced_modules(text: str) -> set[str]:
