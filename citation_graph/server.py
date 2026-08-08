@@ -538,8 +538,8 @@ def compute_clusters(
 ) -> list[dict]:
     """Zotero 資料の埋め込みベクトルをクラスタリングし、ConvexHull 領域を返す。
 
-    AgglomerativeClustering (cosine距離, average linkage) を使い、
-    指定された数のクラスタに分割する。
+    L2正規化したベクトルにKMeansをかける（単位超球面上の spherical k-means に
+    相当し、cosine距離での分割になる）。クラスタ数は呼び出し側の指定に従う。
 
     Args:
         vectors: {item_key: embedding_vector}
