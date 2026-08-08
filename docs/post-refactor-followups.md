@@ -140,6 +140,15 @@ changes rather than as another large refactoring batch.
   rejected and stays flat. Deliberate — nothing in the chunks tells it apart
   from an extractor that lost the opening chapters — but it is a real shape for
   multi-volume works and 全集.
+- S2 identity: `_record_names_a_creator` passes a record that lists no author,
+  on the principle that missing evidence cannot convict. On the DOI/ISBN path
+  the identifier carries the identity, so that is right. On the title-search
+  path it leaves title similarity >= 0.5 as the only test. Reviews are now
+  refused by name, but an author-less record that is simply the wrong work still
+  passes. 21 of the 274 mapped items resolve to a record with no authors
+  (*Asia as Method*, *Ego and the Id*, and also the doubtful
+  "Chapter Three. EARTHQUAKES"), so refusing them wholesale would drop correct
+  identifications with the wrong ones. Needs a discriminator, not a blanket rule.
 - Continue splitting `index_from_zotero.main_async` by attachment processing
   phase.
 - Split `db_relations._init_db` into versioned migrations.

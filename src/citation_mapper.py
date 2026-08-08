@@ -722,6 +722,18 @@ def _record_names_a_creator(paper: Dict[str, Any], creators: str) -> bool:
     return bool(wanted & listed)
 
 
+#: How S2 marks a review record: a parenthesised "(review)" in the title. Only
+#: that marking counts. Matching the phrase "review of" as well looked more
+#: thorough and refused "Annual Review of Anthropology" and "The Review of
+#: English Studies" -- journal names a humanities library is full of.
+_REVIEW_TITLE_RE = re.compile(r"\(review\)", re.IGNORECASE)
+
+
+def _titles_a_review(paper: Dict[str, Any]) -> bool:
+    """Whether the record is a review *of* a work rather than the work."""
+    return bool(_REVIEW_TITLE_RE.search(paper.get("title") or ""))
+
+
 def _select_s2_title_match(
     results: List[Dict[str, Any]], full_title: str, main_title: str, creators: str,
 ) -> Optional[Dict[str, Any]]:
@@ -746,6 +758,21 @@ def _select_s2_title_match(
     # each is the only guard on its own path, and a rule change that reached just
     # one of them would make the two paths disagree about the same record.
     similar = [p for p in similar if _record_names_a_creator(p, creators)]
+    if not similar:
+        return None
+
+    # That guard passes a record listing no author at all, because missing
+    # evidence cannot convict -- which is right on the DOI/ISBN path, where the
+    # identifier already establishes identity, and leaves this path with nothing
+    # checking it. A review indexed without its reviewer is then accepted on
+    # title similarity alone: "Camera Geologica" (Angus) matched "Contact: Art
+    # and the Pull of Print ... and: Camera Geologica ... by Siobhan Angus
+    # (review)", a record with an empty author list, and took its paperId.
+    # S2 marks these in the title, so they can be refused by name. Measured
+    # across all 274 currently mapped items, none carries "(review)" in its
+    # title, so nothing correct is lost. update_citations applies the same rule
+    # to OpenAlex results; only this path lacked it.
+    similar = [p for p in similar if not _titles_a_review(p)]
     if not similar:
         return None
 

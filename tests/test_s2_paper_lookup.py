@@ -595,3 +595,62 @@ class NonRetryableStopIsNotRelabelledTests(unittest.TestCase):
     def test_limited_is_terminal_so_all_runs_stop_retrying_it(self):
         import update_citations
         self.assertIn("limited", update_citations.TERMINAL_STATUSES)
+
+
+class ReviewRecordTests(unittest.TestCase):
+    """A review of a work is never the work, whatever its title contains."""
+
+    TITLE = "Camera geologica: an elemental history of photography"
+    MAIN = "Camera geologica"
+
+    def test_a_review_is_refused_even_when_it_lists_no_author(self):
+        # _record_names_a_creator lets a record with no authors through, because
+        # missing evidence cannot convict -- correct on the DOI/ISBN path, where
+        # the identifier already establishes identity, and it left this path with
+        # nothing checking it at all. S2 indexed this review with an empty author
+        # list, so title similarity alone carried it, and the book took the
+        # review's paperId.
+        review = _paper(
+            "Contact: Art and the Pull of Print by Jennifer L. Roberts, and: "
+            "Camera Geologica: An Elemental History of Photography by Siobhan "
+            "Angus (review)",
+        )
+        self.assertIsNone(citation_mapper._select_s2_title_match(
+            [review], self.TITLE, self.MAIN, "Angus",
+        ))
+
+    def test_the_work_is_chosen_when_it_appears_beside_its_review(self):
+        review = _paper("Camera Geologica: An Elemental History of Photography (review)")
+        work = _paper("Camera Geologica: An Elemental History of Photography",
+                      cc=3, pid="WORK")
+        chosen = citation_mapper._select_s2_title_match(
+            [review, work], self.TITLE, self.MAIN, "Angus",
+        )
+        self.assertEqual((chosen or {}).get("paperId"), "WORK")
+
+    def test_a_record_without_authors_is_still_accepted_on_its_own(self):
+        # The refusal is aimed at reviews, not at thin metadata. 21 of the 274
+        # works mapped here have an S2 record listing no author -- Asia as
+        # Method, Ego and the Id -- and rejecting those would drop correct
+        # identifications along with the wrong one.
+        work = _paper("Camera Geologica: An Elemental History of Photography",
+                      pid="WORK")
+        chosen = citation_mapper._select_s2_title_match(
+            [work], self.TITLE, self.MAIN, "Angus",
+        )
+        self.assertEqual((chosen or {}).get("paperId"), "WORK")
+
+    def test_a_journal_whose_name_contains_review_is_not_a_review(self):
+        # Only S2's own marking counts. Matching the phrase "review of" as well
+        # looked more thorough and refused these, which are journal names a
+        # humanities library is full of.
+        for title in ("The Paris Review", "Annual Review of Anthropology",
+                      "The Review of English Studies", "A review of the evidence"):
+            with self.subTest(title=title):
+                self.assertFalse(citation_mapper._titles_a_review(_paper(title)))
+        self.assertTrue(citation_mapper._titles_a_review(
+            _paper("Camera Geologica ... by Siobhan Angus (review)")))
+
+
+if __name__ == "__main__":
+    unittest.main()

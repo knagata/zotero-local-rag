@@ -34,6 +34,16 @@ API_KEY = os.environ.get("ZOTERO_API_KEY", "")
 #: 再試行しても同じ上限に当たる。上限を上げたときは --force で再走査する。
 TERMINAL_STATUSES = frozenset({"mapped", "not_found", "limited"})
 
+#: S2 offers no way to ask for the most-cited citing papers first, so a cut at
+#: N keeps an arbitrary N rather than the top N -- which is why the reduction
+#: belongs at rendering, where a criterion exists, and the fetch takes the lot.
+#: The most-cited work in this library has 7,755 citations and none reaches
+#: 10,000; the whole library's citations come to 151,906 rows. This is left as a
+#: safety valve rather than removed: if identification goes wrong and lands on a
+#: canonical paper with hundreds of thousands of citations, the run should stop
+#: rather than page through all of them.
+MAX_CITATIONS = 25_000
+
 
 def _zotero_request(endpoint: str, params: dict = None, method: str = "GET", data: dict = None, headers: dict = None):
     url = f"{API_BASE}/{API_PREFIX}/{endpoint}"
@@ -321,7 +331,7 @@ def process_item(item_key: str, item_data: dict, zotero_data_dir: str, skip_s2: 
         try:
             res1 = map_item_global_citations(
                 item_key, title=title, year=year, creators=creators,
-                doi=doi, isbn=isbn, max_citations=5000,
+                doi=doi, isbn=isbn, max_citations=MAX_CITATIONS,
             )
             s1_status = res1.get('status')
             msg = res1.get('message', '')
