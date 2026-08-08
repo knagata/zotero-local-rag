@@ -61,6 +61,17 @@ ZONE_POLICIES = {
     "corrupted": ("exclude", "exclude", "none"),
 }
 
+#: Zones whose text is reference entries to be extracted, derived from the
+#: policy table rather than listed again. Three extractors each carried the
+#: same three names under a different name of their own -- _REFERENCE_ZONES,
+#: _REFERENCE_HARVEST_ZONES, _ENTRY_ZONES -- so a zone gained or lost here
+#: would have left them answering the old question, and no grep for one of
+#: those names would have found the other two.
+CITATION_EXTRACT_ZONES = frozenset(
+    zone for zone, (_summary, _retrieval, citation) in ZONE_POLICIES.items()
+    if citation == "extract"
+)
+
 
 def normalise_zone(value: Any) -> str:
     zone = str(value or "body").strip().casefold().replace("-", "_")

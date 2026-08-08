@@ -22,6 +22,7 @@ try:
     )
     from . import heading_zone
     from .heading_zone import classify_heading_path
+    from .document_structure import CITATION_EXTRACT_ZONES
     from .source_coverage import make_source_coverage
 except ImportError:  # pragma: no cover - direct src entrypoint
     from text_utils import (
@@ -31,6 +32,7 @@ except ImportError:  # pragma: no cover - direct src entrypoint
     )
     import heading_zone
     from heading_zone import classify_heading_path
+    from document_structure import CITATION_EXTRACT_ZONES
     from source_coverage import make_source_coverage
 
 # Optional: robust main-content extraction for Zotero Web Snapshots
@@ -95,7 +97,12 @@ _BACK_MATTER_RE = heading_zone.BACK_MATTER_RE
 # into a single element separated by <br/>.  We split on <br/> so each entry
 # becomes its own block, keeping the boundary intact through chunking (Part A of
 # dev-notes/current/77).  Body prose stays paragraph-merged.
-_ENTRY_ZONES = {"bibliography", "endnote", "footnote"}
+#: The zones whose text is reference entries. Defined by the policy table
+#: in document_structure, not restated here: this module used to keep its
+#: own copy under its own name, as two other extractors did under two more,
+#: so a change to which zones carry references would have reached none of
+#: them and a search for one name would have found neither of the others.
+_ENTRY_ZONES = CITATION_EXTRACT_ZONES
 _MIN_ENTRY_CHARS = 8
 _ZONE_TERMS = {
     "footnote": "footnote", "doc-footnote": "footnote",

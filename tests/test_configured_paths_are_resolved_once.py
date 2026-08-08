@@ -142,3 +142,33 @@ def test_every_caller_sends_the_same_headers():
     assert set(zotero_api_headers("KEY", **{"Content-Type": "application/json"})) == (
         shared | {"Content-Type"}
     )
+
+
+def test_the_zones_carrying_references_are_named_once():
+    """Which zones hold reference entries is a policy, not a literal.
+
+    Three extractors each kept the same three zone names under a name of their
+    own -- _REFERENCE_ZONES, _REFERENCE_HARVEST_ZONES, _ENTRY_ZONES. A zone
+    added to or removed from the policy table would have reached none of them,
+    and a search for any one of those names finds neither of the others.
+    """
+    from src.document_structure import CITATION_EXTRACT_ZONES, ZONE_POLICIES
+
+    assert CITATION_EXTRACT_ZONES == frozenset(
+        zone for zone, (_s, _r, citation) in ZONE_POLICIES.items()
+        if citation == "extract"
+    )
+
+    literal = '{"bibliography", "endnote", "footnote"}'
+    offenders = [
+        path.relative_to(ROOT).as_posix()
+        for directory in SEARCHED
+        for path in sorted((ROOT / directory).rglob("*.py"))
+        if "attic" not in path.as_posix()
+        and literal in path.read_text(encoding="utf-8")
+    ]
+    assert not offenders, (
+        "the answer is written out instead of being asked of ZONE_POLICIES; "
+        "use document_structure.CITATION_EXTRACT_ZONES:\n  "
+        + "\n  ".join(offenders)
+    )

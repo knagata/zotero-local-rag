@@ -17,6 +17,7 @@ try:
         _cjk_ratio,
     )
     from .heading_zone import classify_heading
+    from .document_structure import CITATION_EXTRACT_ZONES
 except ImportError:  # direct execution with src/ on sys.path
     from text_utils import (
         MIN_CHUNK_CHARS, MIN_CHUNK_CHARS_NO_SPACE, MAX_CHARS, TARGET_CHARS,
@@ -25,6 +26,7 @@ except ImportError:  # direct execution with src/ on sys.path
         _cjk_ratio,
     )
     from heading_zone import classify_heading
+    from document_structure import CITATION_EXTRACT_ZONES
 
 
 _DOCLING_CONVERTER = None
@@ -398,7 +400,12 @@ def extract_chunks_from_pdf_with_docling(
     return chunks, quality_info
 
 
-_REFERENCE_HARVEST_ZONES = {"bibliography", "endnote", "footnote"}
+#: The zones whose text is reference entries. Defined by the policy table
+#: in document_structure, not restated here: this module used to keep its
+#: own copy under its own name, as two other extractors did under two more,
+#: so a change to which zones carry references would have reached none of
+#: them and a search for one name would have found neither of the others.
+_REFERENCE_HARVEST_ZONES = CITATION_EXTRACT_ZONES
 
 
 def _docling_subset_pages(

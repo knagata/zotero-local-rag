@@ -17,13 +17,20 @@ from typing import Any, Dict, List
 
 try:
     from .chunk_store import get_item_chunks
+    from .document_structure import CITATION_EXTRACT_ZONES
 except ImportError:  # pragma: no cover
     from chunk_store import get_item_chunks
+    from document_structure import CITATION_EXTRACT_ZONES
 
 
 MIN_REFERENCE_CHARS = 20
 # Zones whose chunks carry outgoing reference/citation candidates.
-_REFERENCE_ZONES = {"bibliography", "endnote", "footnote"}
+#: The zones whose text is reference entries. Defined by the policy table
+#: in document_structure, not restated here: this module used to keep its
+#: own copy under its own name, as two other extractors did under two more,
+#: so a change to which zones carry references would have reached none of
+#: them and a search for one name would have found neither of the others.
+_REFERENCE_ZONES = CITATION_EXTRACT_ZONES
 # A new reference entry typically starts at the left margin; wrapped continuation
 # lines are indented or begin lowercase / with punctuation.  We merge lines that
 # look like continuations back into the preceding entry.
