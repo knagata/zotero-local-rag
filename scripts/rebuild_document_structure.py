@@ -157,16 +157,25 @@ def rebuild_item(
     if refresh_source:
         try:
             chunks, refresh_reports = refresh_source_structure_metadata(chunks)
-        except Exception as exc:
-            # Re-reading the original file improves heading metadata; it is not
-            # a precondition for building the structure, which the indexed
-            # chunks already support on their own. Letting it abort the item
-            # also abandons everything else the rebuild does: a ZONE_POLICIES
-            # migration stalled on four EPUBs whose fresh extraction no longer
-            # lines up with their indexed chunks, leaving those items on the
-            # old retrieval policy for reasons unrelated to the policy.
+        except RuntimeError as exc:
+            # The source is readable but no longer maps onto the indexed chunks.
+            # That is a standing property of this document, not a reason to
+            # abandon everything else the rebuild does: a ZONE_POLICIES
+            # migration stalled on four EPUBs in exactly this state, leaving
+            # them on the old retrieval policy for reasons unrelated to policy.
+            # The structure is buildable from the chunks as indexed, and
             # refresh_source_structure_metadata copies every row before
             # touching it, so `chunks` is untouched here.
+            #
+            # FileNotFoundError is deliberately *not* caught. It means the file
+            # could not be resolved at all -- an unmounted drive, an unsynced
+            # storage folder, a moved library -- which fails for every item at
+            # once and is fixed by fixing the environment. The refreshed
+            # structure_path is not persisted (SYNCED_KEYS excludes it), so
+            # continuing would rebuild from raw metadata and overwrite good
+            # structures wholesale: 543 of 589 items depend on that refresh.
+            # Letting it raise keeps the stored structure and reports the item
+            # as failed, which is the correct outcome for a broken environment.
             refresh_error = f"{type(exc).__name__}: {exc}"
     built = build_document_structure(item_key, chunks)
     previous = get_document_structure(item_key)

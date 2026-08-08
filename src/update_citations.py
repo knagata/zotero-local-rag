@@ -382,7 +382,16 @@ def main():
                         help="Resolve s2_status='skipped' EPUB references with larger budget")
     parser.add_argument("--epub-budget", type=int, default=None,
                         help="Max S2 lookups per EPUB item (default: 50 for --all/--item, 200 for --resume-skipped)")
+    parser.add_argument(
+        "--unresolved-only", action="store_true",
+        help="With --all: only items S2 never identified (no s2_paper_id). "
+             "Implies --force, since those items carry a terminal status and "
+             "would otherwise be skipped. Use after improving the lookup to "
+             "re-search just them, instead of re-fetching the whole library.",
+    )
     args = parser.parse_args()
+    if args.unresolved_only:
+        args.force = True
 
     if not args.item and not args.all and not args.resume_skipped:
         parser.print_help()
@@ -459,6 +468,17 @@ def main():
         except RuntimeError as e:
             print(f"[ERROR] {e}", file=sys.stderr)
             sys.exit(1)
+        if args.unresolved_only:
+            from db_relations import get_item_s2_paper_id
+            before = len(items)
+            items = [
+                raw for raw in items
+                if not get_item_s2_paper_id(_unwrap_item(raw)[0])
+            ]
+            print(
+                f"[PROGRESS] --unresolved-only: {len(items)} of {before} items have "
+                f"no s2_paper_id.", file=sys.stderr,
+            )
         total = len(items)
         if total == 0:
             print("[PROGRESS] No items found.", file=sys.stderr)

@@ -221,3 +221,29 @@ def test_report_only_stdout_keeps_c_level_noise_off_the_report(capfd):
     captured = capfd.readouterr()
     assert captured.out.strip() == '{"run_id": "x"}'
     assert "MuPDF error" in captured.err
+
+
+def test_an_unreachable_source_file_still_aborts_the_item():
+    # FileNotFoundError from _epub_source_path/_pdf_source_path means the file
+    # could not be resolved at all -- an unmounted drive, an unsynced storage
+    # folder -- which fails for every item at once. The refreshed
+    # structure_path is not persisted (SYNCED_KEYS excludes it), so continuing
+    # would rebuild from raw metadata and overwrite good structures wholesale;
+    # 543 of 589 items depend on that refresh. Raising keeps what is stored.
+    import pytest
+
+    with patch.object(rebuild_document_structure, "get_item_chunks", return_value=_chunks()), \
+            patch.object(
+                rebuild_document_structure, "refresh_source_structure_metadata",
+                side_effect=FileNotFoundError("unable to resolve one EPUB source"),
+            ), \
+            patch.object(rebuild_document_structure, "get_document_structure", return_value=None), \
+            patch.object(rebuild_document_structure, "replace_document_structure") as replace, \
+            patch.object(rebuild_document_structure, "_resync_chunk_metadata"), \
+            patch.object(rebuild_document_structure, "mark_artifact_status"):
+        with pytest.raises(FileNotFoundError):
+            rebuild_document_structure.rebuild_item(
+                "ITEM", dry_run=False, force=True, run_id="test", collection_name="test",
+            )
+
+    replace.assert_not_called()
