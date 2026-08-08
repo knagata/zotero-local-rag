@@ -7,11 +7,11 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 
 try:
     from .chapter_detect import get_epub_href_to_toc_entries, get_pdf_toc
-    from .document_structure import _attachment_key
+    from .document_structure import HEADING_BLOCK_TYPES, _attachment_key
     from .source_structure_refresh import _epub_source_path, _pdf_source_path, _refresh_epub_rows
 except ImportError:  # pragma: no cover
     from chapter_detect import get_epub_href_to_toc_entries, get_pdf_toc
-    from document_structure import _attachment_key
+    from document_structure import HEADING_BLOCK_TYPES, _attachment_key
     from source_structure_refresh import _epub_source_path, _pdf_source_path, _refresh_epub_rows
 
 
@@ -24,9 +24,9 @@ _HEADING_NUMBER_RE = re.compile(
     r"[ivxlcdm]+[.)]\s+\S)",
     re.IGNORECASE,
 )
-_HEADING_BLOCK_TYPES = {
-    "heading", "section_header", "title", "chapter", "chapter_title",
-}
+#: Shared with source_structure_refresh, which is the module asked to act on
+#: whatever this one flags. The two carried different sets.
+_HEADING_BLOCK_TYPES = HEADING_BLOCK_TYPES
 
 
 def _source_type(rows: Sequence[Mapping[str, Any]]) -> str:

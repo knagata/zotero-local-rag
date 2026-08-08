@@ -72,6 +72,19 @@ CITATION_EXTRACT_ZONES = frozenset(
     if citation == "extract"
 )
 
+#: What an extractor calls a line it took for a heading. The extractors do not
+#: agree on one word for it, so every consumer has to accept all of them.
+HEADING_BLOCK_TYPES = frozenset({
+    "heading", "section_header", "title", "chapter", "chapter_title",
+})
+#: Blocks that may carry a heading, including the one that needs further
+#: evidence: layout extraction files chapter openers as page furniture as
+#: readily as it files them as headings, and the running header repeating the
+#: chapter's name on every page is filed the same way. Whether a given piece of
+#: furniture is a boundary is decided by how often the document repeats it, so
+#: it is admitted here and tested there.
+HEADING_CANDIDATE_BLOCK_TYPES = HEADING_BLOCK_TYPES | {"page_furniture"}
+
 
 def normalise_zone(value: Any) -> str:
     zone = str(value or "body").strip().casefold().replace("-", "_")

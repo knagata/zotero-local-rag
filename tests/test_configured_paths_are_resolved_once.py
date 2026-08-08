@@ -172,3 +172,27 @@ def test_the_zones_carrying_references_are_named_once():
         "use document_structure.CITATION_EXTRACT_ZONES:\n  "
         + "\n  ".join(offenders)
     )
+
+
+def test_one_definition_of_what_a_heading_block_is():
+    """The module that flags a document and the one that fixes it must agree.
+
+    flat_structure_diagnostics counted section_header, title, chapter and
+    chapter_title as heading blocks; source_structure_refresh looked only at
+    heading and page_furniture. So an attachment could be listed as a recovery
+    candidate on the strength of blocks the recovery then ignored -- which is
+    the same shape as the page_furniture gap that left books flat while their
+    openers sat in the chunks. Sharing the names costs nothing and closed it.
+    """
+    from src.document_structure import (
+        HEADING_BLOCK_TYPES, HEADING_CANDIDATE_BLOCK_TYPES,
+    )
+    from src.flat_structure_diagnostics import _HEADING_BLOCK_TYPES
+    from src.source_structure_refresh import _HEADING_BLOCKS
+
+    assert _HEADING_BLOCK_TYPES is HEADING_BLOCK_TYPES
+    assert _HEADING_BLOCKS is HEADING_CANDIDATE_BLOCK_TYPES
+    # Furniture is a candidate, never trusted on its own: the running header
+    # that repeats a chapter's name on every page arrives labelled this way.
+    assert "page_furniture" in HEADING_CANDIDATE_BLOCK_TYPES
+    assert "page_furniture" not in HEADING_BLOCK_TYPES

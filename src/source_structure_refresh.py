@@ -14,7 +14,9 @@ try:
         build_pdf_page_structure_path_lookup, get_epub_chapter_index_to_toc_entries,
         get_pdf_toc, infer_structure_roles,
     )
-    from .document_structure import _attachment_key
+    from .document_structure import (
+        HEADING_BLOCK_TYPES, HEADING_CANDIDATE_BLOCK_TYPES, _attachment_key,
+    )
     from .heading_structure import (
         CHAPTER_RE, INDEX_GROUP_RE, PART_RE, ROMAN_SUBHEADING_RE, SECTION_RE,
         normalize as normalize_heading, ordinal as heading_ordinal,
@@ -30,7 +32,9 @@ except ImportError:  # pragma: no cover
         build_pdf_page_structure_path_lookup, get_epub_chapter_index_to_toc_entries,
         get_pdf_toc, infer_structure_roles,
     )
-    from document_structure import _attachment_key
+    from document_structure import (
+        HEADING_BLOCK_TYPES, HEADING_CANDIDATE_BLOCK_TYPES, _attachment_key,
+    )
     from heading_structure import (
         CHAPTER_RE, INDEX_GROUP_RE, PART_RE, ROMAN_SUBHEADING_RE, SECTION_RE,
         normalize as normalize_heading, ordinal as heading_ordinal,
@@ -63,9 +67,13 @@ _TRAILING_FOLIO_RE = re.compile(r"[^\w぀-ヿ㐀-鿿]*[0-9]{1,4}$")
 #: rather than a boundary. Measured over the 84 flat PDFs here, genuine chapter
 #: openers appear once or twice and running headers 3 to 28 times.
 _MAX_BOUNDARY_REPEATS = 2
-#: Block types that can carry a heading. Layout extraction files chapter
-#: openers under both, so neither alone is a reliable signal.
-_HEADING_BLOCKS = frozenset({"heading", "page_furniture"})
+#: Named by document_structure so the module that decides which documents are
+#: worth recovering and the module that recovers them cannot disagree about
+#: what a heading block is. They did: the diagnostics counted section_header,
+#: title, chapter and chapter_title, none of which this module looked at, so an
+#: attachment could be listed as a recovery candidate on the strength of blocks
+#: the recovery would then ignore.
+_HEADING_BLOCKS = HEADING_CANDIDATE_BLOCK_TYPES
 #: Openers that carry no number and so cannot be matched by level and ordinal.
 _UNNUMBERED_OPENERS = ("はじめに", "序章")
 
@@ -381,7 +389,7 @@ def _admits_as_boundary(title: str, block_type: str, census: _HeadingCensus) -> 
     carrying the same words on every page of its chapter. Everything else stays
     out: an incidental prose reference to a chapter is not a boundary.
     """
-    if block_type == "heading" or PART_RE.match(title):
+    if block_type in HEADING_BLOCK_TYPES or PART_RE.match(title):
         return True
     return (
         block_type == "page_furniture"
