@@ -8,6 +8,11 @@ from typing import Any
 import httpx
 
 try:
+    from .zotero_source_localapi import local_api_url, zotero_api_headers
+except ImportError:  # pragma: no cover
+    from zotero_source_localapi import local_api_url, zotero_api_headers
+
+try:
     from .db_relations import get_db_connection, get_section_summaries, resolve_work, save_work_link
     from .ndl_client import search_ndl
 except ImportError:  # pragma: no cover
@@ -78,12 +83,9 @@ def promote_chapters(item_key: str, *, dry_run: bool = True) -> dict[str, Any]:
 
 
 def _zotero_item(item_key: str) -> dict[str, Any]:
-    base = (os.environ.get("ZOTERO_LOCAL_API_BASE") or "http://127.0.0.1:23119/api").rstrip("/")
-    prefix = (os.environ.get("ZOTERO_LOCAL_API_PREFIX") or "users/0").strip("/")
-    headers = {"Zotero-API-Version": os.environ.get("ZOTERO_API_VERSION", "3")}
-    if os.environ.get("ZOTERO_API_KEY"):
-        headers["Zotero-API-Key"] = os.environ["ZOTERO_API_KEY"]
-    response = httpx.get(f"{base}/{prefix}/items/{item_key}", headers=headers, timeout=10)
+    response = httpx.get(
+        local_api_url(f"items/{item_key}"), headers=zotero_api_headers(), timeout=10,
+    )
     response.raise_for_status()
     payload = response.json()
     return payload.get("data", payload)

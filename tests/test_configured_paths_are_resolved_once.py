@@ -91,3 +91,54 @@ def test_the_resolver_handles_both_halves_of_the_rule():
     assert resolve_configured_path(ROOT, "~/chroma") == Path.home() / "chroma"
     assert resolve_configured_path(ROOT, "data/chroma") == ROOT / "data" / "chroma"
     assert resolve_configured_path(ROOT, "/tmp/chroma") == Path("/tmp/chroma")
+
+
+#: Where Zotero lives and how a request to it is addressed. Three modules each
+#: worked it out for themselves and disagreed: one sent Accept, the version
+#: header and the key; one omitted Accept; and update_citations -- the module
+#: that writes back to the library -- sent only the key, so it parsed whatever
+#: schema Zotero chose to answer with. Its own test file records a third
+#: variant, a hardcoded 127.0.0.1:8080 that pointed at nothing for a whole run
+#: and reported 0 items as success (2026-08-01).
+ZOTERO_ADDRESS_VARIABLES = frozenset({
+    "ZOTERO_LOCAL_API_BASE", "ZOTERO_LOCAL_API_PREFIX", "ZOTERO_API_VERSION",
+})
+ZOTERO_CLIENT_MODULE = "src/zotero_source_localapi.py"
+
+
+def test_only_the_zotero_client_works_out_how_to_address_zotero():
+    offenders: list[str] = []
+    for directory in SEARCHED:
+        for path in sorted((ROOT / directory).rglob("*.py")):
+            relative = path.relative_to(ROOT).as_posix()
+            if relative == ZOTERO_CLIENT_MODULE or "attic" in relative:
+                continue
+            text = path.read_text(encoding="utf-8")
+            try:
+                tree = ast.parse(text)
+            except SyntaxError:  # pragma: no cover -- compileall covers this
+                continue
+            for name in sorted(_environment_reads(tree) & ZOTERO_ADDRESS_VARIABLES):
+                offenders.append(f"  {relative}: reads {name} directly")
+            if '"Zotero-API-Version"' in text:
+                offenders.append(f"  {relative}: names the Zotero-API-Version header")
+    assert not offenders, (
+        "the address of, or the headers for, Zotero are being worked out "
+        "somewhere other than zotero_source_localapi. Use local_api_url() and "
+        "zotero_api_headers(): the three copies that existed disagreed about "
+        "what to send, and the least pinned of them was the one that writes "
+        "back to the library.\n" + "\n".join(offenders)
+    )
+
+
+def test_every_caller_sends_the_same_headers():
+    from src.zotero_source_localapi import ZoteroLocalAPI, zotero_api_headers
+
+    shared = set(zotero_api_headers("KEY"))
+    assert shared == {"Accept", "Zotero-API-Key", "Zotero-API-Version"}
+    assert set(ZoteroLocalAPI(api_key="KEY").headers) == shared
+    # Extra headers a caller needs are added to the shared set, not instead
+    # of it -- the write-back path needs Content-Type and lost the rest.
+    assert set(zotero_api_headers("KEY", **{"Content-Type": "application/json"})) == (
+        shared | {"Content-Type"}
+    )

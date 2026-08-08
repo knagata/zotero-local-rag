@@ -7,16 +7,19 @@ from unittest import mock
 
 
 def _reload_with_env(env: dict) -> object:
-    """Re-import update_citations with a controlled environment.
-
-    API_BASE/API_PREFIX are module-level constants resolved at import time
-    from os.environ, so exercising the default requires a fresh import with a
-    clean environment rather than monkeypatching an already-imported module.
-    """
+    """Re-import update_citations with a controlled environment."""
     with mock.patch.dict(os.environ, env, clear=True), \
          mock.patch("src.env_utils.load_dotenv_native"):
         import src.update_citations as module
         return importlib.reload(module)
+
+
+def _addressed(env: dict) -> str:
+    """The URL this module would call, under the given environment."""
+    with mock.patch.dict(os.environ, env, clear=True):
+        import src.update_citations as module
+
+        return module.local_api_url("items/ABC")
 
 
 class ApiDefaultsTests(unittest.TestCase):
@@ -31,17 +34,29 @@ class ApiDefaultsTests(unittest.TestCase):
     """
 
     def test_defaults_match_the_rest_of_the_codebase(self):
-        module = _reload_with_env({})
-        self.assertEqual(module.API_BASE, "http://127.0.0.1:23119/api")
-        self.assertEqual(module.API_PREFIX, "users/0")
+        # Asked of the address the module would call rather than of a constant
+        # it holds: the address is now built by zotero_source_localapi, which
+        # is the point -- a module cannot default to a port of its own again.
+        self.assertEqual(
+            _addressed({}), "http://127.0.0.1:23119/api/users/0/items/ABC",
+        )
 
     def test_explicit_env_override_still_wins(self):
-        module = _reload_with_env({
-            "ZOTERO_LOCAL_API_BASE": "http://127.0.0.1:9999/api",
-            "ZOTERO_LOCAL_API_PREFIX": "users/5",
-        })
-        self.assertEqual(module.API_BASE, "http://127.0.0.1:9999/api")
-        self.assertEqual(module.API_PREFIX, "users/5")
+        self.assertEqual(
+            _addressed({
+                "ZOTERO_LOCAL_API_BASE": "http://127.0.0.1:9999/api",
+                "ZOTERO_LOCAL_API_PREFIX": "users/5",
+            }),
+            "http://127.0.0.1:9999/api/users/5/items/ABC",
+        )
+
+    def test_the_environment_is_read_when_the_request_is_made(self):
+        # The base was fixed while the module was imported, so a later change
+        # to the environment was ignored and the run talked to whichever Zotero
+        # had been configured first.
+        default = _addressed({})
+        overridden = _addressed({"ZOTERO_LOCAL_API_BASE": "http://127.0.0.1:9999/api"})
+        self.assertNotEqual(default, overridden)
 
 
 class GetAllItemsConnectionFailureTests(unittest.TestCase):

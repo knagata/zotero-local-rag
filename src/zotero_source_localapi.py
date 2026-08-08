@@ -8,6 +8,57 @@ from typing import Any, Dict, List, Optional, Tuple, AsyncIterator
 import httpx
 
 
+
+#: The schema version this project is written against. Zotero picks its own
+#: default when a request omits the header, so every request pins it: an
+#: unpinned caller keeps working until Zotero moves its default and then
+#: receives a shape nothing here expects.
+ZOTERO_API_VERSION_DEFAULT = "3"
+
+#: Where Zotero's local HTTP API listens when nothing says otherwise.
+LOCAL_API_BASE_DEFAULT = "http://127.0.0.1:23119/api"
+LOCAL_API_PREFIX_DEFAULT = "users/0"
+
+
+def local_api_base() -> str:
+    return (os.environ.get("ZOTERO_LOCAL_API_BASE") or LOCAL_API_BASE_DEFAULT).rstrip("/")
+
+
+def local_api_prefix() -> str:
+    return (os.environ.get("ZOTERO_LOCAL_API_PREFIX") or LOCAL_API_PREFIX_DEFAULT).strip("/")
+
+
+def local_api_url(path: str) -> str:
+    """The address of one endpoint on Zotero's local API.
+
+    Read at call time, not at import: a module that fixed the base URL while
+    being imported ignored anything the environment said afterwards, which is
+    how a caller ends up talking to a different Zotero than the rest of the run.
+    """
+    return f"{local_api_base()}/{local_api_prefix()}/{path.lstrip('/')}"
+
+
+def zotero_api_headers(api_key: Optional[str] = None, **extra: str) -> Dict[str, str]:
+    """What every request to Zotero carries, local API or web API alike.
+
+    One definition because the three that existed disagreed: one sent Accept,
+    the version and the key; one omitted Accept; and the one that writes back
+    to the library sent only the key, so it was the least pinned of the three
+    to a response schema it then parsed.
+    """
+    headers = {
+        "Accept": "application/json",
+        "Zotero-API-Version": os.environ.get(
+            "ZOTERO_API_VERSION", ZOTERO_API_VERSION_DEFAULT,
+        ),
+    }
+    key = api_key if api_key is not None else os.environ.get("ZOTERO_API_KEY")
+    if key:
+        headers["Zotero-API-Key"] = key
+    headers.update(extra)
+    return headers
+
+
 @dataclass(frozen=True)
 class ZoteroAttachment:
     """Normalized attachment record for indexing.
@@ -86,21 +137,11 @@ class ZoteroLocalAPI:
         api_key: Optional[str] = None,
         timeout: float = 30.0,
     ) -> None:
-        self.base_url = (
-            base_url
-            or os.environ.get("ZOTERO_LOCAL_API_BASE")
-            or "http://127.0.0.1:23119/api"
-        ).rstrip("/")
-        self.user_prefix = (os.environ.get("ZOTERO_LOCAL_API_PREFIX") or "users/0").strip("/")
+        self.base_url = (base_url or local_api_base()).rstrip("/")
+        self.user_prefix = local_api_prefix()
         self.api_key = api_key or os.environ.get("ZOTERO_API_KEY")
         self.timeout = timeout
-
-        self.headers: Dict[str, str] = {
-            "Accept": "application/json",
-            "Zotero-API-Version": os.environ.get("ZOTERO_API_VERSION", "3"),
-        }
-        if self.api_key:
-            self.headers["Zotero-API-Key"] = self.api_key
+        self.headers: Dict[str, str] = zotero_api_headers(self.api_key)
 
         self._parent_cache: Dict[str, Dict[str, Any]] = {}
         self._last_total_results: Optional[int] = None

@@ -20,11 +20,10 @@ from citation_mapper import map_item_global_citations, map_item_local_references
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 from env_utils import load_dotenv_native
+from zotero_source_localapi import local_api_url, zotero_api_headers
 
 load_dotenv_native(PROJECT_ROOT)
 
-API_BASE = os.environ.get("ZOTERO_LOCAL_API_BASE", "http://127.0.0.1:23119/api").rstrip("/")
-API_PREFIX = os.environ.get("ZOTERO_LOCAL_API_PREFIX", "users/0").strip("/")
 API_KEY = os.environ.get("ZOTERO_API_KEY", "")
 
 #: 両ステップを走り切った状態。通常更新ではスキップし、--force でのみ再処理する。
@@ -46,17 +45,16 @@ MAX_CITATIONS = 25_000
 
 
 def _zotero_request(endpoint: str, params: dict = None, method: str = "GET", data: dict = None, headers: dict = None):
-    url = f"{API_BASE}/{API_PREFIX}/{endpoint}"
+    url = local_api_url(endpoint)
     if params:
         query = urllib.parse.urlencode(params)
         url = f"{url}?{query}"
-        
-    req_headers = {}
-    if API_KEY:
-        req_headers["Zotero-API-Key"] = API_KEY
-    if headers:
-        req_headers.update(headers)
-        
+
+    # Zotero picks its own response schema when the version header is absent,
+    # and this path had been sending only the key -- the least pinned of the
+    # three callers, and the one that also writes back to the library.
+    req_headers = zotero_api_headers(**(headers or {}))
+
     req_data = None
     if data:
         req_data = json.dumps(data).encode('utf-8')
@@ -118,7 +116,7 @@ def get_all_items():
                 # this doesn't guess a specific cause.
                 raise RuntimeError(
                     f"Could not fetch items from the Zotero Local API at "
-                    f"{API_BASE}/{API_PREFIX} -- see the error above."
+                    f"{local_api_url('')} -- see the error above."
                 )
             break
         if not batch or not isinstance(batch, list):
@@ -217,11 +215,7 @@ def _zotero_web_patch_doi(item_key: str, doi: str, version: object) -> None:
         return
 
     url = f"https://api.zotero.org/users/{user_id}/items/{item_key}"
-    headers = {
-        "Zotero-API-Key": api_key,
-        "Zotero-API-Version": "3",
-        "Content-Type": "application/json",
-    }
+    headers = zotero_api_headers(api_key, **{"Content-Type": "application/json"})
     if version is not None:
         headers["If-Unmodified-Since-Version"] = str(version)
 
