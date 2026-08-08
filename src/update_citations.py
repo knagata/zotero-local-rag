@@ -30,7 +30,9 @@ API_KEY = os.environ.get("ZOTERO_API_KEY", "")
 #: 両ステップを走り切った状態。通常更新ではスキップし、--force でのみ再処理する。
 #: "not_found" もここに含める: S2 に無い資料を毎回問い合わせ直すのは無駄であり、
 #: 検索ロジックを改善したときは --force で再走査する運用にする。
-TERMINAL_STATUSES = frozenset({"mapped", "not_found"})
+#: "limited" もここに含める: max_citations に達して意図的に打ち切った状態で、
+#: 再試行しても同じ上限に当たる。上限を上げたときは --force で再走査する。
+TERMINAL_STATUSES = frozenset({"mapped", "not_found", "limited"})
 
 
 def _zotero_request(endpoint: str, params: dict = None, method: str = "GET", data: dict = None, headers: dict = None):
@@ -275,6 +277,8 @@ def process_item(item_key: str, item_data: dict, zotero_data_dir: str, skip_s2: 
         - ``s2_resolved``: S2 が実際にこの資料を同定できたら True。False の場合
           "mapped" を書いてはいけない（S2上の身元が無いのに mapped と記録すると、
           以後 --all から永久にスキップされ、再検索の機会が失われる）。
+        - ``s2_retryable``: 失敗が再試行に値するなら True。False の場合、マッパー
+          自身が理由（"limited" 等）を記録済みなので、呼び出し元は上書きしない。
     """
     title = item_data.get("title", "")
     year = item_data.get("date", "")[:4] if item_data.get("date") else ""
@@ -292,6 +296,9 @@ def process_item(item_key: str, item_data: dict, zotero_data_dir: str, skip_s2: 
     s2_ok = True
     # skip_s2 は "s2_done"（S2が同定済みで関係も保存済み）からの再開なので解決済み扱い。
     s2_resolved = True
+    # 失敗が再試行に値するか。値しないなら、マッパーが書いた理由（"limited" 等）を
+    # 呼び出し元が "error" で塗り潰してはいけない。
+    s2_retryable = True
     if skip_s2:
         print("  [1/2] S2 step: skipped (already done).", file=sys.stderr)
     else:
@@ -324,6 +331,7 @@ def process_item(item_key: str, item_data: dict, zotero_data_dir: str, skip_s2: 
             else:
                 print(f"        -> {s1_status}: {msg}", file=sys.stderr)
                 s2_ok = False
+                s2_retryable = bool(res1.get("retryable", True))
         except Exception as e:
             print(f"        -> Exception: {e}", file=sys.stderr)
             s2_ok = False
@@ -331,7 +339,7 @@ def process_item(item_key: str, item_data: dict, zotero_data_dir: str, skip_s2: 
     # ── Step 2: EPUB参照抽出 ─────────────────────────────────
     print("  [2/2] Extracting references from EPUB...", file=sys.stderr)
     _run_epub_step(item_key, item_data, zotero_data_dir, epub_budget=epub_budget)
-    return s2_ok, s2_resolved
+    return s2_ok, s2_resolved, s2_retryable
 
 def _fmt_duration(seconds: float) -> str:
     """Format seconds into a human-readable duration string."""
@@ -450,15 +458,19 @@ def main():
                 skip_s2 = (status == "s2_done" and not args.force)
                 if skip_s2:
                     print("[RESUME] S2 step already done. Running EPUB step only.", file=sys.stderr)
-                s2_ok, s2_resolved = process_item(args.item, item_data, zotero_data_dir, skip_s2=skip_s2,
-                                                  epub_budget=args.epub_budget or 50)
+                s2_ok, s2_resolved, s2_retryable = process_item(
+                    args.item, item_data, zotero_data_dir, skip_s2=skip_s2,
+                    epub_budget=args.epub_budget or 50)
                 if s2_ok:
                     final = "mapped" if s2_resolved else "not_found"
                     update_item_citation_status(args.item, final)
                     print(f"[DONE] Item {args.item} marked as '{final}'.", file=sys.stderr)
-                else:
+                elif s2_retryable:
                     update_item_citation_status(args.item, "error")
                     print(f"[WARN] S2 step failed for {args.item}; status set to 'error' (will retry next run).", file=sys.stderr)
+                else:
+                    print(f"[WARN] S2 step stopped for {args.item} for a reason that will not "
+                          f"change on retry; keeping the status the mapper recorded.", file=sys.stderr)
         else:
             print(f"Error: Could not fetch item {args.item} from Zotero API.")
 
@@ -484,7 +496,7 @@ def main():
             print("[PROGRESS] No items found.", file=sys.stderr)
             return
 
-        stats = {"processed": 0, "skipped": 0, "resumed": 0, "error": 0, "meta_updated": 0}
+        stats = {"processed": 0, "skipped": 0, "resumed": 0, "error": 0, "limited": 0, "meta_updated": 0}
         run_start = time.time()
         processed_times: list[float] = []  # wall-clock seconds per non-skipped item
 
@@ -546,19 +558,27 @@ def main():
             # ── 処理・計測 ───────────────────────────────────────
             item_start = time.time()
             try:
-                s2_ok, s2_resolved = process_item(key, item_data, zotero_data_dir, skip_s2=skip_s2,
-                                                  epub_budget=args.epub_budget or 50)
+                s2_ok, s2_resolved, s2_retryable = process_item(
+                    key, item_data, zotero_data_dir, skip_s2=skip_s2,
+                    epub_budget=args.epub_budget or 50)
                 if s2_ok:
                     update_item_citation_status(key, "mapped" if s2_resolved else "not_found")
                     if skip_s2:
                         stats["resumed"] += 1
                     else:
                         stats["processed"] += 1
-                else:
+                elif s2_retryable:
                     # S2 ステップ失敗（429 リトライ枯渇など）→ 次回の --all で再処理されるよう "error" を記録
                     update_item_citation_status(key, "error")
                     stats["error"] += 1
                     print(f"  [WARN] S2 step failed for {key}; status set to 'error' (will retry next run).", file=sys.stderr)
+                else:
+                    # 再試行しても同じ結果になる打ち切り（max_citations 到達など）。
+                    # マッパーが理由を書いているので上書きしない。"error" にすると
+                    # 毎回の --all が同じ上限に当たり続ける。
+                    stats["limited"] += 1
+                    print(f"  [WARN] S2 step stopped for {key} for a reason that will not change "
+                          f"on retry; keeping the status the mapper recorded.", file=sys.stderr)
             except Exception as e:
                 print(f"  [ERROR] {e}", file=sys.stderr)
                 update_item_citation_status(key, "error")

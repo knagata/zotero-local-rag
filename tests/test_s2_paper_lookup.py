@@ -545,3 +545,53 @@ class ContextLessCitationsAreKeptTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NonRetryableStopIsNotRelabelledTests(unittest.TestCase):
+    """Hitting max_citations is a decision, not a failure.
+
+    map_item_global_citations records "limited" and returns retryable=False,
+    but the caller overwrote it with "error" -- which is not terminal, so every
+    later --all re-fetched the item and hit the same cap again. Four heavily
+    cited works (Bourdieu, Scott among them) were in that loop.
+    """
+
+    def _process(self, mapper_result):
+        import update_citations
+
+        written = []
+        with patch.object(update_citations, "map_item_global_citations",
+                          return_value=mapper_result), \
+             patch.object(update_citations, "_run_epub_step"), \
+             patch.object(db_relations, "update_item_citation_status",
+                          side_effect=lambda *a, **kw: written.append(a)):
+            return update_citations.process_item(
+                "ITEM", {"title": "T", "creators": []}, "/tmp", skip_s2=False,
+            ), written
+
+    def test_a_capped_run_is_reported_as_not_retryable(self):
+        (ok, _resolved, retryable), _written = self._process({
+            "status": "error", "retryable": False,
+            "message": "S2 pagination reached max_citations for citations; ...",
+        })
+        self.assertFalse(ok)
+        self.assertFalse(retryable)
+
+    def test_a_rate_limited_run_stays_retryable(self):
+        (ok, _resolved, retryable), _written = self._process({
+            "status": "error", "retryable": True,
+            "message": "S2 pagination incomplete for citations; ...",
+        })
+        self.assertFalse(ok)
+        self.assertTrue(retryable)
+
+    def test_an_error_without_a_retryable_field_is_assumed_retryable(self):
+        (ok, _resolved, retryable), _written = self._process({
+            "status": "error", "message": "S2 API Error while fetching citations.",
+        })
+        self.assertFalse(ok)
+        self.assertTrue(retryable)
+
+    def test_limited_is_terminal_so_all_runs_stop_retrying_it(self):
+        import update_citations
+        self.assertIn("limited", update_citations.TERMINAL_STATUSES)

@@ -45,7 +45,7 @@ uv run src/update_citations.py --resume-skipped --epub-budget 300
 6. 埋め込み類似度で引用・参照箇所をチャンクへ対応付け
 7. `data/relations.db`へ保存
 
-OpenAlexの一致はタイトル類似度で検証されます。`ZOTERO_USER_ID`と`ZOTERO_API_KEY`の両方がある場合だけ、解決したDOIをZotero Web APIへ書き戻します。
+OpenAlexの一致はタイトル類似度に加えて著者照合で検証され、`type=review` は除外されます（書評のDOIを原著に付けないため）。`ZOTERO_USER_ID`と`ZOTERO_API_KEY`の両方がある場合だけ、解決したDOIをZotero Web APIへ書き戻します。
 
 ## S2データの訂正
 
@@ -69,9 +69,12 @@ DisableはDB行の削除ではなく、所蔵アイテムキーとS2 paper IDの
 | `s2_done` | S2が資料を同定し関係も保存済み、参照処理が未完了 | 参照抽出から再開 |
 | `mapped` | 正常完了（S2上の該当論文を同定できた） | スキップ |
 | `not_found` | 両ステップ完了したがS2に該当論文なし | スキップ |
+| `limited` | `max_citations` に達して意図的に打ち切った | スキップ |
 | `error` | 429や通信障害等 | 再処理 |
 
-`mapped` と `not_found` はどちらも「両ステップを走り切った」状態で、通常更新ではスキップされます。同定ロジックを改善したあとに再走査したい場合は `--force` を使ってください。
+`mapped` / `not_found` / `limited` はいずれも「これ以上の再試行では結果が変わらない」状態で、通常更新ではスキップされます。同定ロジックを改善したときや上限を引き上げたときは `--force` で再走査してください。
+
+`limited` は同定自体には成功しており、被引用が `max_citations`（既定5,000）を超えた資料に付きます。かつてはこれを `error` として記録していたため、通常更新のたびに再取得しては同じ上限に当たる、という繰り返しになっていました。
 
 ### 参照単位
 
@@ -115,7 +118,9 @@ S2_API_KEY=...
 
 - Citation Network更新が未実行（`pending`）
 - S2に該当論文が無い（`not_found`）
-- S2は該当論文を持つが、被引用がいずれも引用文脈（contexts）を伴わない。被引用は文脈が無いと保存されません（参照文献側は `no_context` として保存されます）
+- S2に該当論文はあるが、被引用も参照も0件（S2の収録が薄い書籍などで起こります）
+
+なお引用文脈（contexts）を伴わない被引用も、2026-08-08以降は `no_context` として保存されます（以前は破棄していました）。
 
 個別に確認するには `uv run src/update_citations.py --item ITEMKEY --force` を実行し、`s2_status` と保存件数を見てください。
 
