@@ -390,7 +390,7 @@ flowchart TD
 | `chunk_reference_extractor.py` | V3チャンクからの参照/注抽出（bibliography/endnote/footnote zone） |
 | `db_relations.py` | `relations.db` のCRUD。著作・引用・構造・要約・審査キュー・artifact状態 |
 | `recommendations.py` | 関連資料（coupling/cocitation/semantic/hybrid） |
-| `citation_insights.py` | 引用グラフ・階層要約ビュー用データAPI |
+| `citation_graph/insights.py` | 引用グラフ・階層要約ビュー用データAPI（`src/`外） |
 | `zotero_source_localapi.py` | Zoteroローカル HTTP API (:23119) クライアント |
 
 ---
