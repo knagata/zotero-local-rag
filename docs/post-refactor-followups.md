@@ -151,6 +151,9 @@ changes rather than as another large refactoring batch.
   (*Asia as Method*, *Ego and the Id*, and also the doubtful
   "Chapter Three. EARTHQUAKES"), so refusing them wholesale would drop correct
   identifications with the wrong ones. Needs a discriminator, not a blanket rule.
+- `source_structure_refresh._refresh_pdf_rows_from_numbered_body_headings` is
+  split; `index_from_zotero.main_async` and `db_relations._init_db` are the two
+  that remain.
 - Continue splitting `index_from_zotero.main_async` by attachment processing
   phase.
 - Split `db_relations._init_db` into versioned migrations.

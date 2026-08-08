@@ -5,6 +5,7 @@ import os
 import json
 import re
 from collections import Counter, defaultdict
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Sequence
 
@@ -62,6 +63,11 @@ _TRAILING_FOLIO_RE = re.compile(r"[^\w぀-ヿ㐀-鿿]*[0-9]{1,4}$")
 #: rather than a boundary. Measured over the 84 flat PDFs here, genuine chapter
 #: openers appear once or twice and running headers 3 to 28 times.
 _MAX_BOUNDARY_REPEATS = 2
+#: Block types that can carry a heading. Layout extraction files chapter
+#: openers under both, so neither alone is a reliable signal.
+_HEADING_BLOCKS = frozenset({"heading", "page_furniture"})
+#: Openers that carry no number and so cannot be matched by level and ordinal.
+_UNNUMBERED_OPENERS = ("はじめに", "序章")
 
 
 def _clear_source_structure_metadata(metadata: Dict[str, Any]) -> None:
@@ -99,6 +105,10 @@ def _body_heading_title(row: Dict[str, Any]) -> str:
     """
     text = normalize_heading(row.get("text") or "")
     return text if 0 < len(text) <= 180 else ""
+
+
+def _block_type(row: Dict[str, Any]) -> str:
+    return str((row.get("metadata") or {}).get("block_type") or "").casefold()
 
 
 def _row_page(row: Dict[str, Any]) -> int:
@@ -255,234 +265,261 @@ def _numbering_is_contiguous(ordinals: Sequence[int]) -> bool:
     return numbered == list(range(1, len(numbered) + 1))
 
 
-def _refresh_pdf_rows_from_numbered_body_headings(
-    rows: Sequence[Dict[str, Any]], attachment_key: str, source_path: Path,
-) -> tuple[list[Dict[str, Any]], Dict[str, Any]] | None:
-    """Recover a conservative TOC-level hierarchy from body headings.
+@dataclass
+class _HeadingCensus:
+    """How often the document carries each heading, and where its pages start.
 
-    Language-neutral: the part/chapter/section vocabulary comes from
-    heading_structure, so an English book is read the same way a Japanese one
-    is. Notes attached to a chapter become a child of that chapter rather than
-    a boundary of their own -- chapter-end notes are the ordinary form in an
-    edited volume, and treating each "NOTES" as a top-level section would cut
-    every chapter in half. As a child they also pick up zone="endnote" from
-    classify_heading_path, which keeps them out of the chapter's summary and
-    puts their references in front of the citation extractor.
+    Two different questions are asked of the same tally, and keeping them apart
+    is the point. *How often in total* separates a chapter opener from the
+    running header that repeats its words on every page of the chapter. *How
+    many are still ahead* separates a printed contents entry from the opener it
+    points at, since the entry always comes first.
     """
-    events: dict[int, tuple[list[str], list[str]]] = {}
-    chapter_ordinals: list[int] = []
-    part_ordinals: list[int] = []
-    part_path: list[str] = []
-    chapter_path: list[str] = []
-    section_path: list[str] = []
-    functional_scope = False
-    inside_printed_toc = False
-    printed_toc_page = 0
-    # How often the document carries each heading's text, over every block that
-    # could hold one. Two questions are asked of it: how often in total, which
-    # separates a chapter opener from the running header repeating its words on
-    # every page; and how often is left ahead, which separates a printed
-    # contents entry from the opener it points at.
-    repeated_titles = Counter(
-        _repetition_key(title)
-        for row in rows
-        if (title := _body_heading_title(row))
-        and str((row.get("metadata") or {}).get("block_type") or "").casefold()
-        in {"heading", "page_furniture"}
+
+    total: Counter
+    remaining: Counter
+    remaining_ordinals: Counter
+    first_row_on_page: Dict[int, int]
+
+    @classmethod
+    def of(cls, rows: Sequence[Dict[str, Any]]) -> "_HeadingCensus":
+        total: Counter = Counter()
+        ordinals: Counter = Counter()
+        first_row_on_page: Dict[int, int] = {}
+        for index, row in enumerate(rows):
+            first_row_on_page.setdefault(_row_page(row), index)
+            title = _body_heading_title(row)
+            if not title or _block_type(row) not in _HEADING_BLOCKS:
+                continue
+            total[_repetition_key(title)] += 1
+            if key := _ordinal_key(title):
+                ordinals[key] += 1
+        return cls(total, Counter(total), ordinals, first_row_on_page)
+
+    def passing(self, title: str) -> None:
+        """Record that the walk has reached this heading."""
+        self.remaining[_repetition_key(title)] -= 1
+        if key := _ordinal_key(title):
+            self.remaining_ordinals[key] -= 1
+
+    def repeats(self, title: str) -> bool:
+        """Whether the document carries this heading too often to be a boundary."""
+        return self.total[_repetition_key(title)] > _MAX_BOUNDARY_REPEATS
+
+    def recurs_later(self, title: str) -> bool:
+        """Whether this heading appears again further on.
+
+        Matched on the level and number where the heading carries one: a
+        contents page says "PART II" where the body page says "PART TWO", and
+        the two share no text at all.
+        """
+        if key := _ordinal_key(title):
+            return self.remaining_ordinals[key] > 0
+        return self.remaining[_repetition_key(title)] > 0
+
+    def unnumbered_opener_ahead(self) -> bool:
+        return any(self.remaining[value] > 0 for value in _UNNUMBERED_OPENERS)
+
+
+class _PrintedContents:
+    """The region a printed table of contents occupies.
+
+    It lists every opener in the book, so read as body it gives the document a
+    second, spurious copy of its own hierarchy in front of the real one.
+    """
+
+    def __init__(self) -> None:
+        self.inside = False
+        self.heading_page = 0
+
+    def opens_at(self, title: str, page: int) -> bool:
+        # The guard keyed on the literal 目次 and so never fired for an English
+        # book, which says "Contents".
+        if not TOC_RE.match(title):
+            return False
+        self.inside, self.heading_page = True, page
+        return True
+
+    def holds(
+        self, title: str, page: int, block_type: str, census: _HeadingCensus,
+    ) -> bool:
+        """Whether this row belongs to the contents rather than to the body."""
+        if not self.inside:
+            return False
+        # A printed contents occupies its own page and at most the next; in all
+        # 25 candidates here that carry one, every entry sits on the contents
+        # page or the one after, and the first body heading is 2 to 172 pages
+        # further on. The bound is pinned to the contents heading rather than
+        # moving with the region: letting it advance with each row skipped meant
+        # a book with a heading on every page never reached it, and the contents
+        # then ran until something else ended it. In one book here nothing did
+        # until page 171, so its four real part openers were read as contents
+        # and the recovered tree was the back-of-book notes index instead.
+        if page and self.heading_page and page > self.heading_page + 1:
+            self.inside = False
+            return False
+        opener = title in _UNNUMBERED_OPENERS or (
+            bool(PART_RE.match(title) or CHAPTER_RE.match(title))
+            and page > self.heading_page
+            and not census.recurs_later(title)
+            and not census.unnumbered_opener_ahead()
+        )
+        if opener and block_type in _HEADING_BLOCKS:
+            self.inside = False
+            return False
+        return True
+
+
+def _admits_as_boundary(title: str, block_type: str, census: _HeadingCensus) -> bool:
+    """Whether a row may be considered for a boundary at all.
+
+    OCR and layout extractors often file a genuine Part opener as plain text,
+    and they label chapter openers "page_furniture" as readily as "heading" --
+    in one book here five of fifteen chapter openers landed in each. Furniture
+    is admitted when it speaks the structural vocabulary and the document does
+    not repeat it, which is exactly what tells an opener from the running header
+    carrying the same words on every page of its chapter. Everything else stays
+    out: an incidental prose reference to a chapter is not a boundary.
+    """
+    if block_type == "heading" or PART_RE.match(title):
+        return True
+    return (
+        block_type == "page_furniture"
+        and _is_structural(title)
+        and not census.repeats(title)
     )
-    remaining_titles = Counter(repeated_titles)
-    remaining_ordinals: Counter[tuple[str, int]] = Counter(
-        key
-        for row in rows
-        if (title := _body_heading_title(row)) and (key := _ordinal_key(title))
-        and str((row.get("metadata") or {}).get("block_type") or "").casefold()
-        in {"heading", "page_furniture"}
-    )
-    # Which numbers have already opened something. Parts are numbered once
-    # across the book; chapter numbers restart inside each part in many edited
-    # collections and multi-volume works, so the chapter set is cleared at every
-    # part boundary. Without that, a book running PART ONE/CHAPTER 1..3 then
-    # PART TWO/CHAPTER 1..3 lost all three of part two's chapters and put its
-    # whole body under the bare part node.
-    seen_part_ordinals: set[int] = set()
-    seen_chapter_ordinals: set[int] = set()
-    part_count = chapter_count = section_count = roman_count = 0
-    for index, row in enumerate(rows):
-        title = _body_heading_title(row)
-        if not title:
-            continue
-        block_type = str((row.get("metadata") or {}).get("block_type") or "").casefold()
-        if block_type in {"heading", "page_furniture"}:
-            remaining_titles[_repetition_key(title)] -= 1
-            if ordinal_key := _ordinal_key(title):
-                remaining_ordinals[ordinal_key] -= 1
-        # A printed table of contents lists every chapter opener verbatim, so
-        # reading it as body gives the book a second, spurious copy of its own
-        # hierarchy in front of the real one. The guard keyed on the literal
-        # 目次 and so never fired for an English book, which says "Contents".
-        if TOC_RE.match(title):
-            inside_printed_toc = True
-            printed_toc_page = _row_page(row)
-            continue
-        if inside_printed_toc and (page := _row_page(row)) and printed_toc_page \
-                and page > printed_toc_page + 1:
-            # A printed contents occupies its own page and at most the next; in
-            # all 25 candidates here that carry one, every entry sits on the
-            # contents page or the one after, and the first body heading is 2 to
-            # 172 pages further on. The bound is pinned to the contents heading
-            # rather than moving with the region: letting it advance with each
-            # row skipped meant a book with a heading on every page never
-            # reached it, and the contents then ran until something else ended
-            # it. In one book here nothing did until page 171, so its four real
-            # part openers were read as contents and the recovered tree was the
-            # back-of-book notes index instead.
-            inside_printed_toc = False
-        if inside_printed_toc:
-            # What distinguishes a contents entry from the opener it lists is
-            # that the entry comes first: the same heading occurs again further
-            # on. Occurrences are counted over furniture as well as headings,
-            # because an opener the extractor labelled page_furniture would
-            # otherwise look like it never recurs, and the contents region would
-            # swallow the whole book.
-            numbered_opener = bool(PART_RE.match(title) or CHAPTER_RE.match(title))
-            key = _ordinal_key(title)
-            repeated_later = (
-                remaining_ordinals[key] > 0 if key
-                else remaining_titles[_repetition_key(title)] > 0
-            )
-            explicit_opener_later = any(
-                remaining_titles[value] > 0 for value in ("はじめに", "序章")
-            )
-            body_opener = (
-                title in {"はじめに", "序章"}
-                or (
-                    numbered_opener and _row_page(row) > printed_toc_page
-                    and not repeated_later and not explicit_opener_later
-                )
-            )
-            if body_opener and block_type in {"heading", "page_furniture"}:
-                inside_printed_toc = False
-            else:
-                continue
-        # OCR/layout extractors often label a genuine Part opener as text, and
-        # they label chapter openers "page_furniture" as readily as "heading" --
-        # in one book here five of fifteen chapter openers landed in each. A
-        # furniture block is admitted when it speaks the structural vocabulary
-        # and the document does not repeat it, which is exactly what tells an
-        # opener from the running header that carries the same words on every
-        # page of the chapter. Everything else stays out: incidental prose
-        # references to a chapter are not boundaries.
-        if block_type != "heading" and not PART_RE.match(title):
-            if not (
-                block_type == "page_furniture" and _is_structural(title)
-                and repeated_titles[_repetition_key(title)] <= _MAX_BOUNDARY_REPEATS
-            ):
-                continue
-        if INDEX_GROUP_RE.match(title) and not functional_scope:
-            # Multi-column indexes sometimes expose their first kana-group
-            # heading but lose the section title. Start at that PDF page's
-            # first chunk so entries preceding the group are not assigned to
-            # the previous chapter. A later running ``人名索引`` header is
-            # treated as the same functional region below.
-            page = _row_page(row)
-            page_start = index if not page else next((
-                candidate for candidate, value in enumerate(rows)
-                if _row_page(value) == page
-            ), index)
-            part_path = []
-            chapter_path = ["索引"]
-            section_path = []
-            functional_scope = True
-            events[page_start] = (["索引"], ["chapter"])
-            continue
-        # Notes belonging to the chapter just opened. Only while a chapter is
-        # open: a "NOTES" before any chapter is the book's own back matter.
-        if chapter_path and classify_heading_path([title]) in {"endnote", "footnote"}:
-            section_path = [*chapter_path, title]
-            functional_scope = True
-            events[index] = (list(section_path), infer_structure_roles(section_path))
-            continue
-        if _TOP_LEVEL_HEADING_RE.match(title):
-            if title in {"索引", "人名索引"} and chapter_path == ["索引"]:
-                continue
-            part_path = []
-            chapter_path = [title]
-            section_path = []
-            functional_scope = title in _FUNCTIONAL_BODY_HEADINGS
-            events[index] = ([title], ["chapter"])
-        elif PART_RE.match(title) and heading_ordinal(title) in seen_part_ordinals:
-            # Already opened -- see the chapter case below for why a repeat is
-            # a notes label rather than a boundary.
-            if functional_scope and section_path:
-                path = [*section_path, title]
-                events[index] = (path, infer_structure_roles(path))
+
+
+class _RecoveredTree:
+    """Where each admitted heading goes, and whether the result is usable.
+
+    Separated from the walk that feeds it because the placement rules interact
+    only through this state. They used to share fourteen locals with the reading
+    of the rows, the counting of repetitions and the contents region, and a rule
+    added to one of those reached all of them.
+    """
+
+    def __init__(self) -> None:
+        self.events: Dict[int, tuple[list[str], list[str]]] = {}
+        self._part_path: list[str] = []
+        self._chapter_path: list[str] = []
+        self._section_path: list[str] = []
+        self._functional_scope = False
+        # Which numbers have already opened something. Parts are numbered once
+        # across the book; chapter numbers restart inside each part in many
+        # edited collections and multi-volume works, so the chapter set is
+        # cleared at every part boundary. Without that, a book running PART
+        # ONE/CHAPTER 1..3 then PART TWO/CHAPTER 1..3 lost all three of part
+        # two's chapters and put its whole body on the bare part node.
+        self._seen_parts: set[int] = set()
+        self._seen_chapters: set[int] = set()
+        self._part_ordinals: list[int] = []
+        self._chapter_ordinals: list[int] = []
+        self.counts = {"parts": 0, "chapters": 0, "sections": 0, "roman": 0}
+
+    def _record(self, index: int, path: Sequence[str], roles: Sequence[str] | None = None) -> None:
+        path = list(path)
+        self.events[index] = (path, list(roles) if roles else infer_structure_roles(path))
+
+    def _as_notes_label(self, index: int, title: str) -> None:
+        """Keep a heading that names, rather than opens, the region it sits in.
+
+        Notes collected at the back of a book are grouped under the chapter they
+        serve and so repeat every chapter heading. Read as openers they gave a
+        seven-chapter book fourteen chapters; the heading still says which
+        chapter the notes belong to, so it is kept as a child. Outside such a
+        region a repeat is a running header the repetition test let through, and
+        is dropped.
+        """
+        if self._functional_scope and self._section_path:
+            self._record(index, [*self._section_path, title])
+
+    def open_index(self, index: int) -> None:
+        self._part_path, self._chapter_path, self._section_path = [], ["索引"], []
+        self._functional_scope = True
+        self._record(index, ["索引"], ["chapter"])
+
+    def place(self, index: int, title: str) -> None:
+        if self._chapter_path and classify_heading_path([title]) in {"endnote", "footnote"}:
+            # Notes belonging to the chapter just opened. Only while a chapter
+            # is open: a "NOTES" before any chapter is the book's own back
+            # matter.
+            self._section_path = [*self._chapter_path, title]
+            self._functional_scope = True
+            self._record(index, self._section_path)
+        elif _TOP_LEVEL_HEADING_RE.match(title):
+            if title in {"索引", "人名索引"} and self._chapter_path == ["索引"]:
+                return
+            self._part_path, self._chapter_path, self._section_path = [], [title], []
+            self._functional_scope = title in _FUNCTIONAL_BODY_HEADINGS
+            self._record(index, [title], ["chapter"])
         elif PART_RE.match(title):
+            if heading_ordinal(title) in self._seen_parts:
+                self._as_notes_label(index, title)
+                return
             if number := heading_ordinal(title):
-                seen_part_ordinals.add(number)
-            seen_chapter_ordinals.clear()
-            part_path = [title]
-            chapter_path = []
-            section_path = []
-            functional_scope = False
-            part_count += 1
-            part_ordinals.append(heading_ordinal(title) or 0)
-            events[index] = (list(part_path), ["part"])
-        elif CHAPTER_RE.match(title) and heading_ordinal(title) in seen_chapter_ordinals:
-            # The book has already opened this chapter, so this is not a
-            # boundary. Notes collected at the back are grouped under the
-            # chapter they serve and so repeat every chapter heading -- read as
-            # openers, they gave a seven-chapter book fourteen chapters. Inside
-            # such a region the heading still names which chapter the notes
-            # belong to, so it is kept as a child; elsewhere it is a running
-            # header that the repetition test happened to let through.
-            if functional_scope and section_path:
-                path = [*section_path, title]
-                events[index] = (path, infer_structure_roles(path))
+                self._seen_parts.add(number)
+            self._seen_chapters.clear()
+            self._part_path, self._chapter_path, self._section_path = [title], [], []
+            self._functional_scope = False
+            self.counts["parts"] += 1
+            self._part_ordinals.append(heading_ordinal(title) or 0)
+            self._record(index, self._part_path, ["part"])
         elif CHAPTER_RE.match(title):
+            if heading_ordinal(title) in self._seen_chapters:
+                self._as_notes_label(index, title)
+                return
             if number := heading_ordinal(title):
-                seen_chapter_ordinals.add(number)
-            chapter_path = [*part_path, title]
-            section_path = []
-            functional_scope = False
-            chapter_count += 1
-            chapter_ordinals.append(heading_ordinal(title) or 0)
-            roles = ["part", "chapter"] if part_path else ["chapter"]
-            events[index] = (list(chapter_path), roles)
-        elif SECTION_RE.match(title) and chapter_path:
-            section_path = [*chapter_path, title]
-            functional_scope = False
-            section_count += 1
-            roles = infer_structure_roles(section_path)
-            events[index] = (list(section_path), roles)
-        elif ROMAN_SUBHEADING_RE.match(title) and not functional_scope:
-            parent = section_path or chapter_path
+                self._seen_chapters.add(number)
+            self._chapter_path = [*self._part_path, title]
+            self._section_path = []
+            self._functional_scope = False
+            self.counts["chapters"] += 1
+            self._chapter_ordinals.append(heading_ordinal(title) or 0)
+            self._record(index, self._chapter_path,
+                         ["part", "chapter"] if self._part_path else ["chapter"])
+        elif SECTION_RE.match(title) and self._chapter_path:
+            self._section_path = [*self._chapter_path, title]
+            self._functional_scope = False
+            self.counts["sections"] += 1
+            self._record(index, self._section_path)
+        elif ROMAN_SUBHEADING_RE.match(title) and not self._functional_scope:
+            parent = self._section_path or self._chapter_path
             if parent:
-                roman_count += 1
-                path = [*parent, title]
-                events[index] = (path, infer_structure_roles(path))
+                self.counts["roman"] += 1
+                self._record(index, [*parent, title])
 
-    # A numbered run with holes in it means the extractor lost some openers,
-    # not that the book skips chapters. Storing 1, 3, 4, 6 asserts a
-    # six-chapter book has four; four of the ten candidates measured here were
-    # in that state, so the run has to be contiguous or the document stays flat.
-    if not _numbering_is_contiguous(chapter_ordinals):
-        return None
-    if not _numbering_is_contiguous(part_ordinals):
-        return None
+    @property
+    def in_index_region(self) -> bool:
+        return self._functional_scope and self._chapter_path == ["索引"]
 
-    # Avoid promoting incidental numbered phrases. A usable book/thesis tree
-    # needs either explicit Parts or several Chapters, plus multiple boundaries.
-    if not ((part_count >= 1 or chapter_count >= 3) and len(events) >= 5):
-        return None
+    def is_usable(self, total_rows: int) -> bool:
+        """Whether this tree is worth storing in place of a flat document."""
+        # A numbered run with holes in it means the extractor lost some openers,
+        # not that the book skips chapters. Storing 1, 3, 4, 6 asserts a
+        # six-chapter book has four; four of the ten candidates measured here
+        # were in that state.
+        if not _numbering_is_contiguous(self._chapter_ordinals):
+            return False
+        if not _numbering_is_contiguous(self._part_ordinals):
+            return False
+        # Avoid promoting incidental numbered phrases. A usable book or thesis
+        # tree needs either explicit Parts or several Chapters, plus multiple
+        # boundaries.
+        if not ((self.counts["parts"] >= 1 or self.counts["chapters"] >= 3)
+                and len(self.events) >= 5):
+            return False
+        return _divides_the_document(self.events, total_rows)
 
-    if not _divides_the_document(events, len(rows)):
-        return None
 
+def _apply_events(
+    rows: Sequence[Dict[str, Any]], events: Dict[int, tuple[list[str], list[str]]],
+) -> tuple[list[Dict[str, Any]], int, int]:
+    """Write each boundary's path onto the chunks that follow it."""
     output: list[Dict[str, Any]] = []
     active_path: list[str] = []
     active_roles: list[str] = []
-    changed = 0
-    mapped = 0
+    changed = mapped = 0
     for index, row in enumerate(rows):
         if index in events:
             active_path, active_roles = events[index]
@@ -502,17 +539,69 @@ def _refresh_pdf_rows_from_numbered_body_headings(
         after = {key: metadata.get(key) for key in STRUCTURE_METADATA_KEYS}
         changed += before != after
         output.append({**row, "metadata": metadata})
+    return output, changed, mapped
+
+
+def _refresh_pdf_rows_from_numbered_body_headings(
+    rows: Sequence[Dict[str, Any]], attachment_key: str, source_path: Path,
+) -> tuple[list[Dict[str, Any]], Dict[str, Any]] | None:
+    """Recover a conservative TOC-level hierarchy from body headings.
+
+    Language-neutral: the part/chapter/section vocabulary comes from
+    heading_structure, so an English book is read the same way a Japanese one
+    is.
+
+    Four questions are asked of each row, and they are kept apart because they
+    used to be one 250-line loop over fourteen shared locals, where a rule added
+    for one of them reached all four. Does the document repeat this heading
+    (`_HeadingCensus`); is the row still inside a printed contents
+    (`_PrintedContents`); may it be a boundary at all (`_admits_as_boundary`);
+    and where does it belong (`_RecoveredTree`).
+    """
+    census = _HeadingCensus.of(rows)
+    contents = _PrintedContents()
+    tree = _RecoveredTree()
+    for index, row in enumerate(rows):
+        title = _body_heading_title(row)
+        if not title:
+            continue
+        block_type = _block_type(row)
+        page = _row_page(row)
+        if block_type in _HEADING_BLOCKS:
+            census.passing(title)
+        if contents.opens_at(title, page):
+            continue
+        if contents.holds(title, page, block_type, census):
+            continue
+        if not _admits_as_boundary(title, block_type, census):
+            continue
+        if INDEX_GROUP_RE.match(title) and not tree.in_index_region:
+            # Multi-column indexes sometimes expose their first kana-group
+            # heading but lose the section title. Start at that PDF page's first
+            # chunk so entries preceding the group are not assigned to the
+            # previous chapter. A later running 人名索引 header is treated as
+            # the same functional region.
+            tree.open_index(census.first_row_on_page.get(page, index) if page else index)
+            continue
+        tree.place(index, title)
+
+    if not tree.is_usable(len(rows)):
+        return None
+
+    output, changed, mapped = _apply_events(rows, tree.events)
     return output, {
         "attachment_key": attachment_key, "source_type": "pdf",
         "source_path": str(source_path), "chunks": len(output),
         "metadata_changed": changed, "outline_entries": 0,
         "mapping_mode": "numbered_body_headings", "mapped_chunks": mapped,
         "heading_counts": {
-            "parts": part_count, "chapters": chapter_count,
-            "sections": section_count, "roman_subheadings": roman_count,
-            "total": len(events),
+            "parts": tree.counts["parts"], "chapters": tree.counts["chapters"],
+            "sections": tree.counts["sections"],
+            "roman_subheadings": tree.counts["roman"],
+            "total": len(tree.events),
         },
     }
+
 
 
 def _epub_source_path(rows: Sequence[Dict[str, Any]], attachment_key: str) -> Path:

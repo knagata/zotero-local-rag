@@ -789,3 +789,80 @@ def test_a_book_whose_divisions_share_the_text_is_still_recovered():
     assert [path[0] for path in paths] == [
         "CHAPTER ONE", "CHAPTER TWO", "CHAPTER THREE", "CHAPTER FOUR", "CHAPTER FIVE",
     ]
+
+
+# The pieces the recovery loop was split into, each asked its own question.
+
+def _census(entries):
+    from src.source_structure_refresh import _HeadingCensus
+    return _HeadingCensus.of(_pdf_rows(entries))
+
+
+def test_the_census_counts_headings_and_furniture_but_not_body_text():
+    census = _census([
+        ("CHAPTER ONE", "heading", 1), ("CHAPTER ONE", "page_furniture", 2),
+        ("CHAPTER ONE", "text", 3),
+    ])
+    from src.source_structure_refresh import _repetition_key
+    assert census.total[_repetition_key("CHAPTER ONE")] == 2
+
+
+def test_a_folio_does_not_hide_a_repetition_from_the_census():
+    # "序章] 13", "序章] 15" -- the printed page number makes every occurrence
+    # textually unique, so counting the raw text sees no repetition at all.
+    census = _census([(f"第一章 誤解 | {page * 2}", "page_furniture", page)
+                      for page in range(1, 6)])
+    assert census.repeats("第一章 誤解")
+
+
+def test_the_census_says_when_a_heading_still_lies_ahead():
+    census = _census([("PART II THE JOURNEY 87", "heading", 1),
+                      ("PART TWO THE JOURNEY", "heading", 9)])
+    # Matched on level and number: a contents page says "PART II" where the body
+    # page says "PART TWO", and the two share no text.
+    assert census.recurs_later("PART II THE JOURNEY 87")
+    census.passing("PART II THE JOURNEY 87")
+    census.passing("PART TWO THE JOURNEY")
+    assert not census.recurs_later("PART TWO THE JOURNEY")
+
+
+def test_the_contents_region_opens_on_either_language():
+    from src.source_structure_refresh import _PrintedContents
+    for heading in ("Contents", "CONTENTS", "目次", "Table of Contents"):
+        contents = _PrintedContents()
+        assert contents.opens_at(heading, 3), heading
+        assert contents.heading_page == 3
+    assert not _PrintedContents().opens_at("CHAPTER ONE", 3)
+
+
+def test_the_contents_region_ends_a_page_after_its_heading():
+    from src.source_structure_refresh import _PrintedContents
+    contents = _PrintedContents()
+    contents.opens_at("Contents", 1)
+    census = _census([("CHAPTER ONE", "heading", 9)])
+    assert contents.holds("CHAPTER ONE EPISTEMOLOGIES 17", 1, "heading", census)
+    assert not contents.holds("CHAPTER ONE", 9, "heading", census)
+
+
+def test_furniture_is_admitted_only_when_the_document_does_not_repeat_it():
+    from src.source_structure_refresh import _admits_as_boundary
+    once = _census([("CHAPTER ONE", "page_furniture", 1)])
+    often = _census([("CHAPTER ONE", "page_furniture", page) for page in range(1, 9)])
+    assert _admits_as_boundary("CHAPTER ONE", "page_furniture", once)
+    assert not _admits_as_boundary("CHAPTER ONE", "page_furniture", often)
+    # A heading block needs no such evidence, and a part opener is admitted from
+    # any block type because layout extraction so often files one as text.
+    assert _admits_as_boundary("CHAPTER ONE", "heading", often)
+    assert _admits_as_boundary("PART ONE", "text", often)
+    assert not _admits_as_boundary("CHAPTER ONE", "text", once)
+
+
+def test_a_tree_reports_itself_unusable_before_it_is_stored():
+    from src.source_structure_refresh import _RecoveredTree
+    tree = _RecoveredTree()
+    for index, title in enumerate(["CHAPTER ONE", "CHAPTER THREE", "CHAPTER FOUR",
+                                   "CHAPTER FIVE", "CHAPTER SIX"]):
+        tree.place(index * 10, title)
+    # 1, 3, 4, 5, 6 -- the extractor lost chapter two, and storing this would
+    # assert a six-chapter book has five.
+    assert not tree.is_usable(100)
