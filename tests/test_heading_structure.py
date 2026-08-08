@@ -77,6 +77,40 @@ class PartAndChapterTests(unittest.TestCase):
         self.assertFalse(hs.CHAPTER_RE.match(hs.normalize("PART III")))
 
 
+class BareRomanNumeralTests(unittest.TestCase):
+    """A Roman numeral with no PART/CHAPTER word in front of it to vouch for it."""
+
+    #: Every one of these is an ordinary English word spelled entirely from
+    #: IVXLCDM. /usr/share/dict/words holds 37 of them; none is spelled from
+    #: I, V and X alone, which is why the bare patterns stop at those three.
+    PROSE = ("DID THE COMMITTEE ever meet again?", "MIX THE FLOUR and water.",
+             "CIVIL THE tone remained.", "LIVID THE crowd became.",
+             "MILD weather returned.", "Did you have to work at Cootamundra?")
+
+    def test_prose_spelled_from_roman_letters_is_not_a_part(self):
+        # source_structure_refresh admits a PART match from any block type, so
+        # one such sentence became a top-level part with the chapters after it
+        # nested underneath; two of them made the part numbering non-contiguous
+        # and the whole document was rejected.
+        for text in self.PROSE:
+            with self.subTest(text=text):
+                self.assertFalse(hs.PART_RE.match(hs.normalize(text)))
+                self.assertFalse(hs.ROMAN_SUBHEADING_RE.match(hs.normalize(text)))
+                self.assertIsNone(hs.ordinal(text))
+
+    def test_a_real_bare_numeral_still_opens_a_part(self):
+        for text, expected in (("I THE BEGINNING", 1), ("IV THE END", 4),
+                               ("XII THE LAST", 12)):
+            with self.subTest(text=text):
+                self.assertTrue(hs.PART_RE.match(hs.normalize(text)))
+                self.assertEqual(hs.ordinal(text), expected)
+
+    def test_a_roman_subheading_is_still_recognised(self):
+        for text in ("III 展開", "Ⅳ 展開", "VII", "XXIV Method"):
+            with self.subTest(text=text):
+                self.assertTrue(hs.ROMAN_SUBHEADING_RE.match(hs.normalize(text)))
+
+
 class NormalizeTests(unittest.TestCase):
     def test_layout_decoration_is_stripped_from_the_front(self):
         # Headings arrive from OCR and layout extraction as "■ ■ ■ ■ ■ CHAPTER

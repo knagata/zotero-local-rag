@@ -60,9 +60,17 @@ def normalize(text: str) -> str:
     return _LEADING_DECORATION_RE.sub("", folded).strip()
 
 
+#: A Roman numeral standing on its own, with no PART/CHAPTER word in front of
+#: it to vouch for it. Deliberately narrower than _ORDINAL: 37 English words are
+#: spelled entirely from IVXLCDM -- did, dim, mix, mild, civil, livid, mimic --
+#: so a bare [IVXLCDM]+ reads ordinary prose as a part number ("DID THE
+#: COMMITTEE..." scored 999). No English word is spelled from I, V and X alone,
+#: and I..XXXIX is further than any book's parts or subheadings run.
+_BARE_ROMAN = r"[IVX]{1,6}"
+
 PART_RE = re.compile(
     rf"^(?:第\s*(?:{_ORDINAL})\s*[部編]|PART\s+(?:{_ORDINAL})\b|"
-    r"[IVXLCDM]+\s+THE\s+)",
+    rf"{_BARE_ROMAN}\s+THE\s+)",
     re.IGNORECASE,
 )
 CHAPTER_RE = re.compile(
@@ -80,9 +88,11 @@ SECTION_RE = re.compile(
 NUMBERED_RE = re.compile(
     r"^(?:[0-9]{1,2}(?:\.[0-9]{1,2}){0,3}[.)．。:]?|[一二三四五六七八九十百]+)(?:\s|　)",
 )
-#: A Roman numeral standing alone as a subheading ("III", "Ⅳ 展開").
+#: A Roman numeral standing alone as a subheading ("III", "Ⅳ 展開"). Restricted
+#: to _BARE_ROMAN for the same reason PART_RE is: nothing precedes it to confirm
+#: it is a numeral, so "DID THE ..." and "MILD ..." would both open one.
 ROMAN_SUBHEADING_RE = re.compile(
-    r"^(?:[IVXLCDM]+|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+)(?:\s|$)", re.IGNORECASE,
+    rf"^(?:{_BARE_ROMAN}|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+)(?:\s|$)", re.IGNORECASE,
 )
 #: A kana group heading inside a Japanese index ("ア行"). Deliberately kana
 #: only: an all-kanji word ending in 行 (銀行, 五行) is ordinary prose, and

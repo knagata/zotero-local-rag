@@ -299,16 +299,24 @@ def test_pdf_refresh_recovers_conservative_japanese_numbered_hierarchy():
 
 
 def test_pdf_heading_recovery_ignores_printed_toc_until_real_body_opener():
-    titles = [
-        "目次", "第一部 目次上の部", "第一章 目次上の章", "第一節 目次上の節",
-        "序章", "I 本文の導入", "第一章 本文一", "第一節 本文一の節",
-        "第二章 本文二", "第三章 本文三",
+    # The contents entries share the contents page, which is what a printed
+    # contents looks like: measured over the 25 candidates here that have one,
+    # every entry sits on the contents page or the one after, and the first body
+    # heading is 2 to 172 pages further on. A fixture that put one entry per
+    # page described a layout no book has, and it was the only thing holding up
+    # a contents region that advanced with each row it skipped -- which let a
+    # real book's contents run to page 171 and swallow its four part openers.
+    placed = [
+        ("目次", 1), ("第一部 目次上の部", 1), ("第一章 目次上の章", 1),
+        ("第一節 目次上の節", 1),
+        ("序章", 2), ("I 本文の導入", 2), ("第一章 本文一", 3),
+        ("第一節 本文一の節", 3), ("第二章 本文二", 4), ("第三章 本文三", 5),
     ]
     rows = [
         {"id": f"PDF:{index}", "text": title,
-         "metadata": {"attachmentKey": "PDF", "source_type": "pdf", "page": index + 1,
+         "metadata": {"attachmentKey": "PDF", "source_type": "pdf", "page": page,
                       "block_type": "heading", "structure_path": ["stale"]}}
-        for index, title in enumerate(titles)
+        for index, (title, page) in enumerate(placed)
     ]
     with patch("src.source_structure_refresh._pdf_source_path", return_value=Path("paper.pdf")), \
             patch("src.source_structure_refresh.get_pdf_toc", return_value=[]):
@@ -679,3 +687,70 @@ def test_chapter_end_notes_do_not_stop_the_next_chapter_opening():
     assert ("CHAPTER TWO",) in paths
     assert ("CHAPTER ONE", "Notes") in paths
     assert ("CHAPTER TWO", "Notes") in paths
+
+
+def test_one_prose_line_does_not_become_a_part_and_reparent_the_chapters():
+    # PART_RE matches a bare Roman numeral followed by "THE", and a part opener
+    # is admitted from any block type because layout extraction often files one
+    # as text. "DID" is a valid Roman numeral, so this sentence scored 999 and
+    # became a part with chapters three to five nested under it.
+    rows = _pdf_rows([
+        ("CHAPTER ONE", "heading", 1), ("body", "text", 1),
+        ("CHAPTER TWO", "heading", 2), ("body", "text", 2),
+        ("DID THE COMMITTEE ever meet again? The record is silent.", "text", 2),
+        ("CHAPTER THREE", "heading", 3), ("body", "text", 3),
+        ("CHAPTER FOUR", "heading", 4), ("body", "text", 4),
+        ("CHAPTER FIVE", "heading", 5), ("body", "text", 5),
+    ])
+    assert _recovered_paths(rows) == [
+        ("CHAPTER ONE",), ("CHAPTER TWO",), ("CHAPTER THREE",),
+        ("CHAPTER FOUR",), ("CHAPTER FIVE",),
+    ]
+
+
+def test_chapter_numbers_may_restart_inside_each_part():
+    # An edited collection or a multi-volume work numbers its chapters from one
+    # again in every part. A single book-wide set of opened chapter numbers read
+    # part two's chapters as repeats of part one's and dropped all of them,
+    # leaving part two's whole body on the bare part node.
+    rows = _pdf_rows(
+        [("PART ONE", "heading", 1)]
+        + [entry for chapter in range(1, 4) for entry in (
+            (f"CHAPTER {chapter}", "heading", chapter + 1),
+            (f"part one body {chapter}", "text", chapter + 1))]
+        + [("PART TWO", "heading", 5)]
+        + [entry for chapter in range(1, 4) for entry in (
+            (f"CHAPTER {chapter}", "heading", chapter + 5),
+            (f"part two body {chapter}", "text", chapter + 5))]
+    )
+    paths = _recovered_paths(rows)
+    assert ("PART TWO", "CHAPTER 1") in paths
+    assert ("PART TWO", "CHAPTER 3") in paths
+    assert paths.count(("PART ONE", "CHAPTER 1")) == 1
+
+
+def test_the_contents_region_does_not_advance_with_the_rows_it_skips():
+    # The bound is pinned to the contents heading. When it moved with the region
+    # instead, a book with a heading on every page never reached it, and the
+    # contents ran until something else ended it -- in one book here nothing did
+    # until page 171, so its real part openers were read as contents entries and
+    # the recovered tree was the back-of-book notes index instead.
+    rows = _pdf_rows(
+        [("Contents", "heading", 1), ("CHAPTER ONE EPISTEMOLOGIES 17", "heading", 1)]
+        # The body starts a few pages past the contents, as it does in every
+        # measured book, and from there a heading sits on every page -- which is
+        # what a moving bound could never get past.
+        + [entry for index, name in enumerate(
+            ["ONE", "TWO", "THREE", "FOUR", "FIVE"], start=1)
+           for entry in (
+               (f"CHAPTER {name}", "heading", index * 2 + 2),
+               (f"body {index}", "text", index * 2 + 2),
+               ("OBJECTIVITY", "page_furniture", index * 2 + 3),
+               (f"more {index}", "text", index * 2 + 3))]
+        + [("Notes", "heading", 14)]
+        + [entry for name in ["ONE", "TWO", "THREE", "FOUR", "FIVE"]
+           for entry in ((f"CHAPTER {name}: NOTES", "heading", 14), ("note", "text", 14))]
+    )
+    paths = _recovered_paths(rows)
+    assert paths[0] == ("CHAPTER ONE",)
+    assert ("CHAPTER FIVE",) in paths

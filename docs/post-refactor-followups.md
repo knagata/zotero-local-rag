@@ -126,9 +126,20 @@ changes rather than as another large refactoring batch.
 - Flat-PDF structure recovery: a book whose printed contents page lost its own
   "Contents"/"目次" heading during extraction has nothing for the contents guard
   to key on, so its contents lines are read as part openers. One item is in this
-  state (N6RU3QQG, *Japan-ness in Architecture*): four of its six recovered
+  state (N6RU3QQG, *Japan-ness in Architecture*): four of its five recovered
   boundaries are contents lines. Every such line ends in a folio while a real
   opener does not, which is a possible discriminator if more cases appear.
+- Flat-PDF structure recovery: a book that yields only part openers, with no
+  chapter headings the extractor kept, fails the `len(events) >= 5` promotion
+  gate and stays flat. 4GPDN33D (*The Spectre of Comparisons*) has four real
+  parts at pages 19/43/137/171 and nothing else, so it recovers nothing. Worth
+  revisiting the gate once the part vocabulary has fewer false positives to
+  guard against; it was written when a bare Roman numeral could match prose.
+- Flat-PDF structure recovery: `_numbering_is_contiguous` requires a run of
+  1..n, so a volume whose chapters continue the previous volume's numbering is
+  rejected and stays flat. Deliberate — nothing in the chunks tells it apart
+  from an extractor that lost the opening chapters — but it is a real shape for
+  multi-volume works and 全集.
 - Continue splitting `index_from_zotero.main_async` by attachment processing
   phase.
 - Split `db_relations._init_db` into versioned migrations.

@@ -205,6 +205,11 @@ def _numbering_is_contiguous(ordinals: Sequence[int]) -> bool:
     # Must start at 1, not merely be gapless. An extractor that loses the
     # opening chapters leaves 3, 4, 5 -- contiguous, and a tree built from it
     # silently omits the beginning of the book.
+    #
+    # The known cost: a volume whose chapters continue the previous volume's
+    # numbering (12 to 20) is a complete run for that volume and is rejected
+    # anyway. Nothing in the chunks distinguishes it from an extractor that lost
+    # chapters 1 to 11, and staying flat is the safer of the two mistakes.
     return numbered == list(range(1, len(numbered) + 1))
 
 
@@ -251,6 +256,13 @@ def _refresh_pdf_rows_from_numbered_body_headings(
         and str((row.get("metadata") or {}).get("block_type") or "").casefold()
         in {"heading", "page_furniture"}
     )
+    # Which numbers have already opened something. Parts are numbered once
+    # across the book; chapter numbers restart inside each part in many edited
+    # collections and multi-volume works, so the chapter set is cleared at every
+    # part boundary. Without that, a book running PART ONE/CHAPTER 1..3 then
+    # PART TWO/CHAPTER 1..3 lost all three of part two's chapters and put its
+    # whole body under the bare part node.
+    seen_part_ordinals: set[int] = set()
     seen_chapter_ordinals: set[int] = set()
     part_count = chapter_count = section_count = roman_count = 0
     for index, row in enumerate(rows):
@@ -272,10 +284,16 @@ def _refresh_pdf_rows_from_numbered_body_headings(
             continue
         if inside_printed_toc and (page := _row_page(row)) and printed_toc_page \
                 and page > printed_toc_page + 1:
-            # A printed contents runs over a page or two and then stops. Without
-            # a bound the region can swallow the book: a chapter opener whose
-            # number also appears in the back-of-book notes looks repeated, so
-            # nothing ever ends the contents.
+            # A printed contents occupies its own page and at most the next; in
+            # all 25 candidates here that carry one, every entry sits on the
+            # contents page or the one after, and the first body heading is 2 to
+            # 172 pages further on. The bound is pinned to the contents heading
+            # rather than moving with the region: letting it advance with each
+            # row skipped meant a book with a heading on every page never
+            # reached it, and the contents then ran until something else ended
+            # it. In one book here nothing did until page 171, so its four real
+            # part openers were read as contents and the recovered tree was the
+            # back-of-book notes index instead.
             inside_printed_toc = False
         if inside_printed_toc:
             # What distinguishes a contents entry from the opener it lists is
@@ -303,9 +321,6 @@ def _refresh_pdf_rows_from_numbered_body_headings(
             if body_opener and block_type in {"heading", "page_furniture"}:
                 inside_printed_toc = False
             else:
-                # A contents can run to several pages, so the bound above moves
-                # with the region rather than staying pinned to the heading.
-                printed_toc_page = max(printed_toc_page, _row_page(row))
                 continue
         # OCR/layout extractors often label a genuine Part opener as text, and
         # they label chapter openers "page_furniture" as readily as "heading" --
@@ -353,7 +368,16 @@ def _refresh_pdf_rows_from_numbered_body_headings(
             section_path = []
             functional_scope = title in _FUNCTIONAL_BODY_HEADINGS
             events[index] = ([title], ["chapter"])
+        elif PART_RE.match(title) and heading_ordinal(title) in seen_part_ordinals:
+            # Already opened -- see the chapter case below for why a repeat is
+            # a notes label rather than a boundary.
+            if functional_scope and section_path:
+                path = [*section_path, title]
+                events[index] = (path, infer_structure_roles(path))
         elif PART_RE.match(title):
+            if number := heading_ordinal(title):
+                seen_part_ordinals.add(number)
+            seen_chapter_ordinals.clear()
             part_path = [title]
             chapter_path = []
             section_path = []
