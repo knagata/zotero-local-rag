@@ -27,7 +27,7 @@ if __package__:
     from .reference_text import is_short_form_reference, s2_candidate_is_supported
     from .v3_data_plane import (
         collection_name as v3_collection_name,
-        resolve_configured_path as _resolve_configured_path,
+        chroma_dir as _chroma_dir,
     )
     from .env_utils import load_dotenv_native as _load_dotenv
 else:  # pragma: no cover - direct script imports
@@ -41,7 +41,7 @@ else:  # pragma: no cover - direct script imports
     from reference_text import is_short_form_reference, s2_candidate_is_supported
     from v3_data_plane import (
         collection_name as v3_collection_name,
-        resolve_configured_path as _resolve_configured_path,
+        chroma_dir as _chroma_dir,
     )
     from env_utils import load_dotenv_native as _load_dotenv
 
@@ -62,7 +62,7 @@ _load_dotenv()
 # 解決規則は v3_data_plane.resolve_configured_path が唯一の正典（~展開と
 # プロジェクトルート基準の相対解決）。ここで独自に Path() するとその2つが
 # 抜け、CWD次第で別のディレクトリを指す。
-CHROMA_DIR = _resolve_configured_path(ROOT, os.environ.get("CHROMA_DIR") or ROOT / "data" / "chroma")
+CHROMA_DIR = _chroma_dir(ROOT)
 _s2_key_at_import = os.environ.get("S2_API_KEY", "")
 print(
     "[citation_mapper] S2_API_KEY: "

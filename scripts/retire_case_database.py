@@ -8,10 +8,14 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import sys
 from typing import Any, Iterable
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from src.v3_data_plane import chroma_dir  # noqa: E402
 DEFAULT_DB = ROOT / "data" / "relations.db"
 DEFAULT_CHROMA = ROOT / "data" / "chroma"
 DEFAULT_BACKUPS = ROOT / "data" / "backups"
@@ -261,7 +265,7 @@ def run(*, db_path: Path, chroma_path: Path, backups_path: Path, apply: bool) ->
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--db", type=Path, default=Path(os.environ.get("RELATIONS_DB_PATH", DEFAULT_DB)))
-    parser.add_argument("--chroma", type=Path, default=Path(os.environ.get("CHROMA_DIR", DEFAULT_CHROMA)))
+    parser.add_argument("--chroma", type=Path, default=chroma_dir(ROOT))
     parser.add_argument("--backups", type=Path, default=DEFAULT_BACKUPS)
     parser.add_argument("--apply", action="store_true", help="Back up, then remove case artifacts.")
     args = parser.parse_args(argv)

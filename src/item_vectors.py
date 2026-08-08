@@ -10,9 +10,13 @@ from typing import Any
 import numpy as np
 
 try:
-    from .v3_data_plane import collection_name as v3_collection_name
+    from .v3_data_plane import (
+        chroma_dir as v3_chroma_dir, collection_name as v3_collection_name,
+    )
 except ImportError:
-    from v3_data_plane import collection_name as v3_collection_name
+    from v3_data_plane import (
+        chroma_dir as v3_chroma_dir, collection_name as v3_collection_name,
+    )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CACHE_PATH = PROJECT_ROOT / "data" / "item_vectors_cache.json"
@@ -22,8 +26,8 @@ _META_KEY = "__meta__"
 def _open_collection():
     import chromadb
 
-    chroma_dir = Path(os.environ.get("CHROMA_DIR", PROJECT_ROOT / "data" / "chroma"))
-    client = chromadb.PersistentClient(path=str(chroma_dir))
+    directory = v3_chroma_dir(PROJECT_ROOT)
+    client = chromadb.PersistentClient(path=str(directory))
     return client, client.get_collection(v3_collection_name())
 
 
@@ -159,7 +163,7 @@ def get_item_meta(
     if not requested:
         return {}
     chroma_db = chroma_db or Path(
-        os.environ.get("CHROMA_DIR", PROJECT_ROOT / "data" / "chroma")
+        v3_chroma_dir(PROJECT_ROOT)
     ) / "chroma.sqlite3"
     if not chroma_db.exists():
         return {}

@@ -24,6 +24,7 @@ from pathlib import Path
 
 from env_utils import load_dotenv_native
 from v3_data_plane import (
+    chroma_dir,
     V3_COLLECTION, enforce_environment as enforce_v3_environment,
     manifest_path as v3_manifest_path,
 )
@@ -51,7 +52,11 @@ from db_relations import (
 
 
 ROOT = str(PROJECT_ROOT)
-CHROMA_DIR = os.environ.get("CHROMA_DIR", os.path.join(ROOT, "data", "chroma"))
+# Asked of v3_data_plane rather than read from the environment here: it
+# owns both the default location and the rule that expands ~ and resolves
+# a relative value against the project root. Copies of that rule have
+# drifted twice, each time leaving one configuration naming two databases.
+CHROMA_DIR = str(chroma_dir(PROJECT_ROOT))
 MANIFEST_PATH = str(v3_manifest_path(PROJECT_ROOT))
 INDEXING_LOCK_PATH = os.path.join(ROOT, "data", "indexing.lock")
 _LOCK_STALE_HOURS = 4

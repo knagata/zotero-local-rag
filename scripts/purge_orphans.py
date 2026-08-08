@@ -59,9 +59,10 @@ from src.manifest import load_manifest, save_manifest  # noqa: E402
 from src.orphan_cleanup import (  # noqa: E402
     attachment_parents, classify_ledger_keys, live_item_keys, stale_manifest_keys,
 )
+from src.v3_data_plane import chroma_dir, lexical_path  # noqa: E402
 from src.zotero_source_localapi import ZoteroLocalAPI  # noqa: E402
 
-CHROMA_DIR = Path(os.environ.get("CHROMA_DIR", ROOT / "data" / "chroma"))
+CHROMA_DIR = chroma_dir(ROOT)
 
 
 def _ledger_keys() -> set[str]:
@@ -111,7 +112,7 @@ def _count_content(item_keys: list[str]) -> dict[str, dict[str, int]]:
         collection = chromadb.PersistentClient(path=str(CHROMA_DIR)).get_collection(name)
     except Exception as exc:
         print(f"[WARN] Chroma unavailable: {exc}", file=sys.stderr)
-    lexical_path = Path(os.environ.get("LEXICAL_DB_PATH", ROOT / "data" / "lexical_v3.sqlite3"))
+    lexical_db = lexical_path(ROOT)
     for key in item_keys:
         chroma_n = 0
         if collection is not None:
@@ -121,7 +122,7 @@ def _count_content(item_keys: list[str]) -> dict[str, dict[str, int]]:
                 chroma_n = -1
         fts_n = 0
         try:
-            conn = sqlite3.connect(f"file:{lexical_path}?mode=ro", uri=True)
+            conn = sqlite3.connect(f"file:{lexical_db}?mode=ro", uri=True)
             fts_n = conn.execute(
                 "SELECT COUNT(*) FROM chunks_fts WHERE item_key = ?", (key,)
             ).fetchone()[0]
@@ -141,7 +142,7 @@ def _purge_content(item_keys: list[str]) -> dict[str, int]:
     removed = {"chroma": 0, "fts": 0}
     name = active_collection_name(chroma_dir=CHROMA_DIR)
     collection = chromadb.PersistentClient(path=str(CHROMA_DIR)).get_collection(name)
-    lexical_path = Path(os.environ.get("LEXICAL_DB_PATH", ROOT / "data" / "lexical_v3.sqlite3"))
+    lexical_db = lexical_path(ROOT)
     for key in item_keys:
         got = collection.get(where={"itemKey": key}, include=[])
         ids = got.get("ids") or []
@@ -149,10 +150,10 @@ def _purge_content(item_keys: list[str]) -> dict[str, int]:
             for start in range(0, len(ids), 500):
                 collection.delete(ids=ids[start:start + 500])
             removed["chroma"] += len(ids)
-            delete_by_chunk_ids(ids, path=lexical_path)
+            delete_by_chunk_ids(ids, path=lexical_db)
         # Note chunks carry the parent item key but no attachment key, so the
         # id-based delete above covers them too.
-        conn = sqlite3.connect(lexical_path)
+        conn = sqlite3.connect(lexical_db)
         try:
             removed["fts"] += conn.execute(
                 "DELETE FROM chunks_fts WHERE item_key = ?", (key,)
@@ -185,7 +186,7 @@ def _purge_attachments(attachment_keys: list[str]) -> dict[str, int]:
     removed = {"chroma": 0, "fts": 0}
     name = active_collection_name(chroma_dir=CHROMA_DIR)
     collection = chromadb.PersistentClient(path=str(CHROMA_DIR)).get_collection(name)
-    lexical_path = Path(os.environ.get("LEXICAL_DB_PATH", ROOT / "data" / "lexical_v3.sqlite3"))
+    lexical_db = lexical_path(ROOT)
     for key in attachment_keys:
         got = collection.get(where={"attachmentKey": key}, include=[])
         ids = got.get("ids") or []
@@ -194,7 +195,7 @@ def _purge_attachments(attachment_keys: list[str]) -> dict[str, int]:
         for start in range(0, len(ids), 500):
             collection.delete(ids=ids[start:start + 500])
         removed["chroma"] += len(ids)
-        removed["fts"] += delete_by_chunk_ids(ids, path=lexical_path) or 0
+        removed["fts"] += delete_by_chunk_ids(ids, path=lexical_db) or 0
     return removed
 
 

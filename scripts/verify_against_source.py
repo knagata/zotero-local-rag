@@ -39,16 +39,14 @@ from src.source_verification import (  # noqa: E402
     chunks_without_item, compare_document, dangling_node_ids, indexed_page_chars,
     source_page_chars, unretrievable_documents,
 )
-from src.v3_data_plane import V3_COLLECTION, resolve_configured_path  # noqa: E402
+from src.v3_data_plane import V3_COLLECTION, chroma_dir, manifest_path  # noqa: E402
 
 # .env は MANIFEST_PATH / LEXICAL_DB_PATH を *相対パス* で持つ。素の Path() で
 # 受けるとCWD基準になり、プロジェクトルート以外から起動したときに存在しない
 # ファイルを見にいく（2026-08-04に実測）。解決規則は
 # resolve_configured_path が唯一の正典。
-MANIFEST = resolve_configured_path(
-    ROOT, os.environ.get("MANIFEST_PATH") or ROOT / "data" / "manifest_v3.json")
-CHROMA_DIR = resolve_configured_path(
-    ROOT, os.environ.get("CHROMA_DIR") or ROOT / "data" / "chroma")
+MANIFEST = manifest_path(ROOT)
+CHROMA_DIR = chroma_dir(ROOT)
 
 
 def _collection_rows(collection_name: str, *, chroma_dir: Path = CHROMA_DIR) -> list[dict[str, Any]]:

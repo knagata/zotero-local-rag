@@ -9,28 +9,24 @@ from typing import Any
 
 try:
     from .v3_data_plane import (
-        collection_name as v3_collection_name, resolve_configured_path,
+        collection_name as v3_collection_name, chroma_dir,
     )
 except ImportError:
     from v3_data_plane import (
-        collection_name as v3_collection_name, resolve_configured_path,
+        collection_name as v3_collection_name, chroma_dir,
     )
 
 ROOT = Path(__file__).resolve().parents[1]
-# Delegates to v3_data_plane.resolve_configured_path, "the one place this
-# resolution rule is written" (its own docstring), rather than re-deriving it.
-# This used to be an independent copy that missed .expanduser() -- a
-# ~-prefixed CHROMA_DIR silently resolved to a literal "~" subdirectory here
-# while every other V3 entry point expanded it (fixed 2026-07-30). Adding
-# .expanduser() locally closed that gap but left the other half of the rule:
-# a *relative* CHROMA_DIR still resolved against the caller's cwd instead of
-# the project root, so the same config named different directories depending
-# on where the process was started (2026-08-04). Calling the canonical helper
-# keeps both halves in one place. Callers that already resolved CHROMA_DIR
-# (via chroma_dir()/enforce_environment()) should still pass chroma_dir=
+# Asked of v3_data_plane, which owns both the default location and the rule
+# for reading a configured one. This was an independent copy twice over: it
+# missed .expanduser(), so a ~-prefixed CHROMA_DIR became a literal "~"
+# subdirectory here while every other entry point expanded it (2026-07-30);
+# adding .expanduser() locally closed that and left the other half, a relative
+# value still resolving against the caller's cwd (2026-08-04). Reading the
+# variable at all is what kept regrowing the copy, so it is not read here.
+# Callers that already know the directory should still pass chroma_dir=
 # explicitly rather than rely on this default.
-DEFAULT_CHROMA_DIR = resolve_configured_path(
-    ROOT, os.environ.get("CHROMA_DIR") or ROOT / "data" / "chroma")
+DEFAULT_CHROMA_DIR = chroma_dir(ROOT)
 
 
 def natural_chunk_key(chunk_id: str) -> list[Any]:

@@ -53,11 +53,12 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.item_vectors import get_item_vectors as _shared_get_item_vectors
+from src.v3_data_plane import chroma_dir
 from citation_graph.graph_service import GraphBuildService
 load_dotenv(PROJECT_ROOT / ".env")
 
 DB_PATH         = os.environ.get("RELATIONS_DB_PATH", str(PROJECT_ROOT / "data" / "relations.db"))
-CHROMA_DB       = os.environ.get("CHROMA_DIR", str(PROJECT_ROOT / "data" / "chroma")) + "/chroma.sqlite3"
+CHROMA_DB       = str(chroma_dir(PROJECT_ROOT) / "chroma.sqlite3")
 ZOTERO_SQLITE   = os.environ.get(
     "ZOTERO_SQLITE",
     str(Path.home() / "Zotero" / "zotero.sqlite"),
@@ -2856,7 +2857,7 @@ def main() -> None:
         palette=_PALETTE, css_root=_CSS_ROOT, js_theme=_JS_THEME,
     )
     _state["db_path"]    = DB_PATH
-    _state["chroma_dir"] = os.environ.get("CHROMA_DIR", str(PROJECT_ROOT / "data" / "chroma"))
+    _state["chroma_dir"] = str(chroma_dir(PROJECT_ROOT))
     _state["args"]       = args
     # _rebuild_done はクリア状態 → /api/graph はビルド完了まで待機する
 

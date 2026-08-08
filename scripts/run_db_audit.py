@@ -28,6 +28,9 @@ from src.env_utils import load_dotenv_native  # noqa: E402
 load_dotenv_native(ROOT)
 
 from src.v3_data_plane import V3_COLLECTION, enforce_environment  # noqa: E402
+from src.v3_data_plane import (  # noqa: E402
+    chroma_dir as v3_chroma_dir, lexical_path, manifest_path,
+)
 
 
 def _run(*args: str) -> None:
@@ -61,10 +64,14 @@ def main() -> None:
     except RuntimeError as exc:
         raise SystemExit(f"[停止] {exc}") from exc
 
-    chroma_dir = Path(os.environ["CHROMA_DIR"])
+    # Asked of v3_data_plane rather than read from the environment here: it
+    # owns both the default location and the rule that expands ~ and resolves
+    # a relative value against the project root. Copies of that rule have
+    # drifted twice, each time leaving one configuration naming two databases.
+    chroma_directory = v3_chroma_dir(ROOT)
     pipeline_config = Path(os.environ["PIPELINE_CONFIG_PATH"])
-    manifest = Path(os.environ["MANIFEST_PATH"])
-    lexical_db = Path(os.environ["LEXICAL_DB_PATH"])
+    manifest = manifest_path(ROOT)
+    lexical_db = lexical_path(ROOT)
     collection = os.environ.get("CHROMA_COLLECTION", V3_COLLECTION)
 
     zotero_audit_path = Path(os.environ.get(
@@ -81,12 +88,12 @@ def main() -> None:
     _run(
         "python", "scripts/verify_against_source.py",
         "--collection", collection, "--manifest", str(manifest),
-        "--chroma-dir", str(chroma_dir), "--output", str(source_audit_path),
+        "--chroma-dir", str(chroma_directory), "--output", str(source_audit_path),
     )
     _run(
         "python", "scripts/audit_v3_cutover.py",
         "--new-only", "--new-collection", collection, "--manifest", str(manifest),
-        "--chroma-dir", str(chroma_dir),
+        "--chroma-dir", str(chroma_directory),
         "--lexical-db", str(lexical_db), "--pipeline-config", str(pipeline_config),
         "--zotero-report", str(zotero_audit_path), "--source-report", str(source_audit_path),
         "--output", str(gate_path),

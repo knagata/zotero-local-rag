@@ -20,6 +20,7 @@ try:
         classify_section_content, is_meta_summary,
     )
     from .chunk_store import get_item_chunks
+    from .v3_data_plane import chroma_dir
     from .document_structure import STRUCTURE_VERSION
     from .db_relations import (
         get_all_document_node_summaries, get_document_node_summary_reuse_cache, get_document_nodes, get_document_structure,
@@ -34,6 +35,7 @@ try:
 except ImportError:  # pragma: no cover
     from summary_core import _extractive_section, _llm_summary_only_item, _llm_summary_only_section, classify_section_content, is_meta_summary
     from chunk_store import get_item_chunks
+    from v3_data_plane import chroma_dir
     from document_structure import STRUCTURE_VERSION
     from db_relations import get_all_document_node_summaries, get_document_node_summary_reuse_cache, get_document_nodes, get_document_structure, get_item_processing_status, mark_artifact_status, replace_document_node_summary_parts, save_document_node_summary
     from embedder import create_embedding_function, open_chroma_collection, resolve_embedder_settings
@@ -63,7 +65,11 @@ MAX_PARENT_INPUT_CHARS = 30_000
 #: chunks and summaries are separate collections.
 MIN_LEAF_CHARS = 1_000
 ROOT = Path(__file__).resolve().parents[1]
-CHROMA_DIR = Path(os.environ.get("CHROMA_DIR", ROOT / "data" / "chroma"))
+# Asked of v3_data_plane rather than read from the environment here: it
+# owns both the default location and the rule that expands ~ and resolves
+# a relative value against the project root. Copies of that rule have
+# drifted twice, each time leaving one configuration naming two databases.
+CHROMA_DIR = chroma_dir(ROOT)
 
 _PART_TITLE_RE = re.compile(
     r"^(?:第\s*(?:[0-9一二三四五六七八九十百]+|[IVXLCDM]+)\s*部|"

@@ -33,7 +33,7 @@ from src.reocr_adoption import adopt_prepared_reocr  # noqa: E402
 from src.reocr_quality import (  # noqa: E402
     evaluate_adoption_gate, majority_language, text_metrics,
 )
-from src.v3_data_plane import resolve_configured_path  # noqa: E402
+from src.v3_data_plane import chroma_dir, lexical_path, manifest_path  # noqa: E402
 
 
 def selected_rows(path: Path, limit: int, item_key: str | None = None) -> list[dict[str, Any]]:
@@ -184,24 +184,21 @@ def main(argv: list[str] | None = None) -> int:
         # 変数名は MANIFEST_PATH / LEXICAL_DB_PATH。以前ここだけ
         # MANIFEST_V3_PATH / LEXICAL_V3_DB_PATH というリポジトリ内のどこにも
         # 存在しない名前を読んでおり、設定を常に無視して既定値へ落ちていた
-        # （2026-08-04）。解決は resolve_configured_path に委ねる。
-        chroma_dir = resolve_configured_path(
-            ROOT, os.environ.get("CHROMA_DIR") or ROOT / "data" / "chroma")
-        manifest_path = resolve_configured_path(
-            ROOT, os.environ.get("MANIFEST_PATH") or ROOT / "data" / "manifest_v3.json")
-        lexical_path = resolve_configured_path(
-            ROOT, os.environ.get("LEXICAL_DB_PATH") or ROOT / "data" / "lexical_v3.sqlite3")
+        # （2026-08-04）。既定値も解決規則も v3_data_plane が持つ。
+        chroma_directory = chroma_dir(ROOT)
+        manifest_file = manifest_path(ROOT)
+        lexical_file = lexical_path(ROOT)
         collection = get_collection(
-            chroma_dir=chroma_dir, project_root=ROOT,
+            chroma_dir=chroma_directory, project_root=ROOT,
             chroma_collection_env=collection_name,
             chroma_collection_default="zotero_paragraphs_v3",
             persist_active_config=False,
         )
-        old_chunks = get_item_chunks(key[0], chroma_dir=chroma_dir, collection_name=collection_name)
+        old_chunks = get_item_chunks(key[0], chroma_dir=chroma_directory, collection_name=collection_name)
         report["adoption"] = adopt_prepared_reocr(
             item_key=key[0], attachment_key=key[1], prepared=prepared[key],
             collection=collection, old_item_chunks=old_chunks,
-            manifest_path=manifest_path, lexical_path=lexical_path,
+            manifest_file=manifest_file, lexical_file=lexical_file,
             force=bool(args.force_adopt),
             gate_passed=bool(comparison["quality_gate"]["passed"]),
         )

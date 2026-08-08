@@ -86,6 +86,7 @@ from db_relations import (
 from document_structure import attach_structure_metadata, build_document_structure
 from chunk_store import get_item_chunks, list_chunk_ids, list_item_keys
 from v3_data_plane import (
+    chroma_dir, lexical_path,
     V3_COLLECTION, collection_name as v3_collection_name,
     enforce_environment as enforce_v3_environment, manifest_path as v3_manifest_path,
 )
@@ -112,7 +113,11 @@ load_dotenv_native(PROJECT_ROOT)
 enforce_v3_environment(PROJECT_ROOT)
 
 DATA_DIR = PROJECT_ROOT / "data"
-CHROMA_DIR = Path(os.environ.get("CHROMA_DIR", str(DATA_DIR / "chroma")))
+# Asked of v3_data_plane rather than read from the environment here: it
+# owns both the default location and the rule that expands ~ and resolves
+# a relative value against the project root. Copies of that rule have
+# drifted twice, each time leaving one configuration naming two databases.
+CHROMA_DIR = chroma_dir(PROJECT_ROOT)
 PDF_CACHE_DIR = Path(os.environ.get("PDF_CACHE_DIR", str(DATA_DIR / "pdf_cache")))
 STRUCTURED_V3_ENABLE = True
 MANIFEST_PATH = v3_manifest_path(PROJECT_ROOT)
@@ -1663,7 +1668,7 @@ def _reset_rebuild_target() -> None:
         MANIFEST_PATH.unlink()
     if V3_PIPELINE_CONFIG_PATH.exists():
         V3_PIPELINE_CONFIG_PATH.unlink()
-    lexical_v3 = Path(os.environ.get("LEXICAL_DB_PATH", DATA_DIR / "lexical_v3.sqlite3"))
+    lexical_v3 = lexical_path(PROJECT_ROOT)
     if lexical_v3.exists():
         lexical_v3.unlink()
 

@@ -12,14 +12,20 @@ try:
     from .chunk_store import active_collection_name
     from .lexical_index import rebuild_from_chroma
     from .text_utils import detect_lang
+    from .v3_data_plane import chroma_dir
 except ImportError:  # pragma: no cover
     from chunk_store import active_collection_name
     from lexical_index import rebuild_from_chroma
     from text_utils import detect_lang
+    from v3_data_plane import chroma_dir
 
 
 ROOT = Path(__file__).resolve().parents[1]
-CHROMA_DIR = Path(os.environ.get("CHROMA_DIR", ROOT / "data" / "chroma"))
+# Asked of v3_data_plane rather than read from the environment here: it
+# owns both the default location and the rule that expands ~ and resolves
+# a relative value against the project root. Copies of that rule have
+# drifted twice, each time leaving one configuration naming two databases.
+CHROMA_DIR = chroma_dir(ROOT)
 
 
 def annotate_batch(
