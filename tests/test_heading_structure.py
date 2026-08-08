@@ -1,0 +1,159 @@
+"""The structural heading vocabulary, in one place and in both languages.
+
+heading_zone.py consolidated the *functional* vocabulary after three
+extractors disagreed about it. The structural vocabulary was left split and
+drifted the same way: chapter_detect knew "PART ONE" as well as "第一部",
+while source_structure_refresh -- the module that rebuilds a flat document's
+tree -- knew only the Japanese. All 84 flat PDFs awaiting recovery were
+English, so none of them was ever examined.
+"""
+from __future__ import annotations
+
+import sys
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
+import heading_structure as hs  # noqa: E402
+
+
+class PartAndChapterTests(unittest.TestCase):
+    def test_the_same_level_is_recognised_in_either_language(self):
+        for japanese, english in (
+            ("第一部 脱中心化", "PART ONE: Decentring"),
+            ("第一章 物理的メディア", "CHAPTER 1: Physical Media"),
+            ("第一節 基礎", "SECTION 2 Foundations"),
+        ):
+            with self.subTest(pair=(japanese, english)):
+                jp_level = [
+                    name for name, pattern in (
+                        ("part", hs.PART_RE), ("chapter", hs.CHAPTER_RE),
+                        ("section", hs.SECTION_RE),
+                    ) if pattern.match(hs.normalize(japanese))
+                ]
+                en_level = [
+                    name for name, pattern in (
+                        ("part", hs.PART_RE), ("chapter", hs.CHAPTER_RE),
+                        ("section", hs.SECTION_RE),
+                    ) if pattern.match(hs.normalize(english))
+                ]
+                self.assertEqual(jp_level, en_level)
+
+    def test_english_ordinals_are_accepted_as_words_and_digits(self):
+        for heading in ("CHAPTER ONE", "CHAPTER 1", "Chapter I", "chapter twelve"):
+            with self.subTest(heading=heading):
+                self.assertTrue(hs.CHAPTER_RE.match(hs.normalize(heading)))
+
+    def test_unnumbered_japanese_openers_are_still_chapters(self):
+        for heading in ("序章", "終章", "はじめに", "おわりに", "結論"):
+            with self.subTest(heading=heading):
+                self.assertTrue(hs.CHAPTER_RE.match(hs.normalize(heading)))
+
+    def test_a_part_is_not_also_a_chapter(self):
+        self.assertTrue(hs.PART_RE.match(hs.normalize("PART III")))
+        self.assertFalse(hs.CHAPTER_RE.match(hs.normalize("PART III")))
+
+
+class NormalizeTests(unittest.TestCase):
+    def test_layout_decoration_is_stripped_from_the_front(self):
+        # Headings arrive from OCR and layout extraction as "■ ■ ■ ■ ■ CHAPTER
+        # ONE"; anchored patterns match nothing until the run is removed.
+        self.assertEqual(hs.normalize("■ ■ ■ ■ ■ CHAPTER ONE"), "CHAPTER ONE")
+        self.assertTrue(hs.CHAPTER_RE.match(hs.normalize("■ ■ ■ ■ ■ CHAPTER ONE")))
+
+    def test_full_width_forms_fold_to_their_ascii_twins(self):
+        self.assertTrue(hs.CHAPTER_RE.match(hs.normalize("第１章 序説")))
+
+    def test_leading_japanese_text_is_not_stripped(self):
+        self.assertEqual(hs.normalize("第一章 物理的メディア"), "第一章 物理的メディア")
+
+    def test_markdown_hashes_and_runs_of_space_collapse(self):
+        self.assertEqual(hs.normalize("##  PART   TWO "), "PART TWO")
+
+
+class OrdinalTests(unittest.TestCase):
+    def test_numbers_are_read_from_every_written_form(self):
+        for heading, expected in (
+            ("CHAPTER ONE", 1), ("CHAPTER 12", 12), ("Chapter IV", 4),
+            ("第三章", 3), ("第十二章", 12), ("PART IV", 4),
+            ("■ ■ CHAPTER SIX", 6),
+        ):
+            with self.subTest(heading=heading):
+                self.assertEqual(hs.ordinal(heading), expected)
+
+    def test_prose_is_not_read_as_a_roman_numeral(self):
+        # The leading letter of an ordinary word is a valid Roman numeral:
+        # "Introduction" scored 1, "CONTENTS" 100 and "Method" 1000, which
+        # would make a contiguity check pass or fail on prose.
+        for heading in ("序章", "Introduction", "NOTES", "CONTENTS", "Method",
+                        "Ical Practice", "Ди"):
+            with self.subTest(heading=heading):
+                self.assertIsNone(hs.ordinal(heading))
+
+    def test_a_gap_in_a_run_is_detectable(self):
+        # An extractor that drops "CHAPTER TWO" leaves 1, 3, 4, 6. Storing that
+        # would assert a six-chapter book has four chapters.
+        found = [hs.ordinal(h) for h in
+                 ("CHAPTER ONE", "CHAPTER THREE", "CHAPTER FOUR", "CHAPTER SIX")]
+        self.assertEqual(found, [1, 3, 4, 6])
+        self.assertNotEqual(found, list(range(1, len(found) + 1)))
+
+
+class IndexGroupTests(unittest.TestCase):
+    def test_a_kana_row_marker_is_recognised(self):
+        for heading in ("ア行", "か行", "サ 行"):
+            with self.subTest(heading=heading):
+                self.assertTrue(hs.INDEX_GROUP_RE.match(hs.normalize(heading)))
+
+    def test_an_all_kanji_word_ending_in_the_same_character_is_not(self):
+        # 五行 and 銀行 are ordinary prose; treating one as an index marker
+        # moved a body section into the excluded index zone.
+        for heading in ("五行", "銀行", "旅行"):
+            with self.subTest(heading=heading):
+                self.assertFalse(hs.INDEX_GROUP_RE.match(hs.normalize(heading)))
+
+
+class CoversTheVocabularyItReplacesTests(unittest.TestCase):
+    """Nothing the split definitions matched may stop matching here."""
+
+    SAMPLES = (
+        "第一部 脱中心化", "第一章 物理的メディア", "第一節 基礎", "序章", "終章",
+        "はじめに", "おわりに", "結論", "PART ONE", "PART III", "CHAPTER 12",
+        "III 展開", "ア行", "3. Method", "一 序説",
+    )
+
+    def test_every_pattern_the_japanese_module_had_is_covered(self):
+        import source_structure_refresh as ssr
+
+        for label, old, new in (
+            ("part", ssr._JP_PART_RE, hs.PART_RE),
+            ("chapter", ssr._JP_CHAPTER_RE, hs.CHAPTER_RE),
+            ("section", ssr._JP_SECTION_RE, hs.SECTION_RE),
+            ("roman", ssr._ROMAN_SUBHEADING_RE, hs.ROMAN_SUBHEADING_RE),
+            ("index", ssr._JP_INDEX_GROUP_RE, hs.INDEX_GROUP_RE),
+        ):
+            for sample in self.SAMPLES:
+                if old.match(sample):
+                    with self.subTest(pattern=label, sample=sample):
+                        self.assertTrue(new.match(hs.normalize(sample)))
+
+    def test_every_pattern_the_bilingual_module_had_is_covered(self):
+        import chapter_detect as cd
+
+        for label, old, new in (
+            ("part", cd._PART_RE, hs.PART_RE),
+            ("chapter", cd._CHAPTER_RE, hs.CHAPTER_RE),
+            ("section", cd._EXPLICIT_SECTION_RE, hs.SECTION_RE),
+        ):
+            for sample in self.SAMPLES:
+                if old.match(sample):
+                    with self.subTest(pattern=label, sample=sample):
+                        self.assertTrue(new.match(hs.normalize(sample)))
+
+
+if __name__ == "__main__":
+    unittest.main()
