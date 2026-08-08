@@ -1196,35 +1196,50 @@ def _merge_deferred_ocr_audit_quality(
     return merged
 
 
-def _deferred_manifest_entry(
-    previous: dict | None, *, mtime: float, size: int, source_path: Any,
-    title: Any, quality: dict[str, Any], content_signature_value: str | None = None,
+def _manifest_entry(
+    *, mtime: float, size: int, source_path: Any, title: Any,
+    quality: dict[str, Any], content_signature_value: str | None = None,
     pipeline_fingerprint: str | None = None,
 ) -> dict[str, Any]:
-    """Build the manifest row for an attachment handed to the Mistral OCR batch.
+    """One attachment's manifest row: what was indexed, and from which file.
 
-    Every deferral path must write one. An attachment missing from
-    ``files_manifest`` is reported by ``--rebuild``'s completeness check under
-    ``missing_manifest_attachments`` *in addition to* being counted in
-    ``deferred_extract`` -- the same queued file named twice, as if it had
-    vanished rather than been handed to the batch. The EPUB path used to skip
-    this while the PDF path did it inline, which is exactly how that happened.
+    The single definition of the row's shape. It used to be spelled out inline
+    at each of the four sites that produce one, and they drifted: the EPUB
+    deferral simply omitted its write, so ``--rebuild`` reported the attachment
+    under ``missing_manifest_attachments`` while also counting it in
+    ``deferred_extract`` -- the same queued file named twice, as if lost.
     """
-    # A manifest row that is not a dict (hand-edited or truncated file) is
-    # already tolerated when copying it forward; pass the same guarded value to
-    # the audit merge, which would otherwise raise on .get and abort the run.
-    prior = previous if isinstance(previous, dict) else None
-    entry = dict(prior) if prior else {}
-    entry.update({
+    entry: dict[str, Any] = {
         "mtime": mtime, "size": size, "pdf_path": str(source_path),
-        "title": title,
-        "quality": _merge_deferred_ocr_audit_quality(prior, quality),
-    })
+        "title": title, "quality": quality,
+    }
     if content_signature_value:
         entry["content_signature"] = content_signature_value
     if pipeline_fingerprint is not None:
         entry["pipeline_fingerprint"] = pipeline_fingerprint
     return entry
+
+
+def _deferred_manifest_entry(
+    previous: dict | None, *, quality: dict[str, Any], **fields: Any,
+) -> dict[str, Any]:
+    """The row for an attachment handed to the Mistral OCR batch.
+
+    A deferral *continues* the previous row instead of replacing it: the
+    attachment's current chunks stay searchable until an adopted batch result
+    passes the gate, so anything the last completed ingest recorded is carried
+    forward and only the audit/provenance part of the fresh measurement is
+    merged in. A row that is not a dict (hand-edited or truncated manifest) is
+    tolerated on both paths -- the audit merge would otherwise raise on .get
+    and abort the run.
+    """
+    prior = previous if isinstance(previous, dict) else None
+    return {
+        **(prior or {}),
+        **_manifest_entry(
+            quality=_merge_deferred_ocr_audit_quality(prior, quality), **fields,
+        ),
+    }
 
 
 def _cached_ocr_layer_audit(
@@ -3814,15 +3829,13 @@ async def main_async(args: argparse.Namespace) -> None:
                 extraction_status[0], "extraction", extraction_status[1],
                 **extraction_status[2],
             )
-            files_manifest[a.attachmentKey] = {
-                "mtime": mtime,
-                "size": size,
-                "pdf_path": str(file_path),
-                "title": a.title,
-                "quality": quality_info,
-                **({"content_signature": stored_signature} if stored_signature else {}),
-                **({"pipeline_fingerprint": v3_pipeline_fingerprint} if STRUCTURED_V3_ENABLE else {}),
-            }
+            files_manifest[a.attachmentKey] = _manifest_entry(
+                mtime=mtime, size=size, source_path=file_path, title=a.title,
+                quality=quality_info, content_signature_value=stored_signature,
+                pipeline_fingerprint=(
+                    v3_pipeline_fingerprint if STRUCTURED_V3_ENABLE else None
+                ),
+            )
             if stype == "html":
                 skipped_html += 1
             elif stype == "epub":
@@ -3839,15 +3852,13 @@ async def main_async(args: argparse.Namespace) -> None:
             pending_docs.append(text)
             pending_metas.append(md)
 
-        pending_manifest_updates[a.attachmentKey] = {
-            "mtime": mtime,
-            "size": size,
-            "pdf_path": str(file_path),
-            "title": a.title,
-            "quality": quality_info,
-            **({"content_signature": stored_signature} if stored_signature else {}),
-            **({"pipeline_fingerprint": v3_pipeline_fingerprint} if STRUCTURED_V3_ENABLE else {}),
-        }
+        pending_manifest_updates[a.attachmentKey] = _manifest_entry(
+            mtime=mtime, size=size, source_path=file_path, title=a.title,
+            quality=quality_info, content_signature_value=stored_signature,
+            pipeline_fingerprint=(
+                v3_pipeline_fingerprint if STRUCTURED_V3_ENABLE else None
+            ),
+        )
         pending_source_types[a.attachmentKey] = stype
         pending_item_keys[a.attachmentKey] = str(a.parentItemKey or a.attachmentKey)
         if len(pending_ids) >= FLUSH_SIZE:

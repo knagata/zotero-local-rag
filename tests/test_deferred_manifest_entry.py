@@ -62,6 +62,60 @@ class DeferredManifestEntryTests(unittest.TestCase):
         self.assertEqual(self._entry("corrupt-row")["size"], 4096)
 
 
+class CompletedEntryTests(unittest.TestCase):
+    """The row a finished ingest writes, from the same single definition."""
+
+    def _entry(self, **over):
+        kwargs = {
+            "mtime": 1700.0, "size": 4096, "source_path": Path("/lib/book.pdf"),
+            "title": "Some Book", "quality": {"parser": "pymupdf"},
+        }
+        kwargs.update(over)
+        return index_from_zotero._manifest_entry(**kwargs)
+
+    def test_completed_entry_carries_the_quality_as_measured(self):
+        # Unlike a deferral, a completed ingest replaces the row outright, so
+        # the fresh quality stands on its own rather than being merged.
+        self.assertEqual(self._entry()["quality"], {"parser": "pymupdf"})
+
+    def test_completed_entry_does_not_carry_a_previous_row_forward(self):
+        # _manifest_entry takes no previous row at all: a finished extraction
+        # supersedes whatever was there.
+        self.assertEqual(
+            set(self._entry()),
+            {"mtime", "size", "pdf_path", "title", "quality"},
+        )
+
+    def test_optional_fields_follow_the_same_rules_on_both_paths(self):
+        self.assertNotIn("content_signature", self._entry(content_signature_value=""))
+        self.assertNotIn("pipeline_fingerprint", self._entry(pipeline_fingerprint=None))
+        entry = self._entry(content_signature_value="sha:new", pipeline_fingerprint="fp-1")
+        self.assertEqual(entry["content_signature"], "sha:new")
+        self.assertEqual(entry["pipeline_fingerprint"], "fp-1")
+
+
+class EveryManifestRowGoesThroughOneBuilderTests(unittest.TestCase):
+    """Four sites produce a row; they drifted once, so pin that they cannot."""
+
+    def test_no_site_spells_the_row_out_inline(self):
+        source = (SRC / "index_from_zotero.py").read_text()
+        tree = ast.parse(source)
+        builders = {"_manifest_entry", "_deferred_manifest_entry"}
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Assign):
+                continue
+            for target in node.targets:
+                if not (isinstance(target, ast.Subscript)
+                        and isinstance(target.value, ast.Name)
+                        and target.value.id in {"files_manifest", "pending_manifest_updates"}):
+                    continue
+                self.assertIsInstance(
+                    node.value, ast.Call,
+                    f"line {node.lineno}: manifest row built inline instead of via a builder",
+                )
+                self.assertIn(node.value.func.id, builders, f"line {node.lineno}")
+
+
 class EveryDeferralPathWritesToTheManifestTests(unittest.TestCase):
     """The PDF and EPUB paths drifted apart once; pin that they cannot again."""
 
