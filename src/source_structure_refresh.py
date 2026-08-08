@@ -14,6 +14,10 @@ try:
         get_pdf_toc, infer_structure_roles,
     )
     from .document_structure import _attachment_key
+    from .heading_structure import (
+        CHAPTER_RE, INDEX_GROUP_RE, PART_RE, ROMAN_SUBHEADING_RE, SECTION_RE,
+        normalize as normalize_heading, ordinal as heading_ordinal,
+    )
     from .heading_zone import classify_heading_path
     from .html_extract import extract_chunks_from_epub_snapshot
     from .manifest import load_manifest
@@ -26,6 +30,10 @@ except ImportError:  # pragma: no cover
         get_pdf_toc, infer_structure_roles,
     )
     from document_structure import _attachment_key
+    from heading_structure import (
+        CHAPTER_RE, INDEX_GROUP_RE, PART_RE, ROMAN_SUBHEADING_RE, SECTION_RE,
+        normalize as normalize_heading, ordinal as heading_ordinal,
+    )
     from heading_zone import classify_heading_path
     from html_extract import extract_chunks_from_epub_snapshot
     from manifest import load_manifest
@@ -38,11 +46,6 @@ _EPUB_LOCATOR_RE = re.compile(r"^epub:spine(?P<spine>\d+):block(?P<block>\d+)$")
 _EPUB_SPINE_RE = re.compile(r"^epub:spine(?P<spine>\d+)(?::|$)")
 STRUCTURE_METADATA_KEYS = ("structure_path", "structure_roles", "chapter", "section", "zone")
 INTRINSIC_ZONES = {"corrupted", "footnote"}
-_JP_PART_RE = re.compile(r"^第[一二三四五六七八九十百]+部")
-_JP_CHAPTER_RE = re.compile(r"^(?:第[一二三四五六七八九十百]+章|序章|結論)(?:\s|$)")
-_JP_SECTION_RE = re.compile(r"^第[一二三四五六七八九十百]+節")
-_ROMAN_SUBHEADING_RE = re.compile(r"^(?:[IVXLCDM]+|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+)(?:\s|$)", re.IGNORECASE)
-_JP_INDEX_GROUP_RE = re.compile(r"^[ァ-ヶぁ-ん]+\s*行$")
 _TOP_LEVEL_HEADING_RE = re.compile(
     r"^(?:(?:序言|はじめに|訳者あとがき|終章|補論)(?:\s|$)|"
     r"(?:初出一覧|参考文献|謝辞|索引|人名索引)$)"
@@ -78,7 +81,13 @@ def _set_structure_metadata(
 
 
 def _body_heading_title(row: Dict[str, Any]) -> str:
-    text = " ".join(str(row.get("text") or "").replace("#", " ").split()).strip()
+    """The heading text a boundary would be named after, or "".
+
+    Normalised through the shared vocabulary so a heading that layout or OCR
+    prefixed with decoration ("■ ■ ■ ■ ■ CHAPTER ONE") is still
+    recognisable as the chapter opener it is.
+    """
+    text = normalize_heading(row.get("text") or "")
     return text if 0 < len(text) <= 180 else ""
 
 
@@ -141,11 +150,38 @@ def _refresh_pdf_rows_from_persisted_anchors(
     }
 
 
+def _numbering_is_contiguous(ordinals: Sequence[int]) -> bool:
+    """Whether a run of part/chapter numbers is a complete 1..n.
+
+    Unnumbered openers (序章, "Introduction") report 0 and are ignored: they
+    are real boundaries that simply carry no ordinal.
+    """
+    numbered = sorted({value for value in ordinals if value})
+    if len(numbered) < 2:
+        return True
+    # Must start at 1, not merely be gapless. An extractor that loses the
+    # opening chapters leaves 3, 4, 5 -- contiguous, and a tree built from it
+    # silently omits the beginning of the book.
+    return numbered == list(range(1, len(numbered) + 1))
+
+
 def _refresh_pdf_rows_from_numbered_body_headings(
     rows: Sequence[Dict[str, Any]], attachment_key: str, source_path: Path,
 ) -> tuple[list[Dict[str, Any]], Dict[str, Any]] | None:
-    """Recover conservative Japanese TOC-level hierarchy from body headings."""
+    """Recover a conservative TOC-level hierarchy from body headings.
+
+    Language-neutral: the part/chapter/section vocabulary comes from
+    heading_structure, so an English book is read the same way a Japanese one
+    is. Notes attached to a chapter become a child of that chapter rather than
+    a boundary of their own -- chapter-end notes are the ordinary form in an
+    edited volume, and treating each "NOTES" as a top-level section would cut
+    every chapter in half. As a child they also pick up zone="endnote" from
+    classify_heading_path, which keeps them out of the chapter's summary and
+    puts their references in front of the citation extractor.
+    """
     events: dict[int, tuple[list[str], list[str]]] = {}
+    chapter_ordinals: list[int] = []
+    part_ordinals: list[int] = []
     part_path: list[str] = []
     chapter_path: list[str] = []
     section_path: list[str] = []
@@ -170,7 +206,7 @@ def _refresh_pdf_rows_from_numbered_body_headings(
             printed_toc_page = _row_page(row)
             continue
         if inside_printed_toc:
-            numbered_opener = bool(_JP_PART_RE.match(title) or _JP_CHAPTER_RE.match(title))
+            numbered_opener = bool(PART_RE.match(title) or CHAPTER_RE.match(title))
             repeated_later = remaining_heading_titles[title] > 0
             explicit_opener_later = any(
                 remaining_heading_titles[value] > 0 for value in ("はじめに", "序章")
@@ -189,9 +225,9 @@ def _refresh_pdf_rows_from_numbered_body_headings(
         # OCR/layout extractors often label a genuine Part opener as text, but
         # all other canonical boundaries must be explicit headings. This also
         # excludes repeating page furniture and incidental prose references.
-        if block_type != "heading" and not _JP_PART_RE.match(title):
+        if block_type != "heading" and not PART_RE.match(title):
             continue
-        if _JP_INDEX_GROUP_RE.match(title) and not functional_scope:
+        if INDEX_GROUP_RE.match(title) and not functional_scope:
             # Multi-column indexes sometimes expose their first kana-group
             # heading but lose the section title. Start at that PDF page's
             # first chunk so entries preceding the group are not assigned to
@@ -208,6 +244,13 @@ def _refresh_pdf_rows_from_numbered_body_headings(
             functional_scope = True
             events[page_start] = (["索引"], ["chapter"])
             continue
+        # Notes belonging to the chapter just opened. Only while a chapter is
+        # open: a "NOTES" before any chapter is the book's own back matter.
+        if chapter_path and classify_heading_path([title]) in {"endnote", "footnote"}:
+            section_path = [*chapter_path, title]
+            functional_scope = True
+            events[index] = (list(section_path), infer_structure_roles(section_path))
+            continue
         if _TOP_LEVEL_HEADING_RE.match(title):
             if title in {"索引", "人名索引"} and chapter_path == ["索引"]:
                 continue
@@ -216,32 +259,43 @@ def _refresh_pdf_rows_from_numbered_body_headings(
             section_path = []
             functional_scope = title in _FUNCTIONAL_BODY_HEADINGS
             events[index] = ([title], ["chapter"])
-        elif _JP_PART_RE.match(title):
+        elif PART_RE.match(title):
             part_path = [title]
             chapter_path = []
             section_path = []
             functional_scope = False
             part_count += 1
+            part_ordinals.append(heading_ordinal(title) or 0)
             events[index] = (list(part_path), ["part"])
-        elif _JP_CHAPTER_RE.match(title):
+        elif CHAPTER_RE.match(title):
             chapter_path = [*part_path, title]
             section_path = []
             functional_scope = False
             chapter_count += 1
+            chapter_ordinals.append(heading_ordinal(title) or 0)
             roles = ["part", "chapter"] if part_path else ["chapter"]
             events[index] = (list(chapter_path), roles)
-        elif _JP_SECTION_RE.match(title) and chapter_path:
+        elif SECTION_RE.match(title) and chapter_path:
             section_path = [*chapter_path, title]
             functional_scope = False
             section_count += 1
             roles = infer_structure_roles(section_path)
             events[index] = (list(section_path), roles)
-        elif _ROMAN_SUBHEADING_RE.match(title) and not functional_scope:
+        elif ROMAN_SUBHEADING_RE.match(title) and not functional_scope:
             parent = section_path or chapter_path
             if parent:
                 roman_count += 1
                 path = [*parent, title]
                 events[index] = (path, infer_structure_roles(path))
+
+    # A numbered run with holes in it means the extractor lost some openers,
+    # not that the book skips chapters. Storing 1, 3, 4, 6 asserts a
+    # six-chapter book has four; four of the ten candidates measured here were
+    # in that state, so the run has to be contiguous or the document stays flat.
+    if not _numbering_is_contiguous(chapter_ordinals):
+        return None
+    if not _numbering_is_contiguous(part_ordinals):
+        return None
 
     # Avoid promoting incidental numbered phrases. A usable book/thesis tree
     # needs either explicit Parts or several Chapters, plus multiple boundaries.

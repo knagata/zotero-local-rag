@@ -6,7 +6,10 @@ from unittest.mock import patch
 
 import pytest
 
-from src.source_structure_refresh import refresh_source_structure_metadata
+from src.source_structure_refresh import (
+    _numbering_is_contiguous,
+    refresh_source_structure_metadata,
+)
 
 
 def _old_rows():
@@ -494,3 +497,29 @@ def test_pdf_refresh_clears_stale_zone_when_refreshed_path_is_empty():
             ):
         refreshed, _reports = refresh_source_structure_metadata(rows)
     assert "zone" not in refreshed[0]["metadata"]
+
+
+# A recovered run has to be the whole book, not a gapless tail of it.
+
+
+def test_a_complete_numbered_run_from_one_is_accepted():
+    assert _numbering_is_contiguous([1, 2, 3, 4])
+
+
+def test_a_gap_rejects_the_run():
+    assert not _numbering_is_contiguous([1, 3, 4])
+
+
+def test_a_gapless_run_that_does_not_start_at_one_is_rejected():
+    # 3, 4, 5 has no holes, but the extractor lost chapters 1 and 2. Storing it
+    # would assert a five-chapter book begins at its third chapter.
+    assert not _numbering_is_contiguous([3, 4, 5])
+    assert not _numbering_is_contiguous([2, 3, 4])
+
+
+def test_too_few_numbers_to_judge_are_left_alone():
+    # Unnumbered openers report 0 and drop out; one lone number says nothing
+    # about completeness, and rejecting it would block every short document.
+    assert _numbering_is_contiguous([])
+    assert _numbering_is_contiguous([0, 0])
+    assert _numbering_is_contiguous([5])

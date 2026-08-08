@@ -53,6 +53,25 @@ class PartAndChapterTests(unittest.TestCase):
             with self.subTest(heading=heading):
                 self.assertTrue(hs.CHAPTER_RE.match(hs.normalize(heading)))
 
+    def test_a_bare_opening_marker_is_a_chapter_but_a_word_starting_with_it_is_not(self):
+        # chapter_detect accepted a bare "序" as an opener; the consolidated
+        # pattern dropped it, so a Japanese book opening on 序 lost its first
+        # boundary. 序説/序文 must stay out: those are functional front matter.
+        self.assertTrue(hs.CHAPTER_RE.match(hs.normalize("序 メディアの条件")))
+        self.assertTrue(hs.CHAPTER_RE.match(hs.normalize("序")))
+        self.assertFalse(hs.CHAPTER_RE.match(hs.normalize("序説の話")))
+
+    def test_note_headings_are_left_to_the_functional_vocabulary(self):
+        # chapter_detect's chapter pattern also matched 注/註. They are notes,
+        # not chapters -- heading_zone places them in the endnote zone, and
+        # admitting them here would open a chapter at every note section.
+        from heading_zone import classify_heading_path
+
+        for heading in ("注", "註"):
+            with self.subTest(heading=heading):
+                self.assertFalse(hs.CHAPTER_RE.match(hs.normalize(heading)))
+                self.assertIn(classify_heading_path([heading]), {"endnote", "footnote"})
+
     def test_a_part_is_not_also_a_chapter(self):
         self.assertTrue(hs.PART_RE.match(hs.normalize("PART III")))
         self.assertFalse(hs.CHAPTER_RE.match(hs.normalize("PART III")))
@@ -126,16 +145,26 @@ class CoversTheVocabularyItReplacesTests(unittest.TestCase):
         "III 展開", "ア行", "3. Method", "一 序説",
     )
 
-    def test_every_pattern_the_japanese_module_had_is_covered(self):
-        import source_structure_refresh as ssr
+    #: The Japanese-only definitions source_structure_refresh carried before the
+    #: vocabulary was consolidated, kept verbatim so their coverage stays pinned
+    #: after the originals were deleted.
+    RETIRED_JAPANESE = (
+        ("part", r"^第[一二三四五六七八九十百]+部"),
+        ("chapter", r"^(?:第[一二三四五六七八九十百]+章|序章|結論)(?:\s|$)"),
+        ("section", r"^第[一二三四五六七八九十百]+節"),
+        ("roman", r"^(?:[IVXLCDM]+|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+)(?:\s|$)"),
+        ("index", r"^[ァ-ヶぁ-ん]+\s*行$"),
+    )
 
-        for label, old, new in (
-            ("part", ssr._JP_PART_RE, hs.PART_RE),
-            ("chapter", ssr._JP_CHAPTER_RE, hs.CHAPTER_RE),
-            ("section", ssr._JP_SECTION_RE, hs.SECTION_RE),
-            ("roman", ssr._ROMAN_SUBHEADING_RE, hs.ROMAN_SUBHEADING_RE),
-            ("index", ssr._JP_INDEX_GROUP_RE, hs.INDEX_GROUP_RE),
-        ):
+    def test_every_pattern_the_japanese_module_had_is_covered(self):
+        import re
+
+        patterns = {
+            "part": hs.PART_RE, "chapter": hs.CHAPTER_RE, "section": hs.SECTION_RE,
+            "roman": hs.ROMAN_SUBHEADING_RE, "index": hs.INDEX_GROUP_RE,
+        }
+        for label, source in self.RETIRED_JAPANESE:
+            old, new = re.compile(source, re.IGNORECASE), patterns[label]
             for sample in self.SAMPLES:
                 if old.match(sample):
                     with self.subTest(pattern=label, sample=sample):

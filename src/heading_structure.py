@@ -67,7 +67,7 @@ PART_RE = re.compile(
 )
 CHAPTER_RE = re.compile(
     rf"^(?:第?\s*(?:{_ORDINAL})\s*(?:章|講)|CHAPTER\s+(?:{_ORDINAL})\b|"
-    r"序章|終章|序論|結論|序\s|はじめに|おわりに|補考(?:\s|$))",
+    r"序章|終章|序論|結論|はじめに|おわりに|補考(?:\s|$)|序(?:\s|$))",
     re.IGNORECASE,
 )
 SECTION_RE = re.compile(
