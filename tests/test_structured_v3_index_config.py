@@ -31,6 +31,11 @@ class StructuredV3IndexConfigTests(unittest.TestCase):
         env["INGEST_STRUCTURED_V3_ENABLE"] = "1"
         for name in ("MANIFEST_PATH", "CHROMA_COLLECTION", "LEXICAL_DB_PATH"):
             env.pop(name, None)
+        # 'True' is printed literally now: index_from_zotero no longer carries a
+        # STRUCTURED_V3_ENABLE flag, because the plane it selected between is
+        # retired and v3_data_plane raises rather than returning False. What the
+        # assertion is about -- that a bare environment still lands on the V3
+        # names -- is unchanged and is what the three names after it check.
         result = subprocess.run(
             [sys.executable, "-c", (
                 "import sys; sys.path.insert(0, 'src'); import index_from_zotero as m; "
@@ -50,7 +55,7 @@ class StructuredV3IndexConfigTests(unittest.TestCase):
         result = subprocess.run(
             [sys.executable, "-c", (
                 "import sys; sys.path.insert(0, 'src'); import index_from_zotero as m; "
-                "import os; print(m.STRUCTURED_V3_ENABLE, m.MANIFEST_PATH.name, "
+                "import os; print('True', m.MANIFEST_PATH.name, "
                 "m.CHROMA_COLLECTION_ENV, os.environ['LEXICAL_DB_PATH'].split('/')[-1])"
             )], cwd=ROOT, env=env, text=True, capture_output=True, check=True,
         )
@@ -266,7 +271,6 @@ class StructuredV3IndexConfigTests(unittest.TestCase):
                 delete_collection=deleted.append,
             )
             with (
-                patch.object(module, "STRUCTURED_V3_ENABLE", True),
                 patch.object(module, "CHROMA_DIR", chroma),
                 patch.object(module, "MANIFEST_PATH", manifest),
                 patch.object(module, "V3_PIPELINE_CONFIG_PATH", pipeline_config),
@@ -305,7 +309,6 @@ class StructuredV3IndexConfigTests(unittest.TestCase):
                 delete_collection=fail_delete,
             )
             with (
-                patch.object(module, "STRUCTURED_V3_ENABLE", True),
                 patch.object(module, "CHROMA_DIR", chroma),
                 patch.object(module, "MANIFEST_PATH", manifest),
                 patch.object(module, "V3_PIPELINE_CONFIG_PATH", pipeline_config),

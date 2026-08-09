@@ -120,7 +120,6 @@ DATA_DIR = PROJECT_ROOT / "data"
 # drifted twice, each time leaving one configuration naming two databases.
 CHROMA_DIR = chroma_dir(PROJECT_ROOT)
 PDF_CACHE_DIR = Path(os.environ.get("PDF_CACHE_DIR", str(DATA_DIR / "pdf_cache")))
-STRUCTURED_V3_ENABLE = True
 MANIFEST_PATH = v3_manifest_path(PROJECT_ROOT)
 INDEXING_LOCK_PATH = DATA_DIR / "indexing.lock"
 V3_PIPELINE_CONFIG_PATH = CHROMA_DIR / "embedder_config_v3.json"
@@ -490,7 +489,7 @@ def _replace_attachment_batch(
         delete_batch=_delete_by_attachment_keys,
         upsert_batch=_upsert_in_subbatches,
         health_check=_fail_flush_on_unhealthy_collection,
-        verify_written=_verify_written_attachments if STRUCTURED_V3_ENABLE else None,
+        verify_written=_verify_written_attachments,
     )
 
 
@@ -554,14 +553,13 @@ def _flush_pending_index_batch(
     expected_ids = pending.expected_ids()
     committed_item_keys = frozenset(pending.item_keys.values())
 
-    if STRUCTURED_V3_ENABLE:
-        assert_code_unchanged(RUN_CODE_PATHS, run_code_fingerprint)
-        inflight = {
-            str(value) for value in manifest.get("inflight_attachments", []) if value
-        }
-        inflight.update(pending.delete_attachment_keys)
-        manifest["inflight_attachments"] = sorted(inflight)
-        save_manifest(MANIFEST_PATH, manifest)
+    assert_code_unchanged(RUN_CODE_PATHS, run_code_fingerprint)
+    inflight = {
+        str(value) for value in manifest.get("inflight_attachments", []) if value
+    }
+    inflight.update(pending.delete_attachment_keys)
+    manifest["inflight_attachments"] = sorted(inflight)
+    save_manifest(MANIFEST_PATH, manifest)
 
     _replace_attachment_batch(
         col,
@@ -575,17 +573,16 @@ def _flush_pending_index_batch(
         show_progress=show_progress,
         label=label,
         context_label=context_label,
-        strict_lexical=STRUCTURED_V3_ENABLE,
+        strict_lexical=True,
     )
 
     for item_key, status, status_kwargs in pending.extraction_statuses.values():
         mark_artifact_status(item_key, "extraction", status, **status_kwargs)
     files_manifest.update(pending.manifest_updates)
-    if STRUCTURED_V3_ENABLE:
-        manifest["inflight_attachments"] = [
-            value for value in manifest.get("inflight_attachments", [])
-            if value not in pending.delete_attachment_keys
-        ]
+    manifest["inflight_attachments"] = [
+        value for value in manifest.get("inflight_attachments", [])
+        if value not in pending.delete_attachment_keys
+    ]
 
     outcome = FlushOutcome(
         updated_pdf=sum(value == "pdf" for value in pending.source_types.values()),
@@ -595,13 +592,12 @@ def _flush_pending_index_batch(
         committed_item_keys=committed_item_keys,
     )
     save_manifest(MANIFEST_PATH, manifest)
-    if STRUCTURED_V3_ENABLE:
-        _finalize_v3_pending(
-            manifest, set(committed_item_keys),
-            collection_name=str(CHROMA_COLLECTION_ENV or "zotero_paragraphs_v3"),
-            code_paths=RUN_CODE_PATHS,
-            expected_code_fingerprint=run_code_fingerprint,
-        )
+    _finalize_v3_pending(
+        manifest, set(committed_item_keys),
+        collection_name=str(CHROMA_COLLECTION_ENV or "zotero_paragraphs_v3"),
+        code_paths=RUN_CODE_PATHS,
+        expected_code_fingerprint=run_code_fingerprint,
+    )
     pending.clear()
     return outcome
 
@@ -1924,7 +1920,7 @@ async def _index_notes_phase(
         upsert_fn=_upsert_in_subbatches,
         lexical_delete_fn=delete_lexical_note,
         delete_stale=not partial_scope,
-        strict_lexical=STRUCTURED_V3_ENABLE,
+        strict_lexical=True,
     )
     return NoteIndexOutcome(
         manifest=updated_manifest,
@@ -1954,8 +1950,7 @@ def _finalize_index_storage(
     except Exception as exc:
         manifest["hnsw_validated"] = False
         save_manifest(MANIFEST_PATH, manifest)
-        if STRUCTURED_V3_ENABLE:
-            raise RuntimeError(f"HNSW final validation failed: {exc}") from exc
+        raise RuntimeError(f"HNSW final validation failed: {exc}") from exc
         print(f"[WARN] HNSW final flush failed (non-fatal): {exc}", file=sys.__stderr__)
 
     manifest["notes"] = notes_manifest
@@ -2190,7 +2185,7 @@ def _extract_pdf_chunks(
         # Note: PyTorch/MPS-CUDA cache clearing now happens inside the
         # worker subprocess itself (see docling_worker._worker_loop),
         # since the worker -- not this process -- holds the torch state.
-    elif STRUCTURED_V3_ENABLE:
+    else:
         # Approved routing (evaluations/ocr_bakeoff_v3/results/routing_proposal.md):
         # PyMuPDF is only canonical for embedded-text PDFs with a usable
         # outline; everything else escalates to Docling, the higher-scoring
@@ -2727,9 +2722,7 @@ def _extract_pdf_chunks(
                     prev, mtime=mtime, size=size, source_path=file_path,
                     title=a.title, quality=quality_info,
                     content_signature_value=stored_signature,
-                    pipeline_fingerprint=(
-                        v3_pipeline_fingerprint if STRUCTURED_V3_ENABLE else None
-                    ),
+                    pipeline_fingerprint=v3_pipeline_fingerprint,
                 )
                 save_manifest(MANIFEST_PATH, manifest)
                 if show_progress:
@@ -2824,8 +2817,6 @@ def _extract_pdf_chunks(
                             "no better route is available",
                             file=sys.__stderr__,
                         )
-    else:
-        chunks, quality_info = extract_chunks_from_pdf(file_path, a.attachmentKey, meta_base)
     return PdfExtraction(chunks, quality_info)
 
 
@@ -3149,7 +3140,7 @@ async def main_async(args: argparse.Namespace) -> None:
         print(json.dumps({
             "dry_run": True,
             "rebuild": bool(args.rebuild),
-            "structured_v3": STRUCTURED_V3_ENABLE,
+            "structured_v3": True,
             "target_collection": CHROMA_COLLECTION_ENV or CHROMA_COLLECTION_DEFAULT,
             "items": len({str(a.parentItemKey or a.attachmentKey) for a in attachments}),
             "attachments": len(attachments),
@@ -3184,50 +3175,49 @@ async def main_async(args: argparse.Namespace) -> None:
     atexit.register(_close_chroma_collection, col)
 
     v3_pipeline_fingerprint = ""
-    if STRUCTURED_V3_ENABLE:
-        collection_name = str(CHROMA_COLLECTION_ENV or "zotero_paragraphs_v3")
-        removed_sentinels = _remove_stale_hnsw_sentinels(
-            col, collection_name=collection_name,
+    collection_name = str(CHROMA_COLLECTION_ENV or "zotero_paragraphs_v3")
+    removed_sentinels = _remove_stale_hnsw_sentinels(
+        col, collection_name=collection_name,
+    )
+    if removed_sentinels:
+        print(
+            f"[INFO] Removed {len(removed_sentinels)} stale HNSW sentinel(s).",
+            file=sys.__stderr__,
         )
-        if removed_sentinels:
-            print(
-                f"[INFO] Removed {len(removed_sentinels)} stale HNSW sentinel(s).",
-                file=sys.__stderr__,
-            )
-        runtime_embedder = dict(getattr(col, "_zotero_embedder_config", {}) or {})
-        runtime = pipeline_payload(
-            runtime_embedder, collection=collection_name,
-            run_code_fingerprint=run_code_fingerprint,
+    runtime_embedder = dict(getattr(col, "_zotero_embedder_config", {}) or {})
+    runtime = pipeline_payload(
+        runtime_embedder, collection=collection_name,
+        run_code_fingerprint=run_code_fingerprint,
+    )
+    actual_dim = _collection_embedding_dim(col)
+    expected_dim = runtime_embedder.get("embedding_dim")
+    if actual_dim is not None and expected_dim is not None and actual_dim != expected_dim:
+        raise RuntimeError(
+            f"V3 collection dimension mismatch: collection={actual_dim} runtime={expected_dim}"
         )
-        actual_dim = _collection_embedding_dim(col)
-        expected_dim = runtime_embedder.get("embedding_dim")
-        if actual_dim is not None and expected_dim is not None and actual_dim != expected_dim:
-            raise RuntimeError(
-                f"V3 collection dimension mismatch: collection={actual_dim} runtime={expected_dim}"
-            )
-        stored_pipeline, created_pipeline = ensure_pipeline_config(
-            V3_PIPELINE_CONFIG_PATH, runtime, existing_chunk_count=int(col.count()),
+    stored_pipeline, created_pipeline = ensure_pipeline_config(
+        V3_PIPELINE_CONFIG_PATH, runtime, existing_chunk_count=int(col.count()),
+    )
+    v3_pipeline_fingerprint = str(stored_pipeline["pipeline_fingerprint"])
+    bind_manifest_pipeline(
+        manifest, v3_pipeline_fingerprint, adopt_existing=created_pipeline,
+    )
+    manifest["last_run_code_fingerprint"] = run_code_fingerprint
+    manifest["hnsw_validated"] = False
+    if created_pipeline and int(col.count()) > 0:
+        recovery_items = set(manifest.get("post_index_pending", []))
+        recovery_items.update(list_item_keys(collection_name=collection_name))
+        manifest["post_index_pending"] = sorted(str(value) for value in recovery_items if value)
+    save_manifest(MANIFEST_PATH, manifest)
+    pending_recovery = [
+        str(value) for value in manifest.get("post_index_pending", []) if value
+    ]
+    if pending_recovery:
+        _finalize_v3_pending(
+            manifest, pending_recovery, collection_name=collection_name,
+            code_paths=RUN_CODE_PATHS,
+            expected_code_fingerprint=run_code_fingerprint,
         )
-        v3_pipeline_fingerprint = str(stored_pipeline["pipeline_fingerprint"])
-        bind_manifest_pipeline(
-            manifest, v3_pipeline_fingerprint, adopt_existing=created_pipeline,
-        )
-        manifest["last_run_code_fingerprint"] = run_code_fingerprint
-        manifest["hnsw_validated"] = False
-        if created_pipeline and int(col.count()) > 0:
-            recovery_items = set(manifest.get("post_index_pending", []))
-            recovery_items.update(list_item_keys(collection_name=collection_name))
-            manifest["post_index_pending"] = sorted(str(value) for value in recovery_items if value)
-        save_manifest(MANIFEST_PATH, manifest)
-        pending_recovery = [
-            str(value) for value in manifest.get("post_index_pending", []) if value
-        ]
-        if pending_recovery:
-            _finalize_v3_pending(
-                manifest, pending_recovery, collection_name=collection_name,
-                code_paths=RUN_CODE_PATHS,
-                expected_code_fingerprint=run_code_fingerprint,
-            )
 
     # Delete stale attachment items (skipped during selective re-parsing)
     deleted_stale = 0
@@ -3271,7 +3261,7 @@ async def main_async(args: argparse.Namespace) -> None:
             # Reuses the same helper the other three deletion call sites in
             # this file use, rather than a hand-rolled copy: a copy here built
             # its own lexical path from LEXICAL_DB_PATH with a data/lexical_v3
-            # fallback, which is wrong whenever STRUCTURED_V3_ENABLE is off --
+            # fallback, which the retired legacy plane would have taken --
             # that env var is only set in the V3 branch above, so a legacy run
             # would delete from the wrong file and leave the retired
             # attachment answering keyword search (2026-07-28). This helper
@@ -3318,7 +3308,7 @@ async def main_async(args: argparse.Namespace) -> None:
                     file=sys.stderr,
                 )
 
-        if excluded_parent_rebuilds and STRUCTURED_V3_ENABLE:
+        if excluded_parent_rebuilds:
             _finalize_v3_pending(
                 manifest, excluded_parent_rebuilds,
                 collection_name=collection_name,
@@ -3405,8 +3395,7 @@ async def main_async(args: argparse.Namespace) -> None:
     granite_worker = GraniteWorker()
 
     for idx, a in enumerate(attachments, start=1):
-        if STRUCTURED_V3_ENABLE:
-            assert_code_unchanged(RUN_CODE_PATHS, run_code_fingerprint)
+        assert_code_unchanged(RUN_CODE_PATHS, run_code_fingerprint)
         original_path = Path(a.pdf_path).expanduser()
         source = _resolve_attachment_source(a)
         if source is None:
@@ -3477,7 +3466,7 @@ async def main_async(args: argparse.Namespace) -> None:
         verdict = _source_verdict(
             args, attachment_key=a.attachmentKey, previous=prev, file_path=file_path,
             mtime=mtime, size=size, pipeline_fingerprint=v3_pipeline_fingerprint,
-            structured_v3=STRUCTURED_V3_ENABLE, inflight=inflight_attachments,
+            structured_v3=True, inflight=inflight_attachments,
             reparse=reparse,
         )
         current_signature = verdict.signature
@@ -3704,8 +3693,7 @@ async def main_async(args: argparse.Namespace) -> None:
             chunks, quality_info = extraction.chunks, extraction.quality
 
         dt = time.perf_counter() - t_pdf
-        if STRUCTURED_V3_ENABLE:
-            assert_code_unchanged(RUN_CODE_PATHS, run_code_fingerprint)
+        assert_code_unchanged(RUN_CODE_PATHS, run_code_fingerprint)
         if show_progress:
             print(
                 f"[PROGRESS]   ↳ extracted {len(chunks)} chunks in {dt:.1f}s",
@@ -3824,9 +3812,7 @@ async def main_async(args: argparse.Namespace) -> None:
                             prev, mtime=mtime, size=size, source_path=file_path,
                             title=a.title, quality=quality_info,
                             content_signature_value=stored_signature,
-                            pipeline_fingerprint=(
-                                v3_pipeline_fingerprint if STRUCTURED_V3_ENABLE else None
-                            ),
+                            pipeline_fingerprint=v3_pipeline_fingerprint,
                         )
                         save_manifest(MANIFEST_PATH, manifest)
                         deferred_extract += 1
@@ -3977,22 +3963,15 @@ async def main_async(args: argparse.Namespace) -> None:
         for _cid, text, md in chunks:
             md["lang"] = detect_lang(text, getattr(a, "language", None))
 
-        if STRUCTURED_V3_ENABLE:
-            # Stamp extraction provenance + a compact quality summary on every V3
-            # chunk so a later, better structuring/OCR algorithm can query for
-            # reprocessing candidates (e.g. all chunks from scanned PDFs, or all
-            # chunks extracted by a given engine). Extractors that already set
-            # extraction_engine/extraction_version (EPUB/HTML DOM paths, adapter
-            # engines) are preserved as-is.
-            extraction_quality_json = summarize_extraction_quality(quality_info)
-            for _cid, _text, md in chunks:
-                md["extraction_engine"] = resolve_extraction_engine(
-                    quality_info, md.get("extraction_engine"),
-                )
-                md["extraction_version"] = md.get("extraction_version") or "3"
-                md["extraction_quality"] = extraction_quality_json
+        extraction_quality_json = summarize_extraction_quality(quality_info)
+        for _cid, _text, md in chunks:
+            md["extraction_engine"] = resolve_extraction_engine(
+                quality_info, md.get("extraction_engine"),
+            )
+            md["extraction_version"] = md.get("extraction_version") or "3"
+            md["extraction_quality"] = extraction_quality_json
 
-        if STRUCTURED_V3_ENABLE and a.parentItemKey:
+        if a.parentItemKey:
             # Keep a repair-stage retry from producing duplicate writes.  This
             # removes only equivalent records; conflicting duplicate IDs remain
             # a hard failure so their producer cannot be masked.
@@ -4022,9 +4001,7 @@ async def main_async(args: argparse.Namespace) -> None:
             files_manifest[a.attachmentKey] = _manifest_entry(
                 mtime=mtime, size=size, source_path=file_path, title=a.title,
                 quality=quality_info, content_signature_value=stored_signature,
-                pipeline_fingerprint=(
-                    v3_pipeline_fingerprint if STRUCTURED_V3_ENABLE else None
-                ),
+                pipeline_fingerprint=v3_pipeline_fingerprint,
             )
             if stype == "html":
                 skipped_html += 1
@@ -4045,9 +4022,7 @@ async def main_async(args: argparse.Namespace) -> None:
         pending_manifest_updates[a.attachmentKey] = _manifest_entry(
             mtime=mtime, size=size, source_path=file_path, title=a.title,
             quality=quality_info, content_signature_value=stored_signature,
-            pipeline_fingerprint=(
-                v3_pipeline_fingerprint if STRUCTURED_V3_ENABLE else None
-            ),
+            pipeline_fingerprint=v3_pipeline_fingerprint,
         )
         pending_source_types[a.attachmentKey] = stype
         pending_item_keys[a.attachmentKey] = str(a.parentItemKey or a.attachmentKey)
