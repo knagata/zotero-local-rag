@@ -1,0 +1,33 @@
+{
+  "limit": 150,
+  "trees": [
+    "src",
+    "scripts",
+    "citation_graph"
+  ],
+  "functions": {
+    "src/index_from_zotero.py::main_async": 1113,
+    "src/index_from_zotero.py::_extract_pdf_chunks": 705,
+    "src/db_relations.py::_init_db": 698,
+    "src/pdf_extract.py::extract_chunks_from_pdf": 614,
+    "citation_graph/server.py::build_graph_data": 470,
+    "src/citation_mapper.py::map_item_global_citations": 444,
+    "src/rag_mcp_server.py::rag_search": 442,
+    "src/html_extract.py::extract_chunks_from_epub_snapshot": 347,
+    "citation_graph/server.py::_build_sigma_html": 307,
+    "citation_graph/server.py::compute_layout": 262,
+    "src/build_structure_summaries.py::build_structure_summaries": 253,
+    "src/update_citations.py::main": 237,
+    "scripts/audit_v3_cutover.py::main": 216,
+    "scripts/setup_wizard.py::main": 205,
+    "citation_graph/server.py::compute_clusters": 203,
+    "src/note_extract.py::index_notes": 185,
+    "scripts/add_chapter_metadata.py::main": 170,
+    "src/docling_extract.py::extract_chunks_from_pdf_with_docling": 170,
+    "src/retrieval_service.py::RetrievalService.hierarchical_search": 166,
+    "src/text_utils.py::merge_short_chunk_records": 158,
+    "citation_graph/server.py::main": 156,
+    "src/ndlocr_extract.py::extract_chunks_from_pdf_with_ndlocr": 154,
+    "src/rag_mcp_server.py::_col_locked": 151
+  }
+}

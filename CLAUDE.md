@@ -122,6 +122,13 @@ gh run view <id> --log-failed
 test_structure_recovery_corpus.py` のskipifが例）。要否の判定は、静的なリストを別途
 保守するのではなく、gitなど元の情報源に問う。
 
+### 巨大関数はラチェットで押し戻す
+
+150行超の関数は `tests/function_size_budget.json` に記録済みで、伸ばすと落ちる。
+新しく150行超を作っても落ちる。縮めたら `--write` で採択して上限を下げる
+（採択しないと落ちる）。都度の判断で分解し続けるのではなく、機械に押し戻させる。
+手順は `docs/development.md`。
+
 ### 語彙は単一定義
 
 見出しの機能語彙は `src/heading_zone.py`、構造語彙は `src/heading_structure.py` だけに

@@ -109,6 +109,26 @@ uv run python scripts/build_structure_recovery_baseline.py --write  # 採択す�
 リポジトリ最大ファイルの5倍になり、縮めるには普通の本文行を捨てるしかない。直近
 の不具合はまさにそこに潜んでいた）。
 
+## 関数サイズのラチェット
+
+150行を超える関数は `tests/function_size_budget.json` に記録され、
+`tests/test_function_size_ratchet.py` が毎回引き直して照合します。**記録された関数が
+伸びたら赤、150行超の関数が新しく生まれたら赤、縮んだら「新しい値で記録し直せ」と
+言って赤**になります。最後のものが無いと、一度分解したところで上限が古いまま残り、
+次の変更がその余白をまた使ってしまいます。
+
+記録時点で23関数（最大 `main_async` 1,113行）。上限は分解が進むたびに下がります。
+
+```bash
+uv run python scripts/build_function_size_budget.py          # 差分を見る
+uv run python scripts/build_function_size_budget.py --write  # 採択する
+```
+
+対象は `src/`・`scripts/`・`citation_graph/`。テストは対象外です（最長67行で、長い
+テストは大抵もつれではなく事例の一覧なので）。**この検査はコードの良し悪しを見ません。**
+1つの事例一覧として読める200行と、分岐の連鎖の200行を区別できないので、増加を止める
+だけで、読みやすさの判断は分解する人に残しています。
+
 ## 引用関係レポート
 
 ```bash
