@@ -219,6 +219,19 @@ that the size number does not say.
 
 ## Closed
 
+- **A source classification that failed read as "not a scan"** (found and fixed
+  2026-08-09). `classify_pdf_source` failing was swallowed with a bare `pass` on
+  the reused-OCR path and only printed on the extraction path, so
+  `source_class` was absent -- which `reocr_quality` cannot tell apart from a
+  born-digital document, since it tests `source_class == "scanned_no_text"`. A
+  scan whose classification failed would never be offered for re-OCR again. Both
+  paths now record `source_class_error`, and the assessment carries it as its
+  own reason, scored below a measured scan because it says "unknown", not
+  "known bad". Found by scanning every broad `except` inside a function that
+  produces a verdict and reading the eight hits: five were already fail-closed
+  and said so in a comment.
+
+
 - **Context-less incoming citations were discarded** (raised 2026-08-06, fixed
   2026-08-07). `map_item_global_citations` stored nothing for a citing paper
   with no context snippet while the references loop kept the equivalent rows;

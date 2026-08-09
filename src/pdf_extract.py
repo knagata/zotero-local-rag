@@ -939,10 +939,10 @@ def extract_chunks_from_pdf(
         _source_class = classify_pdf_source(pdf_path)
     except Exception as exc:
         _source_class = None
-        print(
-            f"[WARN] PDF source classification failed: attachment={attachment_key} err={exc}",
-            file=os.sys.__stderr__,
-        )
+        quality_info["source_class_error"] = str(exc)  # absent reads as "not a scan"
+        print(f"[WARN] PDF source classification failed: "
+              f"attachment={attachment_key} err={exc}",
+              file=os.sys.__stderr__)
     if _source_class is not None:
         quality_info.update(_source_class.as_metadata())
 

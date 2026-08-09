@@ -126,6 +126,11 @@ def candidate_assessment(
     scan_source_without_native_text = (
         str(quality.get("source_class") or "") == "scanned_no_text"
     )
+    # A classification that could not be computed is not evidence that the
+    # document is born-digital, but absent it reads exactly like one: the test
+    # above is False either way, and the item is never offered again. So the
+    # failure is carried as its own reason rather than being scored as a pass.
+    source_class_unknown = bool(quality.get("source_class_error"))
     reported_gibberish = quality.get("gibberish_rate")
     gibberish_rate = (
         float(reported_gibberish) if reported_gibberish is not None
@@ -137,6 +142,8 @@ def candidate_assessment(
         reasons.append("scanned_pages")
     if scan_source_without_native_text:
         reasons.append("scan_source_without_native_text")
+    if source_class_unknown:
+        reasons.append("source_class_unknown")
     if gibberish_rate > 0:
         reasons.append("gibberish")
     if metrics["characters_per_page"] < min_chars:
@@ -164,6 +171,8 @@ def candidate_assessment(
     score = (
         5 * int(scanned_ratio > 0)
         + 5 * int(scan_source_without_native_text)
+        # Lower than a measured scan: this says "unknown", not "known bad".
+        + 2 * int(source_class_unknown)
         + 5 * int(gibberish_rate > 0)
         + 3 * int(metrics["characters_per_page"] < min_chars)
         + 4 * int(metrics["repeat_artifacts"] > 0)

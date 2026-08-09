@@ -1486,8 +1486,18 @@ def _audit_reused_ocr_chunks(
     try:
         source_class = classify_pdf_source(pdf_path)
         quality_info.update(source_class.as_metadata())
-    except Exception:
-        pass
+    except Exception as exc:
+        # Not "no class": a class that could not be computed. Absent, the two
+        # are the same value downstream, and reocr_quality reads the absence as
+        # "not a scan" -- so a scanned document whose classification failed
+        # would never again be offered as a re-OCR candidate. The normal
+        # extraction path already warns here; this one used to pass silently.
+        quality_info["source_class_error"] = str(exc)
+        print(
+            f"[WARN] PDF source classification failed on reused OCR text: "
+            f"item={item_key} err={exc}",
+            file=sys.__stderr__,
+        )
     quality_info.update(
         detect_text_defects("\n".join(text for (_id, text, _md) in chunks))
     )
