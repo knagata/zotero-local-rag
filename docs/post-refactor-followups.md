@@ -36,22 +36,20 @@ order is decided by the size ratchet (`tests/test_function_size_ratchet.py`).
 
 ### 2. Make re-OCR compensation resilient to rollback failures
 
-- Location: `src/reocr_adoption.py`
-- Still true 2026-08-09: the `except` block restores Chroma, then the lexical
-  index, then the manifest, in sequence with no isolation. A failure restoring
-  Chroma skips the other two *and* the `status_writer(..., "failed", ...)` call
-  below them, so the run ends with neither a repaired store nor a record.
-- Wider than first written: `replace_document_structure` and
-  `delete_document_node_summaries` run inside the `try` and are not compensated
-  at all. If anything after them raises -- the five `status_writer` calls that
-  follow are the live candidates -- the structure tree stays replaced while
-  Chroma, the lexical index and the manifest roll back to the old chunks, which
-  is exactly the mixed state the rollback exists to prevent.
-- Proposal: attempt each compensation independently, collect rollback errors,
-  and raise one error carrying the original failure and all rollback failures.
-  Reuse the attachment unit-of-work primitives where practical.
-- Test: inject a failure into each forward and each rollback phase and assert
-  the final state of every store, the structure tree included.
+**Done 2026-08-09.** `src/reocr_adoption.py`
+
+- Each compensation now runs independently and collects its own failure, so one
+  store refusing no longer abandons the others or the `failed` status write that
+  tells the next run to retry. The raised error names the original failure and
+  every store left inconsistent.
+- The wider problem found while testing it: the status writes ran inside the
+  `try`, so a bookkeeping failure rolled back a complete, consistent adoption.
+  They now run after the canonical stores are all new, and their failures are
+  reported in `status_write_errors` rather than raised -- raising told the
+  caller to redo the expensive adoption that had in fact succeeded.
+- `tests/test_reocr_adoption_fault_injection.py` fails every phase in turn and
+  asserts the same invariant each time, with the stores each case is still
+  answerable for stated in the table. Four regressions were injected and caught.
 
 ### 3. Bound `search_items` resource use and validate inputs
 

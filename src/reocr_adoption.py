@@ -7,6 +7,7 @@ Chroma/FTS rows are retained in memory until every canonical write succeeds.
 from __future__ import annotations
 
 import hashlib
+import sys
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
@@ -70,6 +71,119 @@ def canonicalize_prepared_blocks(
     if not output:
         raise ValueError("prepared result contains no non-empty text blocks")
     return output
+
+
+def _attempt(errors: list[str], what: str, action: Callable[[], Any]) -> None:
+    """Run one compensation and record its failure instead of abandoning the rest.
+
+    The compensations used to be sequential statements in a single ``except``
+    block, so the first one that raised took the others with it -- including the
+    ``failed`` status write at the end, which is how the next run learns there
+    is anything to retry. A store that cannot be restored is bad; a store that
+    is never *attempted* because a different store failed is worse, and silent.
+    """
+    try:
+        action()
+    except Exception as failure:  # noqa: BLE001 -- reported, not swallowed
+        errors.append(f"{what}: {failure}")
+
+
+def _compensate(
+    original: Exception,
+    *,
+    collection: Any,
+    attachment_key: str,
+    old_ids: list[str],
+    old_docs: list[str],
+    old_metas: list[dict],
+    lexical_path: Path,
+    manifest_path: Path,
+    manifest_before: dict,
+    collection_delete_done: bool,
+    lexical_changed: bool,
+    manifest_changed: bool,
+    item_key: str,
+    status_writer: Callable[..., Any],
+) -> None:
+    """Undo whatever was written, then raise one error naming everything wrong."""
+    errors: list[str] = []
+    if collection_delete_done:
+        _attempt(errors, "restoring Chroma", lambda: (
+            collection.delete(where={"attachmentKey": attachment_key}),
+            collection.upsert(ids=old_ids, documents=old_docs, metadatas=old_metas),
+        ))
+    if lexical_changed or collection_delete_done:
+        _attempt(errors, "restoring the lexical index", lambda: (
+            delete_by_attachment_keys([attachment_key], path=lexical_path),
+            upsert_chunks(old_ids, old_docs, old_metas, path=lexical_path),
+        ))
+    if manifest_changed:
+        _attempt(errors, "restoring the manifest",
+                 lambda: save_manifest(manifest_path, manifest_before))
+    _attempt(errors, "recording the failure", lambda: status_writer(
+        item_key, "extraction", "failed", attachment_key=attachment_key,
+        reason_code="reocr_adoption_failed", retryable=True,
+    ))
+    if errors:
+        raise RuntimeError(
+            f"re-OCR adoption of {item_key}/{attachment_key} failed ({original}), "
+            "and the following could not be undone -- these stores are now "
+            "inconsistent and need repair: " + "; ".join(errors)
+        ) from original
+
+
+def _finish_bookkeeping(
+    *,
+    item_key: str,
+    attachment_key: str,
+    prepared: Mapping[str, Any],
+    built: Mapping[str, Any],
+    new_ids: list[str],
+    force: bool,
+    status_writer: Callable[..., Any],
+) -> list[str]:
+    """Record what the adoption did. Failures here do not undo the adoption."""
+    engine = prepared.get("engine") or "unknown"
+    version = prepared.get("version") or "unknown"
+    writes = [
+        (("extraction", "success"), {
+            "attachment_key": attachment_key,
+            "source_fingerprint": built["source_fingerprint"],
+            "processor_version": f"{engine}:{version}",
+            "counts": {"chunks": len(new_ids), "reocr": True, "force_adopt": bool(force)},
+        }),
+        (("structure", "success"), {
+            "source_fingerprint": built["source_fingerprint"],
+            "processor_version": built["structure_version"],
+            "counts": built["diagnostics"],
+        }),
+        (("embeddings", "success"), {
+            "attachment_key": attachment_key,
+            "source_fingerprint": built["source_fingerprint"],
+            "counts": {"chunks": len(new_ids)},
+        }),
+        (("summary", "stale"), {
+            "reason_code": "source_reocr_adopted",
+            "source_fingerprint": built["source_fingerprint"],
+        }),
+        (("references", "stale"), {
+            "reason_code": "source_reocr_adopted",
+            "source_fingerprint": built["source_fingerprint"],
+        }),
+    ]
+    errors: list[str] = []
+    for (artifact, state), keywords in writes:
+        _attempt(
+            errors, f"recording {artifact}={state}",
+            lambda a=artifact, s=state, k=keywords: status_writer(item_key, a, s, **k),
+        )
+    if errors:
+        print(
+            f"[WARN] re-OCR adoption of {item_key}/{attachment_key} succeeded but "
+            "some status rows were not written: " + "; ".join(errors),
+            file=sys.stderr,
+        )
+    return errors
 
 
 def adopt_prepared_reocr(
@@ -181,32 +295,29 @@ def adopt_prepared_reocr(
             confidence=built["confidence"],
         )
         delete_document_node_summaries(item_key)
-        status_writer(
-            item_key, "extraction", "success", attachment_key=attachment_key,
-            source_fingerprint=built["source_fingerprint"],
-            processor_version=f"{prepared.get('engine') or 'unknown'}:{prepared.get('version') or 'unknown'}",
-            counts={"chunks": len(new_ids), "reocr": True, "force_adopt": bool(force)},
+    except Exception as original:
+        _compensate(
+            original,
+            collection=collection, attachment_key=attachment_key,
+            old_ids=old_ids, old_docs=old_docs, old_metas=old_metas,
+            lexical_path=lexical_path, manifest_path=manifest_path,
+            manifest_before=manifest_before,
+            collection_delete_done=collection_delete_done,
+            lexical_changed=lexical_changed, manifest_changed=manifest_changed,
+            item_key=item_key, status_writer=status_writer,
         )
-        status_writer(item_key, "structure", "success", source_fingerprint=built["source_fingerprint"],
-                      processor_version=built["structure_version"], counts=built["diagnostics"])
-        status_writer(item_key, "embeddings", "success", attachment_key=attachment_key,
-                      source_fingerprint=built["source_fingerprint"], counts={"chunks": len(new_ids)})
-        status_writer(item_key, "summary", "stale", reason_code="source_reocr_adopted",
-                      source_fingerprint=built["source_fingerprint"])
-        status_writer(item_key, "references", "stale", reason_code="source_reocr_adopted",
-                      source_fingerprint=built["source_fingerprint"])
-    except Exception:
-        if collection_delete_done:
-            collection.delete(where={"attachmentKey": attachment_key})
-            collection.upsert(ids=old_ids, documents=old_docs, metadatas=old_metas)
-        if lexical_changed or collection_delete_done:
-            delete_by_attachment_keys([attachment_key], path=lexical_path)
-            upsert_chunks(old_ids, old_docs, old_metas, path=lexical_path)
-        if manifest_changed:
-            save_manifest(manifest_path, manifest_before)
-        status_writer(item_key, "extraction", "failed", attachment_key=attachment_key,
-                      reason_code="reocr_adoption_failed", retryable=True)
         raise
+
+    # Past this line every canonical store -- Chroma, the lexical index, the
+    # manifest and the tree -- holds the new generation consistently, so the
+    # adoption has happened. What follows is bookkeeping, and bookkeeping that
+    # fails must be reported rather than answered by undoing correct data: the
+    # rollback used to run for these too, throwing away a complete adoption
+    # because a status row could not be written.
+    bookkeeping_errors = _finish_bookkeeping(
+        item_key=item_key, attachment_key=attachment_key, prepared=prepared,
+        built=built, new_ids=new_ids, force=force, status_writer=status_writer,
+    )
 
     return {
         "item_key": item_key,
@@ -217,6 +328,10 @@ def adopt_prepared_reocr(
         "structure_status": built["status"],
         "summary_status": "stale",
         "canonical_data_modified": True,
+        # Empty on a clean run. Non-empty means the data is right and the
+        # record of it is incomplete, which is a repair job rather than a
+        # reason to distrust the chunks.
+        "status_write_errors": bookkeeping_errors,
     }
 
 
