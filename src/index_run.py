@@ -44,3 +44,22 @@ class ReparseDecision:
     force_docling: bool = False
     force_ndlocr: bool = False
     force_mistral: bool = False
+
+
+@dataclass(frozen=True)
+class SourceVerdict:
+    """Whether an attachment still holds what was indexed from it, and so what
+    the run owes it: extraction, a quality reading only, or nothing.
+
+    ``signature`` is the content hash if one was worth computing -- the file
+    matched a prior row on modification time and size, and that row carried a
+    signature, so only a same-size replacement could still be hiding. It is
+    carried out of the decision because the manifest row written later reuses
+    it rather than hashing the same unchanged bytes twice.
+    """
+
+    #: "index" -- extract and re-index; "quality_only" -- the bytes are
+    #: unchanged but their quality has not been read, or was asked for again;
+    #: "skip" -- unchanged and already understood.
+    action: str
+    signature: str | None = None

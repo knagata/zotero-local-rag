@@ -37,6 +37,37 @@ import pytest
 
 from scripts.build_ingestion_baseline import BASELINE_PATH, CORPUS, ingest, observe
 
+
+def _zotero_is_reachable() -> bool:
+    """Whether Zotero's local API is answering.
+
+    Ingestion enumerates the library over it, and refuses to treat an
+    unreachable Zotero as an empty one -- rightly, since that would delete
+    everything. So with Zotero closed this check cannot run, and saying so is
+    the honest outcome: a red test here would mean "your Zotero is not open",
+    which is not a fact about the code. It surfaced as intermittent failure
+    until the child's stderr was printed and said so in one line.
+    """
+    import socket
+    from urllib.parse import urlparse
+
+    from src.zotero_source_localapi import local_api_base
+
+    parsed = urlparse(local_api_base())
+    try:
+        with socket.create_connection(
+            (parsed.hostname or "127.0.0.1", parsed.port or 23119), timeout=1.5,
+        ):
+            return True
+    except OSError:
+        return False
+
+
+_needs_zotero = pytest.mark.skipif(
+    not _zotero_is_reachable(),
+    reason="needs Zotero's local API; ingestion reads the library through it",
+)
+
 _needs_baseline = pytest.mark.skipif(
     not BASELINE_PATH.exists(),
     reason=f"{BASELINE_PATH.name} is generated locally; run the builder with --write",
@@ -58,6 +89,7 @@ def test_the_recorded_corpus_covers_every_route_the_builder_names():
 
 
 @_needs_baseline
+@_needs_zotero
 @pytest.mark.parametrize("item_key", CORPUS)
 def test_ingesting_an_attachment_does_what_it_did(item_key: str):
     recorded = _baseline()[item_key]
@@ -65,11 +97,18 @@ def test_ingesting_an_attachment_does_what_it_did(item_key: str):
         plane = Path(raw)
         run = ingest(item_key, plane)
         observed = observe(item_key, plane)
+        # Again into the same plane and without --force-reparse, which is the
+        # only way the unchanged-source decision is exercised at all: with the
+        # flag set it always answers "index".
+        run["second_pass"] = {
+            k: v for k, v in ingest(item_key, plane, force=False).items()
+            if k in ("exit_code", "counters", "summary")
+        }
 
     differences = []
     if run.get("exit_code"):
         differences.append("  the run failed:\n" + run.get("stderr_tail", ""))
-    for field in ("exit_code", "counters", "summary"):
+    for field in ("exit_code", "counters", "summary", "second_pass"):
         if recorded.get(field) != run.get(field):
             differences.append(
                 f"  {field}:\n    was: {recorded.get(field)}\n    now: {run.get(field)}"

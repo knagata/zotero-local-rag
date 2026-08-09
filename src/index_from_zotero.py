@@ -74,6 +74,7 @@ from index_batch import (
 )
 from index_run import (
     DiscoveryResult, NoteIndexOutcome, QualityWarning, ReparseDecision,
+    SourceVerdict,
     ResolvedAttachmentSource,
 )
 
@@ -2112,6 +2113,67 @@ def _reparse_decision(
     )
 
 
+def _source_verdict(
+    args: argparse.Namespace,
+    *,
+    attachment_key: str,
+    previous: dict[str, Any] | None,
+    file_path: Path,
+    mtime: float,
+    size: int,
+    pipeline_fingerprint: str,
+    structured_v3: bool,
+    inflight: set[str],
+    reparse: ReparseDecision,
+) -> SourceVerdict:
+    """Decide what this run owes an attachment, without extracting anything.
+
+    The three answers the loop acts on -- index it, read its quality only, skip
+    it -- gathered here because they are one question asked of the same handful
+    of facts. Whether the file changed, whether it was indexed by this pipeline,
+    whether a batch still has it in flight, and whether the invocation demands a
+    reparse regardless.
+
+    The content hash is computed only once modification time and size already
+    match a row that carried one: a difference in either is conclusive on its
+    own and cheaper to trust, so an actually-changed file is never hashed, and
+    an unchanged one is hashed once and the result handed back for the manifest
+    row to reuse.
+    """
+    has_quality = bool(previous and "quality" in previous)
+    entry_pipeline_matches = bool(
+        previous and str(previous.get("pipeline_fingerprint") or "") == pipeline_fingerprint
+    ) if structured_v3 else True
+
+    signature = None
+    stat_matches = bool(
+        previous
+        and float(previous.get("mtime", -1)) == mtime
+        and int(previous.get("size", -1)) == size
+    )
+    if stat_matches and previous.get("content_signature"):
+        try:
+            signature = content_signature(file_path, size)
+        except OSError:
+            signature = None
+
+    unchanged = (
+        _source_content_unchanged(previous, mtime=mtime, size=size, signature=signature)
+        and entry_pipeline_matches
+        and attachment_key not in inflight
+        and not args.retry_failed
+        and not args.force_reparse
+        and not reparse.force_docling
+        and not reparse.force_ndlocr
+        and not reparse.force_mistral
+    )
+    if not unchanged:
+        return SourceVerdict("index", signature)
+    if args.check_quality or not has_quality:
+        return SourceVerdict("quality_only", signature)
+    return SourceVerdict("skip", signature)
+
+
 async def main_async(args: argparse.Namespace) -> None:
     PDF_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -2529,8 +2591,6 @@ async def main_async(args: argparse.Namespace) -> None:
                 )
 
         prev = files_manifest.get(a.attachmentKey)
-        has_quality = prev and "quality" in prev
-        quality_check_only = False
 
         reocr_route = reocr_routes.get(a.attachmentKey)
         reparse = _reparse_decision(
@@ -2543,9 +2603,6 @@ async def main_async(args: argparse.Namespace) -> None:
         inflight_attachments = {
             str(value) for value in manifest.get("inflight_attachments", []) if value
         }
-        entry_pipeline_matches = bool(
-            prev and str(prev.get("pipeline_fingerprint") or "") == v3_pipeline_fingerprint
-        ) if STRUCTURED_V3_ENABLE else True
         if (
                 not args.rebuild
                 and _skip_current_mistral_toc_candidate(
@@ -2566,44 +2623,32 @@ async def main_async(args: argparse.Namespace) -> None:
                     file=sys.__stderr__,
                 )
             continue
-        # Only hashed once mtime and size already look unchanged: a real
-        # difference in either is already conclusive and cheaper to trust
-        # first, so this never adds I/O for a file that has actually changed.
-        mtime_size_match = (
-            prev and float(prev.get("mtime", -1)) == mtime and int(prev.get("size", -1)) == size
+        verdict = _source_verdict(
+            args, attachment_key=a.attachmentKey, previous=prev, file_path=file_path,
+            mtime=mtime, size=size, pipeline_fingerprint=v3_pipeline_fingerprint,
+            structured_v3=STRUCTURED_V3_ENABLE, inflight=inflight_attachments,
+            reparse=reparse,
         )
-        current_signature = None
-        if mtime_size_match and prev.get("content_signature"):
-            try:
-                current_signature = content_signature(file_path, size)
-            except OSError:
-                current_signature = None
-        if (_source_content_unchanged(prev, mtime=mtime, size=size, signature=current_signature)
-                and entry_pipeline_matches
-                and a.attachmentKey not in inflight_attachments
-                and not args.retry_failed
-                and not args.force_reparse
-                and not force_docling and not force_ndlocr and not force_mistral):
-            if args.check_quality or not has_quality:
-                quality_check_only = True
-                if show_progress:
-                    print(
-                        f"[PROGRESS]   ↳ analyzing text quality of existing item: attachment={a.attachmentKey}",
-                        file=sys.__stderr__,
-                    )
+        current_signature = verdict.signature
+        quality_check_only = verdict.action == "quality_only"
+        if verdict.action == "skip":
+            if stype == "html":
+                skipped_html += 1
+            elif stype == "epub":
+                skipped_epub += 1
             else:
-                if stype == "html":
-                    skipped_html += 1
-                elif stype == "epub":
-                    skipped_epub += 1
-                else:
-                    skipped_pdf += 1
-                if show_progress:
-                    print(
-                        f"[PROGRESS]   ↳ skipped (unchanged): attachment={a.attachmentKey}",
-                        file=sys.__stderr__,
-                    )
-                continue
+                skipped_pdf += 1
+            if show_progress:
+                print(
+                    f"[PROGRESS]   ↳ skipped (unchanged): attachment={a.attachmentKey}",
+                    file=sys.__stderr__,
+                )
+            continue
+        if quality_check_only and show_progress:
+            print(
+                f"[PROGRESS]   ↳ analyzing text quality of existing item: attachment={a.attachmentKey}",
+                file=sys.__stderr__,
+            )
 
         # We are about to write a manifest entry for this attachment -- record
         # its content signature so a *future* run can tell a same-size

@@ -85,6 +85,22 @@ _VOLATILE = frozenset({
 })
 
 
+def _zotero_is_reachable() -> bool:
+    import socket
+    from urllib.parse import urlparse
+
+    from src.zotero_source_localapi import local_api_base
+
+    parsed = urlparse(local_api_base())
+    try:
+        with socket.create_connection(
+            (parsed.hostname or "127.0.0.1", parsed.port or 23119), timeout=1.5,
+        ):
+            return True
+    except OSError:
+        return False
+
+
 def _stable(value):
     """Drop the fields that move on their own, at any depth."""
     if isinstance(value, dict):
@@ -98,8 +114,14 @@ def _digest(text: str) -> str:
     return hashlib.sha1(text.encode("utf-8")).hexdigest()[:12]
 
 
-def ingest(item_key: str, plane: Path) -> dict:
-    """Run the real loop over one item, into a data plane of its own."""
+def ingest(item_key: str, plane: Path, *, force: bool = True) -> dict:
+    """Run the real loop over one item, into a data plane of its own.
+
+    ``force`` passes --force-reparse, which is what a first pass into an empty
+    plane needs. A second pass without it is how the unchanged-source decision
+    gets exercised at all: with the flag set that decision always answers
+    "index", so a repeat run said nothing about it.
+    """
     # The child's data plane is built, not inherited. Passing os.environ
     # through leaves whatever the caller happens to have set: run from a test
     # session that had exported PIPELINE_CONFIG_PATH, the child got the real
@@ -125,7 +147,7 @@ def ingest(item_key: str, plane: Path) -> dict:
     })
     result = subprocess.run(
         [sys.executable, str(ROOT / "src" / "index_from_zotero.py"),
-         "--item", item_key, "--force-reparse"],
+         "--item", item_key, *(["--force-reparse"] if force else [])],
         cwd=ROOT, env=environment, text=True, capture_output=True,
     )
     counters, summary = {}, ""
@@ -205,8 +227,16 @@ def measure() -> list[dict]:
             print(f"  {item_key} ...", file=sys.stderr, end="", flush=True)
             run = ingest(item_key, plane)
             observed = observe(item_key, plane)
+            # Again, into the same plane. The first pass always indexes -- the
+            # plane is empty -- so on its own it never exercises the decision
+            # that an attachment is unchanged and can be skipped, which is half
+            # of what the loop does on an ordinary run over a settled library.
+            again = ingest(item_key, plane, force=False)
             print(f" {len(observed['chunks'])} chunks", file=sys.stderr)
-            measured.append({"item_key": item_key, **run, **observed})
+            measured.append({
+                "item_key": item_key, **run, **observed,
+                "second_pass": {k: again[k] for k in ("exit_code", "counters", "summary")},
+            })
     return measured
 
 
@@ -218,7 +248,8 @@ def diff(previous: list[dict], current: list[dict]) -> list[str]:
         if before is None:
             lines.append(f"  + {row['item_key']} entered the corpus")
             continue
-        for field in ("exit_code", "counters", "summary", "manifest", "artifact_status"):
+        for field in ("exit_code", "counters", "summary", "second_pass",
+                      "manifest", "artifact_status"):
             if before.get(field) != row.get(field):
                 lines.append(f"  ~ {row['item_key']} {field}")
                 lines.append(f"      was: {json.dumps(before.get(field), ensure_ascii=False)[:300]}")
@@ -241,6 +272,14 @@ def main() -> None:
                         help="adopt the current behaviour as the baseline")
     args = parser.parse_args()
 
+    # Ingestion enumerates the library over Zotero's local API and refuses to
+    # read an unreachable Zotero as an empty one. Without it every run fails
+    # identically, which is worth saying once here rather than three times as a
+    # traceback.
+    if not _zotero_is_reachable():
+        raise SystemExit(
+            "Zotero's local API is not answering. Open Zotero and run this again."
+        )
     previous = (
         json.loads(BASELINE_PATH.read_text(encoding="utf-8"))
         if BASELINE_PATH.exists() else {"items": []}
