@@ -86,6 +86,7 @@ def _baseline() -> dict[str, dict]:
 
 
 @_needs_baseline
+@pytest.mark.corpus
 def test_the_recorded_corpus_covers_every_route_the_builder_names():
     # A route that quietly leaves the corpus takes its coverage with it, and the
     # remaining entries go on passing. One item was dropped for the opposite

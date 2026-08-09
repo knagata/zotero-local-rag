@@ -72,6 +72,7 @@ def _render(paths: list[list] | None) -> str:
     not _library_is_available(),
     reason="needs the indexed Zotero library; the hand-built rule tests cover CI",
 )
+@pytest.mark.corpus
 def test_the_recovered_trees_are_the_ones_that_were_reviewed():
     baseline = _baseline()
     drifted: list[str] = []
@@ -116,6 +117,7 @@ def test_the_recovered_trees_are_the_ones_that_were_reviewed():
 
 
 @_needs_baseline
+@pytest.mark.corpus
 def test_no_recovered_tree_repeats_a_boundary():
     """A book opens each of its divisions once.
 
@@ -151,6 +153,7 @@ _NEGLIGIBLE_CHUNKS = 5
 
 
 @_needs_baseline
+@pytest.mark.corpus
 def test_no_recovered_tree_hangs_the_whole_book_off_one_boundary():
     """A book's divisions divide it.
 

@@ -90,17 +90,21 @@ def test_every_mark_a_test_carries_is_declared():
     )
 
 
-def test_the_declared_marks_are_the_ones_the_default_run_excludes():
-    # Otherwise a mark is declared, applied, documented -- and still collected.
+def test_every_mark_the_default_run_excludes_is_declared():
+    """Excluding an undeclared mark deselects nothing and says nothing.
+
+    Not the converse: a declared mark need not be excluded. ``corpus`` marks
+    the tests that need the indexed library, which *should* run on a machine
+    that has one -- what it is for is measuring the coverage budget under the
+    same selection CI gets, so the floor is one both environments can reach.
+    """
     declared = _declared_marks()
     expression = _configuration()["addopts"]
-    excluded = {
-        name for name in declared
-        if re.search(rf"\bnot\s+{re.escape(name)}\b", expression)
-    }
-    assert excluded == declared, (
-        "pyproject.toml declares a mark that its addopts do not exclude. "
-        f"addopts: {expression!r}, declared: {sorted(declared)}"
+    excluded = set(re.findall(r"\bnot\s+([a-z_]+)", expression))
+    assert excluded, f"addopts excludes nothing: {expression!r}"
+    assert excluded <= declared, (
+        f"addopts excludes {sorted(excluded - declared)}, which pyproject.toml "
+        "does not declare, so it deselects nothing"
     )
 
 
@@ -147,7 +151,7 @@ def test_an_explicit_marker_expression_beats_the_default_exclusion(tmp_path: Pat
         f"markers = [\n{markers}\n]\n",
         encoding="utf-8",
     )
-    marked = sorted(_declared_marks())[0]
+    marked = "slow"
     (tmp_path / "test_selection_probe.py").write_text(
         "import pytest\n\n\n"
         "def test_ordinary():\n    pass\n\n\n"
