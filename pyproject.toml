@@ -42,6 +42,14 @@ line-length = 120
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+# The default run excludes the marked tests. Opt in with `-m slow`; `-m ""`
+# runs everything. A marker named here is the only one a test may carry --
+# tests/test_default_test_selection.py refuses an undeclared one, because a
+# misspelled mark is not deselected and quietly rejoins the default run.
+addopts = "-m 'not slow'"
+markers = [
+    "slow: runs the real ingestion pipeline against the library, tens of seconds per test. CI never runs these -- they need the library, Zotero's local API, the embedding model and a locally generated baseline -- so excluding them by default removes waiting, not enforcement.",
+]
 
 [project.scripts]
 zotero-local-rag = "src.cli:main"

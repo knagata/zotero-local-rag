@@ -31,6 +31,19 @@ uv run ruff check --select E9,F63,F7,F82 src scripts tests citation_graph
 CI はこの3つに `uv run python -c "import src.cli"` を加えたものを回す。
 テストは CI では `-W error::RuntimeWarning` 付き。Python は 3.10 固定。
 
+既定の実行は `slow` マーカーの付いたテストを除外する。取込ベースライン
+（`tests/test_ingestion_baseline.py`、実測205秒中140秒）がそれで、蔵書・Zotero・
+埋め込みモデル・手元生成のベースラインを要するためCIでは元々走っていない。
+**抽出・取込・構造復元に触ったら明示的に走らせる。**
+
+```bash
+uv run pytest -m slow
+```
+
+マーカーの宣言と除外・付与・この記述の対応は `tests/test_default_test_selection.py`
+が検査する。綴りを間違えたマーカーは除外されず既定の実行に戻るだけなので、
+機械に押し戻させる。
+
 ## 作業上の規則
 
 ### 経験則を変えたら、生成物を読む。集計値で判断しない

@@ -25,7 +25,13 @@ Regenerate with::
     uv run python scripts/build_ingestion_baseline.py --write    # adopt
 
 Needs the library, the attachments on disk and the embedding model, so it skips
-where those are absent. About half a minute for the three items.
+where those are absent -- which is every CI run. It is also the slowest thing in
+the suite by a wide margin (140 of 205 seconds when this was written, five
+attachments through three passes each), so the run itself is marked ``slow`` and
+left out of the default selection. Run it when touching extraction, ingestion or
+structure recovery::
+
+    uv run pytest -m slow
 """
 from __future__ import annotations
 
@@ -90,6 +96,7 @@ def test_the_recorded_corpus_covers_every_route_the_builder_names():
 
 @_needs_baseline
 @_needs_zotero
+@pytest.mark.slow
 @pytest.mark.parametrize("item_key", CORPUS)
 def test_ingesting_an_attachment_does_what_it_did(item_key: str):
     recorded = _baseline()[item_key]

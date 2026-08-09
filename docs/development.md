@@ -9,6 +9,20 @@ uv run pytest -q
 uv run python -m compileall -q src scripts tests
 ```
 
+既定の実行は `slow` マーカーの付いたテストを除外します。現在それに当たるのは下の
+取込ベースライン5件で、実測で全体205秒のうち140秒（68%）を占めていました。蔵書・
+Zotero・埋め込みモデル・手元生成のベースラインを要するためCIでは元々スキップされて
+おり、既定から外しても強制される検査層は変わりません。**抽出・取込・構造復元に
+関わる変更をしたら明示的に走らせてください。**
+
+```bash
+uv run pytest -m slow
+```
+
+マーカーの宣言は `pyproject.toml`。宣言・除外・付与・この記述が食い違っていないことは
+`tests/test_default_test_selection.py` が検査します（綴りを間違えたマーカーは除外され
+ず、症状は「実行がまた遅い」だけなので気付けません）。
+
 ### 取込ベースライン
 
 `index_from_zotero.main_async` は1,856行で、うち1,389行が添付1件を処理するforループ
@@ -21,7 +35,8 @@ uv run python -m compileall -q src scripts tests
 
 代表3経路（HTML/PDF/EPUB）を使い捨てデータプレーンへ通し、実行が印字したカウンタ・
 マニフェスト行・全チャンク（識別子/block_type/zone/構造、本文はハッシュ）・artifact
-状態を記録する。本番のインデックスには触れない。約30秒。
+状態を記録する。本番のインデックスには触れない。5件で約140秒かかるため `slow`
+マーカーを付けており、既定の `uv run pytest` では走らない（上記）。
 
 ```bash
 uv run python scripts/build_ingestion_baseline.py          # 差分を見る
