@@ -14,7 +14,7 @@ than deleted silently, because the same review would otherwise raise them again.
 Priority means: **P1** can lose or corrupt data, or has no bound; **P2** is a
 robustness or cost defect within the local-only workflow; **P3** costs accuracy
 or clarity in what the user is shown. Structural work is not ranked here — its
-order is decided by the size ratchet in `TASKS.md`.
+order is decided by the size ratchet (`tests/test_function_size_ratchet.py`).
 
 ## P1
 
@@ -150,8 +150,10 @@ Verified against `tests/baselines/structure_recovery.json` on 2026-08-09, where
 
 ## Longer-term maintainability
 
-Not ranked with the above. The splitting work is governed by the function-size
-ratchet in `TASKS.md`; this section records only what a splitter needs to know
+Not ranked with the above. The sizes below are held by the function-size ratchet
+(`tests/function_size_budget.json`, checked by
+`tests/test_function_size_ratchet.py`), which stops them growing and records
+each split as it lands; this section keeps only what a splitter needs to know
 that the size number does not say.
 
 ### Per-attachment chunk generations
