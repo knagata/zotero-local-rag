@@ -154,8 +154,26 @@ changes rather than as another large refactoring batch.
 - `source_structure_refresh._refresh_pdf_rows_from_numbered_body_headings` is
   split; `index_from_zotero.main_async` and `db_relations._init_db` are the two
   that remain.
-- Continue splitting `index_from_zotero.main_async` by attachment processing
-  phase.
+- Continue splitting `index_from_zotero.main_async`. The seam is measured, not
+  guessed. Its per-attachment loop is 1,334 lines, and the 785-line block inside
+  it is a routing chain: `force_mistral` (110 lines), `stype == "html"` (1 line),
+  `stype == "epub"` (1 line), and an `else` that is the whole PDF route at 665
+  lines. That `else` is the next unit to lift out. Its interface is smaller than
+  the block's size suggests: about 20 of its 44 read names come from the loop
+  (the rest are module functions and imports), and of 9 names that escape only
+  four matter -- `chunks`, `quality_info`, and the `deferred_extract` /
+  `skipped_pdf` counters. `cid`, `md`, `row`, `text` and `value` are comprehension
+  and inner-loop variables that are reassigned before anything reads them.
+  So: roughly 20 parameters in, `(chunks, quality_info)` plus a counter verdict
+  out. Do it as one mechanical move with room to verify it, not in the tail of a
+  long session -- the ingestion net reaches only 15% of that block, so the
+  verification is the expensive half.
+- Widening the ingest net past 28% needs attachments that take the OCR routes,
+  and those are not deterministic: the library's one corrupted PDF returned 109
+  chunks twice and 108 once, and the smallest image-page EPUB extracts through
+  Mistral in the cloud. The way past this is to separate the deterministic
+  decisions inside the PDF route from the extractor calls they choose between,
+  so the decisions can be netted and the calls mocked.
 - Split `db_relations._init_db` into versioned migrations.
 - Extract the ordinary 442-line `rag_search` into request normalization,
   candidate retrieval, fusion/filtering, and response formatting services.
