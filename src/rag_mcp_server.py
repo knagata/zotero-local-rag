@@ -111,7 +111,11 @@ def _check_indexing_lock() -> tuple:
         try:
             age_hours = (time.time() - os.path.getmtime(INDEXING_LOCK_PATH)) / 3600
         except OSError:
-            age_hours = 0.0
+            # The file went away between the read and the stat -- the indexer
+            # released it mid-check. Treating that as "recently written" told
+            # the caller to hand-delete a file that no longer exists.
+            _log.info("indexing.lock disappeared while being read — not blocking")
+            return False, None
         if age_hours > _LOCK_STALE_HOURS:
             _log.warning("Unreadable indexing.lock is %.1f h old — treating as stale", age_hours)
             return False, None

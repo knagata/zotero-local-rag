@@ -128,6 +128,22 @@ def test_an_old_unreadable_lock_is_still_treated_as_stale(tmp_path):
     assert not blocked
 
 
+def test_a_lock_that_vanishes_mid_check_does_not_block_the_answer(tmp_path):
+    # The narrow race the age fallback has to get right: the indexer releases
+    # the lock between the read that fails and the stat that would date it.
+    # Treating that as "recently written" told the caller to hand-delete a file
+    # that no longer exists.
+    lock = tmp_path / "indexing.lock"
+    lock.write_text("{ this is not json", encoding="utf-8")
+    with (
+        patch.object(server, "INDEXING_LOCK_PATH", str(lock)),
+        patch("os.path.getmtime", side_effect=OSError("gone")),
+    ):
+        blocked, message = server._check_indexing_lock()
+    assert not blocked
+    assert message is None
+
+
 def test_the_server_asks_the_same_place_where_the_lock_is():
     import indexing_lock
 

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import atexit
 import fcntl
+import functools
 import json
 import os
 import sys
@@ -24,6 +25,11 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+
+#: Exit handlers for locks this process holds, by token, so releasing one lock
+#: does not unregister another's backstop.
+_AT_EXIT: dict[str, Any] = {}
 
 
 def default_path(project_root: Path) -> Path:
@@ -135,8 +141,18 @@ def acquire(lock_path: Path) -> dict:
         except FileNotFoundError:
             pass
 
-    # Ensure the lock is released on normal exit, SystemExit, or KeyboardInterrupt.
-    atexit.register(release, lock_data)
+    # Ensure the lock is released on normal exit, SystemExit, or
+    # KeyboardInterrupt, and remove that handler again when the lock is
+    # released normally: a process that acquires repeatedly -- a test session, a
+    # maintenance run doing several ingests -- otherwise accumulates one
+    # handler per acquire, each holding lock data for a file that is long gone.
+    #
+    # Registered per token rather than by function, because
+    # ``atexit.unregister`` removes every registration of the callable it is
+    # given: releasing one lock would drop the backstop for another still held.
+    handler = functools.partial(release, lock_data)
+    _AT_EXIT[lock_data["token"]] = handler
+    atexit.register(handler)
 
     return lock_data
 
@@ -146,6 +162,10 @@ def release(lock_data: dict[str, Any] | None = None, *, lock_path: Path | None =
     held_at = Path(lock_data["path"]) if lock_data and lock_data.get("path") else lock_path
     if held_at is None:
         return
+    if lock_data is not None:
+        handler = _AT_EXIT.pop(lock_data.get("token"), None)
+        if handler is not None:
+            atexit.unregister(handler)
     try:
         with _metadata_guard(held_at):
             if lock_data is not None:

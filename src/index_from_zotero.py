@@ -2868,6 +2868,31 @@ def _extraction_status(
     )
 
 
+def _report_purge(purge_counts: dict[str, int]) -> None:
+    """Say what the relations purge did, and say it differently when refused.
+
+    ``refused`` is a report about the caller's view of the library, not a row
+    that was deleted, so summing it into the total printed "Purged removed
+    items ... =0, =0, =0" at exactly the moment a purge had been refused.
+    """
+    refused = int(purge_counts.get("refused") or 0)
+    if refused:
+        print(
+            f"[PROGRESS] Refused to purge {refused} items from relations.db "
+            "(see the error above); nothing was deleted.",
+            file=sys.__stderr__,
+        )
+    deleted = sum(value for key, value in purge_counts.items() if key != "refused")
+    if deleted > 0:
+        print(
+            f"[PROGRESS] Purged removed items from relations.db: "
+            f"item_citation_status={purge_counts['item_citation_status']}, "
+            f"global_citations={purge_counts['global_citations']}, "
+            f"global_references={purge_counts['global_references']}",
+            file=sys.__stderr__,
+        )
+
+
 def _report_empty_extraction(
     attachment: Any,
     *,
@@ -3383,15 +3408,8 @@ async def _index_library(
             purge_removed_items(current_item_keys) if current_item_keys is not None
             else {"item_citation_status": 0, "global_citations": 0, "global_references": 0}
         )
-        purged_total = sum(purge_counts.values())
-        if purged_total > 0 and show_progress:
-            print(
-                f"[PROGRESS] Purged removed items from relations.db: "
-                f"item_citation_status={purge_counts['item_citation_status']}, "
-                f"global_citations={purge_counts['global_citations']}, "
-                f"global_references={purge_counts['global_references']}",
-                file=sys.__stderr__,
-            )
+        if show_progress:
+            _report_purge(purge_counts)
 
     updated_pdf = updated_html = updated_epub = 0
     skipped_pdf = skipped_html = skipped_epub = 0

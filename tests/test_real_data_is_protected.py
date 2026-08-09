@@ -124,3 +124,57 @@ def test_a_deliberate_bulk_purge_can_still_say_so(tmp_path, monkeypatch):
     counts = db_relations.purge_removed_items(set(), force=True)
 
     assert counts["item_citation_status"] == 500
+
+
+def test_a_refused_purge_is_not_reported_as_a_purge(capfd):
+    """The refusal has to read as a refusal.
+
+    The guard returns its count under "refused", and the run summed every value
+    in that dict: a refused purge made the total non-zero and printed "Purged
+    removed items ... =0, =0, =0" -- announcing a purge at the moment one was
+    prevented, which is the sentence an operator would act on.
+    """
+    import index_from_zotero
+
+    index_from_zotero._report_purge({
+        "item_citation_status": 0, "global_citations": 0, "global_references": 0,
+        "refused": 571,
+    })
+    # capfd, not capsys: the progress output goes to sys.__stderr__, which
+    # capsys does not see, so a capsys-based assertion reads as an empty string
+    # and passes for the wrong reason.
+    refused_output = capfd.readouterr().err
+    assert "Refused to purge 571" in refused_output
+    assert "Purged removed items" not in refused_output, (
+        "a refused purge is announced as a purge that happened"
+    )
+
+    index_from_zotero._report_purge({
+        "item_citation_status": 2, "global_citations": 7, "global_references": 1,
+    })
+    assert "Purged removed items" in capfd.readouterr().err
+
+
+def test_the_confirming_bulk_command_can_still_purge():
+    # purge_orphans confirms every candidate against Zotero individually and
+    # applies its own ratio guard, so it has to be able to get past the guard
+    # inside purge_removed_items -- which the guard's own comment says is the
+    # way to do a deliberate bulk removal.
+    import ast
+
+    source = (ROOT / "scripts" / "purge_orphans.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    calls = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and getattr(node.func, "attr", "") == "purge_removed_items"
+    ]
+    assert calls, "the call moved; this check no longer looks at it"
+    for call in calls:
+        assert any(
+            keyword.arg == "force" and getattr(keyword.value, "value", False) is True
+            for keyword in call.keywords
+        ), (
+            f"purge_removed_items at line {call.lineno} runs without force, so "
+            "the guard refuses it and the script reports an empty result as success"
+        )

@@ -85,9 +85,21 @@ def load_manifest(manifest_path: Path) -> Dict[str, Any]:
         return {"version": 1, "files": {}, "notes": {}}
 
 
-#: Set while this thread holds the writer lock, so a ``save_manifest`` inside an
-#: ``updating`` block does not deadlock against the lock its own caller holds.
+#: The manifests this thread is holding the writer lock for, so a
+#: ``save_manifest`` inside an ``updating`` block does not deadlock against the
+#: lock its own caller holds. A set rather than one slot: with a single slot, a
+#: nested write of a *different* manifest cleared the outer one's marker on the
+#: way out, and the next write of the outer manifest then took flock on a fresh
+#: descriptor and blocked against the one its own caller still holds.
 _HOLDING = threading.local()
+
+
+def _held_paths() -> set[str]:
+    held = getattr(_HOLDING, "paths", None)
+    if held is None:
+        held = set()
+        _HOLDING.paths = held
+    return held
 
 
 @contextmanager
@@ -99,18 +111,20 @@ def _writer_lock(manifest_path: Path):
     lock. Re-entrant within a thread so ``updating`` can save through the same
     code path as everyone else.
     """
-    if getattr(_HOLDING, "path", None) == str(manifest_path):
+    held = _held_paths()
+    key = str(manifest_path)
+    if key in held:
         yield
         return
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     guard = manifest_path.with_name(f".{manifest_path.name}.writer")
     guard_fd = os.open(guard, os.O_RDWR | os.O_CREAT, 0o600)
-    _HOLDING.path = str(manifest_path)
+    held.add(key)
     try:
         fcntl.flock(guard_fd, fcntl.LOCK_EX)
         yield
     finally:
-        _HOLDING.path = None
+        held.discard(key)
         fcntl.flock(guard_fd, fcntl.LOCK_UN)
         os.close(guard_fd)
 

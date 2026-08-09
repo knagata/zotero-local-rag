@@ -140,6 +140,28 @@ def test_a_node_reports_the_graph_count_separately_from_the_s2_total():
     assert '"citationsSource"' in source
     app_js = (ROOT / "citation_graph" / "static" / "app.js").read_text(encoding="utf-8")
     assert "被引用数（S2全体）" in app_js, (
-        "the tooltip still labels S2's total for the work as if it were the "
+        "the sidebar still labels S2's total for the work as if it were the "
         "number of citing papers the graph drew"
     )
+
+
+def test_the_hover_tooltip_says_which_citation_count_it_is_showing():
+    """The surface the first fix missed.
+
+    The relabelling went into app.js, which draws the sidebar; the hover
+    tooltip is built server-side in _tooltip's rows, and it kept the bare
+    "Citations" label on S2's total. A test that reads only app.js passes
+    while the number a reader actually hovers over is unchanged.
+    """
+    rows = server._tooltip_citation_rows(s2_total=4188, drawn=191)
+    labels = [label for label, _value in rows]
+    assert "Citations" not in labels, (
+        f"S2's total is still labelled as a plain citation count: {rows}"
+    )
+    assert any("S2" in label for label in labels)
+    assert any(value == "191" for _label, value in rows), (
+        "the count this graph actually drew is not shown beside the S2 total"
+    )
+    # With no S2 figure there is only one number, and it needs no qualifier.
+    plain = server._tooltip_citation_rows(s2_total=None, drawn=191)
+    assert [label for label, _ in plain] == ["Citations"]

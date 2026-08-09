@@ -1550,6 +1550,23 @@ _JS_THEME = ("window.__RAG_THEME__ = "
 
 # ── build_graph_data: assemble node/edge data for the API ─────────────────────
 
+def _tooltip_citation_rows(*, s2_total: int | None, drawn: int) -> list[tuple[str, str]]:
+    """The citation rows a hover tooltip shows, each saying which number it is.
+
+    S2's total for the work and the citing papers this graph drew are different
+    numbers -- 4,188 against 191 on one item -- and both were labelled
+    "Citations", so comparing two nodes could compare two different things. The
+    sidebar was fixed first and this was not, which a test reading only the
+    sidebar's source could not notice.
+    """
+    if s2_total is None:
+        return [("Citations", f"{drawn:,}" if drawn else "—")]
+    rows = [("Citations (S2 total)", f"{s2_total:,}")]
+    if drawn != s2_total:
+        rows.append(("  of which in this graph", f"{drawn:,}"))
+    return rows
+
+
 def _load_identifier_overrides(db_path: str) -> dict[str, dict]:
     """The hand-corrected identifiers for graph nodes, or none if unreadable.
 
@@ -1819,7 +1836,7 @@ def build_graph_data(
             ("Year",       year_val or "—"),
             ("DOI",        doi_val  or "—"),
             ("ISBN",       isbn_val or "—"),
-            ("Citations",  f"{s2_cc:,}" if s2_cc is not None else (f"{count:,}" if count else "—")),
+            *_tooltip_citation_rows(s2_total=s2_cc, drawn=count),
             ("References", f"{rcount:,}" if rcount else "—"),
             ("Contexts",   f"{d['context_count']:,}"),
             ("Status",     status),

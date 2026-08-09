@@ -287,7 +287,14 @@ async def main_async(args: argparse.Namespace) -> int:
                 payload["ledger_removed"] = {}
                 payload["ledger_purge_refused"] = len(candidate_removal)
             else:
-                payload["ledger_removed"] = db_relations.purge_removed_items(live)
+                # force: this script has just confirmed every candidate against
+                # Zotero individually and applied its own ratio guard above, so
+                # the guard inside purge_removed_items -- which exists for
+                # callers that have done neither -- would silently refuse a
+                # removal that was already checked twice.
+                payload["ledger_removed"] = db_relations.purge_removed_items(
+                    live, force=True,
+                )
         for key in report.reparented:
             db_relations.drop_stale_identity_rows(key, parents.get(key, ""))
         payload["reparented_rows_retired"] = len(report.reparented)

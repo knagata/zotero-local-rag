@@ -115,10 +115,15 @@ def _default_relations_database_to_a_scratch_file() -> None:
     """
     if os.environ.get("RELATIONS_DB_PATH"):
         return
+    import atexit
+    import shutil
     import tempfile
 
-    scratch = Path(tempfile.mkdtemp(prefix="pytest-relations-")) / "relations.db"
-    os.environ["RELATIONS_DB_PATH"] = str(scratch)
+    directory = tempfile.mkdtemp(prefix="pytest-relations-")
+    # Removed at exit: without this every run of the suite leaves a directory
+    # behind, holding whatever relations database the tests wrote into it.
+    atexit.register(shutil.rmtree, directory, ignore_errors=True)
+    os.environ["RELATIONS_DB_PATH"] = str(Path(directory) / "relations.db")
 
 
 _default_relations_database_to_a_scratch_file()
