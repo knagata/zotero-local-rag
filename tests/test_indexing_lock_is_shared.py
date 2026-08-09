@@ -48,7 +48,13 @@ def test_every_writer_asks_the_same_function_where_the_lock_is():
     # Two spellings of data/indexing.lock is the drift this project has already
     # paid for with the manifest and the Chroma directory.
     spelled_out = []
-    for relative in ("src/index_from_zotero.py", "scripts/run_reocr_queue.py"):
+    for relative in (
+        "src/index_from_zotero.py",
+        "scripts/run_reocr_queue.py",
+        # The reader counts too: the MCP server decides whether to serve from
+        # this file, and it had a third spelling of the path.
+        "src/rag_mcp_server.py",
+    ):
         tree = ast.parse((ROOT / relative).read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if isinstance(node, ast.Constant) and node.value == "indexing.lock":

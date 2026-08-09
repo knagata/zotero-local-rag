@@ -35,19 +35,7 @@ order is decided by the size ratchet (`tests/test_function_size_ratchet.py`).
   asserts the same invariant each time, with the stores each case is still
   answerable for stated in the table. Four regressions were injected and caught.
 
-### 2. Bound `search_items` resource use and validate inputs
-
-- Location: `src/rag_mcp_server.py` (`search_items`)
-- Still true 2026-08-09: `k_internal = max(k * 10, 100)` has no upper bound, and
-  `MIN_RETURN_CHARS` is read with a bare `int(os.environ.get(...))` that raises
-  outside the query error boundary. `rag_search` already does both correctly
-  with `bounded_env_int` -- this is the one caller left behind, as it was for
-  the query-embedding precompute (F3, 2026-07-30).
-- Proposal: use `bounded_env_int`, cap by collection count and an absolute
-  maximum, validate the query and list parameters, and return a stable client
-  error.
-
-### 3. Serialize manifest writers
+### 2. Serialize manifest writers
 
 - Location: `src/manifest.py`
 - Still true 2026-08-09: every writer builds the same `.json.tmp` path next to
@@ -60,7 +48,7 @@ order is decided by the size ratchet (`tests/test_function_size_ratchet.py`).
 
 ## P2
 
-### 4. Add translation request limits
+### 3. Add translation request limits
 
 - Location: `citation_graph/server.py` (`_TranslateBatchRequest`)
 - Still true 2026-08-09: the model is `texts: list[str]` with no constraint, so
@@ -69,7 +57,7 @@ order is decided by the size ratchet (`tests/test_function_size_ratchet.py`).
 - Proposal: enforce the limits in the Pydantic model, reject oversized payloads
   before the upstream call, and return sanitized upstream errors.
 
-### 5. Move identifier override migration out of request handling
+### 4. Move identifier override migration out of request handling
 
 - Location: `citation_graph/server.py` (`_ensure_override_table`)
 - Still true 2026-08-09: the handler calls it per update, and it retries five
@@ -81,7 +69,7 @@ order is decided by the size ratchet (`tests/test_function_size_ratchet.py`).
 
 ## P3
 
-### 6. Say which citation count the tooltip is showing
+### 5. Say which citation count the tooltip is showing
 
 - Locations: `citation_graph/server.py` (~L1769), `citation_graph/static/app.js`
   (~L2186)
@@ -92,7 +80,7 @@ order is decided by the size ratchet (`tests/test_function_size_ratchet.py`).
 - Proposal: name the S2 total and the drawn count separately, or label the
   total as S2's.
 
-### 7. Give S2 identity a discriminator for author-less records
+### 6. Give S2 identity a discriminator for author-less records
 
 - Location: `src/citation_mapper.py` (`_record_names_a_creator`)
 - The function passes a record that lists no author, on the principle that
@@ -106,7 +94,7 @@ order is decided by the size ratchet (`tests/test_function_size_ratchet.py`).
   EARTHQUAKES"). Refusing them wholesale drops the correct with the wrong.
 - Re-measure before acting; the count is from the mapping as it stood then.
 
-### 8. Flat-PDF recovery: three shapes that stay flat
+### 7. Flat-PDF recovery: three shapes that stay flat
 
 Verified against `tests/baselines/structure_recovery.json` on 2026-08-09, where
 6 of 84 attachments recover a tree. Both named books are still flat.
@@ -172,13 +160,13 @@ that the size number does not say.
   PDF route from the extractor calls they choose between, so the decisions can
   be netted and the calls mocked.
 - `db_relations._init_db` (698 lines) wants versioned migrations, not a split
-  into helpers -- see item 5, which is the same problem leaking into a handler.
+  into helpers -- see item 4, which is the same problem leaking into a handler.
 - `rag_search` (442 lines) divides into request normalization, candidate
   retrieval, fusion/filtering and response formatting.
 - `pdf_extract.extract_chunks_from_pdf` (614) and
   `citation_graph.build_graph_data` (470) divide along their existing decision
   phases. `citation_mapper.map_item_global_citations` (444) is a fourth over 400
-  and holds the citations/references asymmetry that produced item 6.
+  and holds the citations/references asymmetry that produced item 5.
 
 ### Checking layers CI does not have
 
@@ -187,6 +175,20 @@ that the size number does not say.
   `RuntimeWarning`.
 
 ## Closed
+
+- **The read path had no ceiling, and misnamed its own failures** (fixed
+  2026-08-09). `search_items` fetched `max(k * 10, 100)` chunks with no cap
+  while `rag_search` had one; both now ask `_candidate_cap`, which is also
+  bounded by the collection's size. An empty or non-string query reached the
+  embedding function and came back to the caller as the HNSW index error, so
+  the three copies of query normalisation became `_normalized_queries` and
+  `search_items` returns a request error instead. A Chroma failure in
+  `_chunk_by_id` was reported as "chunk_id not found in the active collection",
+  which told a reader who had just found damaged text that their id was wrong
+  and dropped the report; the failure now surfaces as itself. An unreadable
+  `indexing.lock` was treated as no lock at all, so the server answered from a
+  collection that might be mid-write -- it now falls back to the file's age,
+  which is the evidence that survives a corrupt file.
 
 - **The indexing lock was unreachable and unreleased** (fixed 2026-08-09).
   `src/indexing_lock.py` now owns it, including where the file lives, so the
@@ -218,7 +220,7 @@ that the size number does not say.
   those rows collide on `uq_global_citations_identity`, a partial expression
   index that COALESCEs the snippet and spans the raw reference text, so
   re-running does not duplicate them and no repair migration was needed. What
-  remains is the label, now item 6.
+  remains is the label, now item 5.
 - **Lift the PDF route out of `main_async`** (done 2026-08-09, `41c1484`). The
   665-line `else` branch named here as "the next unit to lift out" is now
   `_extract_pdf_chunks`.

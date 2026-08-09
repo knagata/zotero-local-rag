@@ -43,6 +43,7 @@ from search_fusion import language_balanced_order
 from hierarchical_retrieval import (
     explicit_note_intent, fuse_retrieval_paths, partition_leaf_ids, retrieval_policy_allowed,
 )
+from indexing_lock import default_path as indexing_lock_path
 from runtime_config import bounded_env_int
 from retrieval_service import HierarchicalRetrievalDependencies, RetrievalService
 from db_relations import (
@@ -58,7 +59,7 @@ ROOT = str(PROJECT_ROOT)
 # drifted twice, each time leaving one configuration naming two databases.
 CHROMA_DIR = str(chroma_dir(PROJECT_ROOT))
 MANIFEST_PATH = str(v3_manifest_path(PROJECT_ROOT))
-INDEXING_LOCK_PATH = os.path.join(ROOT, "data", "indexing.lock")
+INDEXING_LOCK_PATH = str(indexing_lock_path(Path(ROOT)))
 _LOCK_STALE_HOURS = 4
 _LOG_PATH = os.path.join(ROOT, "data", "zotero-rag.log")
 
@@ -100,8 +101,26 @@ def _check_indexing_lock() -> tuple:
     try:
         lock_data = json.loads(Path(INDEXING_LOCK_PATH).read_text(encoding="utf-8"))
     except Exception:
-        _log.warning("Corrupt indexing.lock — treating as stale")
-        return False, None
+        # An unreadable lock is not an absent one. The lock is published by
+        # hard link from a fully written inode, so a partial file cannot come
+        # from the indexer -- something else wrote it, and this process cannot
+        # say whether a write is in progress. Treating that as "nobody is
+        # indexing" served possibly half-written data while claiming nothing
+        # was wrong. What is left to go on is the file's age, so that is used:
+        # recent means assume a live writer, old means assume a leftover.
+        try:
+            age_hours = (time.time() - os.path.getmtime(INDEXING_LOCK_PATH)) / 3600
+        except OSError:
+            age_hours = 0.0
+        if age_hours > _LOCK_STALE_HOURS:
+            _log.warning("Unreadable indexing.lock is %.1f h old — treating as stale", age_hours)
+            return False, None
+        _log.warning("Unreadable indexing.lock written %.1f h ago — treating as held", age_hours)
+        return True, (
+            "インデックス更新中の可能性があります（ロックファイルを読み取れません）。\n"
+            f"内容が壊れています: {INDEXING_LOCK_PATH}\n"
+            "インデクサーが動いていないことを確認できたら、このファイルを削除してください。"
+        )
 
     pid = lock_data.get("pid")
 
@@ -831,6 +850,36 @@ def _and_where(base: Any, extra: Dict[str, Any]) -> Dict[str, Any]:
     return extra if base is None else {"$and": [base, extra]}
 
 
+def _candidate_cap(col: Any) -> int:
+    """How many chunks one query may ask the store for.
+
+    Written once because both retrieval tools need it and only one of them had
+    it: ``search_items`` used ``max(k * 10, 100)`` with no ceiling at all. The
+    collection's own size is part of the answer -- asking for more rows than
+    exist is work the store does for nothing.
+    """
+    cap = bounded_env_int("RAG_SEARCH_MAX_CANDIDATES", 1000, minimum=1, maximum=10000)
+    try:
+        count = col.count()
+    except Exception:
+        return cap
+    return min(cap, count) if isinstance(count, int) else cap
+
+
+def _normalized_queries(query: Any) -> List[str]:
+    """The query strings a search will actually use, empties removed.
+
+    One definition because there were three, and they disagreed: rag_search and
+    hierarchical_search dropped non-strings and blanks and returned a warning,
+    while search_items passed whatever it was given to the embedding function.
+    A list with an empty string in it therefore raised inside the Chroma call
+    and came back to the caller as the HNSW index error -- blaming the index for
+    what the request said.
+    """
+    values = [query] if isinstance(query, str) else list(query or [])
+    return [value.strip() for value in values if isinstance(value, str) and value.strip()]
+
+
 def _coerce_json(value: Any) -> Any:
     """If *value* is a JSON string, parse it; otherwise return as-is.
 
@@ -959,8 +1008,7 @@ def rag_search(
 
     if search_mode not in {"default", "case"}:
         return {"results": [], "warning": "search_mode must be 'default' or 'case'."}
-    queries = [query] if isinstance(query, str) else list(query)
-    queries = [item for item in queries if isinstance(item, str) and item.strip()]
+    queries = _normalized_queries(query)
     if not queries:
         return {"results": [], "warning": "query must contain at least one non-empty string."}
     if auto_expand:
@@ -984,16 +1032,7 @@ def rag_search(
         _and_where(effective_where, {"node_id": {"$in": batch}}) for batch in leaf_batches
     ] or [effective_where]
 
-    configured_cap = bounded_env_int(
-        "RAG_SEARCH_MAX_CANDIDATES", 1000, minimum=1, maximum=10000,
-    )
-    try:
-        collection_count = col.count()
-    except Exception:
-        collection_count = None
-    candidate_cap = configured_cap
-    if isinstance(collection_count, int):
-        candidate_cap = min(candidate_cap, collection_count)
+    candidate_cap = _candidate_cap(col)
     if candidate_cap <= 0:
         return {"results": []}
 
@@ -1356,8 +1395,7 @@ def hierarchical_search(
     """
     if k <= 0 or k_items <= 0:
         return {"results": [], "candidate_items": []}
-    queries = [query] if isinstance(query, str) else list(query)
-    queries = [value.strip() for value in queries if isinstance(value, str) and value.strip()]
+    queries = _normalized_queries(query)
     if not queries:
         return {"results": [], "candidate_items": [], "warning": "query is empty"}
     if auto_expand:
@@ -1556,9 +1594,17 @@ def search_items(
     col = _col()
     if k <= 0:
         return {"items": []}
+    k = min(k, bounded_env_int("RAG_SEARCH_MAX_RESULTS", 100, minimum=1, maximum=1000))
 
-    # Internally fetch more chunks to ensure we can find 'k' unique library items.
-    k_internal = max(k * 10, 100)
+    # Internally fetch more chunks than asked for, to find k *unique* items
+    # among them -- but bounded. `max(k * 10, 100)` had no ceiling, so a caller
+    # asking for 100,000 items asked Chroma for a million chunks in one query;
+    # the same shape rag_search was given a cap for, on the one caller that was
+    # left behind (as it was for the query-embedding precompute, F3 2026-07-30).
+    candidate_cap = _candidate_cap(col)
+    if candidate_cap <= 0:
+        return {"items": []}
+    k_internal = min(candidate_cap, max(k * 10, 100))
 
 
 
@@ -1566,9 +1612,13 @@ def search_items(
         where, include_notes=include_notes, include_item_keys=include_item_keys
     )
 
-    queries = [query] if isinstance(query, str) else query
+    queries = _normalized_queries(query)
+    if not queries:
+        return {"items": [], "warning": "query must contain at least one non-empty string."}
     allow_explicit = explicit_note_intent(queries)
-    min_return_chars = int(os.environ.get("MIN_RETURN_CHARS", "200"))
+    min_return_chars = bounded_env_int(
+        "MIN_RETURN_CHARS", 200, minimum=0, maximum=10000,
+    )
     for _attempt in range(2):
         try:
             # Manually compute embeddings to avoid Chroma FFI deadlock, same
@@ -1663,10 +1713,12 @@ def _chunk_by_id(chunk_id: str) -> Dict[str, Any] | None:
     """
     if not chunk_id:
         return None
-    try:
-        response = _col().get(ids=[chunk_id], include=["documents", "metadatas"])
-    except Exception:
-        return None
+    # A store failure is deliberately not caught here. It used to come back as
+    # None, which the caller reports as "chunk_id not found in the active
+    # collection" -- telling a reader who found damaged text that their chunk
+    # id is wrong, and dropping the report. The caller's own handler turns a
+    # raised error into a message that says what actually happened.
+    response = _col().get(ids=[chunk_id], include=["documents", "metadatas"])
     if not (response.get("ids") or []):
         return None
     documents = response.get("documents") or [""]
