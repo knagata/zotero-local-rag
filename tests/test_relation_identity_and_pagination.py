@@ -149,18 +149,13 @@ class RelationIdentityTests(unittest.TestCase):
 
 class CitationPaginationTests(unittest.TestCase):
     def setUp(self):
+        # The debug logs used to be module constants pointing into the real
+        # data directory, so every test here had to patch them aside. They now
+        # resolve beside whichever relations database the run is using, which
+        # under pytest is a scratch file, so there is nothing left to patch.
         self.tempdir = tempfile.TemporaryDirectory()
-        self.debug_log = Path(self.tempdir.name) / "citation.log"
-        self.debug_ref_log = Path(self.tempdir.name) / "reference.log"
-        self.debug_patch = patch.multiple(
-            citation_mapper,
-            _DEBUG_LOG=str(self.debug_log),
-            _DEBUG_REF_LOG=str(self.debug_ref_log),
-        )
-        self.debug_patch.start()
 
     def tearDown(self):
-        self.debug_patch.stop()
         self.tempdir.cleanup()
 
     @staticmethod

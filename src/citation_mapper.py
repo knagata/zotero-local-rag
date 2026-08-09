@@ -152,9 +152,23 @@ _ITEM_CHUNKS_CACHE_KEY: Optional[str] = None
 _ITEM_CHUNK_IDS: List[str] = []
 _ITEM_CHUNK_MATRIX: Optional[np.ndarray] = None
 
-# Path for debug logs (relative to project root, not CWD)
-_DEBUG_LOG = str(ROOT / "data" / "mapping_debug.log")
-_DEBUG_REF_LOG = str(ROOT / "data" / "mapping_debug_ref.log")
+# Debug logs live beside the relations database they describe, resolved when
+# they are written rather than at import. A run pointed at another database --
+# a test with its own RELATIONS_DB_PATH, an audit against a copy -- was still
+# appending its log into the real data directory, which is both wrong and how
+# a test came to touch the user's data at all (2026-08-09).
+def _debug_log_path(name: str) -> str:
+    from db_relations import DB_PATH
+
+    return str(Path(DB_PATH).resolve().parent / name)
+
+
+def _debug_log() -> str:
+    return _debug_log_path("mapping_debug.log")
+
+
+def _debug_ref_log() -> str:
+    return _debug_log_path("mapping_debug_ref.log")
 
 # Cosine distance threshold for accepting a chunk match.
 # Cosine distance range is [0, 2]; 0 = identical, 2 = opposite.
@@ -1084,7 +1098,7 @@ def map_item_global_citations(item_key: str, title: str = "", year: str = "", cr
 
             if hits:
                 best_dist = hits[0]["distance"]
-                with open(_DEBUG_LOG, "a") as f:
+                with open(_debug_log(), "a") as f:
                     f.write(f"Global Context: {ctx[:100]}...\n")
                     f.write(f"  -> Best Hit Distance: {best_dist:.4f}\n")
                 if best_dist < _MAX_COSINE_DISTANCE:
@@ -1093,7 +1107,7 @@ def map_item_global_citations(item_key: str, title: str = "", year: str = "", cr
                     cit_status = 'matched'
                     mapped_count += 1
             else:
-                with open(_DEBUG_LOG, "a") as f:
+                with open(_debug_log(), "a") as f:
                     f.write(f"Global Context: {ctx[:100]}...\n")
                     f.write("  -> No chunks found in DB for this item.\n")
 
@@ -1223,7 +1237,7 @@ def map_item_global_citations(item_key: str, title: str = "", year: str = "", cr
 
                 if hits:
                     best_dist = hits[0]["distance"]
-                    with open(_DEBUG_REF_LOG, "a") as f:
+                    with open(_debug_ref_log(), "a") as f:
                         f.write(f"Local Context: {ctx[:100]}...\n")
                         f.write(f"  -> Best Hit Distance: {best_dist:.4f}\n")
                     if best_dist < _MAX_COSINE_DISTANCE:
@@ -1232,7 +1246,7 @@ def map_item_global_citations(item_key: str, title: str = "", year: str = "", cr
                         ref_status = 'matched'
                         ref_mapped_count += 1
                 else:
-                    with open(_DEBUG_REF_LOG, "a") as f:
+                    with open(_debug_ref_log(), "a") as f:
                         f.write(f"Context: {ctx[:100]}...\n")
                         f.write("  -> No chunks found in DB for this item.\n")
 
@@ -1255,7 +1269,7 @@ def map_item_global_citations(item_key: str, title: str = "", year: str = "", cr
                 )
 
     msg = f"Global Citations: {mapped_count}/{total_contexts} contexts mapped. Local References: {ref_mapped_count}/{ref_total_contexts} contexts mapped."
-    with open(_DEBUG_LOG, "a") as f:
+    with open(_debug_log(), "a") as f:
         f.write(f"Result for {item_key}: {msg}\n")
 
     incomplete_parts = []

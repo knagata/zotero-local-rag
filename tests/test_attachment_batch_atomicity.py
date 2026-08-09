@@ -29,8 +29,15 @@ class AttachmentBatchAtomicityTests(unittest.TestCase):
         col.get.return_value = self._snapshot()
         col.upsert.side_effect = [None, RuntimeError("second batch failed"), None]
 
+        # ``index_from_zotero`` imported the lexical functions under other
+        # names (``upsert_lexical_chunks``), so patching them on ``index_batch``
+        # left the forward path writing into the real data/lexical_v3.sqlite3
+        # on every run of this test. It was invisible until the data-directory
+        # guard refused the connection (2026-08-09). Both bindings are patched
+        # now: the one the rollback uses and the one the forward path uses.
         with patch.object(index_batch, "delete_by_attachment_keys") as lexical_delete, \
                 patch.object(index_batch, "upsert_chunks") as lexical_upsert, \
+                patch.object(module, "upsert_lexical_chunks"), \
                 patch.object(module, "delete_lexical_attachments") as initial_lexical_delete, \
                 patch.object(module, "relieve_memory_pressure"):
             with self.assertRaisesRegex(RuntimeError, "second batch failed"):

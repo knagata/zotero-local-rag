@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from dataclasses import asdict, dataclass
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterable, List, Optional
+from typing import Any, Callable, Iterable, List, Optional
 
 from zotero_source_localapi import ZoteroLocalAPI, ZoteroAttachment
 
@@ -242,14 +242,15 @@ if "BATCH_SIZE" in os.environ and "FLUSH_SIZE" not in os.environ:
 
 
 @contextmanager
-def _indexing_lock_metadata_guard():
+def _indexing_lock_metadata_guard(for_lock_path: Path | str | None = None):
     """Serialize publication, stale recovery, and release of the lock path.
 
     The guard has a stable inode and is never replaced. This supplies the
     compare-and-remove critical section that a pathname alone cannot provide:
     no owner can publish or release a lock between stale inspection and unlink.
     """
-    guard_path = paths().indexing_lock_path.with_name(f".{paths().indexing_lock_path.name}.guard")
+    lock_path = Path(for_lock_path) if for_lock_path else paths().indexing_lock_path
+    guard_path = lock_path.with_name(f".{lock_path.name}.guard")
     guard_fd = os.open(guard_path, os.O_RDWR | os.O_CREAT, 0o600)
     try:
         fcntl.flock(guard_fd, fcntl.LOCK_EX)
@@ -270,6 +271,12 @@ def _acquire_indexing_lock() -> dict:
         "token": uuid.uuid4().hex,
         "started_at": datetime.now(timezone.utc).isoformat(),
         "operation": "indexing",
+        # The lock is released at the path it was taken at, not at whatever the
+        # run resolves to later. Releasing by re-resolution reads and unlinks a
+        # file the lock was never held on if the plane changed in between --
+        # which is how a test against a temporary plane came to touch the real
+        # data directory at interpreter exit (2026-08-09).
+        "path": str(paths().indexing_lock_path),
     }
     payload = json.dumps(lock_data, ensure_ascii=False).encode("utf-8")
     candidate_path = paths().indexing_lock_path.with_name(
@@ -342,16 +349,17 @@ def _acquire_indexing_lock() -> dict:
 
 def _release_indexing_lock(lock_data: dict[str, Any] | None = None) -> None:
     """Remove only a lock owned by this process/run (best-effort)."""
+    held = Path(lock_data["path"]) if lock_data and lock_data.get("path") else paths().indexing_lock_path
     try:
-        with _indexing_lock_metadata_guard():
+        with _indexing_lock_metadata_guard(held):
             if lock_data is not None:
                 try:
-                    current = json.loads(paths().indexing_lock_path.read_text(encoding="utf-8"))
+                    current = json.loads(held.read_text(encoding="utf-8"))
                 except (OSError, ValueError):
                     return
                 if current.get("token") != lock_data.get("token"):
                     return
-            paths().indexing_lock_path.unlink()
+            held.unlink()
     except FileNotFoundError:
         pass  # already gone — nothing to do
     except OSError as e:
@@ -3087,7 +3095,50 @@ def _source_verdict(
     return SourceVerdict("skip", signature)
 
 
-async def main_async(args: argparse.Namespace) -> None:
+def _start_optional_tracing() -> None:
+    """Two debug switches that report on the run rather than perform it.
+
+    Lifted out of ``main_async`` to pay for the lines the seam parameters and
+    their docstring added: the size ratchet refuses to record a function that
+    grew, and this is the least entangled thing in the loop -- it reads no
+    local and writes none.
+    """
+    if os.environ.get("TRACE_UNAWAITED") == "1":
+        import tracemalloc
+        tracemalloc.start(25)
+
+    if os.environ.get("DEBUG_IMPORTS") == "1":
+        import inspect
+        import zotero_source_localapi as _zsl
+        print(f"[DEBUG] zotero_source_localapi.__file__={_zsl.__file__}", file=sys.stderr)
+        print(
+            "[DEBUG] iscoroutinefunction(iter_normalized_attachments)="
+            f"{inspect.iscoroutinefunction(ZoteroLocalAPI.iter_normalized_attachments)}",
+            file=sys.stderr,
+        )
+        print(
+            "[DEBUG] isasyncgenfunction(iter_normalized_attachments)="
+            f"{inspect.isasyncgenfunction(ZoteroLocalAPI.iter_normalized_attachments)}",
+            file=sys.stderr,
+        )
+
+
+async def main_async(
+    args: argparse.Namespace,
+    *,
+    source: Any | None = None,
+    open_collection: Callable[..., Any] | None = None,
+) -> None:
+    """Run one indexing pass.
+
+    ``source`` and ``open_collection`` exist so a caller can supply a library
+    and an embedding function of its own. Both default to what the CLI has
+    always used, so the production path is unchanged; what they buy is a run
+    that a test can watch from inside, against a handful of synthetic documents
+    and a deterministic embedder, in the time a unit test is allowed to take.
+    The alternative -- the only end-to-end check before this -- is starting the
+    real indexer against the real library in a child process.
+    """
     paths().pdf_cache_dir.mkdir(parents=True, exist_ok=True)
     paths().data_dir.mkdir(parents=True, exist_ok=True)
 
@@ -3120,7 +3171,7 @@ async def main_async(args: argparse.Namespace) -> None:
     manifest["files"] = files_manifest
     manifest["notes"] = notes_manifest
     reocr_routes = _load_reocr_routes(args.reocr_candidates, args.reocr_limit)
-    api = ZoteroLocalAPI()
+    api = source if source is not None else ZoteroLocalAPI()
     show_progress = bool(args.progress) or (os.environ.get("PROGRESS") == "1")
     if show_progress and not structure_recovery:
         print(
@@ -3130,24 +3181,7 @@ async def main_async(args: argparse.Namespace) -> None:
         )
     t0 = time.perf_counter()
 
-    if os.environ.get("TRACE_UNAWAITED") == "1":
-        import tracemalloc
-        tracemalloc.start(25)
-
-    if os.environ.get("DEBUG_IMPORTS") == "1":
-        import inspect
-        import zotero_source_localapi as _zsl
-        print(f"[DEBUG] zotero_source_localapi.__file__={_zsl.__file__}", file=sys.stderr)
-        print(
-            "[DEBUG] iscoroutinefunction(iter_normalized_attachments)="
-            f"{inspect.iscoroutinefunction(ZoteroLocalAPI.iter_normalized_attachments)}",
-            file=sys.stderr,
-        )
-        print(
-            "[DEBUG] isasyncgenfunction(iter_normalized_attachments)="
-            f"{inspect.isasyncgenfunction(ZoteroLocalAPI.iter_normalized_attachments)}",
-            file=sys.stderr,
-        )
+    _start_optional_tracing()
 
     discovery = await _discover_attachments(
         args,
@@ -3236,7 +3270,7 @@ async def main_async(args: argparse.Namespace) -> None:
         files_manifest = manifest["files"]
         notes_manifest = manifest["notes"]
 
-    col = get_collection(
+    col = (open_collection or get_collection)(
         chroma_dir=paths().chroma_dir,
         project_root=PROJECT_ROOT,
         chroma_collection_env=paths().collection_name,

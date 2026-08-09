@@ -1,5 +1,6 @@
 import sqlite3
 import os
+import sys
 import re
 import unicodedata
 import hashlib
@@ -23,6 +24,13 @@ except ImportError:  # pragma: no cover - direct src/ entrypoints
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DB_PATH = os.environ.get("RELATIONS_DB_PATH", os.path.join(ROOT, "data", "relations.db"))
+
+#: A purge larger than this is treated as evidence about the caller's view of
+#: the library, not about the library. Mirrors STALE_DELETE_* on the attachment
+#: side of the same run, which has refused deletions on this rule since before
+#: the relations purge existed.
+PURGE_MAX_RATIO = 0.05
+PURGE_MIN_KEYS = 10
 _db_initialized = False
 _initialized_db_path: str | None = None
 _db_init_lock = threading.Lock()
@@ -2901,7 +2909,64 @@ def ledger_keys_pending_removal(current_item_keys: set[str]) -> set[str]:
     return _ledger_populated_item_keys() - current_item_keys
 
 
-def purge_removed_items(current_item_keys: set[str]) -> dict[str, int]:
+def _purge_is_too_large(
+    removed_keys: set[str], db_keys: set[str], current_item_keys: set[str],
+) -> bool:
+    """Whether a purge is too large to be about the library rather than the caller.
+
+    The attachment side of the same run already refuses this -- "a deletion this
+    large is evidence about the listing, not about the library"
+    (index_from_zotero, STALE_DELETE_MAX_RATIO). That rule was never applied
+    here, and on 2026-08-09 a caller that enumerated three items deleted 574
+    items' relations: 205,538 citations and 41,133 references, while the
+    attachment side of the very same run refused to delete anything. One rule,
+    two stores, one of them unguarded.
+    """
+    limit = max(PURGE_MIN_KEYS, int(len(db_keys) * PURGE_MAX_RATIO))
+    if len(removed_keys) <= limit:
+        return False
+    print(
+        f"[ERROR] Refusing to purge {len(removed_keys)} items from relations.db: "
+        f"that is more than {limit} of the {len(db_keys)} this database knows, "
+        f"which indicates the caller enumerated {len(current_item_keys)} items from a "
+        "partial view of the library rather than that the library shrank. Nothing was "
+        "deleted. Re-run once the library enumerates fully, or use "
+        "scripts/purge_orphans.py, which confirms each item against Zotero.",
+        file=sys.stderr,
+    )
+    return True
+
+
+def _purge_work_graph(cursor, placeholders: str, params: list, counts: dict) -> None:
+    """Remove the works owned by these items, and the edges that reach them.
+
+    The edges go first: a work_edges row naming a deleted work_id is an edge to
+    nothing, and nothing else in the schema would notice.
+    """
+    work_rows = cursor.execute(
+        f"SELECT work_id FROM works WHERE zotero_item_key IN ({placeholders})", params
+    ).fetchall()
+    work_ids = [int(row[0]) for row in work_rows]
+    if not work_ids:
+        return
+    work_placeholders = ",".join("?" * len(work_ids))
+    cursor.execute(
+        f"DELETE FROM work_edges WHERE citing_work_id IN ({work_placeholders}) "
+        f"OR cited_work_id IN ({work_placeholders})",
+        [*work_ids, *work_ids],
+    )
+    counts["work_edges"] = cursor.rowcount
+    cursor.execute(
+        f"DELETE FROM work_links WHERE work_id_a IN ({work_placeholders}) "
+        f"OR work_id_b IN ({work_placeholders})",
+        [*work_ids, *work_ids],
+    )
+    counts["work_links"] = cursor.rowcount
+    cursor.execute(f"DELETE FROM works WHERE work_id IN ({work_placeholders})", work_ids)
+    counts["works"] = cursor.rowcount
+
+
+def purge_removed_items(current_item_keys: set[str], *, force: bool = False) -> dict[str, int]:
     """Zoteroから削除されたアイテムキーに関連するDBレコードを削除する。
 
     citation系・summary系・works系に加え、V3の文書構造
@@ -2971,6 +3036,23 @@ def purge_removed_items(current_item_keys: set[str]) -> dict[str, int]:
         if not removed_keys:
             return counts
 
+        # Fail closed on a deletion too large to be about the library.
+        #
+        # The attachment side of the same run already refuses this: "a deletion
+        # this large is evidence about the listing, not about the library"
+        # (index_from_zotero, STALE_DELETE_MAX_RATIO). That rule was never
+        # applied here, and on 2026-08-09 a caller that enumerated three items
+        # deleted 574 items' relations -- 205,538 citations and 41,133
+        # references -- while the attachment side of the same run refused to
+        # delete anything. One guard, two stores, one of them unguarded.
+        #
+        # Deliberate bulk removal passes force=True, or uses
+        # scripts/purge_orphans.py, which confirms each candidate against
+        # Zotero individually.
+        if not force and _purge_is_too_large(removed_keys, db_keys, current_item_keys):
+            counts["refused"] = len(removed_keys)
+            return counts
+
         placeholders = ",".join("?" * len(removed_keys))
         params = list(removed_keys)
 
@@ -2995,26 +3077,7 @@ def purge_removed_items(current_item_keys: set[str]) -> dict[str, int]:
             )
             counts[table] = cursor.rowcount
 
-        work_rows = cursor.execute(
-            f"SELECT work_id FROM works WHERE zotero_item_key IN ({placeholders})", params
-        ).fetchall()
-        work_ids = [int(row[0]) for row in work_rows]
-        if work_ids:
-            work_placeholders = ",".join("?" * len(work_ids))
-            cursor.execute(
-                f"DELETE FROM work_edges WHERE citing_work_id IN ({work_placeholders}) "
-                f"OR cited_work_id IN ({work_placeholders})",
-                [*work_ids, *work_ids],
-            )
-            counts["work_edges"] = cursor.rowcount
-            cursor.execute(
-                f"DELETE FROM work_links WHERE work_id_a IN ({work_placeholders}) "
-                f"OR work_id_b IN ({work_placeholders})",
-                [*work_ids, *work_ids],
-            )
-            counts["work_links"] = cursor.rowcount
-            cursor.execute(f"DELETE FROM works WHERE work_id IN ({work_placeholders})", work_ids)
-            counts["works"] = cursor.rowcount
+        _purge_work_graph(cursor, placeholders, params, counts)
 
         # V3 文書構造・artifact状態レコードのパージ（R7）。
         # document_nodes は document_structures への FK を持たないため

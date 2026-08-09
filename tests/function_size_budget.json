@@ -6,7 +6,7 @@
     "citation_graph"
   ],
   "functions": {
-    "src/index_from_zotero.py::main_async": 1113,
+    "src/index_from_zotero.py::main_async": 1111,
     "src/index_from_zotero.py::_extract_pdf_chunks": 705,
     "src/db_relations.py::_init_db": 698,
     "src/pdf_extract.py::extract_chunks_from_pdf": 614,

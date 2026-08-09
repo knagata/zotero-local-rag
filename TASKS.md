@@ -5,6 +5,36 @@
 
 ## Active
 
+### 2026-08-09 事故: テスト実行が実 relations.db を消した
+
+合成蔵書での in-process 取込テストが、データプレーンのうち `RELATIONS_DB_PATH` だけ
+リダイレクトし忘れた。取込は「3件以外はZoteroから削除された」と判断し、実
+`data/relations.db` から **574アイテム・205,538 citations・41,133 references** を消した。
+同じ実行のチャンク側は `STALE_DELETE_MAX_RATIO` で同じ削除を拒否している。**同じ規則が
+片方のストアにしか付いていなかった。**
+
+- [ ] **復旧の実行可否をユーザーが判断中。** `data/relations.db` は444で固定し、
+  `data/relations.db.rescue-20260809-1902` に複製済み。**書き込むと解放ページが再利用され
+  復旧不能になる**ので、取込・要約生成・`update_citations.py` を実行しない。
+  - カービング実測（読み取り専用、534,030レコード解読）: `global_citations` 164,412行(80%)、
+    `global_references` 33,601行(82%)、`document_nodes` 29,777、`document_node_chunks`
+    約295,753、`item_citation_status` 65(11%)。
+  - 要約テーブルは**元から空**（404MB全体に `deepseek`/`gemini` が0件）。再生成は不要。
+  - Chromaとlexicalは無傷。文書構造は Chroma から再構築するほうがカービングより完全。
+- [x] **防壁を入れた**（2026-08-09）
+  - `tests/conftest.py`: `sys.addaudithook` で `data/` 配下への書き込みと `mode=ro` でない
+    DB接続を例外にする。加えて `RELATIONS_DB_PATH` の既定をテストごとの一時ファイルにする
+    （`db_relations.DB_PATH` はimport時に凍結するので、fixtureでは1インポート分遅い）。
+  - **導入直後に既存の漏れを3件検出**: `citation_mapper` のデバッグログ、indexing lockの
+    解放が取得時と別のパスを見ていた件、`test_attachment_batch_atomicity` が
+    モック先を間違えて**実 lexical DB に書き込んでいた**件。いずれも修正済み。
+  - `db_relations.purge_removed_items`: チャンク側と同じ fail-closed ガード
+    （`PURGE_MAX_RATIO=0.05` / `PURGE_MIN_KEYS=10`、`force=True` で明示的な一括削除）。
+    事故そのものを再現するテストを `tests/test_real_data_is_protected.py` に置いた。
+  - 検査対象を「宣言したリスト」ではなく「実際の書き込み操作」にした。今回空振りしたのは
+    リダイレクト検査が `IngestPaths` のフィールドしか見ていなかったため。
+
+
 ### 2026-07-30 全コードレビュー: 検出された欠陥の修正
 
 `src/`全体＋Setup/Maintenance-Widgetから呼ばれるscriptsを5並列agentでレビューし、
