@@ -2114,6 +2114,56 @@ def _reparse_decision(
 
 
 
+
+def _report_empty_extraction(
+    attachment: Any,
+    *,
+    scope_item_key: str,
+    source_type: str,
+    file_path: Path,
+    quality: dict[str, Any],
+    forced_mistral: bool,
+    mtime: float,
+    size: int,
+) -> None:
+    """Say why an attachment yielded nothing, and record it as what it is.
+
+    A zero-chunk attachment never enters the manifest, so unless the reason is
+    printed here it is unrecoverable afterwards -- the run simply moves on and
+    the file looks untouched. extract_chunks_from_html_snapshot puts the reason
+    in ``failure_reason`` (html_read_failed, html_size_truncated, no_dom_blocks,
+    gibberish); the other extractors set no such key, so it is omitted for them
+    rather than printed as a misleading ``reason=None`` (2026-08-02, 3QHTRQN7).
+
+    A Mistral batch that came back with nothing adoptable is blocked rather than
+    failed: the candidate is deliberately kept for a later batch, so calling it
+    a failure would invite a retry of the one thing already known not to work.
+    """
+    reason = quality.get("failure_reason")
+    print(
+        f"[WARN] Extracted 0 chunks; leaving existing index/manifest unchanged: "
+        f"attachment={attachment.attachmentKey} type={source_type} file={file_path}"
+        + (f" reason={reason}" if reason else ""),
+        file=sys.__stderr__,
+    )
+    if forced_mistral:
+        mark_artifact_status(
+            scope_item_key, "extraction", "blocked",
+            attachment_key=attachment.attachmentKey,
+            reason_code=MISTRAL_TOC_QUEUE_REASON,
+            message="Mistral OCR batch did not produce adoptable chunks; candidate retained.",
+            retryable=False,
+            counts={"source_mtime": mtime, "source_size": size},
+            fallback_kind="mistral_ocr",
+        )
+    else:
+        mark_artifact_status(
+            scope_item_key, "extraction", "failed",
+            attachment_key=attachment.attachmentKey, reason_code="no_chunks",
+            message=f"No chunks extracted from {source_type} attachment.", retryable=True,
+        )
+
+
 def _progress_line(
     attachment: Any, *, index: int, total: int, source_type: str, file_path: Path,
 ) -> str:
@@ -3683,37 +3733,11 @@ async def main_async(args: argparse.Namespace) -> None:
         # A: 抽出0件は失敗扱い（manifest更新しない・削除しない・警告のみ）
         if not chunks:
             failed_extract += 1
-            # extract_chunks_from_html_snapshot records *why* in
-            # quality_info["failure_reason"] (html_read_failed /
-            # html_size_truncated / no_dom_blocks / gibberish, ...), but this
-            # was the only place that failure surfaces at all -- a 0-chunk
-            # attachment never enters the manifest, so without this the reason
-            # was unrecoverable after the fact (found 2026-08-02, diagnosing
-            # 3QHTRQN7). Other extractors don't set this key, so it's omitted
-            # for them rather than printing a misleading "reason=None".
-            failure_reason = quality_info.get("failure_reason")
-            reason_suffix = f" reason={failure_reason}" if failure_reason else ""
-            print(
-                f"[WARN] Extracted 0 chunks; leaving existing index/manifest unchanged: "
-                f"attachment={a.attachmentKey} type={stype} file={file_path}{reason_suffix}",
-                file=sys.__stderr__,
+            _report_empty_extraction(
+                a, scope_item_key=scope_item_key, source_type=stype,
+                file_path=file_path, quality=quality_info,
+                forced_mistral=force_mistral, mtime=mtime, size=size,
             )
-            if force_mistral:
-                mark_artifact_status(
-                    scope_item_key, "extraction", "blocked",
-                    attachment_key=a.attachmentKey,
-                    reason_code=MISTRAL_TOC_QUEUE_REASON,
-                    message="Mistral OCR batch did not produce adoptable chunks; candidate retained.",
-                    retryable=False,
-                    counts={"source_mtime": mtime, "source_size": size},
-                    fallback_kind="mistral_ocr",
-                )
-            else:
-                mark_artifact_status(
-                    scope_item_key, "extraction", "failed",
-                    attachment_key=a.attachmentKey, reason_code="no_chunks",
-                    message=f"No chunks extracted from {stype} attachment.", retryable=True,
-                )
             continue
 
         source_coverage = coverage_from_extraction(stype, chunks, quality_info)
