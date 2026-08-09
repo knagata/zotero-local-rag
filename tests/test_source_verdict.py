@@ -42,11 +42,11 @@ def _indexed(**overrides) -> dict:
 
 
 def _verdict(args=None, previous=None, *, mtime=100.0, size=2048,
-             inflight=frozenset(), reparse=ReparseDecision(), structured_v3=True):
+             inflight=frozenset(), reparse=ReparseDecision()):
     return _source_verdict(
         args or _args(), attachment_key="ATT", previous=previous,
         file_path=Path("/nonexistent/source.pdf"), mtime=mtime, size=size,
-        pipeline_fingerprint=FINGERPRINT, structured_v3=structured_v3,
+        pipeline_fingerprint=FINGERPRINT,
         inflight=set(inflight), reparse=reparse,
     )
 
@@ -85,12 +85,6 @@ def test_an_attachment_a_batch_still_holds_is_indexed():
 
 def test_a_row_from_another_pipeline_is_indexed():
     assert _verdict(previous=_indexed(pipeline_fingerprint="sha256:older")).action == "index"
-
-
-def test_the_pipeline_fingerprint_is_ignored_when_v3_is_off():
-    assert _verdict(
-        previous=_indexed(pipeline_fingerprint="sha256:older"), structured_v3=False,
-    ).action == "skip"
 
 
 @pytest.mark.parametrize("flag", ["retry_failed", "force_reparse"])

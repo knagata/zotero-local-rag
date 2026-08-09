@@ -2964,7 +2964,6 @@ def _source_verdict(
     mtime: float,
     size: int,
     pipeline_fingerprint: str,
-    structured_v3: bool,
     inflight: set[str],
     reparse: ReparseDecision,
 ) -> SourceVerdict:
@@ -2985,7 +2984,7 @@ def _source_verdict(
     has_quality = bool(previous and "quality" in previous)
     entry_pipeline_matches = bool(
         previous and str(previous.get("pipeline_fingerprint") or "") == pipeline_fingerprint
-    ) if structured_v3 else True
+    )
 
     signature = None
     stat_matches = bool(
@@ -3466,7 +3465,7 @@ async def main_async(args: argparse.Namespace) -> None:
         verdict = _source_verdict(
             args, attachment_key=a.attachmentKey, previous=prev, file_path=file_path,
             mtime=mtime, size=size, pipeline_fingerprint=v3_pipeline_fingerprint,
-            structured_v3=True, inflight=inflight_attachments,
+            inflight=inflight_attachments,
             reparse=reparse,
         )
         current_signature = verdict.signature
