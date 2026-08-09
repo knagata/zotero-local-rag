@@ -5,6 +5,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -39,7 +40,7 @@ class StructuredV3IndexConfigTests(unittest.TestCase):
         result = subprocess.run(
             [sys.executable, "-c", (
                 "import sys; sys.path.insert(0, 'src'); import index_from_zotero as m; "
-                "import os; print(m.MANIFEST_PATH.name, m.CHROMA_COLLECTION_ENV, "
+                "import os; print(m.paths().manifest_path.name, m.paths().collection_name, "
                 "os.environ['LEXICAL_DB_PATH'].split('/')[-1])"
             )], cwd=ROOT, env=env, text=True, capture_output=True, check=True,
         )
@@ -55,8 +56,8 @@ class StructuredV3IndexConfigTests(unittest.TestCase):
         result = subprocess.run(
             [sys.executable, "-c", (
                 "import sys; sys.path.insert(0, 'src'); import index_from_zotero as m; "
-                "import os; print('True', m.MANIFEST_PATH.name, "
-                "m.CHROMA_COLLECTION_ENV, os.environ['LEXICAL_DB_PATH'].split('/')[-1])"
+                "import os; print('True', m.paths().manifest_path.name, "
+                "m.paths().collection_name, os.environ['LEXICAL_DB_PATH'].split('/')[-1])"
             )], cwd=ROOT, env=env, text=True, capture_output=True, check=True,
         )
         self.assertEqual(
@@ -238,7 +239,7 @@ class StructuredV3IndexConfigTests(unittest.TestCase):
             manifest_path = Path(directory) / "manifest.json"
             manifest = {"files": {}, "post_index_pending": ["OLD"]}
             with (
-                patch.object(module, "MANIFEST_PATH", manifest_path),
+                module.use_paths(replace(module.paths(), manifest_path=manifest_path)),
                 patch.object(module, "_finalize_v3_item") as finalize,
             ):
                 module._finalize_v3_pending(
@@ -271,9 +272,10 @@ class StructuredV3IndexConfigTests(unittest.TestCase):
                 delete_collection=deleted.append,
             )
             with (
-                patch.object(module, "CHROMA_DIR", chroma),
-                patch.object(module, "MANIFEST_PATH", manifest),
-                patch.object(module, "V3_PIPELINE_CONFIG_PATH", pipeline_config),
+                module.use_paths(replace(
+                    module.paths(), chroma_dir=chroma, manifest_path=manifest,
+                    pipeline_config_path=pipeline_config,
+                )),
                 patch.dict(os.environ, {"LEXICAL_DB_PATH": str(lexical)}),
                 patch("chromadb.PersistentClient", return_value=fake_client),
                 patch.object(module, "reset_ingestion_derived_state") as reset_derived,
@@ -309,9 +311,10 @@ class StructuredV3IndexConfigTests(unittest.TestCase):
                 delete_collection=fail_delete,
             )
             with (
-                patch.object(module, "CHROMA_DIR", chroma),
-                patch.object(module, "MANIFEST_PATH", manifest),
-                patch.object(module, "V3_PIPELINE_CONFIG_PATH", pipeline_config),
+                module.use_paths(replace(
+                    module.paths(), chroma_dir=chroma, manifest_path=manifest,
+                    pipeline_config_path=pipeline_config,
+                )),
                 patch.dict(os.environ, {"LEXICAL_DB_PATH": str(lexical)}),
                 patch("chromadb.PersistentClient", return_value=fake_client),
                 patch.object(module, "reset_ingestion_derived_state"),

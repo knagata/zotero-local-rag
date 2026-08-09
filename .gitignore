@@ -81,3 +81,7 @@ data.backup.*/
 # evaluations/ と同じ理由で追跡しない。
 # scripts/build_structure_recovery_baseline.py --write で手元に再生成する。
 tests/baselines/
+
+# Coverage measurement artefacts (generated locally, see docs/development.md)
+.coverage
+.coverage.*

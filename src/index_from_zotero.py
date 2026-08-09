@@ -12,7 +12,7 @@ import time
 import uuid
 import gc
 from datetime import datetime, timezone
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterable, List, Optional
@@ -113,20 +113,92 @@ from env_utils import load_dotenv_native
 load_dotenv_native(PROJECT_ROOT)
 enforce_v3_environment(PROJECT_ROOT)
 
-DATA_DIR = PROJECT_ROOT / "data"
-# Asked of v3_data_plane rather than read from the environment here: it
-# owns both the default location and the rule that expands ~ and resolves
-# a relative value against the project root. Copies of that rule have
-# drifted twice, each time leaving one configuration naming two databases.
-CHROMA_DIR = chroma_dir(PROJECT_ROOT)
-PDF_CACHE_DIR = Path(os.environ.get("PDF_CACHE_DIR", str(DATA_DIR / "pdf_cache")))
-MANIFEST_PATH = v3_manifest_path(PROJECT_ROOT)
-INDEXING_LOCK_PATH = DATA_DIR / "indexing.lock"
-V3_PIPELINE_CONFIG_PATH = CHROMA_DIR / "embedder_config_v3.json"
-
-ZOTERO_DATA_DIR = os.environ.get("ZOTERO_DATA_DIR")  # required for local storage resolution in your pipeline
-CHROMA_COLLECTION_ENV = v3_collection_name()
 CHROMA_COLLECTION_DEFAULT = V3_COLLECTION
+
+
+@dataclass(frozen=True)
+class IngestPaths:
+    """Where one run reads and writes: resolved once, then passed around.
+
+    These were module constants, computed at import. That made the process
+    environment at import time the only environment the run could have, and it
+    is why the ingestion net has to start a child process to point the indexer
+    at a temporary data plane -- by the time a test could set ``CHROMA_DIR``,
+    this module had already read it. Everything else in the plane
+    (``v3_data_plane``, ``chunk_store``) resolves per call and follows an
+    environment change; this module was the one that could not.
+
+    Resolved once per run rather than per call, which is the property the
+    constants had and worth keeping: a mid-run change to ``CHROMA_DIR`` must
+    not leave half the documents in one collection and half in another.
+    """
+
+    project_root: Path
+    data_dir: Path
+    chroma_dir: Path
+    pdf_cache_dir: Path
+    manifest_path: Path
+    indexing_lock_path: Path
+    pipeline_config_path: Path
+    collection_name: str
+    zotero_data_dir: str | None
+
+    @classmethod
+    def from_environment(cls, project_root: Path = PROJECT_ROOT) -> "IngestPaths":
+        # Asked of v3_data_plane rather than read from the environment here: it
+        # owns both the default location and the rule that expands ~ and
+        # resolves a relative value against the project root. Copies of that
+        # rule have drifted twice, each time leaving one configuration naming
+        # two databases.
+        data_dir = project_root / "data"
+        resolved_chroma = chroma_dir(project_root)
+        return cls(
+            project_root=project_root,
+            data_dir=data_dir,
+            chroma_dir=resolved_chroma,
+            pdf_cache_dir=Path(
+                os.environ.get("PDF_CACHE_DIR", str(data_dir / "pdf_cache"))
+            ),
+            manifest_path=v3_manifest_path(project_root),
+            indexing_lock_path=data_dir / "indexing.lock",
+            pipeline_config_path=resolved_chroma / "embedder_config_v3.json",
+            collection_name=v3_collection_name(),
+            # Required for local storage resolution in your pipeline.
+            zotero_data_dir=os.environ.get("ZOTERO_DATA_DIR"),
+        )
+
+
+_PATHS: IngestPaths | None = None
+
+
+def paths() -> IngestPaths:
+    """The paths this run is using, resolved on first use.
+
+    Deliberately not resolved at import: importing this module must not decide
+    where the run writes, or a caller that sets the environment afterwards
+    silently writes somewhere else.
+    """
+    global _PATHS
+    if _PATHS is None:
+        _PATHS = IngestPaths.from_environment()
+    return _PATHS
+
+
+@contextmanager
+def use_paths(replacement: IngestPaths):
+    """Run against a different data plane, in this process.
+
+    The seam the ingestion net was missing. Restores the previous value even
+    on failure, so one test cannot leave the next one pointed at a temporary
+    directory that has since been deleted.
+    """
+    global _PATHS
+    previous = _PATHS
+    _PATHS = replacement
+    try:
+        yield replacement
+    finally:
+        _PATHS = previous
 
 #: Guards the stale-attachment deletion below. A sync that would retire more
 #: than this is reporting on a failed enumeration, not on the library.
@@ -177,7 +249,7 @@ def _indexing_lock_metadata_guard():
     compare-and-remove critical section that a pathname alone cannot provide:
     no owner can publish or release a lock between stale inspection and unlink.
     """
-    guard_path = INDEXING_LOCK_PATH.with_name(f".{INDEXING_LOCK_PATH.name}.guard")
+    guard_path = paths().indexing_lock_path.with_name(f".{paths().indexing_lock_path.name}.guard")
     guard_fd = os.open(guard_path, os.O_RDWR | os.O_CREAT, 0o600)
     try:
         fcntl.flock(guard_fd, fcntl.LOCK_EX)
@@ -192,7 +264,7 @@ def _acquire_indexing_lock() -> dict:
 
     Returns the lock metadata dict that should be passed to ``_release_indexing_lock``.
     """
-    INDEXING_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    paths().indexing_lock_path.parent.mkdir(parents=True, exist_ok=True)
     lock_data = {
         "pid": os.getpid(),
         "token": uuid.uuid4().hex,
@@ -200,8 +272,8 @@ def _acquire_indexing_lock() -> dict:
         "operation": "indexing",
     }
     payload = json.dumps(lock_data, ensure_ascii=False).encode("utf-8")
-    candidate_path = INDEXING_LOCK_PATH.with_name(
-        f".{INDEXING_LOCK_PATH.name}.{lock_data['token']}.tmp"
+    candidate_path = paths().indexing_lock_path.with_name(
+        f".{paths().indexing_lock_path.name}.{lock_data['token']}.tmp"
     )
     candidate_fd = os.open(
         candidate_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600,
@@ -219,7 +291,7 @@ def _acquire_indexing_lock() -> dict:
                     # Publish a fully written inode atomically. The metadata
                     # guard also prevents another recovery from unlinking this
                     # inode after it has inspected an older lock.
-                    os.link(candidate_path, INDEXING_LOCK_PATH)
+                    os.link(candidate_path, paths().indexing_lock_path)
                 except FileExistsError:
                     pass
                 else:
@@ -228,7 +300,7 @@ def _acquire_indexing_lock() -> dict:
                 # Inspection and removal are one critical section. Every
                 # publisher/releaser takes the same stable-inode flock.
                 try:
-                    existing = json.loads(INDEXING_LOCK_PATH.read_text(encoding="utf-8"))
+                    existing = json.loads(paths().indexing_lock_path.read_text(encoding="utf-8"))
                 except Exception:
                     existing = {}
                 existing_pid = existing.get("pid")
@@ -237,7 +309,7 @@ def _acquire_indexing_lock() -> dict:
                         os.kill(existing_pid, 0)  # signal 0 = existence check
                         raise SystemExit(
                             f"別のインデクサーが実行中です (PID={existing_pid})。\n"
-                            f"ロックファイル: {INDEXING_LOCK_PATH}\n"
+                            f"ロックファイル: {paths().indexing_lock_path}\n"
                             "インデクサーの完了を待ってから再実行してください。\n"
                             "（プロセスが存在しないはずなのにロックが残っている場合は、"
                             "手動で削除してください）"
@@ -253,7 +325,7 @@ def _acquire_indexing_lock() -> dict:
                         file=sys.__stderr__,
                     )
                 try:
-                    INDEXING_LOCK_PATH.unlink()
+                    paths().indexing_lock_path.unlink()
                 except OSError:
                     continue
     finally:
@@ -274,12 +346,12 @@ def _release_indexing_lock(lock_data: dict[str, Any] | None = None) -> None:
         with _indexing_lock_metadata_guard():
             if lock_data is not None:
                 try:
-                    current = json.loads(INDEXING_LOCK_PATH.read_text(encoding="utf-8"))
+                    current = json.loads(paths().indexing_lock_path.read_text(encoding="utf-8"))
                 except (OSError, ValueError):
                     return
                 if current.get("token") != lock_data.get("token"):
                     return
-            INDEXING_LOCK_PATH.unlink()
+            paths().indexing_lock_path.unlink()
     except FileNotFoundError:
         pass  # already gone — nothing to do
     except OSError as e:
@@ -559,7 +631,7 @@ def _flush_pending_index_batch(
     }
     inflight.update(pending.delete_attachment_keys)
     manifest["inflight_attachments"] = sorted(inflight)
-    save_manifest(MANIFEST_PATH, manifest)
+    save_manifest(paths().manifest_path, manifest)
 
     _replace_attachment_batch(
         col,
@@ -591,10 +663,10 @@ def _flush_pending_index_batch(
         last_written_id=str(ids[-1]) if ids else None,
         committed_item_keys=committed_item_keys,
     )
-    save_manifest(MANIFEST_PATH, manifest)
+    save_manifest(paths().manifest_path, manifest)
     _finalize_v3_pending(
         manifest, set(committed_item_keys),
-        collection_name=str(CHROMA_COLLECTION_ENV or "zotero_paragraphs_v3"),
+        collection_name=str(paths().collection_name or "zotero_paragraphs_v3"),
         code_paths=RUN_CODE_PATHS,
         expected_code_fingerprint=run_code_fingerprint,
     )
@@ -612,7 +684,7 @@ def _source_document_chunks(rows: Iterable[dict[str, Any]]) -> list[dict[str, An
 
 def _finalize_v3_item(item_key: str, *, collection_name: str) -> dict[str, Any]:
     item_chunks = _source_document_chunks(get_item_chunks(
-        item_key, chroma_dir=CHROMA_DIR, collection_name=collection_name,
+        item_key, chroma_dir=paths().chroma_dir, collection_name=collection_name,
     ))
     built = build_document_structure(item_key, item_chunks)
     replace_document_structure(
@@ -649,7 +721,7 @@ def _finalize_v3_pending(
     pending = {str(value) for value in manifest.get("post_index_pending", []) if value}
     pending.update(str(value) for value in item_keys if value)
     manifest["post_index_pending"] = sorted(pending)
-    save_manifest(MANIFEST_PATH, manifest)
+    save_manifest(paths().manifest_path, manifest)
     for item_key in sorted(pending):
         if code_paths is not None and expected_code_fingerprint:
             assert_code_unchanged(code_paths, expected_code_fingerprint)
@@ -664,7 +736,7 @@ def _finalize_v3_pending(
         manifest["post_index_pending"] = [
             value for value in manifest.get("post_index_pending", []) if value != item_key
         ]
-        save_manifest(MANIFEST_PATH, manifest)
+        save_manifest(paths().manifest_path, manifest)
 
 
 def _retire_indexed_attachments(
@@ -686,7 +758,7 @@ def _retire_indexed_attachments(
         purge_artifact_status_for_attachments([attachment_key])
         affected_items.add(str(row.parentItemKey or row.attachmentKey))
         deleted += 1
-    save_manifest(MANIFEST_PATH, manifest)
+    save_manifest(paths().manifest_path, manifest)
     if affected_items:
         _finalize_v3_pending(
             manifest, affected_items, collection_name=collection_name,
@@ -708,8 +780,8 @@ def _sync_tag_exclusions_without_embedding_runtime(
     """Retire safely tagged rows without loading or validating an embedder."""
     import chromadb
 
-    collection_name = str(CHROMA_COLLECTION_ENV or "zotero_paragraphs_v3")
-    client = chromadb.PersistentClient(path=str(CHROMA_DIR))
+    collection_name = str(paths().collection_name or "zotero_paragraphs_v3")
+    client = chromadb.PersistentClient(path=str(paths().chroma_dir))
     col = client.get_collection(collection_name)
     ready_preferred = _ready_preferred_pdfs(
         preferred_pdf_attachments, inventory_attachments, files_manifest,
@@ -734,7 +806,7 @@ def _delete_summary_embeddings_for_items(
     """Remove vectors derived from an item's pre-exclusion source scope."""
     if client is None:
         import chromadb
-        client = chromadb.PersistentClient(path=str(CHROMA_DIR))
+        client = chromadb.PersistentClient(path=str(paths().chroma_dir))
     try:
         summary_collection = client.get_collection(f"{collection_name}__sum_node")
     except Exception:
@@ -1633,8 +1705,8 @@ def _reset_rebuild_target() -> None:
     """Reset only the isolated V3 target; the retired data plane is untouched."""
     import chromadb
 
-    client = chromadb.PersistentClient(path=str(CHROMA_DIR))
-    target = str(CHROMA_COLLECTION_ENV or "zotero_paragraphs_v3")
+    client = chromadb.PersistentClient(path=str(paths().chroma_dir))
+    target = str(paths().collection_name or "zotero_paragraphs_v3")
     listed = client.list_collections()
     names = {
         str(value if isinstance(value, str) else getattr(value, "name", ""))
@@ -1661,10 +1733,10 @@ def _reset_rebuild_target() -> None:
             close()
 
     reset_ingestion_derived_state()
-    if MANIFEST_PATH.exists():
-        MANIFEST_PATH.unlink()
-    if V3_PIPELINE_CONFIG_PATH.exists():
-        V3_PIPELINE_CONFIG_PATH.unlink()
+    if paths().manifest_path.exists():
+        paths().manifest_path.unlink()
+    if paths().pipeline_config_path.exists():
+        paths().pipeline_config_path.unlink()
     lexical_v3 = lexical_path(PROJECT_ROOT)
     if lexical_v3.exists():
         lexical_v3.unlink()
@@ -1691,12 +1763,12 @@ def _zotero_data_dir_is_valid(zotero_data_dir: Optional[str]) -> bool:
 
 
 def _validate_zotero_data_dir_or_exit():
-    if not ZOTERO_DATA_DIR:
+    if not paths().zotero_data_dir:
         raise SystemExit(
             "ERROR: ZOTERO_DATA_DIR is not set.\n"
             "Set it to your Zotero data directory (must contain 'storage/' and 'zotero.sqlite').\n"
         )
-    zdd = Path(ZOTERO_DATA_DIR).expanduser()
+    zdd = Path(paths().zotero_data_dir).expanduser()
     if not (zdd.exists() and (zdd / "storage").exists() and (zdd / "zotero.sqlite").exists()):
         raise SystemExit(
             f"ERROR: ZOTERO_DATA_DIR looks invalid: {zdd}\n"
@@ -1773,14 +1845,14 @@ async def _discover_attachments(
 ) -> DiscoveryResult:
     """Resolve the immutable source scope before any destructive index action."""
     zotero_data_dir: Optional[str] = None
-    if _zotero_data_dir_is_valid(ZOTERO_DATA_DIR):
-        zotero_data_dir = ZOTERO_DATA_DIR
-    elif ZOTERO_DATA_DIR:
+    if _zotero_data_dir_is_valid(paths().zotero_data_dir):
+        zotero_data_dir = paths().zotero_data_dir
+    elif paths().zotero_data_dir:
         if args.require_data_dir:
             _validate_zotero_data_dir_or_exit()
         else:
             print(
-                f"[WARN] ZOTERO_DATA_DIR looks invalid: {Path(ZOTERO_DATA_DIR).expanduser()}\n"
+                f"[WARN] ZOTERO_DATA_DIR looks invalid: {Path(paths().zotero_data_dir).expanduser()}\n"
                 "      Falling back to Zotero Local API file download into PDF_CACHE_DIR.",
                 file=sys.__stderr__,
             )
@@ -1800,7 +1872,7 @@ async def _discover_attachments(
         )
     attachments: List[ZoteroAttachment] = await api.list_normalized_attachments(
         zotero_data_dir=zotero_data_dir,
-        pdf_cache_dir=str(PDF_CACHE_DIR),
+        pdf_cache_dir=str(paths().pdf_cache_dir),
         collection_key=args.collection,
         require_complete=bool(args.rebuild),
     )
@@ -1949,13 +2021,13 @@ def _finalize_index_storage(
         print("[INFO] HNSW final flush and query smoke test complete.", file=sys.__stderr__)
     except Exception as exc:
         manifest["hnsw_validated"] = False
-        save_manifest(MANIFEST_PATH, manifest)
+        save_manifest(paths().manifest_path, manifest)
         raise RuntimeError(f"HNSW final validation failed: {exc}") from exc
         print(f"[WARN] HNSW final flush failed (non-fatal): {exc}", file=sys.__stderr__)
 
     manifest["notes"] = notes_manifest
     manifest["files"] = files_manifest
-    save_manifest(MANIFEST_PATH, manifest)
+    save_manifest(paths().manifest_path, manifest)
     return last_written_id
 
 
@@ -2724,7 +2796,7 @@ def _extract_pdf_chunks(
                     content_signature_value=stored_signature,
                     pipeline_fingerprint=v3_pipeline_fingerprint,
                 )
-                save_manifest(MANIFEST_PATH, manifest)
+                save_manifest(paths().manifest_path, manifest)
                 if show_progress:
                     print(
                         f"[PROGRESS]   ↳ deferred to Mistral OCR batch: "
@@ -3016,8 +3088,8 @@ def _source_verdict(
 
 
 async def main_async(args: argparse.Namespace) -> None:
-    PDF_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    paths().pdf_cache_dir.mkdir(parents=True, exist_ok=True)
+    paths().data_dir.mkdir(parents=True, exist_ok=True)
 
     # A feature switched on without its resource is a configuration error, not
     # something to work around: silently skipping it would leave the operator
@@ -3038,7 +3110,7 @@ async def main_async(args: argparse.Namespace) -> None:
     # cannot make half the documents structured and half not.
     structure_recovery = pdf_structure_recovery_enabled()
 
-    manifest = load_manifest(MANIFEST_PATH)
+    manifest = load_manifest(paths().manifest_path)
     files_any = manifest.get("files", {})
     files_manifest: dict[str, dict[str, Any]] = files_any if isinstance(files_any, dict) else {}
 
@@ -3140,7 +3212,7 @@ async def main_async(args: argparse.Namespace) -> None:
             "dry_run": True,
             "rebuild": bool(args.rebuild),
             "structured_v3": True,
-            "target_collection": CHROMA_COLLECTION_ENV or CHROMA_COLLECTION_DEFAULT,
+            "target_collection": paths().collection_name or CHROMA_COLLECTION_DEFAULT,
             "items": len({str(a.parentItemKey or a.attachmentKey) for a in attachments}),
             "attachments": len(attachments),
             "source_types": dict(sorted(source_types.items())),
@@ -3165,16 +3237,16 @@ async def main_async(args: argparse.Namespace) -> None:
         notes_manifest = manifest["notes"]
 
     col = get_collection(
-        chroma_dir=CHROMA_DIR,
+        chroma_dir=paths().chroma_dir,
         project_root=PROJECT_ROOT,
-        chroma_collection_env=CHROMA_COLLECTION_ENV,
+        chroma_collection_env=paths().collection_name,
         chroma_collection_default=CHROMA_COLLECTION_DEFAULT,
         persist_active_config=False,
     )
     atexit.register(_close_chroma_collection, col)
 
     v3_pipeline_fingerprint = ""
-    collection_name = str(CHROMA_COLLECTION_ENV or "zotero_paragraphs_v3")
+    collection_name = str(paths().collection_name or "zotero_paragraphs_v3")
     removed_sentinels = _remove_stale_hnsw_sentinels(
         col, collection_name=collection_name,
     )
@@ -3195,7 +3267,7 @@ async def main_async(args: argparse.Namespace) -> None:
             f"V3 collection dimension mismatch: collection={actual_dim} runtime={expected_dim}"
         )
     stored_pipeline, created_pipeline = ensure_pipeline_config(
-        V3_PIPELINE_CONFIG_PATH, runtime, existing_chunk_count=int(col.count()),
+        paths().pipeline_config_path, runtime, existing_chunk_count=int(col.count()),
     )
     v3_pipeline_fingerprint = str(stored_pipeline["pipeline_fingerprint"])
     bind_manifest_pipeline(
@@ -3207,7 +3279,7 @@ async def main_async(args: argparse.Namespace) -> None:
         recovery_items = set(manifest.get("post_index_pending", []))
         recovery_items.update(list_item_keys(collection_name=collection_name))
         manifest["post_index_pending"] = sorted(str(value) for value in recovery_items if value)
-    save_manifest(MANIFEST_PATH, manifest)
+    save_manifest(paths().manifest_path, manifest)
     pending_recovery = [
         str(value) for value in manifest.get("post_index_pending", []) if value
     ]
@@ -3561,7 +3633,7 @@ async def main_async(args: argparse.Namespace) -> None:
             staged_result_path = str(reocr_route.get("mistral_result_path") or "").strip()
             if staged_result_path:
                 allowed, policy_reason = True, "staged_batch_result"
-            elif stype == "pdf" and not args.refetch_ocr and has_archived_result(file_path, data_dir=DATA_DIR):
+            elif stype == "pdf" and not args.refetch_ocr and has_archived_result(file_path, data_dir=paths().data_dir):
                 # Same reasoning as the staged-result case just above: this
                 # makes no API request and sends nothing, so the cloud-send
                 # policy has nothing to gate here.
@@ -3646,7 +3718,7 @@ async def main_async(args: argparse.Namespace) -> None:
                     elif stype == "pdf":
                         chunks, quality_info = extract_chunks_from_pdf_with_mistral_ocr(
                             file_path, a.attachmentKey, meta_base,
-                            data_dir=DATA_DIR, use_cache=not args.refetch_ocr,
+                            data_dir=paths().data_dir, use_cache=not args.refetch_ocr,
                         )
                         if show_progress:
                             # extract_chunks_from_pdf_with_mistral_ocr always
@@ -3751,7 +3823,7 @@ async def main_async(args: argparse.Namespace) -> None:
             dom_quality = dict(quality_info)
             try:
                 derivative = save_fixed_layout_derivative(
-                    file_path, DATA_DIR / "epub_ocr_cache", a.attachmentKey,
+                    file_path, paths().data_dir / "epub_ocr_cache", a.attachmentKey,
                 )
                 derivative_pdf = Path(str(derivative["derivative_path"]))
                 expected_pages = len(derivative.get("pages") or [])
@@ -3813,7 +3885,7 @@ async def main_async(args: argparse.Namespace) -> None:
                             content_signature_value=stored_signature,
                             pipeline_fingerprint=v3_pipeline_fingerprint,
                         )
-                        save_manifest(MANIFEST_PATH, manifest)
+                        save_manifest(paths().manifest_path, manifest)
                         deferred_extract += 1
                         if show_progress:
                             print(

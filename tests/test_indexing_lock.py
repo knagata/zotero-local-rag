@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import sys
 import tempfile
 import threading
 import time
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -22,9 +24,15 @@ class IndexingLockTests(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
         self.path = Path(self.tempdir.name) / "indexing.lock"
-        self.path_patch = patch.object(module, "INDEXING_LOCK_PATH", self.path)
-        self.path_patch.start()
-        self.addCleanup(self.path_patch.stop)
+        # Through the run's resolved paths rather than by patching a module
+        # constant: the constant is what a test could reach, not what the code
+        # is about, and reaching it meant every test here had to know the
+        # module's spelling of its own configuration.
+        stack = contextlib.ExitStack()
+        self.addCleanup(stack.close)
+        stack.enter_context(module.use_paths(
+            replace(module.paths(), indexing_lock_path=self.path),
+        ))
         self.addCleanup(self.tempdir.cleanup)
 
     def test_live_owner_prevents_a_second_acquisition(self):
