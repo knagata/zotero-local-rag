@@ -1,7 +1,6 @@
 """Read paragraph chunks from Chroma's SQLite metadata store without loading HNSW."""
 from __future__ import annotations
 
-import os
 import re
 import sqlite3
 from pathlib import Path

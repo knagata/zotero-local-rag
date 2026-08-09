@@ -129,6 +129,12 @@ test_structure_recovery_corpus.py` のskipifが例）。要否の判定は、静
 （採択しないと落ちる）。都度の判断で分解し続けるのではなく、機械に押し戻させる。
 手順は `docs/development.md`。
 
+### 例外を飲み込む形は増やさない
+
+広いexcept・`except: pass`・`check`無しsubprocess の件数は
+`tests/lint_budget.json` に凍結済み。増やすと落ちる。**既存の309件は残っている**が、
+新規は通らない。直したら `--write` で採択して上限を下げる。手順は `docs/development.md`。
+
 ### 語彙は単一定義
 
 見出しの機能語彙は `src/heading_zone.py`、構造語彙は `src/heading_structure.py` だけに

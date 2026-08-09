@@ -1,0 +1,24 @@
+{
+  "rules": [
+    "BLE001",
+    "S110",
+    "S112",
+    "PLW1510",
+    "TRY004",
+    "F401"
+  ],
+  "trees": [
+    "src",
+    "scripts",
+    "citation_graph",
+    "tests"
+  ],
+  "counts": {
+    "BLE001": 205,
+    "S110": 40,
+    "S112": 6,
+    "PLW1510": 33,
+    "TRY004": 25,
+    "F401": 0
+  }
+}
