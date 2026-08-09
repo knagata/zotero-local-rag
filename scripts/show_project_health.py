@@ -25,6 +25,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from scripts.build_function_size_budget import LIMIT, load_budget as load_sizes  # noqa: E402
+from scripts.build_coverage_budget import load_budget as load_coverage  # noqa: E402
 from scripts.build_lint_budget import load_budget as load_lint  # noqa: E402
 
 REGISTER = ROOT / "docs" / "post-refactor-followups.md"
@@ -63,6 +64,8 @@ def _mechanical_layers() -> list[tuple[str, str]]:
     return [
         ("function sizes", f"{len(sizes)} over {LIMIT} lines, largest {max(sizes.values(), default=0)}"),
         ("swallowed exceptions", f"{sum(lint.values())} frozen across {len(lint)} rules"),
+        ("unreached statements",
+         f"{sum(load_coverage().values())} frozen across {len(load_coverage())} modules"),
         ("real-data writes", "refused by tests/conftest.py for every test"),
         ("slow tests", "excluded by default, opt in with -m slow"),
     ]

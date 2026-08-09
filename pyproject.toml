@@ -33,7 +33,7 @@ llm-anthropic = ["anthropic>=0.75.0"]
 pdf-docling = ["docling>=2.0,<3"]
 
 [dependency-groups]
-dev = ["pytest>=8,<9", "ruff>=0.12,<1"]
+dev = ["pytest>=8,<9", "ruff>=0.12,<1", "coverage>=7,<8"]
 
 [tool.ruff]
 target-version = "py310"

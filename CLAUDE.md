@@ -29,7 +29,9 @@ uv run ruff check --select E9,F63,F7,F82 src scripts tests citation_graph
 ```
 
 CI はこの3つに `uv run python -c "import src.cli"` を加えたものを回す。
-テストは CI では `-W error::RuntimeWarning` 付き。Python は 3.10 固定。
+テストは CI では計測付き（`uv run coverage run --source=src,citation_graph -m pytest -q
+-W error::RuntimeWarning`）で、その結果を `scripts/build_coverage_budget.py --check` が
+検査する。Python は 3.10 固定。
 
 既定の実行は `slow` マーカーの付いたテストを除外する。取込ベースライン
 （`tests/test_ingestion_baseline.py`、実測205秒中140秒）がそれで、蔵書・Zotero・
@@ -128,6 +130,18 @@ test_structure_recovery_corpus.py` のskipifが例）。要否の判定は、静
 新しく150行超を作っても落ちる。縮めたら `--write` で採択して上限を下げる
 （採択しないと落ちる）。都度の判断で分解し続けるのではなく、機械に押し戻させる。
 手順は `docs/development.md`。
+
+### テストが届かない行を増やさない
+
+モジュールごとの未実行文数は `tests/coverage_budget.json` に凍結済み。増やすと **CIが
+落ちる**。割合ではなく文数なので、テスト付きのコードはいくら足しても増えない。減ったら
+採択して床を下げる。
+
+```bash
+uv run coverage run --source=src,citation_graph -m pytest -q
+uv run python scripts/build_coverage_budget.py --check   # 悪化していないか
+uv run python scripts/build_coverage_budget.py --write   # 採択する
+```
 
 ### 例外を飲み込む形は増やさない
 

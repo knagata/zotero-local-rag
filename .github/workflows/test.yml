@@ -21,4 +21,6 @@ jobs:
       - name: Check fatal Python errors
         run: uv run ruff check --select E9,F63,F7,F82 src scripts tests citation_graph
       - name: Run tests
-        run: uv run pytest -q -W error::RuntimeWarning
+        run: uv run coverage run --source=src,citation_graph -m pytest -q -W error::RuntimeWarning
+      - name: Check nothing lost its tests
+        run: uv run python scripts/build_coverage_budget.py --check
