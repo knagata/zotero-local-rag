@@ -1138,6 +1138,12 @@ renderer.on('clickEdge', function (ev) {
       var ctxs = data.contexts || [];
       var ctxBody = document.getElementById('ctx-body');
       if (!ctxBody) return;
+      if (data.error) {
+        // 「引用文脈なし」と「読めなかった」を同じ空欄にしない。
+        ctxBody.innerHTML = '<div class="ctx-empty">引用文脈を読み取れませんでした（'
+          + String(data.error).replace(/[<>&]/g, '') + '）</div>';
+        return;
+      }
 
       function _renderContexts() {
         var html = '';
@@ -2183,8 +2189,15 @@ function showDetail(nodeId) {
   body += kv('年', n.year || '—');
   body += _kvIdentifier('DOI',  doiLinkHtml,  doi,  n.id, 'doi',  isZotero, itemKey);
   body += _kvIdentifier('ISBN', isbnLinkHtml, isbn, n.id, 'isbn', isZotero, itemKey);
-  body += kv('被引用数', n.citations != null ? Number(n.citations).toLocaleString()
-                       : n.cc        != null ? Number(n.cc).toLocaleString() : '—');
+  // 被引用数は出所で意味が違う。S2 の総数はこの図が描いている数ではないので、
+  // 同じラベルに入れない（描画数と 4,188 対 191 のように開くことがある）。
+  var _citeTotal = n.citations != null ? n.citations : n.cc;
+  var _citeLabel = n.citationsSource === 's2' ? '被引用数（S2全体）' : '被引用数';
+  body += kv(_citeLabel, _citeTotal != null ? Number(_citeTotal).toLocaleString() : '—');
+  if (n.citationsSource === 's2' && n.citationsInGraph != null
+      && Number(n.citationsInGraph) !== Number(_citeTotal)) {
+    body += kv('うちこの図に', Number(n.citationsInGraph).toLocaleString());
+  }
   if (!isExternal) {
     body += kv('参照数', n.refCount ? Number(n.refCount).toLocaleString() : '—');
     body += kv('Key', n.itemKey || '');

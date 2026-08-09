@@ -10,7 +10,7 @@
     "src/index_from_zotero.py::_extract_pdf_chunks": 705,
     "src/db_relations.py::_init_db": 698,
     "src/pdf_extract.py::extract_chunks_from_pdf": 614,
-    "citation_graph/server.py::build_graph_data": 470,
+    "citation_graph/server.py::build_graph_data": 463,
     "src/citation_mapper.py::map_item_global_citations": 444,
     "src/rag_mcp_server.py::rag_search": 432,
     "src/html_extract.py::extract_chunks_from_epub_snapshot": 347,

@@ -13,45 +13,14 @@ than deleted silently, because the same review would otherwise raise them again.
 
 Priority means: **P1** can lose or corrupt data, or has no bound; **P2** is a
 robustness or cost defect within the local-only workflow; **P3** costs accuracy
-or clarity in what the user is shown. **P1 is empty as of 2026-08-09** -- all
-five are in [Closed](#closed). Structural work is not ranked here — its
+or clarity in what the user is shown. **P1 and P2 are empty as of 2026-08-09**;
+what is left is in P3 and both items need data this repository does not have
+(a re-measurement, and the corpus). Everything closed is in [Closed](#closed). Structural work is not ranked here — its
 order is decided by the size ratchet (`tests/test_function_size_ratchet.py`).
-
-## P2
-
-### 1. Add translation request limits
-
-- Location: `citation_graph/server.py` (`_TranslateBatchRequest`)
-- Still true 2026-08-09: the model is `texts: list[str]` with no constraint, so
-  the Azure Translator route bounds neither text count, per-text length nor
-  total characters. Cost, latency and memory are all unbounded by the request.
-- Proposal: enforce the limits in the Pydantic model, reject oversized payloads
-  before the upstream call, and return sanitized upstream errors.
-
-### 2. Move identifier override migration out of request handling
-
-- Location: `citation_graph/server.py` (`_ensure_override_table`)
-- Still true 2026-08-09: the handler calls it per update, and it retries five
-  `ALTER TABLE` statements under `except Exception: pass`, which swallows lock,
-  read-only and I/O failures alongside the duplicate-column error it means.
-- Proposal: migrate once at database initialization, ignore only SQLite's
-  duplicate-column error, and leave the handler with validation and the update
-  transaction.
 
 ## P3
 
-### 3. Say which citation count the tooltip is showing
-
-- Locations: `citation_graph/server.py` (~L1769), `citation_graph/static/app.js`
-  (~L2186)
-- The discard that caused the gap is fixed (see [Closed](#closed)), but the
-  label is not: the tooltip prefers `s2_citation_count` when S2 has it and
-  writes it under `被引用数`, while the graph draws the subset that is actually
-  in the database. Two different numbers under one label.
-- Proposal: name the S2 total and the drawn count separately, or label the
-  total as S2's.
-
-### 4. Give S2 identity a discriminator for author-less records
+### 1. Give S2 identity a discriminator for author-less records
 
 - Location: `src/citation_mapper.py` (`_record_names_a_creator`)
 - The function passes a record that lists no author, on the principle that
@@ -65,7 +34,7 @@ order is decided by the size ratchet (`tests/test_function_size_ratchet.py`).
   EARTHQUAKES"). Refusing them wholesale drops the correct with the wrong.
 - Re-measure before acting; the count is from the mapping as it stood then.
 
-### 5. Flat-PDF recovery: three shapes that stay flat
+### 2. Flat-PDF recovery: three shapes that stay flat
 
 Verified against `tests/baselines/structure_recovery.json` on 2026-08-09, where
 6 of 84 attachments recover a tree. Both named books are still flat.
@@ -146,6 +115,22 @@ that the size number does not say.
   `RuntimeWarning`.
 
 ## Closed
+
+- **The graph server had no request bounds, and reported failures as findings**
+  (fixed 2026-08-09). The translation route accepted any number of texts of any
+  length on a paid per-character API reachable from the page; it now bounds
+  count, per-text length and total, rejects before the upstream call, and
+  returns a generic message because the upstream error carries the request URL
+  and the subscription key travels in that request's headers. `get_contexts_
+  for_edge` turned a database failure into `[]`, which draws as an edge with
+  nothing quoted -- a reason for the reader to stop looking -- and now raises,
+  with the route and the page distinguishing "could not read" from "nothing
+  there". `_ensure_override_table` ran five `ALTER TABLE` statements per
+  request under `except Exception: pass`, swallowing a locked or read-only
+  database along with the duplicate-column error it meant; only that message is
+  ignored now. And the tooltip put S2's total for a work and the citing papers
+  actually drawn under one label, `被引用数`, which differ by as much as 4,188
+  against 191; both are reported, each as itself.
 
 - **Re-OCR compensation abandoned the rest when one store refused** (fixed
   2026-08-09). Each compensation runs independently and collects its own

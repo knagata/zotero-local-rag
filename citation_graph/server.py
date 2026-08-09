@@ -118,7 +118,13 @@ def get_item_meta(item_keys: list[str]) -> dict[str, dict]:
             for r in rows
         }
     except Exception as e:
+        # Returning {} draws the whole graph with Zotero keys where titles
+        # should be, which reads as "this library has no metadata" rather than
+        # "the metadata could not be read just now". The graph is still worth
+        # drawing, so this stays non-fatal -- but it says so where the caller
+        # can find it instead of only on stderr.
         print(f"  (ChromaDB metadata lookup failed: {e})", file=sys.stderr)
+        _state["metadata_lookup_error"] = str(e)
         return {}
 
 
@@ -420,8 +426,14 @@ def get_contexts_for_edge(db_path: str, src_id: str, tgt_id: str) -> list[dict]:
         for r in rows:
             results.append({"snippet": r["context_snippet"] or "", "page": r["page_hint"] or ""})
         return results
-    except Exception:
-        return []
+    except Exception as error:
+        # Not an empty list. "This edge has no quotable context" is a fact
+        # about the library that a reader acts on -- they stop looking. A
+        # database that could not be read is not that fact, and the route above
+        # turns a raised error into one the caller can see.
+        raise RuntimeError(
+            f"could not read citation contexts for {src_id} -> {tgt_id}: {error}"
+        ) from error
     finally:
         try:
             conn.close()
@@ -1538,6 +1550,31 @@ _JS_THEME = ("window.__RAG_THEME__ = "
 
 # ── build_graph_data: assemble node/edge data for the API ─────────────────────
 
+def _load_identifier_overrides(db_path: str) -> dict[str, dict]:
+    """The hand-corrected identifiers for graph nodes, or none if unreadable.
+
+    Non-fatal on purpose: a graph without the corrections is still the graph,
+    and refusing to draw it would hide far more than the corrections add. The
+    failure is printed rather than swallowed so the corrections going missing
+    is at least visible to whoever wonders where they went.
+    """
+    overrides: dict[str, dict] = {}
+    try:
+        with sqlite3.connect(db_path) as connection:
+            _ensure_override_table(connection)
+            for row in connection.execute(
+                "SELECT node_id, doi, isbn, title, year, authors, citations "
+                "FROM node_identifier_overrides"
+            ):
+                overrides[row[0]] = {
+                    "doi": row[1], "isbn": row[2], "title": row[3],
+                    "year": row[4], "authors": row[5], "citations": row[6],
+                }
+    except Exception as error:
+        print(f"[warn] override load failed: {error}", file=sys.stderr)
+    return overrides
+
+
 def build_graph_data(
     items: list[dict],
     citers: list[dict],
@@ -1649,21 +1686,7 @@ def build_graph_data(
         edge_counter += 1
         return f"e{edge_counter}"
 
-    # ── node_identifier_overrides テーブルからオーバーライドを読み込む ─────────
-    _id_overrides: dict[str, dict] = {}
-    _ov_path = db_path or DB_PATH
-    try:
-        with sqlite3.connect(_ov_path) as _ov_conn:
-            _ensure_override_table(_ov_conn)
-            for row in _ov_conn.execute(
-                "SELECT node_id, doi, isbn, title, year, authors, citations FROM node_identifier_overrides"
-            ):
-                _id_overrides[row[0]] = {
-                    "doi": row[1], "isbn": row[2], "title": row[3],
-                    "year": row[4], "authors": row[5], "citations": row[6],
-                }
-    except Exception as _ov_err:
-        print(f"[warn] override load failed: {_ov_err}", file=__import__("sys").stderr)
+    _id_overrides = _load_identifier_overrides(db_path or DB_PATH)
 
     def _apply_id_override(
         nid: str, doi_val: str, isbn_val: str = "", title_val: str = "",
@@ -1817,7 +1840,14 @@ def build_graph_data(
             "year":      year_val or "",
             "doi":       doi_val or "",
             "isbn":      isbn_val or "",
+            # Two different numbers used to share the label 被引用数: S2's total
+            # for the work, and the citing papers this graph actually holds.
+            # They differ by a lot -- one item shows 4,188 against 191 drawn --
+            # and a reader comparing nodes was comparing whichever each node
+            # happened to have. Both are reported, each as itself.
             "citations": s2_cc if s2_cc is not None else count,
+            "citationsSource": "s2" if s2_cc is not None else "graph",
+            "citationsInGraph": count,
             "refCount":  rcount,
             "itemKey":   key,
             **( {"x": round(_xy[0], 1), "y": round(_xy[1], 1)} if _xy else {} ),
@@ -2017,7 +2047,7 @@ from citation_graph.lifecycle import SingleFlight, StartOnce
 
 from fastapi import APIRouter, FastAPI
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 # サーバー起動時に main() が詰める in-memory state
 _state: dict = {
@@ -2356,9 +2386,23 @@ def _route_semantic_layout(method: str = "umap", n_clusters: int = 8) -> JSONRes
     })
 
 
+def _log_translation_failure(error: Exception) -> None:
+    """Record why a translation failed without answering the client with it."""
+    print(f"[WARN] translation request failed: {type(error).__name__}: {error}",
+          file=sys.stderr)
+
+
+#: Azure Translator は文字数で課金される。上限が無い経路は、費用・待ち時間・
+#: メモリのどれもリクエスト側が決められる状態になる。既定値は「画面1枚分の
+#: ノードラベルと要約」を通し、それ以上は拒否する大きさ。
+TRANSLATE_MAX_TEXTS = 200
+TRANSLATE_MAX_TEXT_CHARS = 5_000
+TRANSLATE_MAX_TOTAL_CHARS = 50_000
+
+
 class _TranslateBatchRequest(BaseModel):
-    texts: list[str]
-    target: str = "ja"
+    texts: list[str] = Field(default_factory=list, max_length=TRANSLATE_MAX_TEXTS)
+    target: str = Field(default="ja", max_length=16)
 
 
 @router.post("/api/translate/batch")
@@ -2371,6 +2415,21 @@ def _route_translate_batch(req: _TranslateBatchRequest) -> JSONResponse:
         )
     if not req.texts:
         return JSONResponse({"translations": []})
+    # Rejected here rather than upstream: the cost of finding out from Azure
+    # that a payload was too large is the request itself.
+    too_long = next((t for t in req.texts if len(t) > TRANSLATE_MAX_TEXT_CHARS), None)
+    if too_long is not None:
+        return JSONResponse(
+            {"error": f"1件あたり{TRANSLATE_MAX_TEXT_CHARS}文字までです"},
+            status_code=413,
+        )
+    total = sum(len(t) for t in req.texts)
+    if total > TRANSLATE_MAX_TOTAL_CHARS:
+        return JSONResponse(
+            {"error": f"1リクエストの合計は{TRANSLATE_MAX_TOTAL_CHARS}文字までです"
+                      f"（{total}文字ありました）"},
+            status_code=413,
+        )
     import requests as _req
     cfg = _state["translator"]
     try:
@@ -2389,14 +2448,24 @@ def _route_translate_batch(req: _TranslateBatchRequest) -> JSONResponse:
         translations = [item["translations"][0]["text"] for item in resp.json()]
         return JSONResponse({"translations": translations})
     except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
+        # The upstream error is logged, not returned: it can carry the request
+        # URL, and the subscription key travels in that request's headers.
+        _log_translation_failure(e)
+        return JSONResponse({"error": "翻訳に失敗しました"}, status_code=502)
 
 
 @router.get("/api/edge/contexts")
-def _route_edge_contexts(src: str, tgt: str) -> dict:
+def _route_edge_contexts(src: str, tgt: str) -> JSONResponse:
     """エッジ(src → tgt)の引用コンテキストを全件返す。"""
-    contexts = get_contexts_for_edge(_state["db_path"], src, tgt)
-    return {"contexts": contexts}
+    try:
+        contexts = get_contexts_for_edge(_state["db_path"], src, tgt)
+    except Exception as exc:
+        # An empty list here reads as "nothing was quoted", which is a reason
+        # to stop looking. A failure has to look different from that.
+        return JSONResponse(
+            {"contexts": [], "error": str(exc)}, status_code=500,
+        )
+    return JSONResponse({"contexts": contexts})
 
 
 class _RelationReportRequest(BaseModel):
@@ -2678,7 +2747,24 @@ class _IdentifierUpdate(BaseModel):
     value: str
 
 
+#: Columns added to node_identifier_overrides after it first shipped.
+_OVERRIDE_MIGRATIONS = (
+    ("isbn", "TEXT"), ("title", "TEXT"), ("year", "TEXT"),
+    ("authors", "TEXT"), ("citations", "TEXT"),
+)
+
+
 def _ensure_override_table(conn: sqlite3.Connection) -> None:
+    """Create the table and bring it up to date, once, at open time.
+
+    This used to run inside the identifier-update handler, on every request,
+    retrying five ``ALTER TABLE`` statements under ``except Exception: pass``.
+    That swallowed a locked database, a read-only file and an I/O error
+    identically to the duplicate-column error it was written for, so a failing
+    migration was reported to nobody and the update that followed failed with
+    something unrelated. Only SQLite's duplicate-column message is ignored now;
+    anything else is the caller's problem to see.
+    """
     conn.execute("""
         CREATE TABLE IF NOT EXISTS node_identifier_overrides (
             node_id    TEXT PRIMARY KEY,
@@ -2690,12 +2776,14 @@ def _ensure_override_table(conn: sqlite3.Connection) -> None:
             updated_at TEXT DEFAULT (datetime('now'))
         )
     """)
-    # 既存テーブルへのカラム追加（マイグレーション）
-    for col, coltype in [("isbn", "TEXT"), ("title", "TEXT"), ("year", "TEXT"), ("authors", "TEXT"), ("citations", "TEXT")]:
+    for column, column_type in _OVERRIDE_MIGRATIONS:
         try:
-            conn.execute(f"ALTER TABLE node_identifier_overrides ADD COLUMN {col} {coltype}")
-        except Exception:
-            pass  # 既に存在する場合は無視
+            conn.execute(
+                f"ALTER TABLE node_identifier_overrides ADD COLUMN {column} {column_type}"
+            )
+        except sqlite3.OperationalError as error:
+            if "duplicate column name" not in str(error).lower():
+                raise
 
 
 @router.post("/api/node/identifier")
