@@ -47,6 +47,22 @@ class ReparseDecision:
 
 
 @dataclass(frozen=True)
+class PdfExtraction:
+    """What came of trying to read one PDF, and whether anything came at all.
+
+    ``deferred`` means the file was handed to the Mistral OCR batch rather than
+    extracted: it is queued, the manifest already records that, and nothing the
+    caller does with chunks applies to it. It is the one way out of this route
+    that is not a result, and it was a bare ``continue`` reaching out of 665
+    lines into the loop around them.
+    """
+
+    chunks: list
+    quality: dict
+    deferred: bool = False
+
+
+@dataclass(frozen=True)
 class SourceVerdict:
     """Whether an attachment still holds what was indexed from it, and so what
     the run owes it: extraction, a quality reading only, or nothing.

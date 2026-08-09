@@ -73,8 +73,8 @@ from index_batch import (
     AttachmentBatch, FlushOutcome, PendingIndexBatch, replace_attachment_batch,
 )
 from index_run import (
-    DiscoveryResult, NoteIndexOutcome, QualityWarning, ReparseDecision,
-    SourceVerdict,
+    DiscoveryResult, NoteIndexOutcome, PdfExtraction, QualityWarning,
+    ReparseDecision, SourceVerdict,
     ResolvedAttachmentSource,
 )
 
@@ -2115,6 +2115,720 @@ def _reparse_decision(
 
 
 
+
+
+
+def _extract_pdf_chunks(
+    *,
+    a: Any,
+    args: Any,
+    col: Any,
+    docling_worker: Any,
+    file_path: Any,
+    files_manifest: Any,
+    force_docling: Any,
+    force_ndlocr: Any,
+    granite_worker: Any,
+    manifest: Any,
+    meta_base: Any,
+    mtime: Any,
+    prev: Any,
+    scope_item_key: Any,
+    show_progress: Any,
+    size: Any,
+    source_metadata: Any,
+    stored_signature: Any,
+    structure_recovery: Any,
+    v3_pipeline_fingerprint: Any,
+) -> PdfExtraction:
+    """Read a PDF, choosing and escalating between extractors as it goes.
+
+    Six hundred and sixty-five lines of main_async's per-attachment loop, which
+    is most of what that loop was: PyMuPDF first, then the OCR-layer audit, then
+    Docling or NDLOCR or Granite depending on what the pages turn out to be,
+    then the coverage checks that decide whether what came back is enough to
+    index.
+
+    Lifted whole rather than in pieces because the interface is narrow --
+    ``chunks`` and ``quality`` are the only names that escaped, and the one
+    ``continue`` is now the deferred flag -- and because its own size is easier
+    to see, and to split further, once it is somewhere of its own.
+
+    The parameter list is long and deliberately unreduced. Grouping the per-run
+    values apart from the per-attachment ones is the obvious next move and a
+    separate one: doing both at once would leave no way to tell which change
+    caused a difference.
+    """
+    chunks: list = []
+    quality_info: dict = {}
+    use_docling_for_this_file = force_docling or args.use_docling
+    if force_ndlocr:
+        if show_progress:
+            print(
+                "[PROGRESS]   ↳ parsing Japanese re-OCR candidate with NDLOCR-Lite...",
+                file=sys.__stderr__,
+            )
+        chunks, quality_info = extract_chunks_from_pdf_with_ndlocr(
+            file_path, a.attachmentKey, meta_base,
+        )
+    elif use_docling_for_this_file:
+        if show_progress:
+            print(
+                "[PROGRESS]   ↳ parsing with high-fidelity IBM Docling...",
+                file=sys.__stderr__,
+            )
+        try:
+            chunks, quality_info = docling_worker.extract(
+                file_path, a.attachmentKey, meta_base,
+            )
+        except RuntimeError as exc:
+            print(
+                f"[WARN] Docling worker extraction failed: attachment={a.attachmentKey} err={exc}",
+                file=sys.__stderr__,
+            )
+            chunks, quality_info = [], {}
+        # Note: PyTorch/MPS-CUDA cache clearing now happens inside the
+        # worker subprocess itself (see docling_worker._worker_loop),
+        # since the worker -- not this process -- holds the torch state.
+    elif STRUCTURED_V3_ENABLE:
+        # Approved routing (evaluations/ocr_bakeoff_v3/results/routing_proposal.md):
+        # PyMuPDF is only canonical for embedded-text PDFs with a usable
+        # outline; everything else escalates to Docling, the higher-scoring
+        # local default. Legacy (non-V3) ingestion keeps its prior behavior.
+        chunks, quality_info = extract_chunks_from_pdf(file_path, a.attachmentKey, meta_base)
+        quality_info = _attach_pdf_source_provenance(quality_info, source_metadata)
+        recovered = None
+        total_pages = int(quality_info.get("total_pages") or 0)
+        minimum_pages = int(os.environ.get("PDF_AI_TOC_MIN_PAGES", "30"))
+        attempted_local_ocr = False
+        scanned_ocr_replacement_attempted = False
+        scanned_ocr_batch_defer = False
+        # A pre-existing OCR layer must reach stage 2 below before it
+        # can be replaced. Only a scan classified as having *no* text
+        # layer is safe to route immediately.
+        initial_scan_route, initial_scan_route_reason = _initial_scanned_pdf_ocr_route(
+            quality_info, total_pages=total_pages, item_key=scope_item_key,
+        )
+        if initial_scan_route == "mistral_batch":
+            # The Batch queue owns cloud submission and later adoption.
+            # Do not run any local OCR before preserving this non-canonical
+            # deferral for a long scan without a usable OCR layer.
+            scanned_ocr_batch_defer = True
+            scanned_ocr_replacement_attempted = True
+            chunks = []
+        elif initial_scan_route in {"docling", "granite"}:
+            scanned_ocr_replacement_attempted = True
+            attempted_local_ocr = True
+            if show_progress:
+                print(
+                    f"[PROGRESS]   ↳ scan OCR replacement: parsing with "
+                    f"{initial_scan_route} ({initial_scan_route_reason})...",
+                    file=sys.__stderr__,
+                )
+            try:
+                chunks, quality_info = _structure_with_engine(
+                    initial_scan_route, file_path, a.attachmentKey, meta_base,
+                    docling_worker=docling_worker, granite_worker=granite_worker,
+                )
+                quality_info = _attach_pdf_source_provenance(quality_info, source_metadata)
+                quality_info["ocr_layer_quality"] = "not_applicable"
+                quality_info["ocr_layer_audit_reason"] = (
+                    "not_applicable_no_ocr_layer"
+                )
+            except RuntimeError as exc:
+                print(
+                    f"[WARN] Docling worker extraction failed: attachment={a.attachmentKey} err={exc}",
+                    file=sys.__stderr__,
+                )
+                chunks, quality_info = [], {}
+        elif not chunks and total_pages > 0:
+            # RapidOCR/NDLOCR are retained for fixed-layout EPUBs and
+            # explicit re-OCR overrides, but are not an ordinary PDF
+            # route. Docling is the local PDF baseline.
+            attempted_local_ocr = True
+            if show_progress:
+                print(
+                    "[PROGRESS]   ↳ no usable text layer; parsing with IBM Docling...",
+                    file=sys.__stderr__,
+                )
+            try:
+                chunks, quality_info = docling_worker.extract(
+                    file_path, a.attachmentKey, meta_base,
+                )
+                quality_info = _attach_pdf_source_provenance(quality_info, source_metadata)
+            except RuntimeError as exc:
+                print(
+                    f"[WARN] Docling worker extraction failed: attachment={a.attachmentKey} err={exc}",
+                    file=sys.__stderr__,
+                )
+                chunks, quality_info = [], {}
+        # Scanned/image-only pages inside an otherwise clean embedded-text
+        # PDF (figure plates, a scanned dedication page, etc.) currently
+        # fail-closed the PyMuPDF fast-path and AI-TOC gates entirely,
+        # sending the whole document to Mistral OCR even when most pages
+        # are fine. Patch those pages via a Docling sub-PDF pass first
+        # (E2c, dev-notes/current/77). Gate on ``is_scanned`` (ratio>=0.8,
+        # a genuine scan job where local text-page patching wouldn't help)
+        # rather than a raw scanned-page count: the page-level "attempted
+        # = resolved" semantics above already prevent garbage/index
+        # pollution regardless of how many pages that covers, so a count
+        # cap was never actually protecting anything (user decision
+        # 2026-07-25, following the M5TQ4HLZ case: a 127-page catalog
+        # with 60 genuine figure-plate pages was previously escalated
+        # whole to Mistral OCR and rejected outright by its repeat-
+        # artifact gate).
+        #
+        # Restricted to born-digital documents (note 79): the "no text
+        # here means a figure" reading only holds when the text layer is
+        # the typeset source. In a scan the same observation means OCR
+        # failed on that page, and marking it ``figure`` would record a
+        # gap as an illustration -- those pages go to the scan-derived
+        # page repair below instead.
+        scanned_pages = list(quality_info.get("scanned_pages") or [])
+        source_class = str(quality_info.get("source_class") or "")
+        text_layer_is_authoritative = (
+            source_class == BORN_DIGITAL if source_class
+            else not quality_info.get("is_scanned")
+        )
+        if (
+            chunks and scanned_pages and not attempted_local_ocr
+            and structure_recovery
+            and os.environ.get("PDF_SCANNED_PAGE_PATCH_ENABLE", "1").strip() == "1"
+            and text_layer_is_authoritative
+        ):
+            try:
+                from docling_extract import patch_scanned_pages_with_docling
+            except ImportError:  # pragma: no cover - direct src entrypoint
+                from .docling_extract import patch_scanned_pages_with_docling
+            try:
+                patched, attempted_pages = patch_scanned_pages_with_docling(
+                    file_path, scanned_pages, attachment_key=a.attachmentKey, meta_base=meta_base,
+                    worker=docling_worker,
+                )
+            except Exception as exc:
+                patched, attempted_pages = [], set()
+                if show_progress:
+                    print(
+                        f"[WARN] scanned-page Docling patch failed: attachment={a.attachmentKey} err={exc}",
+                        file=sys.__stderr__,
+                    )
+            if attempted_pages:
+                # Every attempted page is resolved for the scanned-ratio
+                # gate, whether Docling recovered text or concluded the
+                # page has none (a figure/photo/poster plate): forcing
+                # more OCR on non-text content risks index-polluting
+                # garbage rather than recovering anything real.
+                # P5 (note 78): splice in reading order, not by appending.
+                chunks = _sort_chunks_in_reading_order(list(chunks) + patched)
+                quality_info = recompute_scanned_quality_after_patch(
+                    quality_info, attempted_pages, total_pages,
+                )
+                if show_progress:
+                    print(
+                        f"[PROGRESS]   ↳ scanned-page Docling patch: {len(patched)} text chunk(s) "
+                        f"recovered from {len(attempted_pages)} page(s) "
+                        f"({len(quality_info['scanned_pages'])} still unattempted)",
+                        file=sys.__stderr__,
+                    )
+        # Scan-derived text: the same page-level repair, but a page
+        # without usable text is an OCR failure rather than a figure
+        # (note 79, U2). The document-level local-OCR gate is all-or-
+        # nothing, so before this there was no way to fix a scan whose
+        # OCR failed on only part of its pages -- the whole document had
+        # to be re-OCRed or accepted as-is. Marker chunks for pages that
+        # stay unrecovered say ``corrupted_unresolved``, never
+        # ``figure``.
+        if (
+            chunks and str(quality_info.get("source_class") or "") in SCAN_DERIVED_CLASSES
+            and structure_recovery
+            and os.environ.get("PDF_SCAN_PAGE_REPAIR_ENABLE", "1").strip() == "1"
+        ):
+            failed_pages = _scan_pages_needing_repair(chunks, total_pages)
+            if failed_pages:
+                try:
+                    from docling_extract import patch_corrupted_pages_with_docling
+                except ImportError:  # pragma: no cover - direct src entrypoint
+                    from .docling_extract import patch_corrupted_pages_with_docling
+                try:
+                    patched, attempted_pages = patch_corrupted_pages_with_docling(
+                        file_path, failed_pages,
+                        attachment_key=a.attachmentKey, meta_base=meta_base,
+                        worker=docling_worker,
+                        # This uses the corrupted-page marker semantics
+                        # for scan-derived OCR failures, but is a
+                        # separate repair provenance from the later
+                        # text-corruption pass below.  Keep their IDs
+                        # disjoint when both target the same page.
+                        chunk_namespace="scanrepair",
+                    )
+                except Exception as exc:
+                    patched, attempted_pages = [], set()
+                    if show_progress:
+                        print(
+                            f"[WARN] scan-derived page repair failed: "
+                            f"attachment={a.attachmentKey} err={exc}",
+                            file=sys.__stderr__,
+                        )
+                if attempted_pages:
+                    kept = [
+                        row for row in chunks
+                        if int((row[2] or {}).get("page") or 0) not in attempted_pages
+                    ]
+                    chunks = _sort_chunks_in_reading_order(kept + patched)
+                    # Unlike the scanned-page patch above (which calls
+                    # recompute_scanned_quality_after_patch), nothing
+                    # here reconciled empty_pages/blank_pages with the
+                    # pages this just recovered -- see
+                    # recompute_blank_pages_after_patch's docstring
+                    # (found 2026-08-02, diagnosing YX3MMS4D page 444).
+                    quality_info = recompute_blank_pages_after_patch(
+                        quality_info, attempted_pages,
+                    )
+                    if show_progress:
+                        print(
+                            f"[PROGRESS]   ↳ scan-derived page repair: {len(patched)} chunk(s) "
+                            f"from {len(attempted_pages)} failed OCR page(s)",
+                            file=sys.__stderr__,
+                        )
+        # Text-corrupted pages (font-encoding mismatch or OCR/linguistic
+        # noise already baked into the PDF's text layer -- see
+        # pdf_extract.analyze_text_quality's is_corrupted) inside an
+        # otherwise clean PDF get the same "patch just the bad pages"
+        # treatment as scanned pages above (E2d, dev-notes/current/77,
+        # user decision 2026-07-26). Unlike scanned pages, corrupted
+        # pages already produced (garbled) chunks upstream, so those
+        # must be dropped before splicing in the Docling-recovered
+        # replacements -- otherwise both the garbage and the fix would
+        # be indexed side by side. Gated on ``is_corrupted`` (ratio
+        # >=0.6, a genuinely corrupted document where per-page local
+        # patching wouldn't help) rather than a raw corrupted-page
+        # count, mirroring the scanned-page patch's reasoning: the
+        # page-level "attempted = resolved" semantics below already
+        # prevent garbage/index pollution regardless of how many pages
+        # that covers.
+        corrupted_pages = list(quality_info.get("corrupted_pages") or [])
+        if (
+            chunks and corrupted_pages and not attempted_local_ocr
+            and structure_recovery
+            and os.environ.get("PDF_CORRUPTED_PAGE_PATCH_ENABLE", "0").strip() == "1"
+            and not quality_info.get("is_corrupted")
+        ):
+            try:
+                from docling_extract import patch_corrupted_pages_with_docling
+            except ImportError:  # pragma: no cover - direct src entrypoint
+                from .docling_extract import patch_corrupted_pages_with_docling
+            try:
+                corrupt_patched, corrupt_attempted_pages = patch_corrupted_pages_with_docling(
+                    file_path, corrupted_pages, attachment_key=a.attachmentKey, meta_base=meta_base,
+                    worker=docling_worker,
+                )
+            except Exception as exc:
+                corrupt_patched, corrupt_attempted_pages = [], set()
+                if show_progress:
+                    print(
+                        f"[WARN] corrupted-page Docling patch failed: attachment={a.attachmentKey} err={exc}",
+                        file=sys.__stderr__,
+                    )
+            if corrupt_attempted_pages:
+                # Drop the pre-patch (garbled) chunks for every attempted
+                # page first -- the patch output (recovered text or the
+                # corrupted_unresolved marker) is their full replacement,
+                # not an addition alongside the original mojibake.
+                chunks = [
+                    (cid, text, md) for cid, text, md in chunks
+                    if int(md.get("page") or 0) not in corrupt_attempted_pages
+                ]
+                # P5 (note 78): splice in reading order, not by appending.
+                chunks = _sort_chunks_in_reading_order(list(chunks) + corrupt_patched)
+                quality_info = recompute_corrupted_quality_after_patch(
+                    quality_info, corrupt_attempted_pages, total_pages,
+                )
+                if show_progress:
+                    print(
+                        f"[PROGRESS]   ↳ corrupted-page Docling patch: {len(corrupt_patched)} chunk(s) "
+                        f"recovered from {len(corrupt_attempted_pages)} page(s) "
+                        f"({len(quality_info['corrupted_pages'])} still unresolved)",
+                        file=sys.__stderr__,
+                    )
+        # Stage 2 (note 79): measure the OCR quality of a scan-derived
+        # text layer before deciding whether it can stand as canonical.
+        # Runs after page repair so it audits the text we would actually
+        # index, and before the fast-path gate, which consults its
+        # verdict. A cached verdict for an unchanged source is reused so
+        # reingestion costs no API calls.
+        if (
+            chunks
+            and str(quality_info.get("source_class") or "") in SCAN_DERIVED_CLASSES
+            and not scanned_ocr_replacement_attempted
+            and not ocr_layer_audit_enabled()
+        ):
+            # Record that measuring was declined, so the router can tell
+            # it apart from an audit that tried and failed. Without this
+            # the layer reads as "unverified" and every scanned PDF gets
+            # re-OCRed the moment the LLM is switched off (note 80 B).
+            quality_info = dict(quality_info)
+            quality_info["ocr_layer_audit_reason"] = OCR_LAYER_AUDIT_DISABLED
+        elif (
+            chunks
+            and str(quality_info.get("source_class") or "") in SCAN_DERIVED_CLASSES
+            and not scanned_ocr_replacement_attempted
+        ):
+            cached_audit = _cached_ocr_layer_audit(prev, mtime=mtime, size=size)
+            if cached_audit is not None:
+                quality_info = dict(quality_info)
+                quality_info.update(cached_audit)
+                quality_info["ocr_layer_audit_cached"] = True
+                if show_progress:
+                    print(
+                        f"[PROGRESS]   ↳ OCR layer audit cache hit: "
+                        f"{cached_audit.get('ocr_layer_quality')} "
+                        f"rate={cached_audit.get('ocr_layer_error_rate')}",
+                        file=sys.__stderr__,
+                    )
+            else:
+                audit = audit_ocr_text_layer(file_path, scope_item_key)
+                quality_info = dict(quality_info)
+                quality_info.update(audit)
+                if show_progress:
+                    print(
+                        f"[PROGRESS]   ↳ OCR layer audit: "
+                        f"{audit.get('ocr_layer_quality')} "
+                        f"rate={audit.get('ocr_layer_error_rate')} "
+                        f"({audit.get('ocr_layer_verified_count')} verified / "
+                        f"{audit.get('ocr_layer_rejected_count')} rejected) "
+                        f"{audit.get('ocr_layer_audit_reason')}",
+                        file=sys.__stderr__,
+                    )
+                # An audit that could not run says nothing about the
+                # text, so the text is kept -- but silently keeping it
+                # would hide the fact that it was never measured. Each
+                # outcome is surfaced differently because each needs a
+                # different follow-up (user decision 2026-07-27).
+                if audit_was_transient_failure(quality_info):
+                    # Not cached, so the next run measures it properly.
+                    quality_info["ocr_layer_needs_reaudit"] = True
+                    mark_artifact_status(
+                        scope_item_key, "extraction", "degraded",
+                        attachment_key=a.attachmentKey,
+                        reason_code="ocr_layer_audit_deferred",
+                        message=str(audit.get("ocr_layer_audit_reason") or "")[:500],
+                        retryable=True,
+                    )
+                elif audit_hit_file_problem(quality_info):
+                    # Re-OCR would hit the same unreadable file; this
+                    # needs the source repaired, not another attempt.
+                    print(
+                        f"[WARN] Could not sample {a.attachmentKey} for the OCR "
+                        f"audit: {audit.get('ocr_layer_audit_reason')}. The PDF "
+                        "itself may be damaged -- repair or replace the file.",
+                        file=sys.__stderr__,
+                    )
+                    mark_artifact_status(
+                        scope_item_key, "extraction", "degraded",
+                        attachment_key=a.attachmentKey,
+                        reason_code="source_file_unreadable",
+                        message=str(audit.get("ocr_layer_audit_reason") or "")[:500],
+                        retryable=False,
+                    )
+                elif audit_sample_too_small(quality_info):
+                    # Too little text to measure, and too little for a
+                    # re-OCR to improve on. Index it, marked unmeasured.
+                    chunks, quality_info = _adopt_with_quality_uncertain(
+                        chunks, quality_info, reason="ocr_layer_sample_too_small",
+                    )
+        # An OCR-layer scan is canonical only after the stage-2 audit
+        # explicitly accepts it.  Failed/unavailable audits follow the
+        # same page-count/cloud policy as a scan with no OCR layer.
+        # This is intentionally after the audit and before the generic
+        # PDF structural gate, so RapidOCR/NDLOCR cannot slip in first.
+        if not scanned_ocr_replacement_attempted:
+            scan_route, scan_route_reason = _scanned_pdf_ocr_route(
+                quality_info, total_pages=total_pages, item_key=scope_item_key,
+            )
+            if scan_route == "mistral_batch":
+                scanned_ocr_batch_defer = True
+                scanned_ocr_replacement_attempted = True
+                chunks = []
+            elif scan_route in {"docling", "granite"}:
+                scanned_ocr_replacement_attempted = True
+                attempted_local_ocr = True
+                pre_replacement_quality = dict(quality_info)
+                if show_progress:
+                    print(
+                        "[PROGRESS]   ↳ rejected/unverified scan OCR layer; "
+                        f"parsing with {scan_route} ({scan_route_reason})...",
+                        file=sys.__stderr__,
+                    )
+                try:
+                    chunks, quality_info = _structure_with_engine(
+                        scan_route, file_path, a.attachmentKey, meta_base,
+                        docling_worker=docling_worker, granite_worker=granite_worker,
+                    )
+                    quality_info = _attach_pdf_source_provenance(
+                        quality_info, source_metadata,
+                    )
+                    quality_info = _carry_ocr_layer_audit(
+                        quality_info, pre_replacement_quality,
+                    )
+                except RuntimeError as exc:
+                    print(
+                        f"[WARN] Docling worker extraction failed: "
+                        f"attachment={a.attachmentKey} err={exc}",
+                        file=sys.__stderr__,
+                    )
+                    chunks, quality_info = [], {}
+        # P1 (note 78): a prior run of this identical source file may
+        # already have established that the document has no headings
+        # (the LLM itself said so). That verdict is final for the file
+        # -- skip the fast path (saving the DeepSeek call and the
+        # full-document page sweep) and carry the status forward so
+        # the manifest keeps confirming it for the next reingest too.
+        prior_no_structure = _prior_no_structure_ai_toc_status(
+            prev, mtime=mtime, size=size,
+        )
+        if (
+            chunks and not quality_info.get("has_outline")
+            and total_pages >= minimum_pages
+            and prior_no_structure
+        ):
+            quality_info = dict(quality_info)
+            quality_info["ai_toc_recovery_status"] = prior_no_structure
+            quality_info["ai_toc_recovery_status_cached"] = True
+            if show_progress:
+                print(
+                    f"[PROGRESS]   ↳ AI TOC skipped: prior run confirmed no "
+                    f"structure ({prior_no_structure}); indexing unstructured",
+                    file=sys.__stderr__,
+                )
+        elif (
+            chunks and not quality_info.get("has_outline")
+            and total_pages >= minimum_pages
+            and structure_recovery
+        ):
+            recovered = try_ai_toc_fast_path(
+                file_path, scope_item_key, chunks, quality_info,
+                docling_worker=docling_worker,
+            )
+            quality_info = dict(quality_info)
+            quality_info["ai_toc_recovery_status"] = (
+                "accepted" if recovered.accepted else recovered.reason
+            )
+            if recovered.diagnostics:
+                quality_info["ai_toc_body_coverage"] = recovered.diagnostics.get("body_coverage")
+                quality_info["ai_toc_matched_count"] = recovered.diagnostics.get("matched_count")
+                quality_info["ai_toc_diagnostics"] = recovered.diagnostics
+            if recovered.accepted:
+                chunks = recovered.chunks
+                if show_progress:
+                    print(
+                        f"[PROGRESS]   ↳ AI TOC fast path accepted: "
+                        f"coverage={recovered.diagnostics.get('body_coverage')} "
+                        f"anchors={recovered.diagnostics.get('matched_count')}",
+                        file=sys.__stderr__,
+                    )
+        if not structure_recovery:
+            # Plain-text indexing was requested: PyMuPDF chunks (or the
+            # local OCR output above) are the final answer, so the
+            # structural gate has nothing to escalate to.
+            quality_info = dict(quality_info)
+            quality_info["pdf_structure_recovery"] = "disabled"
+        elif scanned_ocr_batch_defer or not chunks or (
+            not attempted_local_ocr
+            and not pymupdf_fast_path_passes(quality_info)
+        ):
+            use_mistral_queue = False
+            policy_reason = ""
+            # A document whose local OCR chain (rapidocr/ndlocr →
+            # Docling fallback) was tried and rejected by
+            # evaluate_local_ocr_gate: local engines are exhausted.
+            local_ocr_exhausted = attempted_local_ocr and not chunks
+            # P7 (note 78): the queue is governed by its own flag
+            # alone -- it is not an AI-TOC subfeature, so
+            # PDF_AI_TOC_FAST_PATH_ENABLE no longer gates it.
+            # P2 (note 78): scanned documents whose local OCR chain
+            # was exhausted are exactly the class where Mistral OCR
+            # is the strongest engine (bake-off 0.973 vs Docling
+            # 0.753), so they may queue regardless of the AI-TOC
+            # page minimum; the minimum still applies to the
+            # structure-recovery deferrals it was designed for.
+            if scanned_ocr_batch_defer:
+                use_mistral_queue = True
+                policy_reason = initial_scan_route_reason
+            elif (
+                mistral_batch_queue_enabled()
+                and (
+                    local_ocr_exhausted
+                    or (not attempted_local_ocr and total_pages >= minimum_pages)
+                )
+            ):
+                use_mistral_queue = True
+                policy_reason = "mistral_batch_queue"
+            if use_mistral_queue:
+                diagnostics = recovered.diagnostics if recovered is not None else {}
+                # P6 (note 78): record the fast-path reason and the
+                # AI-TOC rejection reason separately -- the AI-TOC
+                # reason used to overwrite the fast-path one even when
+                # the fast path was what actually sent the document
+                # here. gate_reason keeps its historical precedence
+                # (and the counts key "ai_toc_reason" keeps carrying
+                # it) for existing queue-listing consumers.
+                fast_path_reason = (
+                    None if not chunks
+                    else pymupdf_fast_path_rejection_reason(quality_info)
+                )
+                ai_toc_rejection_reason = (
+                    recovered.reason
+                    if recovered is not None and not recovered.accepted else None
+                )
+                if scanned_ocr_batch_defer:
+                    gate_reason = "scanned_pdf_ocr_replacement"
+                elif local_ocr_exhausted:
+                    gate_reason = "local_ocr_quality_gate_failed"
+                elif not chunks:
+                    gate_reason = "pymupdf_no_chunks"
+                elif recovered is not None:
+                    gate_reason = recovered.reason
+                else:
+                    gate_reason = fast_path_reason or "pymupdf_fast_path_rejected"
+                mark_artifact_status(
+                    scope_item_key, "extraction", "blocked",
+                    attachment_key=a.attachmentKey,
+                    reason_code=MISTRAL_TOC_QUEUE_REASON,
+                    message=f"AI TOC/PyMuPDF gate failed: {gate_reason}",
+                    retryable=False,
+                    source_fingerprint=f"stat:{mtime}:{size}",
+                    processor_version=MISTRAL_TOC_QUEUE_PROCESSOR_VERSION,
+                    counts={
+                        "source_mtime": mtime, "source_size": size,
+                        "total_pages": total_pages, "ai_toc_reason": gate_reason,
+                        "fast_path_reason": fast_path_reason,
+                        "ai_toc_rejection_reason": ai_toc_rejection_reason,
+                        "local_ocr_exhausted": local_ocr_exhausted,
+                        "ai_toc_diagnostics": diagnostics,
+                    },
+                    fallback_kind="mistral_ocr",
+                )
+                inflight = {
+                    str(value) for value in manifest.get("inflight_attachments", []) if value
+                }
+                if a.attachmentKey in inflight:
+                    _delete_by_attachment_keys(col, [a.attachmentKey], strict=True)
+                    manifest["inflight_attachments"] = [
+                        value for value in manifest.get("inflight_attachments", [])
+                        if value != a.attachmentKey
+                    ]
+                # A Mistral deferral is deliberately non-canonical:
+                # its current chunks remain searchable until an
+                # explicitly adopted Batch result passes the gate.
+                # Its stage-2 audit is still final for this exact
+                # source fingerprint, so persist just that cache and
+                # provenance (not the transient extraction quality).
+                files_manifest[a.attachmentKey] = _deferred_manifest_entry(
+                    prev, mtime=mtime, size=size, source_path=file_path,
+                    title=a.title, quality=quality_info,
+                    content_signature_value=stored_signature,
+                    pipeline_fingerprint=(
+                        v3_pipeline_fingerprint if STRUCTURED_V3_ENABLE else None
+                    ),
+                )
+                save_manifest(MANIFEST_PATH, manifest)
+                if show_progress:
+                    print(
+                        f"[PROGRESS]   ↳ deferred to Mistral OCR batch: "
+                        f"reason={gate_reason}", file=sys.__stderr__,
+                    )
+                # The attachment is queued, not extracted. The caller counts it
+                # and moves on; nothing below this point applies to it.
+                return PdfExtraction([], {}, deferred=True)
+            if local_ocr_exhausted:
+                # P2 (note 78): Docling already ran (and was rejected
+                # by evaluate_local_ocr_gate) as run_local_ocr's own
+                # fallback for this exact document -- re-running it
+                # here would duplicate the work only to adopt, ungated,
+                # the same output that was just rejected. With cloud
+                # queueing unavailable too, this document is
+                # unextractable right now: fall through to the
+                # no-chunks failure handling (visible artifact status,
+                # existing index left untouched).
+                if show_progress:
+                    print(
+                        "[PROGRESS]   ↳ local OCR exhausted (Docling already "
+                        "rejected); not re-running Docling ungated"
+                        + (
+                            f"; cloud policy requires local processing ({policy_reason})"
+                            if policy_reason else "; Mistral queue disabled"
+                        ),
+                        file=sys.__stderr__,
+                    )
+            else:
+                if show_progress:
+                    reason = "produced no chunks" if not chunks else "fast-path gate failed"
+                    route_reason = (
+                        f"cloud policy requires local processing ({policy_reason})"
+                        if policy_reason else "short PDF or Mistral queue disabled"
+                    )
+                    print(
+                        f"[PROGRESS]   ↳ PyMuPDF {reason}; escalating to Docling "
+                        f"({route_reason})...", file=sys.__stderr__,
+                    )
+                # U4 (note 79): keep what the local extractor already
+                # produced. If Docling cannot improve on it -- and the
+                # cloud route is unavailable, which is why we are here --
+                # then discarding this would leave the document out of
+                # the index entirely. Indexing it with a quality tag is
+                # strictly better than not indexing it at all.
+                pre_escalation = (list(chunks), dict(quality_info))
+                try:
+                    chunks, quality_info = docling_worker.extract(file_path, a.attachmentKey, meta_base)
+                    # Docling returns a new quality object; retain the
+                    # source classification and already-measured
+                    # stage-2 verdict that selected this escalation.
+                    quality_info = _attach_pdf_source_provenance(quality_info, source_metadata)
+                    prior_quality = pre_escalation[1]
+                    for key in _OCR_LAYER_AUDIT_FIELDS:
+                        if key in prior_quality:
+                            quality_info[key] = prior_quality[key]
+                except RuntimeError as exc:
+                    print(
+                        f"[WARN] Docling worker extraction failed: attachment={a.attachmentKey} err={exc}",
+                        file=sys.__stderr__,
+                    )
+                    chunks, quality_info = [], {}
+                if chunks:
+                    # P2 (note 78): mirror the local-OCR route's content
+                    # checks so this escalation's output is no longer
+                    # adopted entirely ungated.
+                    acceptable, gate_counts = _docling_escalation_acceptable(chunks)
+                    if not acceptable:
+                        if show_progress:
+                            print(
+                                f"[PROGRESS]   ↳ Docling escalation output rejected "
+                                f"by minimal quality gate: {gate_counts}",
+                                file=sys.__stderr__,
+                            )
+                        quality_info = dict(quality_info)
+                        quality_info["docling_escalation_gate"] = gate_counts
+                        chunks = []
+                if not chunks and pre_escalation[0]:
+                    chunks, quality_info = _adopt_with_quality_uncertain(
+                        *pre_escalation,
+                        reason=(
+                            "docling_escalation_unavailable"
+                            if not quality_info else "docling_escalation_rejected"
+                        ),
+                    )
+                    if show_progress:
+                        print(
+                            "[PROGRESS]   ↳ keeping local extraction with a "
+                            f"quality-uncertain tag ({len(chunks)} chunks); "
+                            "no better route is available",
+                            file=sys.__stderr__,
+                        )
+    else:
+        chunks, quality_info = extract_chunks_from_pdf(file_path, a.attachmentKey, meta_base)
+    return PdfExtraction(chunks, quality_info)
+
+
 def _report_empty_extraction(
     attachment: Any,
     *,
@@ -2911,671 +3625,23 @@ async def main_async(args: argparse.Namespace) -> None:
         elif stype == "epub":
             chunks, quality_info = extract_chunks_from_epub_snapshot(file_path, a.attachmentKey, meta_base)
         else:
-            use_docling_for_this_file = force_docling or args.use_docling
-            if force_ndlocr:
-                if show_progress:
-                    print(
-                        "[PROGRESS]   ↳ parsing Japanese re-OCR candidate with NDLOCR-Lite...",
-                        file=sys.__stderr__,
-                    )
-                chunks, quality_info = extract_chunks_from_pdf_with_ndlocr(
-                    file_path, a.attachmentKey, meta_base,
-                )
-            elif use_docling_for_this_file:
-                if show_progress:
-                    print(
-                        "[PROGRESS]   ↳ parsing with high-fidelity IBM Docling...",
-                        file=sys.__stderr__,
-                    )
-                try:
-                    chunks, quality_info = docling_worker.extract(
-                        file_path, a.attachmentKey, meta_base,
-                    )
-                except RuntimeError as exc:
-                    print(
-                        f"[WARN] Docling worker extraction failed: attachment={a.attachmentKey} err={exc}",
-                        file=sys.__stderr__,
-                    )
-                    chunks, quality_info = [], {}
-                # Note: PyTorch/MPS-CUDA cache clearing now happens inside the
-                # worker subprocess itself (see docling_worker._worker_loop),
-                # since the worker -- not this process -- holds the torch state.
-            elif STRUCTURED_V3_ENABLE:
-                # Approved routing (evaluations/ocr_bakeoff_v3/results/routing_proposal.md):
-                # PyMuPDF is only canonical for embedded-text PDFs with a usable
-                # outline; everything else escalates to Docling, the higher-scoring
-                # local default. Legacy (non-V3) ingestion keeps its prior behavior.
-                chunks, quality_info = extract_chunks_from_pdf(file_path, a.attachmentKey, meta_base)
-                quality_info = _attach_pdf_source_provenance(quality_info, source_metadata)
-                recovered = None
-                total_pages = int(quality_info.get("total_pages") or 0)
-                minimum_pages = int(os.environ.get("PDF_AI_TOC_MIN_PAGES", "30"))
-                attempted_local_ocr = False
-                scanned_ocr_replacement_attempted = False
-                scanned_ocr_batch_defer = False
-                # A pre-existing OCR layer must reach stage 2 below before it
-                # can be replaced. Only a scan classified as having *no* text
-                # layer is safe to route immediately.
-                initial_scan_route, initial_scan_route_reason = _initial_scanned_pdf_ocr_route(
-                    quality_info, total_pages=total_pages, item_key=scope_item_key,
-                )
-                if initial_scan_route == "mistral_batch":
-                    # The Batch queue owns cloud submission and later adoption.
-                    # Do not run any local OCR before preserving this non-canonical
-                    # deferral for a long scan without a usable OCR layer.
-                    scanned_ocr_batch_defer = True
-                    scanned_ocr_replacement_attempted = True
-                    chunks = []
-                elif initial_scan_route in {"docling", "granite"}:
-                    scanned_ocr_replacement_attempted = True
-                    attempted_local_ocr = True
-                    if show_progress:
-                        print(
-                            f"[PROGRESS]   ↳ scan OCR replacement: parsing with "
-                            f"{initial_scan_route} ({initial_scan_route_reason})...",
-                            file=sys.__stderr__,
-                        )
-                    try:
-                        chunks, quality_info = _structure_with_engine(
-                            initial_scan_route, file_path, a.attachmentKey, meta_base,
-                            docling_worker=docling_worker, granite_worker=granite_worker,
-                        )
-                        quality_info = _attach_pdf_source_provenance(quality_info, source_metadata)
-                        quality_info["ocr_layer_quality"] = "not_applicable"
-                        quality_info["ocr_layer_audit_reason"] = (
-                            "not_applicable_no_ocr_layer"
-                        )
-                    except RuntimeError as exc:
-                        print(
-                            f"[WARN] Docling worker extraction failed: attachment={a.attachmentKey} err={exc}",
-                            file=sys.__stderr__,
-                        )
-                        chunks, quality_info = [], {}
-                elif not chunks and total_pages > 0:
-                    # RapidOCR/NDLOCR are retained for fixed-layout EPUBs and
-                    # explicit re-OCR overrides, but are not an ordinary PDF
-                    # route. Docling is the local PDF baseline.
-                    attempted_local_ocr = True
-                    if show_progress:
-                        print(
-                            "[PROGRESS]   ↳ no usable text layer; parsing with IBM Docling...",
-                            file=sys.__stderr__,
-                        )
-                    try:
-                        chunks, quality_info = docling_worker.extract(
-                            file_path, a.attachmentKey, meta_base,
-                        )
-                        quality_info = _attach_pdf_source_provenance(quality_info, source_metadata)
-                    except RuntimeError as exc:
-                        print(
-                            f"[WARN] Docling worker extraction failed: attachment={a.attachmentKey} err={exc}",
-                            file=sys.__stderr__,
-                        )
-                        chunks, quality_info = [], {}
-                # Scanned/image-only pages inside an otherwise clean embedded-text
-                # PDF (figure plates, a scanned dedication page, etc.) currently
-                # fail-closed the PyMuPDF fast-path and AI-TOC gates entirely,
-                # sending the whole document to Mistral OCR even when most pages
-                # are fine. Patch those pages via a Docling sub-PDF pass first
-                # (E2c, dev-notes/current/77). Gate on ``is_scanned`` (ratio>=0.8,
-                # a genuine scan job where local text-page patching wouldn't help)
-                # rather than a raw scanned-page count: the page-level "attempted
-                # = resolved" semantics above already prevent garbage/index
-                # pollution regardless of how many pages that covers, so a count
-                # cap was never actually protecting anything (user decision
-                # 2026-07-25, following the M5TQ4HLZ case: a 127-page catalog
-                # with 60 genuine figure-plate pages was previously escalated
-                # whole to Mistral OCR and rejected outright by its repeat-
-                # artifact gate).
-                #
-                # Restricted to born-digital documents (note 79): the "no text
-                # here means a figure" reading only holds when the text layer is
-                # the typeset source. In a scan the same observation means OCR
-                # failed on that page, and marking it ``figure`` would record a
-                # gap as an illustration -- those pages go to the scan-derived
-                # page repair below instead.
-                scanned_pages = list(quality_info.get("scanned_pages") or [])
-                source_class = str(quality_info.get("source_class") or "")
-                text_layer_is_authoritative = (
-                    source_class == BORN_DIGITAL if source_class
-                    else not quality_info.get("is_scanned")
-                )
-                if (
-                    chunks and scanned_pages and not attempted_local_ocr
-                    and structure_recovery
-                    and os.environ.get("PDF_SCANNED_PAGE_PATCH_ENABLE", "1").strip() == "1"
-                    and text_layer_is_authoritative
-                ):
-                    try:
-                        from docling_extract import patch_scanned_pages_with_docling
-                    except ImportError:  # pragma: no cover - direct src entrypoint
-                        from .docling_extract import patch_scanned_pages_with_docling
-                    try:
-                        patched, attempted_pages = patch_scanned_pages_with_docling(
-                            file_path, scanned_pages, attachment_key=a.attachmentKey, meta_base=meta_base,
-                            worker=docling_worker,
-                        )
-                    except Exception as exc:
-                        patched, attempted_pages = [], set()
-                        if show_progress:
-                            print(
-                                f"[WARN] scanned-page Docling patch failed: attachment={a.attachmentKey} err={exc}",
-                                file=sys.__stderr__,
-                            )
-                    if attempted_pages:
-                        # Every attempted page is resolved for the scanned-ratio
-                        # gate, whether Docling recovered text or concluded the
-                        # page has none (a figure/photo/poster plate): forcing
-                        # more OCR on non-text content risks index-polluting
-                        # garbage rather than recovering anything real.
-                        # P5 (note 78): splice in reading order, not by appending.
-                        chunks = _sort_chunks_in_reading_order(list(chunks) + patched)
-                        quality_info = recompute_scanned_quality_after_patch(
-                            quality_info, attempted_pages, total_pages,
-                        )
-                        if show_progress:
-                            print(
-                                f"[PROGRESS]   ↳ scanned-page Docling patch: {len(patched)} text chunk(s) "
-                                f"recovered from {len(attempted_pages)} page(s) "
-                                f"({len(quality_info['scanned_pages'])} still unattempted)",
-                                file=sys.__stderr__,
-                            )
-                # Scan-derived text: the same page-level repair, but a page
-                # without usable text is an OCR failure rather than a figure
-                # (note 79, U2). The document-level local-OCR gate is all-or-
-                # nothing, so before this there was no way to fix a scan whose
-                # OCR failed on only part of its pages -- the whole document had
-                # to be re-OCRed or accepted as-is. Marker chunks for pages that
-                # stay unrecovered say ``corrupted_unresolved``, never
-                # ``figure``.
-                if (
-                    chunks and str(quality_info.get("source_class") or "") in SCAN_DERIVED_CLASSES
-                    and structure_recovery
-                    and os.environ.get("PDF_SCAN_PAGE_REPAIR_ENABLE", "1").strip() == "1"
-                ):
-                    failed_pages = _scan_pages_needing_repair(chunks, total_pages)
-                    if failed_pages:
-                        try:
-                            from docling_extract import patch_corrupted_pages_with_docling
-                        except ImportError:  # pragma: no cover - direct src entrypoint
-                            from .docling_extract import patch_corrupted_pages_with_docling
-                        try:
-                            patched, attempted_pages = patch_corrupted_pages_with_docling(
-                                file_path, failed_pages,
-                                attachment_key=a.attachmentKey, meta_base=meta_base,
-                                worker=docling_worker,
-                                # This uses the corrupted-page marker semantics
-                                # for scan-derived OCR failures, but is a
-                                # separate repair provenance from the later
-                                # text-corruption pass below.  Keep their IDs
-                                # disjoint when both target the same page.
-                                chunk_namespace="scanrepair",
-                            )
-                        except Exception as exc:
-                            patched, attempted_pages = [], set()
-                            if show_progress:
-                                print(
-                                    f"[WARN] scan-derived page repair failed: "
-                                    f"attachment={a.attachmentKey} err={exc}",
-                                    file=sys.__stderr__,
-                                )
-                        if attempted_pages:
-                            kept = [
-                                row for row in chunks
-                                if int((row[2] or {}).get("page") or 0) not in attempted_pages
-                            ]
-                            chunks = _sort_chunks_in_reading_order(kept + patched)
-                            # Unlike the scanned-page patch above (which calls
-                            # recompute_scanned_quality_after_patch), nothing
-                            # here reconciled empty_pages/blank_pages with the
-                            # pages this just recovered -- see
-                            # recompute_blank_pages_after_patch's docstring
-                            # (found 2026-08-02, diagnosing YX3MMS4D page 444).
-                            quality_info = recompute_blank_pages_after_patch(
-                                quality_info, attempted_pages,
-                            )
-                            if show_progress:
-                                print(
-                                    f"[PROGRESS]   ↳ scan-derived page repair: {len(patched)} chunk(s) "
-                                    f"from {len(attempted_pages)} failed OCR page(s)",
-                                    file=sys.__stderr__,
-                                )
-                # Text-corrupted pages (font-encoding mismatch or OCR/linguistic
-                # noise already baked into the PDF's text layer -- see
-                # pdf_extract.analyze_text_quality's is_corrupted) inside an
-                # otherwise clean PDF get the same "patch just the bad pages"
-                # treatment as scanned pages above (E2d, dev-notes/current/77,
-                # user decision 2026-07-26). Unlike scanned pages, corrupted
-                # pages already produced (garbled) chunks upstream, so those
-                # must be dropped before splicing in the Docling-recovered
-                # replacements -- otherwise both the garbage and the fix would
-                # be indexed side by side. Gated on ``is_corrupted`` (ratio
-                # >=0.6, a genuinely corrupted document where per-page local
-                # patching wouldn't help) rather than a raw corrupted-page
-                # count, mirroring the scanned-page patch's reasoning: the
-                # page-level "attempted = resolved" semantics below already
-                # prevent garbage/index pollution regardless of how many pages
-                # that covers.
-                corrupted_pages = list(quality_info.get("corrupted_pages") or [])
-                if (
-                    chunks and corrupted_pages and not attempted_local_ocr
-                    and structure_recovery
-                    and os.environ.get("PDF_CORRUPTED_PAGE_PATCH_ENABLE", "0").strip() == "1"
-                    and not quality_info.get("is_corrupted")
-                ):
-                    try:
-                        from docling_extract import patch_corrupted_pages_with_docling
-                    except ImportError:  # pragma: no cover - direct src entrypoint
-                        from .docling_extract import patch_corrupted_pages_with_docling
-                    try:
-                        corrupt_patched, corrupt_attempted_pages = patch_corrupted_pages_with_docling(
-                            file_path, corrupted_pages, attachment_key=a.attachmentKey, meta_base=meta_base,
-                            worker=docling_worker,
-                        )
-                    except Exception as exc:
-                        corrupt_patched, corrupt_attempted_pages = [], set()
-                        if show_progress:
-                            print(
-                                f"[WARN] corrupted-page Docling patch failed: attachment={a.attachmentKey} err={exc}",
-                                file=sys.__stderr__,
-                            )
-                    if corrupt_attempted_pages:
-                        # Drop the pre-patch (garbled) chunks for every attempted
-                        # page first -- the patch output (recovered text or the
-                        # corrupted_unresolved marker) is their full replacement,
-                        # not an addition alongside the original mojibake.
-                        chunks = [
-                            (cid, text, md) for cid, text, md in chunks
-                            if int(md.get("page") or 0) not in corrupt_attempted_pages
-                        ]
-                        # P5 (note 78): splice in reading order, not by appending.
-                        chunks = _sort_chunks_in_reading_order(list(chunks) + corrupt_patched)
-                        quality_info = recompute_corrupted_quality_after_patch(
-                            quality_info, corrupt_attempted_pages, total_pages,
-                        )
-                        if show_progress:
-                            print(
-                                f"[PROGRESS]   ↳ corrupted-page Docling patch: {len(corrupt_patched)} chunk(s) "
-                                f"recovered from {len(corrupt_attempted_pages)} page(s) "
-                                f"({len(quality_info['corrupted_pages'])} still unresolved)",
-                                file=sys.__stderr__,
-                            )
-                # Stage 2 (note 79): measure the OCR quality of a scan-derived
-                # text layer before deciding whether it can stand as canonical.
-                # Runs after page repair so it audits the text we would actually
-                # index, and before the fast-path gate, which consults its
-                # verdict. A cached verdict for an unchanged source is reused so
-                # reingestion costs no API calls.
-                if (
-                    chunks
-                    and str(quality_info.get("source_class") or "") in SCAN_DERIVED_CLASSES
-                    and not scanned_ocr_replacement_attempted
-                    and not ocr_layer_audit_enabled()
-                ):
-                    # Record that measuring was declined, so the router can tell
-                    # it apart from an audit that tried and failed. Without this
-                    # the layer reads as "unverified" and every scanned PDF gets
-                    # re-OCRed the moment the LLM is switched off (note 80 B).
-                    quality_info = dict(quality_info)
-                    quality_info["ocr_layer_audit_reason"] = OCR_LAYER_AUDIT_DISABLED
-                elif (
-                    chunks
-                    and str(quality_info.get("source_class") or "") in SCAN_DERIVED_CLASSES
-                    and not scanned_ocr_replacement_attempted
-                ):
-                    cached_audit = _cached_ocr_layer_audit(prev, mtime=mtime, size=size)
-                    if cached_audit is not None:
-                        quality_info = dict(quality_info)
-                        quality_info.update(cached_audit)
-                        quality_info["ocr_layer_audit_cached"] = True
-                        if show_progress:
-                            print(
-                                f"[PROGRESS]   ↳ OCR layer audit cache hit: "
-                                f"{cached_audit.get('ocr_layer_quality')} "
-                                f"rate={cached_audit.get('ocr_layer_error_rate')}",
-                                file=sys.__stderr__,
-                            )
-                    else:
-                        audit = audit_ocr_text_layer(file_path, scope_item_key)
-                        quality_info = dict(quality_info)
-                        quality_info.update(audit)
-                        if show_progress:
-                            print(
-                                f"[PROGRESS]   ↳ OCR layer audit: "
-                                f"{audit.get('ocr_layer_quality')} "
-                                f"rate={audit.get('ocr_layer_error_rate')} "
-                                f"({audit.get('ocr_layer_verified_count')} verified / "
-                                f"{audit.get('ocr_layer_rejected_count')} rejected) "
-                                f"{audit.get('ocr_layer_audit_reason')}",
-                                file=sys.__stderr__,
-                            )
-                        # An audit that could not run says nothing about the
-                        # text, so the text is kept -- but silently keeping it
-                        # would hide the fact that it was never measured. Each
-                        # outcome is surfaced differently because each needs a
-                        # different follow-up (user decision 2026-07-27).
-                        if audit_was_transient_failure(quality_info):
-                            # Not cached, so the next run measures it properly.
-                            quality_info["ocr_layer_needs_reaudit"] = True
-                            mark_artifact_status(
-                                scope_item_key, "extraction", "degraded",
-                                attachment_key=a.attachmentKey,
-                                reason_code="ocr_layer_audit_deferred",
-                                message=str(audit.get("ocr_layer_audit_reason") or "")[:500],
-                                retryable=True,
-                            )
-                        elif audit_hit_file_problem(quality_info):
-                            # Re-OCR would hit the same unreadable file; this
-                            # needs the source repaired, not another attempt.
-                            print(
-                                f"[WARN] Could not sample {a.attachmentKey} for the OCR "
-                                f"audit: {audit.get('ocr_layer_audit_reason')}. The PDF "
-                                "itself may be damaged -- repair or replace the file.",
-                                file=sys.__stderr__,
-                            )
-                            mark_artifact_status(
-                                scope_item_key, "extraction", "degraded",
-                                attachment_key=a.attachmentKey,
-                                reason_code="source_file_unreadable",
-                                message=str(audit.get("ocr_layer_audit_reason") or "")[:500],
-                                retryable=False,
-                            )
-                        elif audit_sample_too_small(quality_info):
-                            # Too little text to measure, and too little for a
-                            # re-OCR to improve on. Index it, marked unmeasured.
-                            chunks, quality_info = _adopt_with_quality_uncertain(
-                                chunks, quality_info, reason="ocr_layer_sample_too_small",
-                            )
-                # An OCR-layer scan is canonical only after the stage-2 audit
-                # explicitly accepts it.  Failed/unavailable audits follow the
-                # same page-count/cloud policy as a scan with no OCR layer.
-                # This is intentionally after the audit and before the generic
-                # PDF structural gate, so RapidOCR/NDLOCR cannot slip in first.
-                if not scanned_ocr_replacement_attempted:
-                    scan_route, scan_route_reason = _scanned_pdf_ocr_route(
-                        quality_info, total_pages=total_pages, item_key=scope_item_key,
-                    )
-                    if scan_route == "mistral_batch":
-                        scanned_ocr_batch_defer = True
-                        scanned_ocr_replacement_attempted = True
-                        chunks = []
-                    elif scan_route in {"docling", "granite"}:
-                        scanned_ocr_replacement_attempted = True
-                        attempted_local_ocr = True
-                        pre_replacement_quality = dict(quality_info)
-                        if show_progress:
-                            print(
-                                "[PROGRESS]   ↳ rejected/unverified scan OCR layer; "
-                                f"parsing with {scan_route} ({scan_route_reason})...",
-                                file=sys.__stderr__,
-                            )
-                        try:
-                            chunks, quality_info = _structure_with_engine(
-                                scan_route, file_path, a.attachmentKey, meta_base,
-                                docling_worker=docling_worker, granite_worker=granite_worker,
-                            )
-                            quality_info = _attach_pdf_source_provenance(
-                                quality_info, source_metadata,
-                            )
-                            quality_info = _carry_ocr_layer_audit(
-                                quality_info, pre_replacement_quality,
-                            )
-                        except RuntimeError as exc:
-                            print(
-                                f"[WARN] Docling worker extraction failed: "
-                                f"attachment={a.attachmentKey} err={exc}",
-                                file=sys.__stderr__,
-                            )
-                            chunks, quality_info = [], {}
-                # P1 (note 78): a prior run of this identical source file may
-                # already have established that the document has no headings
-                # (the LLM itself said so). That verdict is final for the file
-                # -- skip the fast path (saving the DeepSeek call and the
-                # full-document page sweep) and carry the status forward so
-                # the manifest keeps confirming it for the next reingest too.
-                prior_no_structure = _prior_no_structure_ai_toc_status(
-                    prev, mtime=mtime, size=size,
-                )
-                if (
-                    chunks and not quality_info.get("has_outline")
-                    and total_pages >= minimum_pages
-                    and prior_no_structure
-                ):
-                    quality_info = dict(quality_info)
-                    quality_info["ai_toc_recovery_status"] = prior_no_structure
-                    quality_info["ai_toc_recovery_status_cached"] = True
-                    if show_progress:
-                        print(
-                            f"[PROGRESS]   ↳ AI TOC skipped: prior run confirmed no "
-                            f"structure ({prior_no_structure}); indexing unstructured",
-                            file=sys.__stderr__,
-                        )
-                elif (
-                    chunks and not quality_info.get("has_outline")
-                    and total_pages >= minimum_pages
-                    and structure_recovery
-                ):
-                    recovered = try_ai_toc_fast_path(
-                        file_path, scope_item_key, chunks, quality_info,
-                        docling_worker=docling_worker,
-                    )
-                    quality_info = dict(quality_info)
-                    quality_info["ai_toc_recovery_status"] = (
-                        "accepted" if recovered.accepted else recovered.reason
-                    )
-                    if recovered.diagnostics:
-                        quality_info["ai_toc_body_coverage"] = recovered.diagnostics.get("body_coverage")
-                        quality_info["ai_toc_matched_count"] = recovered.diagnostics.get("matched_count")
-                        quality_info["ai_toc_diagnostics"] = recovered.diagnostics
-                    if recovered.accepted:
-                        chunks = recovered.chunks
-                        if show_progress:
-                            print(
-                                f"[PROGRESS]   ↳ AI TOC fast path accepted: "
-                                f"coverage={recovered.diagnostics.get('body_coverage')} "
-                                f"anchors={recovered.diagnostics.get('matched_count')}",
-                                file=sys.__stderr__,
-                            )
-                if not structure_recovery:
-                    # Plain-text indexing was requested: PyMuPDF chunks (or the
-                    # local OCR output above) are the final answer, so the
-                    # structural gate has nothing to escalate to.
-                    quality_info = dict(quality_info)
-                    quality_info["pdf_structure_recovery"] = "disabled"
-                elif scanned_ocr_batch_defer or not chunks or (
-                    not attempted_local_ocr
-                    and not pymupdf_fast_path_passes(quality_info)
-                ):
-                    use_mistral_queue = False
-                    policy_reason = ""
-                    # A document whose local OCR chain (rapidocr/ndlocr →
-                    # Docling fallback) was tried and rejected by
-                    # evaluate_local_ocr_gate: local engines are exhausted.
-                    local_ocr_exhausted = attempted_local_ocr and not chunks
-                    # P7 (note 78): the queue is governed by its own flag
-                    # alone -- it is not an AI-TOC subfeature, so
-                    # PDF_AI_TOC_FAST_PATH_ENABLE no longer gates it.
-                    # P2 (note 78): scanned documents whose local OCR chain
-                    # was exhausted are exactly the class where Mistral OCR
-                    # is the strongest engine (bake-off 0.973 vs Docling
-                    # 0.753), so they may queue regardless of the AI-TOC
-                    # page minimum; the minimum still applies to the
-                    # structure-recovery deferrals it was designed for.
-                    if scanned_ocr_batch_defer:
-                        use_mistral_queue = True
-                        policy_reason = initial_scan_route_reason
-                    elif (
-                        mistral_batch_queue_enabled()
-                        and (
-                            local_ocr_exhausted
-                            or (not attempted_local_ocr and total_pages >= minimum_pages)
-                        )
-                    ):
-                        use_mistral_queue = True
-                        policy_reason = "mistral_batch_queue"
-                    if use_mistral_queue:
-                        diagnostics = recovered.diagnostics if recovered is not None else {}
-                        # P6 (note 78): record the fast-path reason and the
-                        # AI-TOC rejection reason separately -- the AI-TOC
-                        # reason used to overwrite the fast-path one even when
-                        # the fast path was what actually sent the document
-                        # here. gate_reason keeps its historical precedence
-                        # (and the counts key "ai_toc_reason" keeps carrying
-                        # it) for existing queue-listing consumers.
-                        fast_path_reason = (
-                            None if not chunks
-                            else pymupdf_fast_path_rejection_reason(quality_info)
-                        )
-                        ai_toc_rejection_reason = (
-                            recovered.reason
-                            if recovered is not None and not recovered.accepted else None
-                        )
-                        if scanned_ocr_batch_defer:
-                            gate_reason = "scanned_pdf_ocr_replacement"
-                        elif local_ocr_exhausted:
-                            gate_reason = "local_ocr_quality_gate_failed"
-                        elif not chunks:
-                            gate_reason = "pymupdf_no_chunks"
-                        elif recovered is not None:
-                            gate_reason = recovered.reason
-                        else:
-                            gate_reason = fast_path_reason or "pymupdf_fast_path_rejected"
-                        mark_artifact_status(
-                            scope_item_key, "extraction", "blocked",
-                            attachment_key=a.attachmentKey,
-                            reason_code=MISTRAL_TOC_QUEUE_REASON,
-                            message=f"AI TOC/PyMuPDF gate failed: {gate_reason}",
-                            retryable=False,
-                            source_fingerprint=f"stat:{mtime}:{size}",
-                            processor_version=MISTRAL_TOC_QUEUE_PROCESSOR_VERSION,
-                            counts={
-                                "source_mtime": mtime, "source_size": size,
-                                "total_pages": total_pages, "ai_toc_reason": gate_reason,
-                                "fast_path_reason": fast_path_reason,
-                                "ai_toc_rejection_reason": ai_toc_rejection_reason,
-                                "local_ocr_exhausted": local_ocr_exhausted,
-                                "ai_toc_diagnostics": diagnostics,
-                            },
-                            fallback_kind="mistral_ocr",
-                        )
-                        inflight = {
-                            str(value) for value in manifest.get("inflight_attachments", []) if value
-                        }
-                        if a.attachmentKey in inflight:
-                            _delete_by_attachment_keys(col, [a.attachmentKey], strict=True)
-                            manifest["inflight_attachments"] = [
-                                value for value in manifest.get("inflight_attachments", [])
-                                if value != a.attachmentKey
-                            ]
-                        # A Mistral deferral is deliberately non-canonical:
-                        # its current chunks remain searchable until an
-                        # explicitly adopted Batch result passes the gate.
-                        # Its stage-2 audit is still final for this exact
-                        # source fingerprint, so persist just that cache and
-                        # provenance (not the transient extraction quality).
-                        files_manifest[a.attachmentKey] = _deferred_manifest_entry(
-                            prev, mtime=mtime, size=size, source_path=file_path,
-                            title=a.title, quality=quality_info,
-                            content_signature_value=stored_signature,
-                            pipeline_fingerprint=(
-                                v3_pipeline_fingerprint if STRUCTURED_V3_ENABLE else None
-                            ),
-                        )
-                        save_manifest(MANIFEST_PATH, manifest)
-                        skipped_pdf += 1
-                        deferred_extract += 1
-                        if show_progress:
-                            print(
-                                f"[PROGRESS]   ↳ deferred to Mistral OCR batch: "
-                                f"reason={gate_reason}", file=sys.__stderr__,
-                            )
-                        continue
-                    if local_ocr_exhausted:
-                        # P2 (note 78): Docling already ran (and was rejected
-                        # by evaluate_local_ocr_gate) as run_local_ocr's own
-                        # fallback for this exact document -- re-running it
-                        # here would duplicate the work only to adopt, ungated,
-                        # the same output that was just rejected. With cloud
-                        # queueing unavailable too, this document is
-                        # unextractable right now: fall through to the
-                        # no-chunks failure handling (visible artifact status,
-                        # existing index left untouched).
-                        if show_progress:
-                            print(
-                                "[PROGRESS]   ↳ local OCR exhausted (Docling already "
-                                "rejected); not re-running Docling ungated"
-                                + (
-                                    f"; cloud policy requires local processing ({policy_reason})"
-                                    if policy_reason else "; Mistral queue disabled"
-                                ),
-                                file=sys.__stderr__,
-                            )
-                    else:
-                        if show_progress:
-                            reason = "produced no chunks" if not chunks else "fast-path gate failed"
-                            route_reason = (
-                                f"cloud policy requires local processing ({policy_reason})"
-                                if policy_reason else "short PDF or Mistral queue disabled"
-                            )
-                            print(
-                                f"[PROGRESS]   ↳ PyMuPDF {reason}; escalating to Docling "
-                                f"({route_reason})...", file=sys.__stderr__,
-                            )
-                        # U4 (note 79): keep what the local extractor already
-                        # produced. If Docling cannot improve on it -- and the
-                        # cloud route is unavailable, which is why we are here --
-                        # then discarding this would leave the document out of
-                        # the index entirely. Indexing it with a quality tag is
-                        # strictly better than not indexing it at all.
-                        pre_escalation = (list(chunks), dict(quality_info))
-                        try:
-                            chunks, quality_info = docling_worker.extract(file_path, a.attachmentKey, meta_base)
-                            # Docling returns a new quality object; retain the
-                            # source classification and already-measured
-                            # stage-2 verdict that selected this escalation.
-                            quality_info = _attach_pdf_source_provenance(quality_info, source_metadata)
-                            prior_quality = pre_escalation[1]
-                            for key in _OCR_LAYER_AUDIT_FIELDS:
-                                if key in prior_quality:
-                                    quality_info[key] = prior_quality[key]
-                        except RuntimeError as exc:
-                            print(
-                                f"[WARN] Docling worker extraction failed: attachment={a.attachmentKey} err={exc}",
-                                file=sys.__stderr__,
-                            )
-                            chunks, quality_info = [], {}
-                        if chunks:
-                            # P2 (note 78): mirror the local-OCR route's content
-                            # checks so this escalation's output is no longer
-                            # adopted entirely ungated.
-                            acceptable, gate_counts = _docling_escalation_acceptable(chunks)
-                            if not acceptable:
-                                if show_progress:
-                                    print(
-                                        f"[PROGRESS]   ↳ Docling escalation output rejected "
-                                        f"by minimal quality gate: {gate_counts}",
-                                        file=sys.__stderr__,
-                                    )
-                                quality_info = dict(quality_info)
-                                quality_info["docling_escalation_gate"] = gate_counts
-                                chunks = []
-                        if not chunks and pre_escalation[0]:
-                            chunks, quality_info = _adopt_with_quality_uncertain(
-                                *pre_escalation,
-                                reason=(
-                                    "docling_escalation_unavailable"
-                                    if not quality_info else "docling_escalation_rejected"
-                                ),
-                            )
-                            if show_progress:
-                                print(
-                                    "[PROGRESS]   ↳ keeping local extraction with a "
-                                    f"quality-uncertain tag ({len(chunks)} chunks); "
-                                    "no better route is available",
-                                    file=sys.__stderr__,
-                                )
-            else:
-                chunks, quality_info = extract_chunks_from_pdf(file_path, a.attachmentKey, meta_base)
+            extraction = _extract_pdf_chunks(
+                a=a, args=args, col=col, docling_worker=docling_worker,
+                file_path=file_path, files_manifest=files_manifest,
+                force_docling=force_docling, force_ndlocr=force_ndlocr,
+                granite_worker=granite_worker, manifest=manifest,
+                meta_base=meta_base, mtime=mtime, prev=prev,
+                scope_item_key=scope_item_key, show_progress=show_progress,
+                size=size, source_metadata=source_metadata,
+                stored_signature=stored_signature,
+                structure_recovery=structure_recovery,
+                v3_pipeline_fingerprint=v3_pipeline_fingerprint,
+            )
+            if extraction.deferred:
+                skipped_pdf += 1
+                deferred_extract += 1
+                continue
+            chunks, quality_info = extraction.chunks, extraction.quality
 
         dt = time.perf_counter() - t_pdf
         if STRUCTURED_V3_ENABLE:

@@ -119,28 +119,68 @@ class EveryManifestRowGoesThroughOneBuilderTests(unittest.TestCase):
 class EveryDeferralPathWritesToTheManifestTests(unittest.TestCase):
     """The PDF and EPUB paths drifted apart once; pin that they cannot again."""
 
+    @staticmethod
+    def _decides_to_defer(statement):
+        """Whether this statement is a path choosing to hand a file to the batch.
+
+        Two shapes, because the PDF route now lives in its own function. It
+        reports the decision by returning ``PdfExtraction(deferred=True)`` and
+        the caller does the counting; the EPUB route still increments in place.
+        The counter alone is no longer the marker: the increment at the call
+        site is a relay of a decision made elsewhere, and demanding a manifest
+        write beside it would be asking the wrong statement for it.
+        """
+        if (isinstance(statement, ast.AugAssign)
+                and isinstance(statement.target, ast.Name)
+                and statement.target.id == "deferred_extract"):
+            return True
+        return (
+            isinstance(statement, ast.Return)
+            and isinstance(statement.value, ast.Call)
+            and isinstance(statement.value.func, ast.Name)
+            and statement.value.func.id == "PdfExtraction"
+            and any(kw.arg == "deferred" and getattr(kw.value, "value", False) is True
+                    for kw in statement.value.keywords)
+        )
+
     def _deferral_sites(self):
-        """Statement blocks that increment deferred_extract, with their siblings."""
+        """(block, guard) for every block where a file is sent to the batch.
+
+        ``guard`` is the condition the block sits under, when it sits under one.
+        It is what tells a decision apart from the call site that merely counts
+        one: the latter is guarded by the returned flag.
+        """
         tree = ast.parse((SRC / "index_from_zotero.py").read_text())
         sites = []
         for node in ast.walk(tree):
-            body = getattr(node, "body", None)
-            if not isinstance(body, list):
-                continue
-            for statement in body:
-                if (
-                    isinstance(statement, ast.AugAssign)
-                    and isinstance(statement.target, ast.Name)
-                    and statement.target.id == "deferred_extract"
-                ):
-                    sites.append(body)
+            for attribute in ("body", "orelse", "finalbody"):
+                body = getattr(node, attribute, None)
+                if not isinstance(body, list):
+                    continue
+                if not any(self._decides_to_defer(s) for s in body):
+                    continue
+                guard = (
+                    ast.unparse(node.test)
+                    if isinstance(node, ast.If) and attribute == "body" else ""
+                )
+                sites.append((body, guard))
         return sites
 
     def test_both_deferral_sites_were_found(self):
-        self.assertEqual(len(self._deferral_sites()), 2)
+        # The PDF route's decision, the EPUB route's, and the call site that
+        # relays the first of them into the counter.
+        self.assertEqual(len(self._deferral_sites()), 3)
+
+    def test_exactly_one_site_is_a_relay(self):
+        relays = [guard for _body, guard in self._deferral_sites()
+                  if ".deferred" in guard]
+        self.assertEqual(relays, ["extraction.deferred"])
 
     def test_each_deferral_records_a_manifest_row(self):
-        for block in self._deferral_sites():
+        checked = 0
+        for block, guard in self._deferral_sites():
+            if ".deferred" in guard:
+                continue    # the relay; the decision it counts is a site of its own
             names = {
                 child.func.id
                 for statement in block
@@ -149,6 +189,9 @@ class EveryDeferralPathWritesToTheManifestTests(unittest.TestCase):
             }
             self.assertIn("_deferred_manifest_entry", names)
             self.assertIn("save_manifest", names)
+            checked += 1
+        # Both deciding paths reached, not one of them plus the relay twice.
+        self.assertEqual(checked, 2)
 
 
 if __name__ == "__main__":
