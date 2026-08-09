@@ -9,32 +9,6 @@ uv run pytest -q
 uv run python -m compileall -q src scripts tests
 ```
 
-### 取込ベースライン
-
-`index_from_zotero.main_async` は1,856行で、うち1,389行が添付を1件処理するforループ
-本体。**この関数を呼ぶテストは1つも無い**（17ファイルが同モジュールに触れるが、15は
-そこから既に括り出された補助関数を、2はコメントで言及するだけ）。
-
-分解の前にここへ網を張る。extract-method がここで失敗するときは、じわじわずれるので
-はなく**外側で更新されるはずのローカルが更新されなくなる**という壊れ方をする。抽出
-した関数への単体テストでは見えず、ループを実際に回すものだけが見える。
-
-代表3経路（HTML/PDF/EPUB）を使い捨てデータプレーンへ通し、実行が印字したカウンタ・
-マニフェスト行・全チャンク（識別子/block_type/zone/構造、本文はハッシュ）・artifact
-状態を記録する。本番のインデックスには一切触れない。約30秒。
-
-```bash
-uv run python scripts/build_ingestion_baseline.py          # 差分を見る
-uv run python scripts/build_ingestion_baseline.py --write  # 採択する
-```
-
-Zoteroノートは意図的に対象外。添付を持たないためこのループを1度も通らず、含めると
-「何も起きなかった」という結果を記録して、ループが何をしようと一致し続ける。
-
-**OCR層監査の値は揮発として除外している。** 候補提案にLLMを使うため、同じPDFでも実行
-ごとに `ocr_layer_error_rate` が 0.00807 / 0.01066 と変わり、`ocr_layer_needs_review`
-が false / true で反転する。設計通りの挙動だが、リファクタの影響判定には使えない。
-
 ### 構造復元ベースライン
 
 フラットPDFの見出しから木を復元する規則は、どれも実際の蔵書に合わせて調整した
