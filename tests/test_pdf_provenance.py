@@ -7,6 +7,7 @@ values that actually separated real documents rather than to invented ones.
 from __future__ import annotations
 
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -45,13 +46,11 @@ BODY = ("The quick brown fox jumps over the lazy dog and then continues along "
 
 class ClassifyPdfSourceTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.tmp = Path(__file__).resolve().parent / "_tmp_provenance"
-        self.tmp.mkdir(exist_ok=True)
+        self._tmp = tempfile.TemporaryDirectory(prefix="pdf-provenance-")
+        self.tmp = Path(self._tmp.name)
 
     def tearDown(self) -> None:
-        for path in self.tmp.glob("*.pdf"):
-            path.unlink()
-        self.tmp.rmdir()
+        self._tmp.cleanup()
 
     def test_text_only_document_is_born_digital(self):
         path = self.tmp / "digital.pdf"

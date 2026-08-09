@@ -26,7 +26,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 #: Documents that describe the code as it is now.
-DOCUMENTS = ("CLAUDE.md", "SPEC.md", "README.md", *sorted(
+DOCUMENTS = ("AGENTS.md", "CLAUDE.md", "SPEC.md", "README.md", *sorted(
     str(path.relative_to(ROOT)) for path in (ROOT / "docs").glob("*.md")
 ))
 
@@ -110,3 +110,12 @@ def test_the_check_covers_the_file_read_at_the_start_of_every_session():
     # document list by accident.
     assert "CLAUDE.md" in DOCUMENTS
     assert _referenced_paths((ROOT / "CLAUDE.md").read_text(encoding="utf-8"))
+
+
+def test_codex_entrypoint_requires_the_complete_claude_instructions():
+    """Codex must share Claude's tracked rules instead of growing a second copy."""
+    text = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+    assert "AGENTS.md" in DOCUMENTS
+    assert "`CLAUDE.md`" in text
+    assert re.search(r"最初から最後まで\s+必ず読む", text)
+    assert len(text.splitlines()) <= 8

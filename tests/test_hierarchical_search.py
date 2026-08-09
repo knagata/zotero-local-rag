@@ -16,6 +16,83 @@ import rag_mcp_server  # noqa: E402
 
 
 class HierarchicalSearchTests(unittest.TestCase):
+    def test_invalid_rag_requests_stop_before_opening_the_collection(self):
+        with patch.object(
+            rag_mcp_server, "_check_indexing_lock", return_value=(False, None),
+        ), patch.object(rag_mcp_server, "_col") as collection:
+            invalid_mode = rag_mcp_server.rag_search(
+                "query", search_mode="unknown", auto_expand=False,
+            )
+            empty_query = rag_mcp_server.rag_search(
+                ["", "  ", None], auto_expand=False,
+            )
+
+        self.assertIn("search_mode", invalid_mode["warning"])
+        self.assertIn("query", empty_query["warning"])
+        collection.assert_not_called()
+
+    def test_neighbor_read_failure_does_not_erase_the_search_hit(self):
+        collection = Mock()
+        collection.get.side_effect = RuntimeError("context store unavailable")
+        hit = {
+            "distance": 0.1,
+            "rrf_score": 1 / 61,
+            "document": "evidence " * 40,
+            "metadata": {"title": "Book", "retrieval_policy": "normal"},
+        }
+
+        results = rag_mcp_server._format_rag_hits(
+            [("ATTACH:p1:para1:part0", hit)],
+            k=1,
+            context_window=1,
+            col=collection,
+        )
+
+        self.assertEqual([row["id"] for row in results], ["ATTACH:p1:para1:part0"])
+        self.assertEqual(results[0]["context"], [])
+
+    def test_chroma_candidate_query_retries_once_with_a_fresh_collection(self):
+        first = Mock()
+        first._embedding_function.return_value = [[0.1, 0.2]]
+        first.query.side_effect = RuntimeError("stale collection")
+        second = Mock()
+        second._embedding_function.return_value = [[0.1, 0.2]]
+        second.query.return_value = {"ids": [[]], "documents": [[]], "metadatas": [[]], "distances": [[]]}
+
+        with patch.object(rag_mcp_server, "_col", side_effect=[first, second]), \
+             patch.object(rag_mcp_server, "_reset_col") as reset, \
+             patch.object(rag_mcp_server.time, "sleep") as sleep:
+            responses, collection = rag_mcp_server._query_chroma_candidates(
+                ["query"], [None], 5, first,
+            )
+
+        self.assertEqual(responses, [second.query.return_value])
+        self.assertIs(collection, second)
+        reset.assert_called_once_with()
+        sleep.assert_called_once_with(1)
+
+    def test_usable_candidate_count_is_distinct_and_respects_exclusions(self):
+        responses = [{
+            "ids": [["keep", "keep", "excluded", "short"]],
+            "documents": [["evidence " * 40, "evidence " * 40, "evidence " * 40, "short"]],
+            "metadatas": [[
+                {"retrieval_policy": "normal"},
+                {"retrieval_policy": "normal"},
+                {"retrieval_policy": "normal"},
+                {"retrieval_policy": "normal"},
+            ]],
+        }]
+
+        count = rag_mcp_server._count_usable_semantic_candidates(
+            responses,
+            exclude_set={"excluded"},
+            min_return_chars=200,
+            allow_explicit=False,
+            include_corrupted=False,
+        )
+
+        self.assertEqual(count, 1)
+
     def test_v2_is_the_default_when_the_flag_is_unset(self):
         paragraphs = Mock()
         expected = {"results": [], "candidate_items": []}

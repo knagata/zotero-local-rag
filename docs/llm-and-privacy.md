@@ -72,7 +72,7 @@ uv run python scripts/build_structure_summaries.py --all --mode llm --embed \
 uv run python scripts/build_structure_summaries.py --all --mode extractive --embed
 ```
 
-全件AI要約の生成はpilot→ユーザー承認後に有効化する運用です（[環境設定](configuration.md#メンテナンス時のai要約) 参照）。
+全件AI要約の生成はユーザーが明示承認した場合だけ実行します（[環境設定](configuration.md#メンテナンス時のai要約) 参照）。
 サーバーではさらに、フェーズ2のZotero・原本・DB監査が現在のDB世代に対して合格していなければ、
 フェーズ3のAI要約CLIはAPIを呼び出さず停止します。
 

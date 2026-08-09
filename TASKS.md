@@ -3,6 +3,29 @@
 正本: `SPEC.md`。実装・検証の永続的な履歴はこのファイルに残す。
 `evaluations/`のローカル生成レポートはZotero識別子や絶対パスを含み得るため追跡しない。
 
+### 2026-08-10 Codex向け入口・検索分解・テスト網の整理
+
+- [x] **`rag_search`を責務別に分解。** 432行のMCP handlerを110行に縮め、request準備、
+  bounded Chroma retry、semantic RRF、lexical融合、policy filter、近傍context、response整形を
+  独立helperへ移した。batch横断順位、post-filter後のdeepening、hybrid条件などの公開挙動は
+  維持し、再試行・候補重複排除・不正requestの早期拒否・context障害時のhit保持を真偽テスト化。
+  `tests/function_size_budget.json`からこの関数を外し、150行超は23件から22件へ減った。
+- [x] **未テストだったCitation Graph build境界を固定。** item/top選択、参照無効化、空結果、
+  正常snapshot、DB読取例外時のconnection closeを
+  `tests/test_citation_graph_graph_service.py`で直接検査。`graph_service.py`の未到達文は27から0、
+  `rag_mcp_server.py`は664から621へ下がったためcoverage予算を同じ変更で引き下げた。
+- [x] **並行テストで衝突する固定一時ディレクトリを撤去。** `test_pdf_provenance.py`を
+  test instanceごとの`TemporaryDirectory`へ変更し、同じテストファイルの2プロセス同時実行で
+  両方が通ることを確認した。
+- [x] **Codexの追跡対象入口を追加。** 短い`AGENTS.md`から毎回`CLAUDE.md`全体を読むよう
+  必須化し、規則本文は複製しない。文書参照テストにも入口を加えた。廃止済みServer workflowと
+  「要約索引が承認待ちで空」という古い利用者向け記述を現行V3契約へ更新し、残る構造負債を
+  `docs/post-refactor-followups.md`へ優先度・工数・着手フェーズ付きで記録した。
+- [x] **検証。** coverage付き全体テスト`1484 passed, 4 skipped, 5 deselected`、公開CLI import、
+  compileall、致命的Ruff、function/lint/coverage各ラチェット、文書参照、`git diff --check`に合格。
+  ローカル計測は88モジュール・5,482未到達文。環境差が既知のモジュールはローカル値へ下げず、
+  今回直接改善した2モジュールだけを採択した予算は5,496文。
+
 ## Active
 
 ### 2026-08-09 事故: テスト実行が実 relations.db を消した

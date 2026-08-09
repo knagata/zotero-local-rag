@@ -901,6 +901,396 @@ def _coerce_json(value: Any) -> Any:
     return value
 
 
+def _prepare_rag_search(
+    query: str | List[str], *, k: int, where: Any, context_window: int,
+    include_notes: bool, include_item_keys: Any, include_leaf_ids: Any,
+    exclude_chunk_ids: Any, auto_expand: bool, search_mode: str,
+    hybrid: bool, language_balance: bool, include_corrupted: bool,
+) -> dict[str, Any]:
+    """Normalize public arguments and build the bounded Chroma query plan."""
+    blocked, msg = _check_indexing_lock()
+    if blocked:
+        return {"response": {"results": [], "warning": msg}}
+
+    where = _coerce_json(where)
+    include_item_keys = _coerce_json(include_item_keys)
+    include_leaf_ids = _coerce_json(include_leaf_ids)
+    exclude_chunk_ids = _coerce_json(exclude_chunk_ids)
+
+    if search_mode not in {"default", "case"}:
+        return {"response": {"results": [], "warning": "search_mode must be 'default' or 'case'."}}
+    queries = _normalized_queries(query)
+    if not queries:
+        return {"response": {"results": [], "warning": "query must contain at least one non-empty string."}}
+    if auto_expand:
+        queries = expand_queries(queries, mode=search_mode, timeout=5.0, logger=_log)
+    if search_mode == "case" and context_window == 0:
+        context_window = 1
+
+    col = _col()
+    if k <= 0:
+        return {"response": {"results": []}}
+    k = min(k, bounded_env_int("RAG_SEARCH_MAX_RESULTS", 100, minimum=1, maximum=1000))
+
+    effective_where = _build_effective_where(
+        where, include_notes=include_notes, include_item_keys=include_item_keys,
+    )
+    leaf_batches = partition_leaf_ids(include_leaf_ids or [])
+    if include_leaf_ids is not None and not leaf_batches:
+        return {"response": {"results": []}}
+    query_wheres = [
+        _and_where(effective_where, {"node_id": {"$in": batch}}) for batch in leaf_batches
+    ] or [effective_where]
+
+    candidate_cap = _candidate_cap(col)
+    if candidate_cap <= 0:
+        return {"response": {"results": []}}
+    internal_k = min(candidate_cap, max(k * 5, k))
+    if exclude_chunk_ids:
+        internal_k = min(candidate_cap, internal_k + len(exclude_chunk_ids))
+    return {
+        "queries": queries,
+        "query_wheres": query_wheres,
+        "where": where,
+        "include_notes": include_notes,
+        "hybrid": hybrid,
+        "include_item_keys": include_item_keys,
+        "include_leaf_ids": include_leaf_ids,
+        "exclude_chunk_ids": exclude_chunk_ids,
+        "context_window": context_window,
+        "language_balance": language_balance,
+        "include_corrupted": include_corrupted,
+        "col": col,
+        "k": k,
+        "candidate_cap": candidate_cap,
+        "internal_k": internal_k,
+    }
+
+
+def _query_chroma_candidates(
+    queries: List[str], query_wheres: List[Any], n_results: int, col: Any,
+) -> tuple[Optional[List[Dict[str, Any]]], Any]:
+    """Query every leaf batch, retrying once if Chroma's client is stale."""
+    for attempt in range(2):
+        try:
+            col = _col()
+            if not col:
+                raise ValueError("Chroma collection is empty or not initialized. Run the indexer first.")
+
+            # Manually compute embeddings to avoid Chroma FFI deadlock.
+            query_embeddings = col._embedding_function(queries)
+            responses = [
+                col.query(
+                    query_embeddings=query_embeddings, n_results=n_results,
+                    where=query_where, include=["documents", "metadatas", "distances"],
+                )
+                for query_where in query_wheres
+            ]
+            return responses, col
+        except Exception as exc:
+            _log.warning(
+                "rag_search query failed (attempt %d): %s\n%s",
+                attempt + 1, exc, traceback.format_exc(),
+            )
+            if attempt == 0:
+                # Collection state may be stale (indexer ran while server was live).
+                # Wait briefly to let the indexer finish a write cycle, then
+                # reset the cache and re-initialize with a fresh PersistentClient.
+                _reset_col()
+                time.sleep(1)
+            else:
+                _log.error("rag_search: both attempts failed — returning error message")
+    return None, col
+
+
+def _count_usable_semantic_candidates(
+    responses: List[Dict[str, Any]], *, exclude_set: set[str], min_return_chars: int,
+    allow_explicit: bool, include_corrupted: bool,
+) -> int:
+    """Count distinct semantic candidates that can survive post-filtering."""
+    usable_ids: set[str] = set()
+    for response in responses:
+        all_ids = response.get("ids") or []
+        all_docs = response.get("documents") or []
+        all_metas = response.get("metadatas") or []
+        for q_idx, q_ids in enumerate(all_ids):
+            q_docs = all_docs[q_idx] if q_idx < len(all_docs) else []
+            q_metas = all_metas[q_idx] if q_idx < len(all_metas) else []
+            for hit_idx, hit_id in enumerate(q_ids or []):
+                if hit_id in exclude_set:
+                    continue
+                document = q_docs[hit_idx] if hit_idx < len(q_docs) else ""
+                metadata = q_metas[hit_idx] if hit_idx < len(q_metas) else {}
+                if (
+                    len(str(document or "").strip()) >= min_return_chars
+                    and retrieval_policy_allowed(
+                        metadata if isinstance(metadata, dict) else {},
+                        allow_explicit=allow_explicit,
+                        include_corrupted=include_corrupted,
+                    )
+                ):
+                    usable_ids.add(hit_id)
+    return len(usable_ids)
+
+
+def _merge_semantic_rrf(responses: List[Dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Merge semantic batches, assigning ranks after each query's batches join."""
+    hits_combined: dict[str, dict[str, Any]] = {}
+    per_query_hits: dict[int, dict[str, dict[str, Any]]] = {}
+    for response in responses:
+        all_q_ids = response.get("ids") or []
+        all_q_docs = response.get("documents") or []
+        all_q_metas = response.get("metadatas") or []
+        all_q_dists = response.get("distances") or []
+
+        for q_idx in range(len(all_q_ids)):
+            q_ids = all_q_ids[q_idx]
+            q_docs = all_q_docs[q_idx] if q_idx < len(all_q_docs) else []
+            q_metas = all_q_metas[q_idx] if q_idx < len(all_q_metas) else []
+            q_dists = all_q_dists[q_idx] if q_idx < len(all_q_dists) else []
+            bucket = per_query_hits.setdefault(q_idx, {})
+            for hit_idx, hit_id in enumerate(q_ids):
+                document = q_docs[hit_idx] if hit_idx < len(q_docs) else ""
+                metadata = q_metas[hit_idx] if hit_idx < len(q_metas) else {}
+                distance = q_dists[hit_idx] if hit_idx < len(q_dists) else 1.0
+                existing = bucket.get(hit_id)
+                if existing is None or distance < existing["distance"]:
+                    bucket[hit_id] = {
+                        "distance": distance, "document": document, "metadata": metadata,
+                    }
+
+    for bucket in per_query_hits.values():
+        # Global rank across the merged batches, not per-batch rank.
+        ranked = sorted(bucket.items(), key=lambda item: item[1]["distance"])
+        for rank, (hit_id, hit) in enumerate(ranked, start=1):
+            rrf_value = 1.0 / (RRF_K + rank)
+            if hit_id not in hits_combined:
+                hits_combined[hit_id] = {
+                    "distance": hit["distance"], "rrf_score": rrf_value,
+                    "document": hit["document"], "metadata": hit["metadata"],
+                }
+            else:
+                if hit["distance"] < hits_combined[hit_id]["distance"]:
+                    hits_combined[hit_id]["distance"] = hit["distance"]
+                hits_combined[hit_id]["rrf_score"] += rrf_value
+    return hits_combined
+
+
+def _fuse_lexical_results(
+    hits_combined: dict[str, dict[str, Any]], queries: List[str], *, internal_k: int,
+    include_notes: bool, include_item_keys: Any, col: Any,
+) -> dict[str, dict[str, Any]]:
+    """Fuse unrestricted FTS5 rankings into the semantic RRF result map."""
+    try:
+        from lexical_index import search_chunks as lexical_search
+
+        lexical_rankings = [
+            lexical_search(
+                query, k=internal_k, include_notes=include_notes,
+                item_keys=include_item_keys,
+            )
+            for query in queries
+        ]
+        lexical_ids = list(dict.fromkeys(
+            row["chunk_id"] for ranking in lexical_rankings for row in ranking
+        ))
+        lexical_docs: dict[str, str] = {}
+        lexical_metas: dict[str, dict[str, Any]] = {}
+        if lexical_ids:
+            hydrated = col.get(ids=lexical_ids, include=["documents", "metadatas"])
+            for idx, chunk_id in enumerate(hydrated.get("ids") or []):
+                documents = hydrated.get("documents") or []
+                metadatas = hydrated.get("metadatas") or []
+                lexical_docs[chunk_id] = documents[idx] if idx < len(documents) else ""
+                metadata = metadatas[idx] if idx < len(metadatas) else {}
+                lexical_metas[chunk_id] = metadata if isinstance(metadata, dict) else {}
+        for ranking in lexical_rankings:
+            for rank, row in enumerate(ranking, start=1):
+                chunk_id = row["chunk_id"]
+                if chunk_id not in lexical_docs:
+                    continue
+                contribution = 1.0 / (RRF_K + rank)
+                if chunk_id in hits_combined:
+                    hits_combined[chunk_id]["rrf_score"] += contribution
+                else:
+                    hits_combined[chunk_id] = {
+                        "distance": None, "rrf_score": contribution,
+                        "document": lexical_docs[chunk_id],
+                        "metadata": lexical_metas[chunk_id],
+                    }
+    except Exception as exc:
+        _log.warning("Lexical search unavailable; using semantic results: %s", exc)
+    return hits_combined
+
+
+def _neighbor_context(col: Any, chunk_id: str, context_window: int) -> List[RagContextChunk]:
+    """Fetch and order neighboring paragraphs, tolerating partial reads."""
+    nids = [nid for nid in neighbor_ids(chunk_id, context_window) if isinstance(nid, str) and nid]
+    if not nids:
+        return []
+    try:
+        got = col.get(ids=nids, include=["documents", "metadatas"])
+    except Exception:
+        got = {"ids": [], "documents": [], "metadatas": []}
+
+    got_ids = got.get("ids", [])
+    got_docs = got.get("documents", [])
+    got_metas = got.get("metadatas", [])
+    ordered = []
+    for idx, neighbor_id in enumerate(got_ids):
+        document = got_docs[idx] if idx < len(got_docs) else ""
+        metadata = got_metas[idx] if idx < len(got_metas) and isinstance(got_metas[idx], dict) else {}
+        parsed = parse_id(neighbor_id)
+        paragraph = parsed[3] if parsed else None
+        ordered.append((paragraph, {
+            "id": neighbor_id,
+            "page": metadata.get("page"),
+            "citation": _make_citation(metadata),
+            "text": document,
+        }))
+    ordered.sort(key=lambda item: (item[0] is None, item[0]))
+    return [
+        item[1] for item in ordered
+        if isinstance(item[1].get("text", ""), str) and item[1]["text"].strip()
+    ]
+
+
+def _rank_rag_hits(
+    hits_combined: dict[str, dict[str, Any]], *, k: int, exclude_set: set[str],
+    min_return_chars: int, allow_explicit: bool, include_corrupted: bool,
+    language_balance: bool,
+) -> List[tuple[str, dict[str, Any]]]:
+    """Apply policy, exclusion, length, and optional language ordering."""
+    sorted_hits = sorted(
+        hits_combined.items(), key=lambda item: item[1]["rrf_score"], reverse=True,
+    )
+    sorted_hits = [
+        hit for hit in sorted_hits
+        if retrieval_policy_allowed(
+            hit[1].get("metadata") or {}, allow_explicit=allow_explicit,
+            include_corrupted=include_corrupted,
+        )
+    ]
+    sorted_hits = [hit for hit in sorted_hits if hit[0] not in exclude_set]
+    sorted_hits = [
+        hit for hit in sorted_hits
+        if len(str(hit[1].get("document") or "").strip()) >= min_return_chars
+    ]
+    if language_balance:
+        sorted_hits = language_balanced_order(sorted_hits, k)
+    return sorted_hits
+
+
+def _format_rag_hits(
+    sorted_hits: List[tuple[str, dict[str, Any]]], *, k: int, context_window: int, col: Any,
+) -> List[RagHit]:
+    """Build public hit records and optional neighboring context."""
+    out: List[RagHit] = []
+    for chunk_id, hit in sorted_hits:
+        metadata = hit.get("metadata") if isinstance(hit.get("metadata"), dict) else {}
+        text = hit.get("document") or ""
+        context = (
+            _neighbor_context(col, chunk_id, context_window)
+            if context_window and context_window > 0 else []
+        )
+        out.append({
+            "id": chunk_id,
+            "distance": hit.get("distance"),
+            "rrf_score": hit.get("rrf_score"),
+            "citation": _make_citation(metadata),
+            "text": text,
+            "context": context,
+            "meta": {
+                "title": metadata.get("title"),
+                "year": metadata.get("year"),
+                "creators": metadata.get("creators"),
+                "page": metadata.get("page"),
+                "page_label": metadata.get("page_label"),
+                "pdf_path": metadata.get("pdf_path"),
+                "path": metadata.get("path"),
+                "itemKey": metadata.get("itemKey"),
+                "attachmentKey": metadata.get("attachmentKey"),
+                "noteKey": metadata.get("noteKey"),
+                "source_type": metadata.get("source_type"),
+                "locator": metadata.get("locator"),
+                "contentType": metadata.get("contentType"),
+                "filename": metadata.get("filename"),
+                "chapter": metadata.get("chapter"),
+                "section": metadata.get("section"),
+                "lang": metadata.get("lang"),
+                # Endnotes are returned in ordinary results, so the reader
+                # needs to see when a passage is one.
+                "zone": metadata.get("zone"),
+            },
+        })
+        if len(out) >= k:
+            break
+    return out
+
+
+def _run_rag_search(plan: dict[str, Any]) -> RagSearchResponse:
+    """Execute a prepared search plan through semantic and lexical retrieval."""
+    queries = plan["queries"]
+    query_wheres = plan["query_wheres"]
+    where = plan["where"]
+    include_notes = plan["include_notes"]
+    include_item_keys = plan["include_item_keys"]
+    include_leaf_ids = plan["include_leaf_ids"]
+    exclude_chunk_ids = plan["exclude_chunk_ids"]
+    context_window = plan["context_window"]
+    include_corrupted = plan["include_corrupted"]
+    language_balance = plan["language_balance"]
+    col = plan["col"]
+    k = plan["k"]
+    candidate_cap = plan["candidate_cap"]
+    internal_k = plan["internal_k"]
+
+    responses, col = _query_chroma_candidates(queries, query_wheres, internal_k, col)
+    if responses is None:
+        return {"results": [], "warning": _HNSW_ERROR_MSG}
+
+    # Post-filters can leave too few semantic candidates, so deepen once.
+    allow_explicit = explicit_note_intent(queries)
+    exclude_set = set(exclude_chunk_ids or [])
+    min_return_chars = bounded_env_int(
+        "MIN_RETURN_CHARS", 200, minimum=0, maximum=10000,
+    )
+    if (
+        _count_usable_semantic_candidates(
+            responses, exclude_set=exclude_set,
+            min_return_chars=min_return_chars,
+            allow_explicit=allow_explicit,
+            include_corrupted=include_corrupted,
+        ) < k
+        and internal_k < candidate_cap
+    ):
+        deeper_k = min(candidate_cap, max(internal_k + 1, internal_k * 2))
+        deeper_responses, col = _query_chroma_candidates(
+            queries, query_wheres, deeper_k, col,
+        )
+        if deeper_responses is not None:
+            responses, internal_k = deeper_responses, deeper_k
+
+    hits_combined = _merge_semantic_rrf(responses)
+    if plan["hybrid"]:
+        if where is None and include_leaf_ids is None:
+            hits_combined = _fuse_lexical_results(
+                hits_combined, queries, internal_k=internal_k,
+                include_notes=include_notes,
+                include_item_keys=include_item_keys,
+                col=col,
+            )
+
+    sorted_hits = _rank_rag_hits(
+        hits_combined, k=k, exclude_set=exclude_set,
+        min_return_chars=min_return_chars, allow_explicit=allow_explicit,
+        include_corrupted=include_corrupted, language_balance=language_balance,
+    )
+    return {"results": _format_rag_hits(
+        sorted_hits, k=k, context_window=context_window, col=col,
+    )}
+
+
 @mcp.tool()
 def rag_search(
     query: str | List[str],
@@ -1001,339 +1391,17 @@ def rag_search(
         {"results": [ ... ]}
     """
 
-    blocked, msg = _check_indexing_lock()
-    if blocked:
-        return {"results": [], "warning": msg}
-
-    where = _coerce_json(where)
-    include_item_keys = _coerce_json(include_item_keys)
-    include_leaf_ids = _coerce_json(include_leaf_ids)
-    exclude_chunk_ids = _coerce_json(exclude_chunk_ids)
-
-    if search_mode not in {"default", "case"}:
-        return {"results": [], "warning": "search_mode must be 'default' or 'case'."}
-    queries = _normalized_queries(query)
-    if not queries:
-        return {"results": [], "warning": "query must contain at least one non-empty string."}
-    if auto_expand:
-        queries = expand_queries(queries, mode=search_mode, timeout=5.0, logger=_log)
-    if search_mode == "case" and context_window == 0:
-        context_window = 1
-
-    col = _col()
-    if k <= 0:
-        return {"results": []}
-    k = min(k, bounded_env_int("RAG_SEARCH_MAX_RESULTS", 100, minimum=1, maximum=1000))
-
-
-    effective_where = _build_effective_where(
-        where, include_notes=include_notes, include_item_keys=include_item_keys
+    plan = _prepare_rag_search(
+        query, k=k, where=where, context_window=context_window,
+        include_notes=include_notes, include_item_keys=include_item_keys,
+        include_leaf_ids=include_leaf_ids, exclude_chunk_ids=exclude_chunk_ids,
+        auto_expand=auto_expand, search_mode=search_mode,
+        hybrid=hybrid, language_balance=language_balance,
+        include_corrupted=include_corrupted,
     )
-    leaf_batches = partition_leaf_ids(include_leaf_ids or [])
-    if include_leaf_ids is not None and not leaf_batches:
-        return {"results": []}
-    query_wheres = [
-        _and_where(effective_where, {"node_id": {"$in": batch}}) for batch in leaf_batches
-    ] or [effective_where]
-
-    candidate_cap = _candidate_cap(col)
-    if candidate_cap <= 0:
-        return {"results": []}
-
-    internal_k = min(candidate_cap, max(k * 5, k))
-    if exclude_chunk_ids:
-        internal_k = min(candidate_cap, internal_k + len(exclude_chunk_ids))
-
-    def _query_candidates(n_results: int) -> Optional[List[Dict[str, Any]]]:
-        """Query every leaf batch, retrying once if Chroma's client is stale."""
-        nonlocal col
-        for _attempt in range(2):
-            try:
-                col = _col()
-                if not col:
-                    raise ValueError("Chroma collection is empty or not initialized. Run the indexer first.")
-
-                # Manually compute embeddings to avoid Chroma FFI deadlock.
-                query_embeddings = col._embedding_function(queries)
-                return [
-                    col.query(
-                        query_embeddings=query_embeddings, n_results=n_results,
-                        where=query_where, include=["documents", "metadatas", "distances"],
-                    )
-                    for query_where in query_wheres
-                ]
-            except Exception as _exc:
-                _log.warning("rag_search query failed (attempt %d): %s\n%s", _attempt + 1, _exc, traceback.format_exc())
-                if _attempt == 0:
-                    # Collection state may be stale (indexer ran while server was live).
-                    # Wait briefly to let the indexer finish a write cycle, then
-                    # reset the cache and re-initialize with a fresh PersistentClient.
-                    _reset_col()
-                    time.sleep(1)
-                else:
-                    _log.error("rag_search: both attempts failed — returning error message")
-        return None
-
-    responses = _query_candidates(internal_k)
-    if responses is None:
-        return {"results": [], "warning": _HNSW_ERROR_MSG}
-
-    # The query-level ``where`` already carries item, note, and leaf filters.
-    # Policy, ID exclusion, and minimum-text filtering happen below because the
-    # first two are not always representable in Chroma's metadata grammar.  Do
-    # one bounded deepening pass when those post-filters leave too few semantic
-    # candidates; otherwise a fixed 5*k query can return an arbitrarily short
-    # result list when its nearest neighbours are endnotes or short fragments.
-    allow_explicit = explicit_note_intent(queries)
-    exclude_set = set(exclude_chunk_ids or [])
-    min_return_chars = bounded_env_int(
-        "MIN_RETURN_CHARS", 200, minimum=0, maximum=10000,
-    )
-
-    def _usable_semantic_candidate_count(candidate_responses: List[Dict[str, Any]]) -> int:
-        usable_ids: set[str] = set()
-        for response in candidate_responses:
-            all_ids = response.get("ids") or []
-            all_docs = response.get("documents") or []
-            all_metas = response.get("metadatas") or []
-            for q_idx, q_ids in enumerate(all_ids):
-                q_docs = all_docs[q_idx] if q_idx < len(all_docs) else []
-                q_metas = all_metas[q_idx] if q_idx < len(all_metas) else []
-                for hit_idx, hit_id in enumerate(q_ids or []):
-                    if hit_id in exclude_set:
-                        continue
-                    document = q_docs[hit_idx] if hit_idx < len(q_docs) else ""
-                    metadata = q_metas[hit_idx] if hit_idx < len(q_metas) else {}
-                    if (
-                        len(str(document or "").strip()) >= min_return_chars
-                        and retrieval_policy_allowed(
-                            metadata if isinstance(metadata, dict) else {},
-                            allow_explicit=allow_explicit,
-                            include_corrupted=include_corrupted,
-                        )
-                    ):
-                        usable_ids.add(hit_id)
-        return len(usable_ids)
-
-    if (
-        _usable_semantic_candidate_count(responses) < k
-        and internal_k < candidate_cap
-    ):
-        deeper_k = min(candidate_cap, max(internal_k + 1, internal_k * 2))
-        deeper_responses = _query_candidates(deeper_k)
-        if deeper_responses is not None:
-            responses = deeper_responses
-            internal_k = deeper_k
-
-    # include_leaf_ids larger than one batch (partition_leaf_ids caps each at
-    # 100) produces multiple entries in `responses`, one Chroma query per
-    # batch. Assigning RRF rank from each batch's own h_idx made batch 2's
-    # single best hit tie batch 1's single best hit at rank 1, regardless of
-    # actual similarity -- the highest-weighted retrieval path was ordered
-    # largely by which batch a chunk's node fell into rather than by
-    # closeness to the query. Measured: 48 of 540 items have more than 100
-    # leaf nodes and so route through more than one batch (2026-07-28, found
-    # in code review). Hits for the same query are now merged across batches
-    # before rank is assigned, so the rank reflects one global ordering.
-    #
-    # Consolidated hits map: id -> {distance, rrf_score, document, metadata}
-    hits_combined = {}
-    per_query_hits: dict[int, dict[str, dict[str, Any]]] = {}
-    for res in responses:
-        all_q_ids = res.get("ids") or []
-        all_q_docs = res.get("documents") or []
-        all_q_metas = res.get("metadatas") or []
-        all_q_dists = res.get("distances") or []
-
-        for q_idx in range(len(all_q_ids)):
-            q_ids = all_q_ids[q_idx]
-            q_docs = all_q_docs[q_idx] if q_idx < len(all_q_docs) else []
-            q_metas = all_q_metas[q_idx] if q_idx < len(all_q_metas) else []
-            q_dists = all_q_dists[q_idx] if q_idx < len(all_q_dists) else []
-            bucket = per_query_hits.setdefault(q_idx, {})
-
-            for h_idx in range(len(q_ids)):
-                hid = q_ids[h_idx]
-                hdoc = q_docs[h_idx] if h_idx < len(q_docs) else ""
-                hmd = q_metas[h_idx] if h_idx < len(q_metas) else {}
-                hdist = q_dists[h_idx] if h_idx < len(q_dists) else 1.0
-                existing = bucket.get(hid)
-                if existing is None or hdist < existing["distance"]:
-                    bucket[hid] = {"distance": hdist, "document": hdoc, "metadata": hmd}
-
-    for bucket in per_query_hits.values():
-        # Global rank across the merged batches, not per-batch rank.
-        ranked = sorted(bucket.items(), key=lambda item: item[1]["distance"])
-        for rank, (hid, hit) in enumerate(ranked, start=1):
-            rrf_val = 1.0 / (RRF_K + rank)
-            if hid not in hits_combined:
-                hits_combined[hid] = {
-                    "distance": hit["distance"], "rrf_score": rrf_val,
-                    "document": hit["document"], "metadata": hit["metadata"],
-                }
-            else:
-                if hit["distance"] < hits_combined[hid]["distance"]:
-                    hits_combined[hid]["distance"] = hit["distance"]
-                hits_combined[hid]["rrf_score"] += rrf_val
-
-    # Lexical BM25 results are fused by rank, never by incomparable raw scores.
-    # Restrictive arbitrary Chroma filters remain semantic-only; item-key and note
-    # restrictions are supported directly by the lexical index.
-    if hybrid and where is None and include_leaf_ids is None:
-        try:
-            from lexical_index import search_chunks as lexical_search
-
-            lexical_rankings = [
-                lexical_search(
-                    q,
-                    k=internal_k,
-                    include_notes=include_notes,
-                    item_keys=include_item_keys,
-                )
-                for q in queries
-            ]
-            lexical_ids = list(dict.fromkeys(
-                row["chunk_id"] for ranking in lexical_rankings for row in ranking
-            ))
-            lexical_docs: dict[str, str] = {}
-            lexical_metas: dict[str, dict[str, Any]] = {}
-            if lexical_ids:
-                hydrated = col.get(ids=lexical_ids, include=["documents", "metadatas"])
-                for idx, chunk_id in enumerate(hydrated.get("ids") or []):
-                    documents = hydrated.get("documents") or []
-                    metadatas = hydrated.get("metadatas") or []
-                    lexical_docs[chunk_id] = documents[idx] if idx < len(documents) else ""
-                    metadata = metadatas[idx] if idx < len(metadatas) else {}
-                    lexical_metas[chunk_id] = metadata if isinstance(metadata, dict) else {}
-            for ranking in lexical_rankings:
-                for rank, row in enumerate(ranking, start=1):
-                    chunk_id = row["chunk_id"]
-                    if chunk_id not in lexical_docs:
-                        continue
-                    contribution = 1.0 / (RRF_K + rank)
-                    if chunk_id in hits_combined:
-                        hits_combined[chunk_id]["rrf_score"] += contribution
-                    else:
-                        hits_combined[chunk_id] = {
-                            "distance": None,
-                            "rrf_score": contribution,
-                            "document": lexical_docs[chunk_id],
-                            "metadata": lexical_metas[chunk_id],
-                        }
-        except Exception as exc:
-            _log.warning("Lexical search unavailable; using semantic results: %s", exc)
-
-    # Sort all consolidated hits by RRF score descending (highest first).
-    sorted_hits = sorted(hits_combined.items(), key=lambda x: x[1]["rrf_score"], reverse=True)
-    sorted_hits = [
-        hit for hit in sorted_hits
-        if retrieval_policy_allowed(
-            hit[1].get("metadata") or {}, allow_explicit=allow_explicit,
-            include_corrupted=include_corrupted,
-        )
-    ]
-
-    # Filtering out excluded IDs
-    if exclude_chunk_ids:
-        sorted_hits = [h for h in sorted_hits if h[0] not in exclude_set]
-
-    sorted_hits = [
-        hit for hit in sorted_hits
-        if len(str(hit[1].get("document") or "").strip()) >= min_return_chars
-    ]
-    if language_balance:
-        sorted_hits = language_balanced_order(sorted_hits, k)
-
-    ids0 = [x[0] for x in sorted_hits]
-    docs0 = [x[1]["document"] for x in sorted_hits]
-    metas0 = [x[1]["metadata"] for x in sorted_hits]
-    dists0 = [x[1]["distance"] for x in sorted_hits]
-    rrfs0 = [x[1]["rrf_score"] for x in sorted_hits]
-
-
-
-    out: List[RagHit] = []
-    for i in range(len(ids0)):
-        md = metas0[i] if i < len(metas0) and isinstance(metas0[i], dict) else {}
-        dist = dists0[i] if i < len(dists0) else None
-        text = docs0[i] if i < len(docs0) else ""
-
-        citation = _make_citation(md)
-
-        ctx: List[RagContextChunk] = []
-        if context_window and context_window > 0:
-            # Defensive: never call `col.get()` with an empty IDs list (Chroma raises),
-            # and tolerate missing neighbors / partial failures.
-            nids = [nid for nid in neighbor_ids(ids0[i], context_window) if isinstance(nid, str) and nid]
-            if nids:
-                try:
-                    got = col.get(ids=nids, include=["documents", "metadatas"])
-                except Exception:
-                    got = {"ids": [], "documents": [], "metadatas": []}
-
-                got_ids = got.get("ids", [])
-                got_docs = got.get("documents", [])
-                got_metas = got.get("metadatas", [])
-
-                tmp = []
-                for j in range(len(got_ids)):
-                    gid = got_ids[j]
-                    gdoc = got_docs[j] if j < len(got_docs) else ""
-                    gmd = got_metas[j] if j < len(got_metas) and isinstance(got_metas[j], dict) else {}
-                    parsed = parse_id(gid)
-                    gpara = parsed[3] if parsed else None
-                    tmp.append(
-                        (
-                            gpara,
-                            {
-                                "id": gid,
-                                "page": gmd.get("page"),
-                                "citation": _make_citation(gmd),
-                                "text": gdoc,
-                            },
-                        )
-                    )
-                tmp.sort(key=lambda x: (x[0] is None, x[0]))
-                ctx = [x[1] for x in tmp if isinstance(x[1].get("text", ""), str) and x[1]["text"].strip()]
-
-        out.append(
-            {
-                "id": ids0[i],
-                "distance": dist,
-                "rrf_score": rrfs0[i],
-                "citation": citation,
-                "text": text,
-                "context": ctx,
-                "meta": {
-                    "title": md.get("title"),
-                    "year": md.get("year"),
-                    "creators": md.get("creators"),
-                    "page": md.get("page"),
-                    "page_label": md.get("page_label"),
-                    "pdf_path": md.get("pdf_path"),
-                    "path": md.get("path"),
-                    "itemKey": md.get("itemKey"),
-                    "attachmentKey": md.get("attachmentKey"),
-                    "noteKey": md.get("noteKey"),
-                    "source_type": md.get("source_type"),
-                    "locator": md.get("locator"),
-                    "contentType": md.get("contentType"),
-                    "filename": md.get("filename"),
-                    "chapter": md.get("chapter"),
-                    "section": md.get("section"),
-                    "lang": md.get("lang"),
-                    # Endnotes are returned in ordinary results, so the reader
-                    # needs to see when a passage is one -- an unmarked note
-                    # reads as body text and would be cited as such.
-                    "zone": md.get("zone"),
-                },
-            }
-        )
-
-        if len(out) >= k:
-            break
-
-    return {"results": out}
+    if "response" in plan:
+        return plan["response"]
+    return _run_rag_search(plan)
 
 
 @mcp.tool()

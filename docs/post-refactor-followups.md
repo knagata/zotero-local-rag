@@ -2,7 +2,7 @@
 
 Opened: 2026-08-04, from the review after the indexing, repository, MCP and
 FastAPI refactoring.
-Last triaged: 2026-08-09. No production incident is known for anything here.
+Last triaged: 2026-08-10. No production incident is known for anything here.
 
 Every item below was re-read against the code on the triage date and names the
 file and symbol it lives in, so a fix that lands without updating this file
@@ -15,8 +15,9 @@ Priority means: **P1** can lose or corrupt data, or has no bound; **P2** is a
 robustness or cost defect within the local-only workflow; **P3** costs accuracy
 or clarity in what the user is shown. **P1 and P2 are empty as of 2026-08-09**;
 what is left is in P3 and both items need data this repository does not have
-(a re-measurement, and the corpus). Everything closed is in [Closed](#closed). Structural work is not ranked here — its
-order is decided by the size ratchet (`tests/test_function_size_ratchet.py`).
+(a re-measurement, and the corpus). Everything closed is in [Closed](#closed).
+Structural work is prioritized separately below; the size ratchet
+(`tests/test_function_size_ratchet.py`) enforces each improvement once adopted.
 
 ## P3
 
@@ -60,7 +61,23 @@ Verified against `tests/baselines/structure_recovery.json` on 2026-08-09, where
 
 ## Longer-term maintainability
 
-Not ranked with the above. The sizes below are held by the function-size ratchet
+These are maintenance risks rather than known product defects. Priority is
+`(impact + risk) × (6 - effort)`, each input scored 1–5; effort estimates are
+for the refactor and its deterministic tests, not corpus validation.
+
+| Order | Seam | Score | Estimate | Why next |
+|---|---|---:|---:|---|
+| 1 | Common external citer/reference node construction in `citation_graph/server.py` | 28 | 0.5–1 day | Two near-copies can drift in IDs, overrides and self-loop handling |
+| 2 | Separate layout/cache from graph assembly in `citation_graph/server.py` | 24 | 0.5–1 day | Makes the 463-line data boundary deterministic and directly testable |
+| 3 | Replace `db_relations._init_db` with versioned migrations | 24 | 2–4 days | The 698-line highest-coupling persistence boundary needs rollbackable upgrades |
+| 4 | Common S2 citation/reference paging and context matching in `src/citation_mapper.py` | 21 | 1–2 days | Asymmetric fixes can silently omit one direction of the graph |
+
+Do orders 1 and 4 alongside citation feature work, order 2 before changing layout
+or clustering, and order 3 as its own migration phase. Split the ingestion giants
+only after widening their measured ingestion net; their low route coverage makes
+an otherwise mechanical extraction unsafe.
+
+The sizes below are held by the function-size ratchet
 (`tests/function_size_budget.json`, checked by
 `tests/test_function_size_ratchet.py`), which stops them growing and records
 each split as it lands; this section keeps only what a splitter needs to know
@@ -85,7 +102,7 @@ that the size number does not say.
 
 ### What the splitters need to know
 
-- `index_from_zotero.main_async` (1,113 lines) is the largest remaining
+- `index_from_zotero._index_library` (1,104 lines) is the largest remaining
   function. The PDF route came out of it in 2026-08-09 as `_extract_pdf_chunks`
   (705 lines), which is now the second largest: the seam moved rather than
   disappeared, and the same measured-interface approach applies to it.
@@ -99,12 +116,11 @@ that the size number does not say.
   cloud. The way past this is to separate the deterministic decisions inside the
   PDF route from the extractor calls they choose between, so the decisions can
   be netted and the calls mocked.
-- `db_relations._init_db` (698 lines) wants versioned migrations, not a split
-  into helpers -- see item 2, which is the same problem leaking into a handler.
-- `rag_search` (442 lines) divides into request normalization, candidate
-  retrieval, fusion/filtering and response formatting.
+- `db_relations._init_db` (698 lines) wants versioned migrations, not a mechanical
+  split into helpers: each schema step needs an explicit version, rollback and
+  old-database fixture.
 - `pdf_extract.extract_chunks_from_pdf` (614) and
-  `citation_graph.build_graph_data` (470) divide along their existing decision
+  `citation_graph.build_graph_data` (463) divide along their existing decision
   phases. `citation_mapper.map_item_global_citations` (444) is a fourth over 400
   and holds the citations/references asymmetry that produced item 3.
 
@@ -115,6 +131,12 @@ that the size number does not say.
   `RuntimeWarning`.
 
 ## Closed
+
+- **`rag_search` mixed every retrieval phase in one function** (fixed
+  2026-08-10). The 432-line MCP handler is now a 110-line public contract over
+  separately tested request preparation, bounded Chroma retry, semantic RRF,
+  lexical fusion, policy filtering, context lookup and response formatting.
+  The function-size ratchet dropped from 23 oversized functions to 22.
 
 - **The graph server had no request bounds, and reported failures as findings**
   (fixed 2026-08-09). The translation route accepted any number of texts of any

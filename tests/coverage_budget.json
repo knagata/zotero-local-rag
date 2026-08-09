@@ -1,7 +1,7 @@
 {
   "unreached_statements": {
     "citation_graph/__init__.py": 0,
-    "citation_graph/graph_service.py": 27,
+    "citation_graph/graph_service.py": 0,
     "citation_graph/insights.py": 11,
     "citation_graph/lifecycle.py": 6,
     "citation_graph/server.py": 762,
@@ -62,7 +62,7 @@
     "src/pdf_provenance.py": 7,
     "src/pdf_toc_recovery.py": 53,
     "src/query_expansion.py": 4,
-    "src/rag_mcp_server.py": 664,
+    "src/rag_mcp_server.py": 621,
     "src/rapidocr_extract.py": 100,
     "src/recommendations.py": 3,
     "src/reference_agent.py": 146,

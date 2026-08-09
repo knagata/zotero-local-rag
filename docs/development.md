@@ -27,7 +27,7 @@ uv run pytest -m slow
 
 取込ループは当時1,856行あり（うち1,389行が添付1件分のforループ本体）、**それを呼ぶ
 テストは1つも無かった**。現在は `main_async` がロック解放のための薄いラッパで、本体は
-`_index_library`（1,111行）。in-processで呼べる網は `tests/test_ingest_end_to_end.py`
+`_index_library`（1,104行）。in-processで呼べる網は `tests/test_ingest_end_to_end.py`
 にもあり（合成蔵書・数秒・CIで実行）、下のベースラインは実蔵書側を受け持つ。
 
 分解の前にここへ網を張る。extract-method がここで失敗するときは、じわじわずれるので
@@ -118,7 +118,7 @@ uv run python scripts/build_structure_recovery_baseline.py --write  # 採択す�
 言って赤**になります。最後のものが無いと、一度分解したところで上限が古いまま残り、
 次の変更がその余白をまた使ってしまいます。
 
-記録時点で23関数（最大は取込ループ本体 `_index_library` の1,111行）。上限は分解が進むたびに下がります。
+記録時点で22関数（最大は取込ループ本体 `_index_library` の1,104行）。上限は分解が進むたびに下がります。
 
 ```bash
 uv run python scripts/build_function_size_budget.py          # 差分を見る
@@ -143,7 +143,7 @@ uv run python scripts/build_coverage_budget.py --check   # 悪化していない
 uv run python scripts/build_coverage_budget.py --write   # 採択する
 ```
 
-記録時点で **88モジュール・5,566文**が未実行。**増加は落とし、減少は報告するだけ**に
+記録時点で **88モジュール・5,496文**が未実行。**増加は落とし、減少は報告するだけ**に
 しています（関数サイズと違い、この数字は環境で変わる — CIはプラットフォーム分岐の
 ぶん4モジュールで到達が少ない。減少で落とすと両環境が同時に通れなくなる）。
 強制するのはCIなので、記録するのはCIの数字です。凍結した数字には意味があります —
@@ -260,7 +260,7 @@ uv run python scripts/eval_retrieval.py data/quality/gold_qa.jsonl --k 10 --incl
 - `data/manifest_v3.json`
 
 旧collection・`manifest.json`・`lexical.sqlite3`は本番経路では使用しません。復旧が必要な場合は、
-現在のV3データ面をバックアップから復元するか、原本からServer workflowのフェーズ1を再実行します。
+現在のV3データ面をバックアップから復元するか、原本から`Setup.command`でV3 DBを再構築します。
 
 大規模修復前だけ `data/backups/` にV3スナップショットを作成します。修復後にDB整合性と回帰テストを確認し、古い中間バックアップを削除します。`data/`はGitやSoftware Updateでは同期されないため、必要なら利用者側の暗号化バックアップへ保存してください。
 
