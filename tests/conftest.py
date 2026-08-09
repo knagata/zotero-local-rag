@@ -41,10 +41,10 @@ class RealDataWriteAttempted(RuntimeError):
 def _as_text(path) -> str:
     """Audit arguments arrive as str or bytes depending on the event.
 
-    ``sqlite3.connect`` passes bytes. Formatting those with ``str()`` yields
-    ``b'/Users/...'``, which resolves to a relative path that is under nothing,
-    so the guard silently allowed every database connection until this was
-    found by a test that expected to be blocked and was not.
+    ``sqlite3.connect`` passes bytes. Formatting those with ``str()`` keeps the
+    ``b'...'`` repr, which resolves to a relative path that is under nothing, so
+    the guard silently allowed every database connection until this was found by
+    a test that expected to be blocked and was not.
     """
     if isinstance(path, bytes):
         return path.decode("utf-8", "surrogateescape")
