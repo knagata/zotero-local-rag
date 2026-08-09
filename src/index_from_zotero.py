@@ -2113,6 +2113,33 @@ def _reparse_decision(
     )
 
 
+
+def _progress_line(
+    attachment: Any, *, index: int, total: int, source_type: str, file_path: Path,
+) -> str:
+    """The one line a run prints per attachment as it reaches it.
+
+    Naming what it shows rather than assembling it inline: an attachment with
+    no title falls back to its filename and then to the file on disk, because a
+    line reading ``attachment=ABCD1234 item=- type=pdf`` with nothing after it
+    identifies nothing to whoever is watching the run.
+    """
+    title = (getattr(attachment, "title", None) or "").strip()
+    if not title:
+        title = (getattr(attachment, "filename", None) or "").strip()
+    if not title:
+        title = file_path.name
+    if len(title) > 80:
+        title = title[:77] + "..."
+    # A top-level attachment has no parent, which is ordinary but worth saying
+    # out loud: it is also what a lost parent looks like.
+    parent = attachment.parentItemKey or "- (orphan?)"
+    return (
+        f"[PROGRESS] ({index}/{total}) attachment={attachment.attachmentKey} "
+        f"item={parent} type={source_type} {title}"
+    )
+
+
 def _source_verdict(
     args: argparse.Namespace,
     *,
@@ -2704,23 +2731,11 @@ async def main_async(args: argparse.Namespace) -> None:
                     )
 
         if show_progress:
-            short_title = (a.title or "").strip()
-            if not short_title:
-                short_title = (getattr(a, "filename", None) or "").strip()
-            if not short_title:
-                short_title = file_path.name
-
-            if len(short_title) > 80:
-                short_title = short_title[:77] + "..."
-
-            parent_disp = a.parentItemKey or "-"
-            if parent_disp == "-":
-                parent_disp = "- (orphan?)"
-
-            # stype already computed above
             print(
-                f"[PROGRESS] ({idx}/{total_attachments}) attachment={a.attachmentKey} "
-                f"item={parent_disp} type={stype} {short_title}",
+                _progress_line(
+                    a, index=idx, total=total_attachments,
+                    source_type=stype, file_path=file_path,
+                ),
                 file=sys.__stderr__,
             )
 
