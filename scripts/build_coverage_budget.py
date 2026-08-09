@@ -1,4 +1,4 @@
-"""Record how many statements no test reaches, so that number can only fall.
+"""Record how many statements no test reaches, as a ceiling that comes down.
 
 Counted as *unreached statements*, not as a percentage. A percentage falls when
 code is added even if the addition is well covered, so it punishes writing code
@@ -13,8 +13,14 @@ kept producing surprises. The floor stops that getting worse while it is being
 improved.
 
 Reads an existing coverage data file rather than measuring: the suite is run
-under coverage once, and both the test result and this check come from that
-run.
+under coverage once, and both the test result and this check come from that run.
+
+An increase fails; a decrease is reported and adopted deliberately. Unlike
+function sizes, this number is not the same everywhere -- CI reaches slightly
+less of four modules than macOS does, through branches guarded by platform or
+by what is installed -- so a rule that failed on a decrease would leave the two
+environments unable to both pass. CI is the one that enforces, so CI's numbers
+are the ones recorded.
 
     uv run coverage run --source=src,citation_graph -m pytest -q
     uv run python scripts/build_coverage_budget.py --check
@@ -24,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import platform
 import sys
 from pathlib import Path
 
@@ -89,26 +96,39 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.write:
         BUDGET_PATH.write_text(
-            json.dumps({"unreached_statements": measured}, indent=2) + "\n",
+            json.dumps({
+                "measured_on": f"{platform.system().lower()} python{sys.version_info.major}."
+                               f"{sys.version_info.minor}",
+                "enforced_by": "the CI workflow, which measures on linux",
+                "unreached_statements": measured,
+            }, indent=2) + "\n",
             encoding="utf-8",
         )
         print(f"wrote {BUDGET_PATH.relative_to(ROOT)}")
+        if platform.system().lower() != "linux":
+            print("  note: CI measures on linux and reaches slightly less of "
+                  "citation_mapper, env_utils, pdf_extract and text_utils "
+                  "(platform-guarded branches). Adopting here can make the next "
+                  "CI run fail; raise those four to what CI reports.")
         return 0
     if args.check and (grew or added):
         print(
             "\nSomething was added that no test reaches, or a test that reached "
-            "it was removed. Cover it, or adopt the new floor deliberately with "
+            "it was removed. Cover it, or adopt the new ceiling deliberately with "
             "--write and say why in the commit.",
             file=sys.stderr,
         )
         return 1
-    if args.check and shrank:
-        print(
-            "\nFewer unreached statements than recorded -- adopt them with "
-            "--write so the floor comes down with them.",
-            file=sys.stderr,
-        )
-        return 1
+    if shrank:
+        # Reported, not failed. Unlike function sizes, this number is not the
+        # same in every environment: CI measures four modules as having more
+        # unreached statements than macOS does, because branches guarded by
+        # what is installed or which platform it is never run there. Failing on
+        # a decrease would mean the two environments could never both pass, so
+        # the ceiling is lowered deliberately with --write rather than by a red
+        # test somebody has to work around.
+        print("\nFewer unreached statements than recorded -- lower the ceiling "
+              "with --write when you mean to.")
     return 0
 
 
