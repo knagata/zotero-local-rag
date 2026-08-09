@@ -55,6 +55,7 @@ CI はこの3つに `uv run python -c "import src.cli"` を加えたものを回
 | 真偽テスト（性質） | `test_no_recovered_tree_repeats_a_boundary` | ○ |
 | 手書きの規則テスト | `tests/test_source_structure_refresh.py` | ○ |
 | 実コーパス照合 | `tests/test_structure_recovery_corpus.py` | × (蔵書とベースラインが要る) |
+| 取込の特性化 | `tests/test_ingestion_baseline.py` | × (同上＋埋め込みモデル) |
 
 ベースライン `tests/baselines/` は**追跡対象外**。書名と章見出しを含み、このリポジトリ
 は公開されているため。手元で `--write` して使う。
