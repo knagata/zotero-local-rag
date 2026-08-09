@@ -13,42 +13,13 @@ than deleted silently, because the same review would otherwise raise them again.
 
 Priority means: **P1** can lose or corrupt data, or has no bound; **P2** is a
 robustness or cost defect within the local-only workflow; **P3** costs accuracy
-or clarity in what the user is shown. Structural work is not ranked here — its
+or clarity in what the user is shown. **P1 is empty as of 2026-08-09** -- all
+five are in [Closed](#closed). Structural work is not ranked here — its
 order is decided by the size ratchet (`tests/test_function_size_ratchet.py`).
-
-## P1
-
-### 1. Make re-OCR compensation resilient to rollback failures
-
-**Done 2026-08-09.** `src/reocr_adoption.py`
-
-- Each compensation now runs independently and collects its own failure, so one
-  store refusing no longer abandons the others or the `failed` status write that
-  tells the next run to retry. The raised error names the original failure and
-  every store left inconsistent.
-- The wider problem found while testing it: the status writes ran inside the
-  `try`, so a bookkeeping failure rolled back a complete, consistent adoption.
-  They now run after the canonical stores are all new, and their failures are
-  reported in `status_write_errors` rather than raised -- raising told the
-  caller to redo the expensive adoption that had in fact succeeded.
-- `tests/test_reocr_adoption_fault_injection.py` fails every phase in turn and
-  asserts the same invariant each time, with the stores each case is still
-  answerable for stated in the table. Four regressions were injected and caught.
-
-### 2. Serialize manifest writers
-
-- Location: `src/manifest.py`
-- Still true 2026-08-09: every writer builds the same `.json.tmp` path next to
-  the manifest and `replace()`s it into place.
-- Risk: concurrent writers collide on the temporary path, and independent
-  read-modify-write cycles lose updates.
-- Proposal: a unique temporary inode plus a shared writer lock. Decide which
-  maintenance commands are authorized writers. A unique temporary name alone
-  fixes the collision and not the lost update.
 
 ## P2
 
-### 3. Add translation request limits
+### 1. Add translation request limits
 
 - Location: `citation_graph/server.py` (`_TranslateBatchRequest`)
 - Still true 2026-08-09: the model is `texts: list[str]` with no constraint, so
@@ -57,7 +28,7 @@ order is decided by the size ratchet (`tests/test_function_size_ratchet.py`).
 - Proposal: enforce the limits in the Pydantic model, reject oversized payloads
   before the upstream call, and return sanitized upstream errors.
 
-### 4. Move identifier override migration out of request handling
+### 2. Move identifier override migration out of request handling
 
 - Location: `citation_graph/server.py` (`_ensure_override_table`)
 - Still true 2026-08-09: the handler calls it per update, and it retries five
@@ -69,7 +40,7 @@ order is decided by the size ratchet (`tests/test_function_size_ratchet.py`).
 
 ## P3
 
-### 5. Say which citation count the tooltip is showing
+### 3. Say which citation count the tooltip is showing
 
 - Locations: `citation_graph/server.py` (~L1769), `citation_graph/static/app.js`
   (~L2186)
@@ -80,7 +51,7 @@ order is decided by the size ratchet (`tests/test_function_size_ratchet.py`).
 - Proposal: name the S2 total and the drawn count separately, or label the
   total as S2's.
 
-### 6. Give S2 identity a discriminator for author-less records
+### 4. Give S2 identity a discriminator for author-less records
 
 - Location: `src/citation_mapper.py` (`_record_names_a_creator`)
 - The function passes a record that lists no author, on the principle that
@@ -94,7 +65,7 @@ order is decided by the size ratchet (`tests/test_function_size_ratchet.py`).
   EARTHQUAKES"). Refusing them wholesale drops the correct with the wrong.
 - Re-measure before acting; the count is from the mapping as it stood then.
 
-### 7. Flat-PDF recovery: three shapes that stay flat
+### 5. Flat-PDF recovery: three shapes that stay flat
 
 Verified against `tests/baselines/structure_recovery.json` on 2026-08-09, where
 6 of 84 attachments recover a tree. Both named books are still flat.
@@ -160,13 +131,13 @@ that the size number does not say.
   PDF route from the extractor calls they choose between, so the decisions can
   be netted and the calls mocked.
 - `db_relations._init_db` (698 lines) wants versioned migrations, not a split
-  into helpers -- see item 4, which is the same problem leaking into a handler.
+  into helpers -- see item 2, which is the same problem leaking into a handler.
 - `rag_search` (442 lines) divides into request normalization, candidate
   retrieval, fusion/filtering and response formatting.
 - `pdf_extract.extract_chunks_from_pdf` (614) and
   `citation_graph.build_graph_data` (470) divide along their existing decision
   phases. `citation_mapper.map_item_global_citations` (444) is a fourth over 400
-  and holds the citations/references asymmetry that produced item 5.
+  and holds the citations/references asymmetry that produced item 3.
 
 ### Checking layers CI does not have
 
@@ -175,6 +146,27 @@ that the size number does not say.
   `RuntimeWarning`.
 
 ## Closed
+
+- **Re-OCR compensation abandoned the rest when one store refused** (fixed
+  2026-08-09). Each compensation runs independently and collects its own
+  failure, so the `failed` status write that tells the next run to retry is no
+  longer skipped, and the raised error names the original failure and every
+  store left inconsistent. Found while testing it: the five status writes ran
+  inside the `try`, so failing to record a complete adoption rolled the
+  adoption back; they now run after the canonical stores are new and their
+  failures are reported in `status_write_errors` rather than raised.
+  `tests/test_reocr_adoption_fault_injection.py` fails every phase in turn.
+- **Manifest writers shared one temporary file and could lose each other's
+  changes** (fixed 2026-08-09). Each write now gets a temporary inode of its
+  own, is fsynced before the rename and the directory after it, and takes a
+  writer lock on a guard file beside the manifest. The lost update needed more
+  than that -- two callers that load, work for a minute and save leave only the
+  second one's version -- so `updating()` holds the lock across the whole
+  read-modify-write, and `purge_orphans` and `repair_v3_indexes`, which each
+  did exactly that cycle, use it. `tests/test_manifest_concurrency.py` runs
+  threads and separate processes; the temporary inode's own guarantee is
+  checked by what a failed write leaves behind, because racing two unlocked
+  writers is not reliably reproducible.
 
 - **The read path had no ceiling, and misnamed its own failures** (fixed
   2026-08-09). `search_items` fetched `max(k * 10, 100)` chunks with no cap
@@ -220,7 +212,7 @@ that the size number does not say.
   those rows collide on `uq_global_citations_identity`, a partial expression
   index that COALESCEs the snippet and spans the raw reference text, so
   re-running does not duplicate them and no repair migration was needed. What
-  remains is the label, now item 5.
+  remains is the label, now item 3.
 - **Lift the PDF route out of `main_async`** (done 2026-08-09, `41c1484`). The
   665-line `else` branch named here as "the next unit to lift out" is now
   `_extract_pdf_chunks`.

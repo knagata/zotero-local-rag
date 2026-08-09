@@ -22,7 +22,7 @@ from index_from_zotero import _flush_and_verify_hnsw  # noqa: E402
 from lexical_index import (  # noqa: E402
     delete_by_chunk_ids, list_chunk_ids as list_lexical_chunk_ids, upsert_chunks,
 )
-from manifest import load_manifest, save_manifest  # noqa: E402
+from manifest import load_manifest, updating  # noqa: E402
 from scripts.audit_v3_cutover import source_rows  # noqa: E402
 from scripts.rebuild_document_structure import rebuild_item  # noqa: E402
 from chunk_store import get_item_chunks  # noqa: E402
@@ -147,11 +147,14 @@ def main() -> int:
             raise RuntimeError("Chroma/FTS ID sets still differ after repair")
         sample_id = next(iter(remaining_ids), None)
         _flush_and_verify_hnsw(collection, sample_id)
-        manifest["hnsw_validated"] = True
-        save_manifest(args.manifest, manifest)
+        # One field, written into whatever the manifest holds now: the copy
+        # loaded at the top of this run is minutes old by here, and saving it
+        # whole would undo anything written in between.
+        with updating(args.manifest) as current:
+            current["hnsw_validated"] = True
     except Exception:
-        manifest["hnsw_validated"] = False
-        save_manifest(args.manifest, manifest)
+        with updating(args.manifest) as current:
+            current["hnsw_validated"] = False
         raise
     finally:
         client.close()

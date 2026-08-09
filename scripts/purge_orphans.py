@@ -55,7 +55,7 @@ load_dotenv_native(ROOT)
 from src import db_relations  # noqa: E402
 from src.chunk_store import active_collection_name  # noqa: E402
 from src.chunk_store import list_attachment_keys  # noqa: E402
-from src.manifest import load_manifest, save_manifest  # noqa: E402
+from src.manifest import load_manifest, updating  # noqa: E402
 from src.orphan_cleanup import (  # noqa: E402
     attachment_parents, classify_ledger_keys, live_item_keys, stale_manifest_keys,
 )
@@ -293,15 +293,16 @@ async def main_async(args: argparse.Namespace) -> int:
         payload["reparented_rows_retired"] = len(report.reparented)
         if gone_attachments:
             payload["attachment_content_removed"] = _purge_attachments(gone_attachments)
-            files = manifest.get("files") or {}
-            for key in gone_attachments:
-                files.pop(key, None)
-            save_manifest(manifest_path, manifest)
-        if stale_rows:
-            files = manifest.get("files") or {}
-            for key in stale_rows:
-                files.pop(key, None)
-            save_manifest(manifest_path, manifest)
+        if gone_attachments or stale_rows:
+            # Re-read under the writer lock rather than saving the copy loaded
+            # before the confirmations above: an indexer that added entries in
+            # the meantime would have them dropped by this save, with nothing
+            # reporting it. The removals are computed from keys, so they apply
+            # to whatever the manifest says now.
+            with updating(manifest_path) as current:
+                files = current.get("files") or {}
+                for key in [*gone_attachments, *stale_rows]:
+                    files.pop(key, None)
         payload["manifest_rows_removed"] = len(stale_rows) if args.apply else 0
 
     print(json.dumps(payload, ensure_ascii=False, indent=2))

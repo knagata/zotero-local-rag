@@ -1,8 +1,13 @@
 # src/manifest.py
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
+import os
+import tempfile
+import threading
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict
 
@@ -80,8 +85,89 @@ def load_manifest(manifest_path: Path) -> Dict[str, Any]:
         return {"version": 1, "files": {}, "notes": {}}
 
 
-def save_manifest(manifest_path: Path, manifest: Dict[str, Any]) -> None:
+#: Set while this thread holds the writer lock, so a ``save_manifest`` inside an
+#: ``updating`` block does not deadlock against the lock its own caller holds.
+_HOLDING = threading.local()
+
+
+@contextmanager
+def _writer_lock(manifest_path: Path):
+    """Serialize manifest writers on a guard file beside the manifest.
+
+    The guard has a stable inode and is never replaced, for the same reason the
+    indexing lock has one: a lock keyed on a path that gets replaced is not a
+    lock. Re-entrant within a thread so ``updating`` can save through the same
+    code path as everyone else.
+    """
+    if getattr(_HOLDING, "path", None) == str(manifest_path):
+        yield
+        return
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = manifest_path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(manifest_path)
+    guard = manifest_path.with_name(f".{manifest_path.name}.writer")
+    guard_fd = os.open(guard, os.O_RDWR | os.O_CREAT, 0o600)
+    _HOLDING.path = str(manifest_path)
+    try:
+        fcntl.flock(guard_fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        _HOLDING.path = None
+        fcntl.flock(guard_fd, fcntl.LOCK_UN)
+        os.close(guard_fd)
+
+
+def _write(manifest_path: Path, manifest: Dict[str, Any]) -> None:
+    """Replace the manifest with a fully written file, or leave it alone.
+
+    The temporary file gets an inode of its own. Every writer used to build the
+    same ``.json.tmp`` path, so two of them wrote into one file and whichever
+    renamed second published a mixture -- and a crash mid-write left that
+    shared name behind for the next writer to append meaning to. ``fsync``
+    before the rename, and on the directory after it, so a crash cannot leave
+    the rename recorded and the bytes missing.
+    """
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps(manifest, ensure_ascii=False, indent=2)
+    handle, temporary = tempfile.mkstemp(
+        dir=str(manifest_path.parent), prefix=f".{manifest_path.name}.", suffix=".tmp",
+    )
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, manifest_path)
+    except BaseException:
+        Path(temporary).unlink(missing_ok=True)
+        raise
+    directory_fd = os.open(str(manifest_path.parent), os.O_RDONLY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
+def save_manifest(manifest_path: Path, manifest: Dict[str, Any]) -> None:
+    """Write the manifest, serialized against other writers."""
+    with _writer_lock(manifest_path):
+        _write(manifest_path, manifest)
+
+
+@contextmanager
+def updating(manifest_path: Path):
+    """Read, change and write the manifest without losing a concurrent change.
+
+    ``save_manifest`` alone cannot prevent a lost update: two callers that each
+    load, work for a minute and save leave only the second one's version, and
+    nothing reports that the first one's entries are gone. Holding the lock
+    across the whole cycle is the only thing that does, so the cycle is offered
+    as one operation:
+
+        with updating(path) as manifest:
+            manifest["files"].pop(key, None)
+
+    Nothing is written if the body raises.
+    """
+    with _writer_lock(manifest_path):
+        manifest = load_manifest(manifest_path)
+        yield manifest
+        _write(manifest_path, manifest)
