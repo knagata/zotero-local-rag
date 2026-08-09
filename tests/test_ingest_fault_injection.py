@@ -157,12 +157,6 @@ def _assert_stores_agree(plane, where: str) -> None:
     )
 
 
-def _release_the_lock_a_new_process_would_not_inherit() -> None:
-    import index_from_zotero
-
-    index_from_zotero._release_indexing_lock(None)
-
-
 PHASES = [
     ("chroma upsert, first flush", ("upsert", 1)),
     ("chroma upsert, second flush", ("upsert", 2)),
@@ -188,14 +182,10 @@ def test_a_re_run_after_a_failure_finishes_the_job(tmp_path):
             _run(source, fail_on=("upsert", 2))
         _assert_stores_agree(plane, "after the failed run")
 
-        # A real second run is a new process, where the lock was released by the
-        # atexit handler the first run registered. In one process it is still
-        # held, because main_async has no failure path that releases it -- see
-        # the register entry "The indexing lock is only released at process
-        # exit". Released here so this test asks about the manifest and the
-        # stores rather than about that.
-        _release_the_lock_a_new_process_would_not_inherit()
-
+        # No lock cleanup between the two runs: main_async releases in a
+        # finally now, so a failed run leaves the lock free for the next one.
+        # This line is the check -- without the release, the second run exits
+        # with "another indexer is running" naming this very process.
         _run(source)
         _assert_stores_agree(plane, "after the re-run")
         assert set(_manifest(plane)["files"]) == {"SYNPDF001", "SYNHTML01", "SYNEPUB01"}, (
@@ -217,3 +207,18 @@ def test_a_failed_run_does_not_leave_attachments_marked_in_flight(tmp_path):
             f"attachments {sorted(set(inflight) & present)} are both written and "
             "still marked in flight"
         )
+
+
+def test_a_failed_run_does_not_keep_the_indexing_lock(tmp_path):
+    # The lock is what stops the MCP server serving mid-write, so a run that
+    # dies holding it takes search down until someone deletes a file by hand.
+    import index_from_zotero
+
+    with temporary_data_plane(tmp_path) as plane:
+        source = SyntheticZoteroSource(build_library(tmp_path))
+        with pytest.raises(BaseException):
+            _run(source, fail_on=("upsert", 2))
+        assert not plane.indexing_lock_path.exists(), (
+            "the lock outlived the run that took it"
+        )
+        assert index_from_zotero._HELD_LOCK is None

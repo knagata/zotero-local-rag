@@ -33,6 +33,8 @@ from src.reocr_adoption import adopt_prepared_reocr  # noqa: E402
 from src.reocr_quality import (  # noqa: E402
     evaluate_adoption_gate, majority_language, text_metrics,
 )
+from src.indexing_lock import default_path as indexing_lock_path  # noqa: E402
+from src.indexing_lock import held as indexing_lock_held  # noqa: E402
 from src.v3_data_plane import chroma_dir, lexical_path, manifest_path  # noqa: E402
 
 
@@ -195,13 +197,20 @@ def main(argv: list[str] | None = None) -> int:
             persist_active_config=False,
         )
         old_chunks = get_item_chunks(key[0], chroma_dir=chroma_directory, collection_name=collection_name)
-        report["adoption"] = adopt_prepared_reocr(
-            item_key=key[0], attachment_key=key[1], prepared=prepared[key],
-            collection=collection, old_item_chunks=old_chunks,
-            manifest_file=manifest_file, lexical_file=lexical_file,
-            force=bool(args.force_adopt),
-            gate_passed=bool(comparison["quality_gate"]["passed"]),
-        )
+        # Adoption rewrites Chroma, the lexical index, the manifest and the
+        # structure database -- the same four the indexer writes, and it used
+        # to do so without taking the indexer's lock. Running beside an indexer,
+        # either could overwrite the other's generation, and an MCP query in
+        # between could read half of one. The whole unit of work is held, not
+        # each write, because the point is that no reader sees the seam.
+        with indexing_lock_held(indexing_lock_path(ROOT)):
+            report["adoption"] = adopt_prepared_reocr(
+                item_key=key[0], attachment_key=key[1], prepared=prepared[key],
+                collection=collection, old_item_chunks=old_chunks,
+                manifest_file=manifest_file, lexical_file=lexical_file,
+                force=bool(args.force_adopt),
+                gate_passed=bool(comparison["quality_gate"]["passed"]),
+            )
         report["canonical_data_modified"] = True
     elif args.adopt and failures:
         failure = failures[0]

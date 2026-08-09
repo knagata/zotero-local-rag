@@ -19,6 +19,7 @@ from typing import Any, Callable, Iterable, List, Optional
 
 from zotero_source_localapi import ZoteroLocalAPI, ZoteroAttachment
 
+import indexing_lock
 from embedder import get_collection
 from html_extract import (
     extract_chunks_from_html_snapshot,
@@ -160,7 +161,7 @@ class IngestPaths:
                 os.environ.get("PDF_CACHE_DIR", str(data_dir / "pdf_cache"))
             ),
             manifest_path=v3_manifest_path(project_root),
-            indexing_lock_path=data_dir / "indexing.lock",
+            indexing_lock_path=indexing_lock.default_path(project_root),
             pipeline_config_path=resolved_chroma / "embedder_config_v3.json",
             collection_name=v3_collection_name(),
             # Required for local storage resolution in your pipeline.
@@ -241,129 +242,28 @@ if "BATCH_SIZE" in os.environ and "FLUSH_SIZE" not in os.environ:
 # ---------------------------------------------------------------------------
 
 
-@contextmanager
-def _indexing_lock_metadata_guard(for_lock_path: Path | str | None = None):
-    """Serialize publication, stale recovery, and release of the lock path.
+#: The lock this process is holding, if any. Kept here so the run can be
+#: released by whoever notices it ended -- including the ``finally`` in
+#: ``main_async``, which previously had no way to learn what the body acquired
+#: and left a failed run holding the lock until the process exited.
+_HELD_LOCK: dict[str, Any] | None = None
 
-    The guard has a stable inode and is never replaced. This supplies the
-    compare-and-remove critical section that a pathname alone cannot provide:
-    no owner can publish or release a lock between stale inspection and unlink.
-    """
-    lock_path = Path(for_lock_path) if for_lock_path else paths().indexing_lock_path
-    guard_path = lock_path.with_name(f".{lock_path.name}.guard")
-    guard_fd = os.open(guard_path, os.O_RDWR | os.O_CREAT, 0o600)
-    try:
-        fcntl.flock(guard_fd, fcntl.LOCK_EX)
-        yield
-    finally:
-        fcntl.flock(guard_fd, fcntl.LOCK_UN)
-        os.close(guard_fd)
 
 def _acquire_indexing_lock() -> dict:
-    """Create the indexing lock file.  Exits with an error if another indexer
-    is currently running (lock file exists and the owning process is alive).
-
-    Returns the lock metadata dict that should be passed to ``_release_indexing_lock``.
-    """
-    paths().indexing_lock_path.parent.mkdir(parents=True, exist_ok=True)
-    lock_data = {
-        "pid": os.getpid(),
-        "token": uuid.uuid4().hex,
-        "started_at": datetime.now(timezone.utc).isoformat(),
-        "operation": "indexing",
-        # The lock is released at the path it was taken at, not at whatever the
-        # run resolves to later. Releasing by re-resolution reads and unlinks a
-        # file the lock was never held on if the plane changed in between --
-        # which is how a test against a temporary plane came to touch the real
-        # data directory at interpreter exit (2026-08-09).
-        "path": str(paths().indexing_lock_path),
-    }
-    payload = json.dumps(lock_data, ensure_ascii=False).encode("utf-8")
-    candidate_path = paths().indexing_lock_path.with_name(
-        f".{paths().indexing_lock_path.name}.{lock_data['token']}.tmp"
-    )
-    candidate_fd = os.open(
-        candidate_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600,
-    )
-    try:
-        os.write(candidate_fd, payload)
-        os.fsync(candidate_fd)
-    finally:
-        os.close(candidate_fd)
-
-    try:
-        while True:
-            with _indexing_lock_metadata_guard():
-                try:
-                    # Publish a fully written inode atomically. The metadata
-                    # guard also prevents another recovery from unlinking this
-                    # inode after it has inspected an older lock.
-                    os.link(candidate_path, paths().indexing_lock_path)
-                except FileExistsError:
-                    pass
-                else:
-                    break
-
-                # Inspection and removal are one critical section. Every
-                # publisher/releaser takes the same stable-inode flock.
-                try:
-                    existing = json.loads(paths().indexing_lock_path.read_text(encoding="utf-8"))
-                except Exception:
-                    existing = {}
-                existing_pid = existing.get("pid")
-                if existing_pid is not None:
-                    try:
-                        os.kill(existing_pid, 0)  # signal 0 = existence check
-                        raise SystemExit(
-                            f"別のインデクサーが実行中です (PID={existing_pid})。\n"
-                            f"ロックファイル: {paths().indexing_lock_path}\n"
-                            "インデクサーの完了を待ってから再実行してください。\n"
-                            "（プロセスが存在しないはずなのにロックが残っている場合は、"
-                            "手動で削除してください）"
-                        )
-                    except OSError:
-                        print(
-                            f"[WARN] 古いロックファイルを削除します（PID={existing_pid} は存在しません）",
-                            file=sys.__stderr__,
-                        )
-                else:
-                    print(
-                        "[WARN] PID情報のない古いロックファイルを削除します",
-                        file=sys.__stderr__,
-                    )
-                try:
-                    paths().indexing_lock_path.unlink()
-                except OSError:
-                    continue
-    finally:
-        try:
-            candidate_path.unlink()
-        except FileNotFoundError:
-            pass
-
-    # Ensure the lock is released on normal exit, SystemExit, or KeyboardInterrupt.
-    atexit.register(_release_indexing_lock, lock_data)
-
-    return lock_data
+    """Take the lock for this run's plane. Kept as a name callers already use."""
+    global _HELD_LOCK
+    _HELD_LOCK = indexing_lock.acquire(paths().indexing_lock_path)
+    return _HELD_LOCK
 
 
 def _release_indexing_lock(lock_data: dict[str, Any] | None = None) -> None:
-    """Remove only a lock owned by this process/run (best-effort)."""
-    held = Path(lock_data["path"]) if lock_data and lock_data.get("path") else paths().indexing_lock_path
-    try:
-        with _indexing_lock_metadata_guard(held):
-            if lock_data is not None:
-                try:
-                    current = json.loads(held.read_text(encoding="utf-8"))
-                except (OSError, ValueError):
-                    return
-                if current.get("token") != lock_data.get("token"):
-                    return
-            held.unlink()
-    except FileNotFoundError:
-        pass  # already gone — nothing to do
-    except OSError as e:
-        print(f"[WARN] ロックファイルの削除に失敗しました: {e}", file=sys.__stderr__)
+    """Release a lock this run took, at the path it was taken at."""
+    global _HELD_LOCK
+    held = lock_data or _HELD_LOCK
+    if held is None:
+        return
+    indexing_lock.release(held, lock_path=paths().indexing_lock_path)
+    _HELD_LOCK = None
 
 
 def _dedupe_by_id(
@@ -3139,6 +3039,25 @@ async def main_async(
     source: Any | None = None,
     open_collection: Callable[..., Any] | None = None,
 ) -> None:
+    """Run one indexing pass, releasing the lock however it ends.
+
+    The release used to happen on the last line of the happy path and, for
+    anything else, on ``atexit``. One run per process made that survivable;
+    a caller that runs an ingest and keeps going met a lock naming its own live
+    process, with a message telling it to delete the file by hand.
+    """
+    try:
+        await _index_library(args, source=source, open_collection=open_collection)
+    finally:
+        _release_indexing_lock()
+
+
+async def _index_library(
+    args: argparse.Namespace,
+    *,
+    source: Any | None = None,
+    open_collection: Callable[..., Any] | None = None,
+) -> None:
     """Run one indexing pass.
 
     ``source`` and ``open_collection`` exist so a caller can supply a library
@@ -4232,7 +4151,7 @@ async def main_async(
         print(f"[PROGRESS] Total runtime: {time.perf_counter() - t0:.1f}s", file=sys.__stderr__)
 
     _close_chroma_collection(col)
-    _release_indexing_lock(locals().get("lock_data"))
+    _release_indexing_lock()
 
     if args.rebuild:
         resolved_attachment_keys = {str(row.attachmentKey) for row in attachments}

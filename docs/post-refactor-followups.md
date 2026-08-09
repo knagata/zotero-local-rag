@@ -18,23 +18,7 @@ order is decided by the size ratchet (`tests/test_function_size_ratchet.py`).
 
 ## P1
 
-### 1. Share the indexing lock with re-OCR adoption
-
-- Locations: `scripts/run_reocr_queue.py`, `src/reocr_adoption.py`,
-  `src/index_from_zotero.py`
-- Still true 2026-08-09: `_acquire_indexing_lock` lives in
-  `index_from_zotero.py` and nothing else can reach it; neither
-  `reocr_adoption.py` nor `run_reocr_queue.py` mentions a lock.
-- Risk: `--adopt` mutates Chroma, the lexical index, the manifest and the
-  structure database without the lock the normal indexer takes. Concurrent
-  indexing can overwrite either generation, and MCP queries can observe a
-  partial update.
-- Proposal: move acquisition/release into a module both callers can import, and
-  hold it for the whole adoption unit of work.
-- Raise priority if adoption is automated, or run while the MCP server or the
-  indexer is active.
-
-### 2. Make re-OCR compensation resilient to rollback failures
+### 1. Make re-OCR compensation resilient to rollback failures
 
 **Done 2026-08-09.** `src/reocr_adoption.py`
 
@@ -51,7 +35,7 @@ order is decided by the size ratchet (`tests/test_function_size_ratchet.py`).
   asserts the same invariant each time, with the stores each case is still
   answerable for stated in the table. Four regressions were injected and caught.
 
-### 3. Bound `search_items` resource use and validate inputs
+### 2. Bound `search_items` resource use and validate inputs
 
 - Location: `src/rag_mcp_server.py` (`search_items`)
 - Still true 2026-08-09: `k_internal = max(k * 10, 100)` has no upper bound, and
@@ -63,22 +47,7 @@ order is decided by the size ratchet (`tests/test_function_size_ratchet.py`).
   maximum, validate the query and list parameters, and return a stable client
   error.
 
-### 4. The indexing lock is only released when the process exits
-
-- Location: `src/index_from_zotero.py` (`_acquire_indexing_lock`, `main_async`)
-- Found 2026-08-09 by the ingest fault-injection tests: after a run raises, the
-  lock file is still held. `main_async` has no failure path that releases it --
-  the release is registered with `atexit` and repeated once at the end of the
-  happy path, read out of `locals().get("lock_data")`.
-- Why it is not P1: the CLI is one run per process, so `atexit` covers a crash
-  today. It bites any caller that runs an ingest and then keeps going -- an
-  embedded run, a maintenance process doing two things, a test -- where the
-  second attempt is refused with "another indexer is running" naming its own
-  live PID, and the message tells the user to delete the file by hand.
-- Proposal: release in a `finally` around the run, keeping `atexit` as the
-  backstop, and stop reading the lock data out of `locals()`.
-
-### 5. Serialize manifest writers
+### 3. Serialize manifest writers
 
 - Location: `src/manifest.py`
 - Still true 2026-08-09: every writer builds the same `.json.tmp` path next to
@@ -91,7 +60,7 @@ order is decided by the size ratchet (`tests/test_function_size_ratchet.py`).
 
 ## P2
 
-### 6. Add translation request limits
+### 4. Add translation request limits
 
 - Location: `citation_graph/server.py` (`_TranslateBatchRequest`)
 - Still true 2026-08-09: the model is `texts: list[str]` with no constraint, so
@@ -100,7 +69,7 @@ order is decided by the size ratchet (`tests/test_function_size_ratchet.py`).
 - Proposal: enforce the limits in the Pydantic model, reject oversized payloads
   before the upstream call, and return sanitized upstream errors.
 
-### 7. Move identifier override migration out of request handling
+### 5. Move identifier override migration out of request handling
 
 - Location: `citation_graph/server.py` (`_ensure_override_table`)
 - Still true 2026-08-09: the handler calls it per update, and it retries five
@@ -112,7 +81,7 @@ order is decided by the size ratchet (`tests/test_function_size_ratchet.py`).
 
 ## P3
 
-### 8. Say which citation count the tooltip is showing
+### 6. Say which citation count the tooltip is showing
 
 - Locations: `citation_graph/server.py` (~L1769), `citation_graph/static/app.js`
   (~L2186)
@@ -123,7 +92,7 @@ order is decided by the size ratchet (`tests/test_function_size_ratchet.py`).
 - Proposal: name the S2 total and the drawn count separately, or label the
   total as S2's.
 
-### 9. Give S2 identity a discriminator for author-less records
+### 7. Give S2 identity a discriminator for author-less records
 
 - Location: `src/citation_mapper.py` (`_record_names_a_creator`)
 - The function passes a record that lists no author, on the principle that
@@ -137,7 +106,7 @@ order is decided by the size ratchet (`tests/test_function_size_ratchet.py`).
   EARTHQUAKES"). Refusing them wholesale drops the correct with the wrong.
 - Re-measure before acting; the count is from the mapping as it stood then.
 
-### 10. Flat-PDF recovery: three shapes that stay flat
+### 8. Flat-PDF recovery: three shapes that stay flat
 
 Verified against `tests/baselines/structure_recovery.json` on 2026-08-09, where
 6 of 84 attachments recover a tree. Both named books are still flat.
@@ -203,13 +172,13 @@ that the size number does not say.
   PDF route from the extractor calls they choose between, so the decisions can
   be netted and the calls mocked.
 - `db_relations._init_db` (698 lines) wants versioned migrations, not a split
-  into helpers -- see item 7, which is the same problem leaking into a handler.
+  into helpers -- see item 5, which is the same problem leaking into a handler.
 - `rag_search` (442 lines) divides into request normalization, candidate
   retrieval, fusion/filtering and response formatting.
 - `pdf_extract.extract_chunks_from_pdf` (614) and
   `citation_graph.build_graph_data` (470) divide along their existing decision
   phases. `citation_mapper.map_item_global_citations` (444) is a fourth over 400
-  and holds the citations/references asymmetry that produced item 8.
+  and holds the citations/references asymmetry that produced item 6.
 
 ### Checking layers CI does not have
 
@@ -218,6 +187,15 @@ that the size number does not say.
   `RuntimeWarning`.
 
 ## Closed
+
+- **The indexing lock was unreachable and unreleased** (fixed 2026-08-09).
+  `src/indexing_lock.py` now owns it, including where the file lives, so the
+  indexer and `run_reocr_queue --adopt` take the same lock at the same path
+  instead of one of them taking none. `main_async` releases in a `finally`;
+  before, a run that raised left the lock held until the process exited, which
+  made any second run in the same process meet a lock naming its own live PID.
+  `tests/test_indexing_lock_is_shared.py` reads the adoption call site to check
+  it is inside the hold, and refuses a second spelling of the lock path.
 
 - **A source classification that failed read as "not a scan"** (found and fixed
   2026-08-09). `classify_pdf_source` failing was swallowed with a bare `pass` on
@@ -240,7 +218,7 @@ that the size number does not say.
   those rows collide on `uq_global_citations_identity`, a partial expression
   index that COALESCEs the snippet and spans the raw reference text, so
   re-running does not duplicate them and no repair migration was needed. What
-  remains is the label, now item 8.
+  remains is the label, now item 6.
 - **Lift the PDF route out of `main_async`** (done 2026-08-09, `41c1484`). The
   665-line `else` branch named here as "the next unit to lift out" is now
   `_extract_pdf_chunks`.
