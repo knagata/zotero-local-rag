@@ -1,191 +1,227 @@
 # Post-refactor follow-up register
 
-Date: 2026-08-04  
-Baseline: `049b5bf` (`main`)  
-Status: Deferred; no immediate production incident is known.
+Opened: 2026-08-04, from the review after the indexing, repository, MCP and
+FastAPI refactoring.
+Last triaged: 2026-08-09. No production incident is known for anything here.
 
-This note records findings from the comprehensive review after the indexing,
-repository, MCP, and FastAPI refactoring. The current implementation passes
-1,126 tests. These items should be handled as small, separately verified
-changes rather than as another large refactoring batch.
+Every item below was re-read against the code on the triage date and names the
+file and symbol it lives in, so a fix that lands without updating this file
+leaves a reference that can be checked (`tests/test_documentation_references.py`
+checks that the files exist; the symbols are the reader's job). Items that were
+finished or overtaken are listed under [Closed](#closed) in one line each rather
+than deleted silently, because the same review would otherwise raise them again.
 
-## Recommended order
+Priority means: **P1** can lose or corrupt data, or has no bound; **P2** is a
+robustness or cost defect within the local-only workflow; **P3** costs accuracy
+or clarity in what the user is shown. Structural work is not ranked here — its
+order is decided by the size ratchet in `TASKS.md`.
+
+## P1
 
 ### 1. Share the indexing lock with re-OCR adoption
 
 - Locations: `scripts/run_reocr_queue.py`, `src/reocr_adoption.py`,
   `src/index_from_zotero.py`
-- Risk: `--adopt` mutates Chroma, the lexical index, the manifest, and the
-  structure database without acquiring the lock used by the normal indexer.
-  Concurrent indexing can overwrite either generation, while MCP queries can
-  observe a partial update.
-- Proposal: move lock acquisition/release into a reusable module and hold the
-  same lock for the complete re-OCR adoption unit of work.
-- Raise priority if re-OCR adoption is automated or run while the MCP server or
-  normal indexer remains active.
+- Still true 2026-08-09: `_acquire_indexing_lock` lives in
+  `index_from_zotero.py` and nothing else can reach it; neither
+  `reocr_adoption.py` nor `run_reocr_queue.py` mentions a lock.
+- Risk: `--adopt` mutates Chroma, the lexical index, the manifest and the
+  structure database without the lock the normal indexer takes. Concurrent
+  indexing can overwrite either generation, and MCP queries can observe a
+  partial update.
+- Proposal: move acquisition/release into a module both callers can import, and
+  hold it for the whole adoption unit of work.
+- Raise priority if adoption is automated, or run while the MCP server or the
+  indexer is active.
 
 ### 2. Make re-OCR compensation resilient to rollback failures
 
 - Location: `src/reocr_adoption.py`
-- Risk: a failure during Chroma restoration stops lexical and manifest
-  restoration and can also prevent the failed status from being recorded.
-- Proposal: attempt every compensation independently, collect rollback errors,
-  and raise one error that preserves both the original failure and all rollback
-  failures. Reuse the attachment unit-of-work primitives where practical.
-- Test: inject a failure into each forward and rollback phase and assert the
-  final state of all stores.
+- Still true 2026-08-09: the `except` block restores Chroma, then the lexical
+  index, then the manifest, in sequence with no isolation. A failure restoring
+  Chroma skips the other two *and* the `status_writer(..., "failed", ...)` call
+  below them, so the run ends with neither a repaired store nor a record.
+- Wider than first written: `replace_document_structure` and
+  `delete_document_node_summaries` run inside the `try` and are not compensated
+  at all. If anything after them raises -- the five `status_writer` calls that
+  follow are the live candidates -- the structure tree stays replaced while
+  Chroma, the lexical index and the manifest roll back to the old chunks, which
+  is exactly the mixed state the rollback exists to prevent.
+- Proposal: attempt each compensation independently, collect rollback errors,
+  and raise one error carrying the original failure and all rollback failures.
+  Reuse the attachment unit-of-work primitives where practical.
+- Test: inject a failure into each forward and each rollback phase and assert
+  the final state of every store, the structure tree included.
 
 ### 3. Bound `search_items` resource use and validate inputs
 
-- Location: `src/rag_mcp_server.py`
-- Risk: `k_internal = max(k * 10, 100)` has no upper bound, so a very large `k`
-  can request an excessive Chroma result set. Invalid `MIN_RETURN_CHARS` values
-  also fail outside the query error boundary.
+- Location: `src/rag_mcp_server.py` (`search_items`)
+- Still true 2026-08-09: `k_internal = max(k * 10, 100)` has no upper bound, and
+  `MIN_RETURN_CHARS` is read with a bare `int(os.environ.get(...))` that raises
+  outside the query error boundary. `rag_search` already does both correctly
+  with `bounded_env_int` -- this is the one caller left behind, as it was for
+  the query-embedding precompute (F3, 2026-07-30).
 - Proposal: use `bounded_env_int`, cap by collection count and an absolute
-  maximum, validate query/list parameters, and return a stable client error.
+  maximum, validate the query and list parameters, and return a stable client
+  error.
 
 ### 4. Serialize manifest writers
 
 - Location: `src/manifest.py`
-- Risk: every writer uses the same `.json.tmp` path. Concurrent writers can
-  collide, and independent read-modify-write operations can lose updates.
-- Proposal: use a unique temporary inode plus a shared writer lock. Define
-  clearly which maintenance commands are authorized manifest writers.
-- Note: a unique temporary filename prevents temp-file collisions but does not
-  by itself prevent lost updates.
+- Still true 2026-08-09: every writer builds the same `.json.tmp` path next to
+  the manifest and `replace()`s it into place.
+- Risk: concurrent writers collide on the temporary path, and independent
+  read-modify-write cycles lose updates.
+- Proposal: a unique temporary inode plus a shared writer lock. Decide which
+  maintenance commands are authorized writers. A unique temporary name alone
+  fixes the collision and not the lost update.
+
+## P2
 
 ### 5. Add translation request limits
 
-- Location: `citation_graph/server.py`
-- Risk: the Azure Translator route does not limit text count, per-text length,
-  or total characters, allowing excessive memory use, latency, or API cost.
-- Proposal: enforce Pydantic limits, reject oversized payloads before the
-  upstream request, and return sanitized upstream errors.
+- Location: `citation_graph/server.py` (`_TranslateBatchRequest`)
+- Still true 2026-08-09: the model is `texts: list[str]` with no constraint, so
+  the Azure Translator route bounds neither text count, per-text length nor
+  total characters. Cost, latency and memory are all unbounded by the request.
+- Proposal: enforce the limits in the Pydantic model, reject oversized payloads
+  before the upstream call, and return sanitized upstream errors.
 
 ### 6. Move identifier override migration out of request handling
 
-- Location: `citation_graph/server.py`
-- Risk: each identifier update retries `ALTER TABLE` and suppresses all
-  exceptions, including lock, read-only, and I/O failures.
-- Proposal: migrate once during database initialization, ignoring only SQLite's
-  duplicate-column error, and keep the HTTP handler limited to validation and
-  the update transaction.
+- Location: `citation_graph/server.py` (`_ensure_override_table`)
+- Still true 2026-08-09: the handler calls it per update, and it retries five
+  `ALTER TABLE` statements under `except Exception: pass`, which swallows lock,
+  read-only and I/O failures alongside the duplicate-column error it means.
+- Proposal: migrate once at database initialization, ignore only SQLite's
+  duplicate-column error, and leave the handler with validation and the update
+  transaction.
 
-### 7. Decide what to do with context-less incoming citations
+## P3
 
-- Location: `src/citation_mapper.py` (`map_item_global_citations`)
-- Observation (2026-08-06): the citations loop does `if not contexts: continue`,
-  so every citing paper S2 reports without an extracted context snippet is
-  discarded. The references loop, a few hundred lines below, keeps the
-  equivalent rows as `s2_status='no_context'`. The asymmetry looks unintended.
-- Impact: the graph holds roughly 37% of the citations S2 knows about
-  (`s2_citation_count` totals 54,132 against 20,188 stored citing papers).
-  Per item the gap can be far larger — V2ESRAMA shows "Citations: 4,188" in its
-  tooltip while contributing 191 citing nodes. Knowing *who* cited a work is
-  useful even with no quotable context, so the discard also costs real signal.
-- Resolved 2026-08-07: the citations loop now stores them as
-  `chunk_status='no_context'` with an empty-string snippet, matching the
-  references loop.
-- Two objections recorded here on 2026-08-06 turned out not to hold:
-  - *"A NULL snippet would never conflict, so every re-run would duplicate."*
-    Wrong. Rows collide on `uq_global_citations_identity`, a partial expression
-    index that COALESCEs the snippet, not on the table-level UNIQUE. Inserting
-    the same context-less citation three times leaves one row with either NULL
-    or `''`.
-  - *"The references table already has this defect: 1,622 `no_context` rows
-    cover only 1,095 distinct (paper, item) pairs."* That count used (paper,
-    item) alone. The index identity also spans `raw_reference_text` and falls
-    back to title+year+authors when there is no paper id; measured against the
-    real expression the 1,622 rows are 1,622 distinct entries. No repair
-    migration was needed.
-  - What remains true is the graph-size question. It is bounded by the existing
-    `max_citations` cap (5,000/item, which only 6 of 574 items reach), so the
-    growth lands on a handful of heavily cited works rather than the library.
-- Still open: the tooltip labels the S2 total as "Citations" while the graph
-  draws a subset, so the number should say which it is.
+### 7. Say which citation count the tooltip is showing
+
+- Locations: `citation_graph/server.py` (~L1769), `citation_graph/static/app.js`
+  (~L2186)
+- The discard that caused the gap is fixed (see [Closed](#closed)), but the
+  label is not: the tooltip prefers `s2_citation_count` when S2 has it and
+  writes it under `被引用数`, while the graph draws the subset that is actually
+  in the database. Two different numbers under one label.
+- Proposal: name the S2 total and the drawn count separately, or label the
+  total as S2's.
+
+### 8. Give S2 identity a discriminator for author-less records
+
+- Location: `src/citation_mapper.py` (`_record_names_a_creator`)
+- The function passes a record that lists no author, on the principle that
+  missing evidence cannot convict. On the DOI/ISBN path the identifier carries
+  the identity and that is right. On the title-search path it leaves title
+  similarity >= 0.5 as the only test, so an author-less record that is simply
+  the wrong work passes.
+- Why not a blanket rule: at the 2026-08-06 count, 21 of 274 mapped items
+  resolved to a record with no authors, including correct ones (*Asia as
+  Method*, *Ego and the Id*) alongside the doubtful ("Chapter Three.
+  EARTHQUAKES"). Refusing them wholesale drops the correct with the wrong.
+- Re-measure before acting; the count is from the mapping as it stood then.
+
+### 9. Flat-PDF recovery: three shapes that stay flat
+
+Verified against `tests/baselines/structure_recovery.json` on 2026-08-09, where
+6 of 84 attachments recover a tree. Both named books are still flat.
+
+- **A contents page that lost its own heading.** With no "Contents"/"目次" for
+  the guard to key on, the contents lines read as part openers. N6RU3QQG
+  (*Japan-ness in Architecture*) is in this state. It no longer produces a wrong
+  tree -- the promotion gate refuses divisions holding almost none of the
+  document -- but the structure is really there in the book. Every contents line
+  ends in a folio and a real opener does not, which is a possible discriminator
+  if more cases appear.
+- **Part openers and nothing else.** `source_structure_refresh` requires
+  `len(self.events) >= 5` to promote, so a book whose only kept headings are its
+  parts recovers nothing. 4GPDN33D (*The Spectre of Comparisons*) has four real
+  parts at pages 19/43/137/171. Worth revisiting the gate once the part
+  vocabulary has fewer false positives to guard against -- it was written when a
+  bare Roman numeral could match prose.
+- **Numbering continued from a previous volume.** `_numbering_is_contiguous`
+  requires a run of 1..n, so volume two of a work whose chapters carry on from
+  volume one is rejected. Deliberate -- nothing in the chunks tells it apart
+  from an extractor that lost the opening chapters -- but it is a real shape for
+  multi-volume works and 全集.
 
 ## Longer-term maintainability
+
+Not ranked with the above. The splitting work is governed by the function-size
+ratchet in `TASKS.md`; this section records only what a splitter needs to know
+that the size number does not say.
 
 ### Per-attachment chunk generations
 
 - Current constraint: `chunk_scheme` is bound to the whole Chroma collection by
-  the pipeline fingerprint. A chunk-boundary change therefore requires a new
-  homogeneous collection and a full rebuild, even though only attachment-level
-  old/new generation mixing must strictly be prevented.
-- Proposal: store `chunk_generation`, `chunk_scheme_version`, and a content
+  the pipeline fingerprint, so a chunk-boundary change needs a new homogeneous
+  collection and a full rebuild -- even though only attachment-level old/new
+  mixing must strictly be prevented.
+- Proposal: store `chunk_generation`, `chunk_scheme_version` and a content
   fingerprint per attachment; build a candidate generation, verify its Chroma,
-  lexical, structure, and summary artifacts, then atomically switch the active
-  generation. Keep the prior generation available for rollback.
+  lexical, structure and summary artifacts, then switch the active generation
+  atomically, keeping the prior one for rollback.
 - Migration rule: embedding-model or vector-dimension changes still require a
   separate collection and full re-embedding. Chunking changes should permit
-  attachment-at-a-time migration followed by an eventual background convergence.
-- Do not relax the current collection fingerprint until generation-aware search,
-  deletion, crash recovery, and audits are implemented; merely allowing mixed
-  rows would reintroduce duplicate and orphaned chunks.
+  attachment-at-a-time migration with eventual background convergence.
+- Do not relax the collection fingerprint until generation-aware search,
+  deletion, crash recovery and audits exist. Merely allowing mixed rows
+  reintroduces duplicate and orphaned chunks.
 
-- Flat-PDF structure recovery: a book whose printed contents page lost its own
-  "Contents"/"目次" heading during extraction has nothing for the contents guard
-  to key on, so its contents lines are read as part openers. One item is in this
-  state (N6RU3QQG, *Japan-ness in Architecture*). It no longer produces a wrong
-  tree — the promotion gate refuses divisions that hold almost none of the
-  document — but it stays flat, and the structure is really there in the book.
-  Every contents line ends in a folio while a real opener does not, which is a
-  possible discriminator if more cases appear.
-- Flat-PDF structure recovery: a book that yields only part openers, with no
-  chapter headings the extractor kept, fails the `len(events) >= 5` promotion
-  gate and stays flat. 4GPDN33D (*The Spectre of Comparisons*) has four real
-  parts at pages 19/43/137/171 and nothing else, so it recovers nothing. Worth
-  revisiting the gate once the part vocabulary has fewer false positives to
-  guard against; it was written when a bare Roman numeral could match prose.
-- Flat-PDF structure recovery: `_numbering_is_contiguous` requires a run of
-  1..n, so a volume whose chapters continue the previous volume's numbering is
-  rejected and stays flat. Deliberate — nothing in the chunks tells it apart
-  from an extractor that lost the opening chapters — but it is a real shape for
-  multi-volume works and 全集.
-- S2 identity: `_record_names_a_creator` passes a record that lists no author,
-  on the principle that missing evidence cannot convict. On the DOI/ISBN path
-  the identifier carries the identity, so that is right. On the title-search
-  path it leaves title similarity >= 0.5 as the only test. Reviews are now
-  refused by name, but an author-less record that is simply the wrong work still
-  passes. 21 of the 274 mapped items resolve to a record with no authors
-  (*Asia as Method*, *Ego and the Id*, and also the doubtful
-  "Chapter Three. EARTHQUAKES"), so refusing them wholesale would drop correct
-  identifications with the wrong ones. Needs a discriminator, not a blanket rule.
-- `source_structure_refresh._refresh_pdf_rows_from_numbered_body_headings` is
-  split; `index_from_zotero.main_async` and `db_relations._init_db` are the two
-  that remain.
-- Continue splitting `index_from_zotero.main_async`. The seam is measured, not
-  guessed. Its per-attachment loop is 1,334 lines, and the 785-line block inside
-  it is a routing chain: `force_mistral` (110 lines), `stype == "html"` (1 line),
-  `stype == "epub"` (1 line), and an `else` that is the whole PDF route at 665
-  lines. That `else` is the next unit to lift out. Its interface is smaller than
-  the block's size suggests: about 20 of its 44 read names come from the loop
-  (the rest are module functions and imports), and of 9 names that escape only
-  four matter -- `chunks`, `quality_info`, and the `deferred_extract` /
-  `skipped_pdf` counters. `cid`, `md`, `row`, `text` and `value` are comprehension
-  and inner-loop variables that are reassigned before anything reads them.
-  So: roughly 20 parameters in, `(chunks, quality_info)` plus a counter verdict
-  out. Do it as one mechanical move with room to verify it, not in the tail of a
-  long session -- the ingestion net reaches only 15% of that block, so the
-  verification is the expensive half.
-- Widening the ingest net past 28% needs attachments that take the OCR routes,
-  and those are not deterministic: the library's one corrupted PDF returned 109
-  chunks twice and 108 once, and the smallest image-page EPUB extracts through
-  Mistral in the cloud. The way past this is to separate the deterministic
-  decisions inside the PDF route from the extractor calls they choose between,
-  so the decisions can be netted and the calls mocked.
-- Split `db_relations._init_db` into versioned migrations.
-- Extract the ordinary 442-line `rag_search` into request normalization,
-  candidate retrieval, fusion/filtering, and response formatting services.
-- Split `pdf_extract.extract_chunks_from_pdf` and
-  `citation_graph.build_graph_data` along their existing decision phases.
-- Add static type checking and a coverage gate after establishing a baseline;
-  CI currently checks compilation, fatal Ruff rules, imports, tests, and
-  `RuntimeWarning` only.
+### What the splitters need to know
+
+- `index_from_zotero.main_async` (1,113 lines) is the largest remaining
+  function. The PDF route came out of it in 2026-08-09 as `_extract_pdf_chunks`
+  (705 lines), which is now the second largest: the seam moved rather than
+  disappeared, and the same measured-interface approach applies to it.
+- The ingestion net (`tests/test_ingestion_baseline.py`, `slow`-marked) reaches
+  28% of the loop and about 15% of the PDF route, so verification is the
+  expensive half of any split here. **Measure a block's reach before lifting
+  it** -- an unreached block is not verified by the net, only unopposed by it.
+- Widening the net needs attachments that take the OCR routes, and those are not
+  deterministic: the library's one corrupted PDF returned 109 chunks twice and
+  108 once, and the smallest image-page EPUB extracts through Mistral in the
+  cloud. The way past this is to separate the deterministic decisions inside the
+  PDF route from the extractor calls they choose between, so the decisions can
+  be netted and the calls mocked.
+- `db_relations._init_db` (698 lines) wants versioned migrations, not a split
+  into helpers -- see item 6, which is the same problem leaking into a handler.
+- `rag_search` (442 lines) divides into request normalization, candidate
+  retrieval, fusion/filtering and response formatting.
+- `pdf_extract.extract_chunks_from_pdf` (614) and
+  `citation_graph.build_graph_data` (470) divide along their existing decision
+  phases. `citation_mapper.map_item_global_citations` (444) is a fourth over 400
+  and holds the citations/references asymmetry that produced item 7.
+
+### Checking layers CI does not have
+
+- Static type checking and a coverage gate, after establishing a baseline. CI
+  checks compilation, fatal Ruff rules, the public import, tests, and
+  `RuntimeWarning`.
+
+## Closed
+
+- **Context-less incoming citations were discarded** (raised 2026-08-06, fixed
+  2026-08-07). `map_item_global_citations` stored nothing for a citing paper
+  with no context snippet while the references loop kept the equivalent rows;
+  the graph held roughly 37% of the citations S2 reported. Both loops now record
+  them (`chunk_status` / `s2_status` = `'no_context'`). The fact worth keeping:
+  those rows collide on `uq_global_citations_identity`, a partial expression
+  index that COALESCEs the snippet and spans the raw reference text, so
+  re-running does not duplicate them and no repair migration was needed. What
+  remains is the label, now item 7.
+- **Lift the PDF route out of `main_async`** (done 2026-08-09, `41c1484`). The
+  665-line `else` branch named here as "the next unit to lift out" is now
+  `_extract_pdf_chunks`.
+- **`source_structure_refresh._refresh_pdf_rows_from_numbered_body_headings`
+  is split** (done before 2026-08-04).
 
 ## Reassessment triggers
 
-Revisit the deferred P1 items immediately if any of the following occurs:
+Revisit the P1 items immediately if any of the following occurs:
 
 - re-OCR adoption and normal indexing may run concurrently;
 - partial or mismatched Chroma/lexical/manifest generations are observed;
