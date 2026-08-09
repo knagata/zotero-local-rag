@@ -2829,6 +2829,66 @@ def _extract_pdf_chunks(
     return PdfExtraction(chunks, quality_info)
 
 
+
+def _extraction_status(
+    attachment: Any,
+    *,
+    scope_item_key: str,
+    source_type: str,
+    chunks: list,
+    quality: dict[str, Any],
+    coverage_adopted: bool,
+    coverage_gap: Any,
+    truncated: bool,
+    ai_toc_alignment_failed: bool,
+    degraded_reason: Any,
+    degraded_message: Any,
+) -> tuple[str, str, dict[str, Any]]:
+    """The ledger row for an attachment that produced chunks.
+
+    "success" or "degraded", and the counts a later reader needs to tell which
+    kind of degraded it was: a coverage shortfall the run accepted, a truncation,
+    or an AI table of contents that would not line up with the text. Retryable
+    only for the first two -- an alignment failure repeats.
+
+    Assembled here rather than inline because it is one value with eleven
+    inputs, and inline it read as though the surrounding code were still doing
+    something.
+    """
+    return (
+        scope_item_key,
+        (
+            "degraded"
+            if (coverage_adopted or truncated or ai_toc_alignment_failed)
+            else "success"
+        ),
+        {
+            "attachment_key": attachment.attachmentKey,
+            "reason_code": degraded_reason,
+            "message": degraded_message,
+            "retryable": truncated or coverage_adopted,
+            "processor_version": str(quality.get("parser") or source_type),
+            "counts": {
+                "chunks": len(chunks), "source_type": source_type,
+                "processed_pages": quality.get("processed_pages"),
+                "expected_pages": quality.get("expected_pages"),
+                "pages_without_chunks": _pages_without_chunks(
+                    chunks, quality.get("expected_pages") or quality.get("total_pages"),
+                ),
+                "chars_out": sum(len(text) for _cid, text, _md in chunks),
+                **(
+                    {"ai_toc_reason": quality.get("ai_toc_recovery_status")}
+                    if ai_toc_alignment_failed else {}
+                ),
+                **(
+                    {"source_coverage_shortfall": coverage_gap}
+                    if coverage_adopted else {}
+                ),
+            },
+        },
+    )
+
+
 def _report_empty_extraction(
     attachment: Any,
     *,
@@ -3906,37 +3966,12 @@ async def main_async(args: argparse.Namespace) -> None:
         else:
             degraded_reason = None
             degraded_message = None
-        extraction_status = (
-            scope_item_key,
-            (
-                "degraded"
-                if (coverage_adopted or truncated or ai_toc_alignment_failed)
-                else "success"
-            ),
-            {
-                "attachment_key": a.attachmentKey,
-                "reason_code": degraded_reason,
-                "message": degraded_message,
-                "retryable": truncated or coverage_adopted,
-                "processor_version": str(quality_info.get("parser") or stype),
-                "counts": {
-                "chunks": len(chunks), "source_type": stype,
-                "processed_pages": quality_info.get("processed_pages"),
-                "expected_pages": quality_info.get("expected_pages"),
-                "pages_without_chunks": _pages_without_chunks(
-                    chunks, quality_info.get("expected_pages") or quality_info.get("total_pages"),
-                ),
-                "chars_out": sum(len(text) for _cid, text, _md in chunks),
-                **(
-                    {"ai_toc_reason": quality_info.get("ai_toc_recovery_status")}
-                    if ai_toc_alignment_failed else {}
-                ),
-                **(
-                    {"source_coverage_shortfall": coverage_gap}
-                    if coverage_adopted else {}
-                ),
-                },
-            },
+        extraction_status = _extraction_status(
+            a, scope_item_key=scope_item_key, source_type=stype, chunks=chunks,
+            quality=quality_info, coverage_adopted=coverage_adopted,
+            coverage_gap=coverage_gap, truncated=truncated,
+            ai_toc_alignment_failed=ai_toc_alignment_failed,
+            degraded_reason=degraded_reason, degraded_message=degraded_message,
         )
 
         for _cid, text, md in chunks:

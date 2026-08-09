@@ -168,6 +168,18 @@ changes rather than as another large refactoring batch.
   out. Do it as one mechanical move with room to verify it, not in the tail of a
   long session -- the ingestion net reaches only 15% of that block, so the
   verification is the expensive half.
+- `index_from_zotero.STRUCTURED_V3_ENABLE` is the literal `True`, not a value
+  read from anywhere, and the legacy plane it once selected is retired --
+  `v3_data_plane.require_v3_enabled` raises rather than returning False. It is
+  still referenced 22 times: 9 `if` guards whose condition is the constant
+  alone, 5 ternaries, and the rest. One of those guards wraps 629 lines, so
+  those lines carry an indentation level for a choice that cannot be made, and
+  its `else` is one unreachable line calling the retired extractor.
+  Worth removing, and worth doing on its own: re-indenting 629 lines produces a
+  diff nobody can review beside anything else, and the payoff is legibility
+  rather than behaviour. Two tests reference the constant
+  (`tests/test_structured_v3_index_config.py`) and would assert the same thing
+  structurally afterwards.
 - Widening the ingest net past 28% needs attachments that take the OCR routes,
   and those are not deterministic: the library's one corrupted PDF returned 109
   chunks twice and 108 once, and the smallest image-page EPUB extracts through
