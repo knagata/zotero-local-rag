@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """Which parts of the ingest loop the ingestion baseline actually watches.
 
-``tests/test_ingestion_baseline.py`` runs the real loop over three attachments,
-which makes it easy to say it "covers ingestion" and easy to be wrong. It covers
-21% of the loop. The rest is the branches those three attachments do not take:
-an EPUB whose pages are images, a PDF whose extraction misses part of its text,
-a batch that came back empty. Reading a block's coverage before moving it is the
-difference between a refactor the net verified and one it merely did not object
-to -- and three blocks lifted out so far were in the second category without
-that being said out loud.
+``tests/test_ingestion_baseline.py`` runs the real loop over a handful of
+attachments, which makes it easy to say it "covers ingestion" and easy to be
+wrong. Three attachments reached 21% of the loop, and three blocks had already
+been lifted out of the parts it could not see before anyone measured. Six
+attachments and three passes each reach 28%.
+
+The number is the point of this script, not the refactor. Read a block's
+coverage before moving it: below it, a green net means the check did not object,
+not that it verified anything.
 
 Run it before choosing what to lift next, and again after widening the corpus:
 
@@ -54,7 +55,8 @@ def loop_span() -> tuple[int, int]:
     return loop.lineno, loop.end_lineno
 
 
-def _trace_one(item_key: str, plane: Path, low: int, high: int) -> set[int]:
+def _trace_one(item_key: str, plane: Path, low: int, high: int, *,
+               force: bool = True, check_quality: bool = False) -> set[int]:
     """Ingest one attachment in this process, recording the loop lines reached."""
     hit: set[int] = set()
     target = str(TARGET)
@@ -75,7 +77,11 @@ def _trace_one(item_key: str, plane: Path, low: int, high: int) -> set[int]:
         "RELATIONS_DB_PATH": str(plane / "relations.db"),
     })
     argv = sys.argv
-    sys.argv = ["index_from_zotero.py", "--item", item_key, "--force-reparse"]
+    sys.argv = [
+        "index_from_zotero.py", "--item", item_key,
+        *(["--force-reparse"] if force else []),
+        *(["--check-quality"] if check_quality else []),
+    ]
     sys.path.insert(0, str(ROOT / "src"))
     sys.settrace(tracer)
     try:
@@ -106,24 +112,34 @@ def main() -> None:
     # against the first one's world.
     for item_key in CORPUS:
         with tempfile.TemporaryDirectory(prefix="net-coverage-") as raw:
-            handoff = Path(raw) / "hit.json"
-            child = subprocess.run(
-                [sys.executable, "-c",
-                 "import json,sys,tempfile;from pathlib import Path;"
-                 f"sys.path.insert(0, {str(ROOT)!r});"
-                 "from scripts.measure_ingestion_net_coverage import _trace_one, loop_span;"
-                 "low, high = loop_span();"
-                 "plane = Path(tempfile.mkdtemp());"
-                 f"json.dump(sorted(_trace_one({item_key!r}, plane, low, high)),"
-                 f" open({str(handoff)!r}, 'w'))"],
-                cwd=ROOT, capture_output=True, text=True,
-            )
-            if not handoff.exists():
-                print(f"  {item_key}: no trace -- "
-                      f"{(child.stderr.strip().splitlines() or ['?'])[-1][:120]}",
-                      file=sys.stderr)
-                continue
-            reached = set(json.loads(handoff.read_text()))
+            plane = Path(raw) / "plane"
+            reached: set[int] = set()
+            # The same three passes the baseline makes, against one plane: the
+            # first indexes, the second finds the source unchanged, the third
+            # asks for quality again. Tracing only the first measured a third of
+            # what the net actually walks and reported it as the whole.
+            for label, options in (
+                ("index", {}),
+                ("unchanged", {"force": False}),
+                ("quality", {"force": False, "check_quality": True}),
+            ):
+                handoff = Path(raw) / f"hit-{label}.json"
+                child = subprocess.run(
+                    [sys.executable, "-c",
+                     "import json,sys;from pathlib import Path;"
+                     f"sys.path.insert(0, {str(ROOT)!r});"
+                     "from scripts.measure_ingestion_net_coverage import _trace_one, loop_span;"
+                     "low, high = loop_span();"
+                     f"json.dump(sorted(_trace_one({item_key!r}, Path({str(plane)!r}),"
+                     f" low, high, **{options!r})), open({str(handoff)!r}, 'w'))"],
+                    cwd=ROOT, capture_output=True, text=True,
+                )
+                if not handoff.exists():
+                    print(f"  {item_key} ({label}): no trace -- "
+                          f"{(child.stderr.strip().splitlines() or ['?'])[-1][:110]}",
+                          file=sys.stderr)
+                    continue
+                reached |= set(json.loads(handoff.read_text()))
             hit |= reached
             print(f"  {item_key}: {len(reached)} lines", file=sys.stderr)
 

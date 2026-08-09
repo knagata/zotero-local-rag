@@ -100,15 +100,20 @@ def test_ingesting_an_attachment_does_what_it_did(item_key: str):
         # Again into the same plane and without --force-reparse, which is the
         # only way the unchanged-source decision is exercised at all: with the
         # flag set it always answers "index".
+        wanted = ("exit_code", "counters", "summary")
         run["second_pass"] = {
-            k: v for k, v in ingest(item_key, plane, force=False).items()
-            if k in ("exit_code", "counters", "summary")
+            k: v for k, v in ingest(item_key, plane, force=False).items() if k in wanted
+        }
+        run["quality_pass"] = {
+            k: v for k, v in
+            ingest(item_key, plane, force=False, check_quality=True).items()
+            if k in wanted
         }
 
     differences = []
     if run.get("exit_code"):
         differences.append("  the run failed:\n" + run.get("stderr_tail", ""))
-    for field in ("exit_code", "counters", "summary", "second_pass"):
+    for field in ("exit_code", "counters", "summary", "second_pass", "quality_pass"):
         if recorded.get(field) != run.get(field):
             differences.append(
                 f"  {field}:\n    was: {recorded.get(field)}\n    now: {run.get(field)}"

@@ -55,7 +55,30 @@ BASELINE_PATH = ROOT / "tests" / "baselines" / "ingestion.json"
 #: not processed by this loop at all -- an item made only of notes runs it zero
 #: times, and including one recorded an empty result that would have gone on
 #: agreeing with itself no matter what the loop did.
-CORPUS = ("3FTKWX9U", "4GVKUITL", "4M5LZB5S")
+CORPUS = (
+    # One per extraction route, chosen small.
+    "3FTKWX9U",   # html -- a web clipping, which never reaches the PDF gates
+    "4GVKUITL",   # pdf  -- the ordinary path, text extracted straight through
+    "4M5LZB5S",   # epub -- the DOM path, which a PDF has no equivalent of
+    # Added after measuring what the first three actually walked: 21% of the
+    # loop, with the coverage-shortfall branch at 2% and the extraction router
+    # at 12%. These take the routes those three never do.
+    "J33Z2LHV",   # an EPUB whose recorded coverage verdict did not pass
+    "8AQ7T9ML",   # a PDF that needed Docling rather than the fast extractor
+)
+
+#: Routes deliberately left outside the corpus, with the reason, so the next
+#: person to widen it does not spend the same afternoon finding out.
+#:
+#: 5GLU7NDK is the library's one corrupted PDF, and it repairs through OCR: it
+#: produced 109 chunks twice and 108 once. Occasional, not systematic, which is
+#: the worst thing a net member can be -- it teaches you to rerun until green,
+#: and that is the habit that lets a real regression through.
+#:
+#: CAXCWCQB is the smallest EPUB whose pages are images, the route at L3629 that
+#: nothing else reaches. At 13.5 MB it would dominate the runtime, and its
+#: extraction goes to Mistral OCR in the cloud, so it would be neither fast nor
+#: deterministic either.
 
 #: Variables v3_data_plane.enforce_environment derives and writes back for its
 #: children. Inheriting any of them alongside a redirected CHROMA_DIR describes
@@ -114,7 +137,8 @@ def _digest(text: str) -> str:
     return hashlib.sha1(text.encode("utf-8")).hexdigest()[:12]
 
 
-def ingest(item_key: str, plane: Path, *, force: bool = True) -> dict:
+def ingest(item_key: str, plane: Path, *, force: bool = True,
+           check_quality: bool = False) -> dict:
     """Run the real loop over one item, into a data plane of its own.
 
     ``force`` passes --force-reparse, which is what a first pass into an empty
@@ -147,7 +171,8 @@ def ingest(item_key: str, plane: Path, *, force: bool = True) -> dict:
     })
     result = subprocess.run(
         [sys.executable, str(ROOT / "src" / "index_from_zotero.py"),
-         "--item", item_key, *(["--force-reparse"] if force else [])],
+         "--item", item_key, *(["--force-reparse"] if force else []),
+         *(["--check-quality"] if check_quality else [])],
         cwd=ROOT, env=environment, text=True, capture_output=True,
     )
     counters, summary = {}, ""
@@ -232,10 +257,15 @@ def measure() -> list[dict]:
             # that an attachment is unchanged and can be skipped, which is half
             # of what the loop does on an ordinary run over a settled library.
             again = ingest(item_key, plane, force=False)
+            # A third pass asking for quality again. Without it the branch that
+            # re-reads a settled attachment is never entered -- 5% of its lines
+            # were reached by the two passes above.
+            requested = ingest(item_key, plane, force=False, check_quality=True)
             print(f" {len(observed['chunks'])} chunks", file=sys.stderr)
             measured.append({
                 "item_key": item_key, **run, **observed,
                 "second_pass": {k: again[k] for k in ("exit_code", "counters", "summary")},
+                "quality_pass": {k: requested[k] for k in ("exit_code", "counters", "summary")},
             })
     return measured
 
@@ -249,7 +279,7 @@ def diff(previous: list[dict], current: list[dict]) -> list[str]:
             lines.append(f"  + {row['item_key']} entered the corpus")
             continue
         for field in ("exit_code", "counters", "summary", "second_pass",
-                      "manifest", "artifact_status"):
+                      "quality_pass", "manifest", "artifact_status"):
             if before.get(field) != row.get(field):
                 lines.append(f"  ~ {row['item_key']} {field}")
                 lines.append(f"      was: {json.dumps(before.get(field), ensure_ascii=False)[:300]}")
