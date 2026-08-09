@@ -155,6 +155,19 @@ uv run python scripts/build_lint_budget.py --write  # 採択する
 `_rendered_page_is_visually_blank` のように、fail-closedで理由が書いてあるものは
 そのままです。減らすときは1件ずつ現物を読んでから。
 
+## 現状を数字で見る
+
+「あとどれくらい残っているか」を記憶で答えると毎回違う答えになるので、コードと予算
+ファイルとレジスタから毎回引き直します。
+
+```bash
+uv run python scripts/show_project_health.py
+uv run python scripts/show_project_health.py --coverage  # スイートを計測付きで回す（分単位）
+```
+
+**目標は「指摘ゼロ」ではありません。** 変更を安全に入れられること — 機械的な層が後退を
+拒否し、読まないと判断できない部分が読める量に収まっていること — が目標です。
+
 ## 引用関係レポート
 
 ```bash
