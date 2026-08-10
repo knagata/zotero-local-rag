@@ -32,9 +32,11 @@ Updated: 2026-08-10
   `_repair_scan_derived_pages`に隔離し、blank再計算と失敗時保持を固定した。
 - corrupted text pageのgarbled chunk全置換・読順splice・quality再計算を
   `_patch_corrupted_text_pages`に隔離し、worker失敗時の元データ保持を固定した。
+- OCR layerの無いscanのMistral deferとDocling/Granite置換を
+  `_run_initial_scan_replacement`に隔離し、provenance・audit非適用・失敗時の状態を固定した。
 - 150行超の関数は22件から17件へ減少。最大は
-  `index_from_zotero._index_library`（1,104行）、次が`_extract_pdf_chunks`（402行）。
-- 既定suiteは1,548 passed / 4 skipped / 5 deselected。実資料取込baselineは5 passed。
+  `index_from_zotero._index_library`（1,104行）、次が`_extract_pdf_chunks`（379行）。
+- 既定suiteは1,551 passed / 4 skipped / 5 deselected。実資料取込baselineは5 passed。
   抽出・取り込み・構造を変更したら
   `uv run pytest -m slow`も必要。
 - P1/P2の既知製品欠陥はない。残るP3はS2 author-less識別とflat PDF 3形状で、どちらも
@@ -59,9 +61,9 @@ Updated: 2026-08-10
 
 ## Next work, in order
 
-1. 次はinitial scan replacementで、Mistral defer、Docling/Granite経路、
-   local worker失敗時の空抽出、provenanceとOCR audit非適用の付与をfakeで固定して分離する。
-2. その後にgeneric Docling escalationの未到達分岐を同じ方法で固定する。
+1. 次はgeneric Docling escalationで、PyMuPDFがchunkを返さない非scan-replacement経路の
+   provenance付与、local OCR試行済み状態、RuntimeError時の空抽出をfakeで固定して分離する。
+2. その後に残るpost-audit scan replacementとgeneric gate escalationの責務を棚卸しする。
    テストが届いた責務だけを`_extract_pdf_chunks`から抽出し、1 seamずつ対象テストと
    function-size ratchetを更新する。低coverage部分を機械的に移動して「検証済み」と扱わない。
 3. `_extract_pdf_chunks`の挙動不変分割が終わってから`_index_library`を同じ方法で分割する。

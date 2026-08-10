@@ -2582,6 +2582,80 @@ def _patch_corrupted_text_pages(
     return chunks, quality
 
 
+@dataclass(frozen=True)
+class _InitialScanReplacement:
+    chunks: list
+    quality: dict[str, Any]
+    route_reason: str
+    attempted_local_ocr: bool = False
+    replacement_attempted: bool = False
+    batch_defer: bool = False
+
+
+def _run_initial_scan_replacement(
+    *,
+    attachment_key: str,
+    scope_item_key: str,
+    file_path: Path,
+    meta_base: dict[str, Any],
+    chunks: list,
+    quality: dict[str, Any],
+    source_metadata: dict[str, Any],
+    total_pages: int,
+    docling_worker: Any,
+    granite_worker: Any,
+    show_progress: bool,
+) -> _InitialScanReplacement:
+    """Replace a scan with no text layer before any OCR-layer audit."""
+    route, route_reason = _initial_scanned_pdf_ocr_route(
+        quality, total_pages=total_pages, item_key=scope_item_key,
+    )
+    if route == "mistral_batch":
+        # The Batch queue owns cloud submission and later adoption. Preserve
+        # this result as non-canonical and do not run a local OCR engine first.
+        return _InitialScanReplacement(
+            chunks=[],
+            quality=quality,
+            route_reason=route_reason,
+            replacement_attempted=True,
+            batch_defer=True,
+        )
+    if route not in {"docling", "granite"}:
+        return _InitialScanReplacement(chunks, quality, route_reason)
+    if show_progress:
+        print(
+            f"[PROGRESS]   ↳ scan OCR replacement: parsing with "
+            f"{route} ({route_reason})...",
+            file=sys.__stderr__,
+        )
+    try:
+        chunks, quality = _structure_with_engine(
+            route,
+            file_path,
+            attachment_key,
+            meta_base,
+            docling_worker=docling_worker,
+            granite_worker=granite_worker,
+        )
+        quality = _attach_pdf_source_provenance(quality, source_metadata)
+        quality["ocr_layer_quality"] = "not_applicable"
+        quality["ocr_layer_audit_reason"] = "not_applicable_no_ocr_layer"
+    except RuntimeError as exc:
+        print(
+            f"[WARN] Docling worker extraction failed: "
+            f"attachment={attachment_key} err={exc}",
+            file=sys.__stderr__,
+        )
+        chunks, quality = [], {}
+    return _InitialScanReplacement(
+        chunks=chunks,
+        quality=quality,
+        route_reason=route_reason,
+        attempted_local_ocr=True,
+        replacement_attempted=True,
+    )
+
+
 def _extract_pdf_chunks(
     *,
     a: Any,
@@ -2644,48 +2718,25 @@ def _extract_pdf_chunks(
         recovered = None
         total_pages = int(quality_info.get("total_pages") or 0)
         minimum_pages = int(os.environ.get("PDF_AI_TOC_MIN_PAGES", "30"))
-        attempted_local_ocr = False
-        scanned_ocr_replacement_attempted = False
-        scanned_ocr_batch_defer = False
-        # A pre-existing OCR layer must reach stage 2 below before it
-        # can be replaced. Only a scan classified as having *no* text
-        # layer is safe to route immediately.
-        initial_scan_route, initial_scan_route_reason = _initial_scanned_pdf_ocr_route(
-            quality_info, total_pages=total_pages, item_key=scope_item_key,
+        initial_scan = _run_initial_scan_replacement(
+            attachment_key=a.attachmentKey,
+            scope_item_key=scope_item_key,
+            file_path=file_path,
+            meta_base=meta_base,
+            chunks=chunks,
+            quality=quality_info,
+            source_metadata=source_metadata,
+            total_pages=total_pages,
+            docling_worker=docling_worker,
+            granite_worker=granite_worker,
+            show_progress=bool(show_progress),
         )
-        if initial_scan_route == "mistral_batch":
-            # The Batch queue owns cloud submission and later adoption.
-            # Do not run any local OCR before preserving this non-canonical
-            # deferral for a long scan without a usable OCR layer.
-            scanned_ocr_batch_defer = True
-            scanned_ocr_replacement_attempted = True
-            chunks = []
-        elif initial_scan_route in {"docling", "granite"}:
-            scanned_ocr_replacement_attempted = True
-            attempted_local_ocr = True
-            if show_progress:
-                print(
-                    f"[PROGRESS]   ↳ scan OCR replacement: parsing with "
-                    f"{initial_scan_route} ({initial_scan_route_reason})...",
-                    file=sys.__stderr__,
-                )
-            try:
-                chunks, quality_info = _structure_with_engine(
-                    initial_scan_route, file_path, a.attachmentKey, meta_base,
-                    docling_worker=docling_worker, granite_worker=granite_worker,
-                )
-                quality_info = _attach_pdf_source_provenance(quality_info, source_metadata)
-                quality_info["ocr_layer_quality"] = "not_applicable"
-                quality_info["ocr_layer_audit_reason"] = (
-                    "not_applicable_no_ocr_layer"
-                )
-            except RuntimeError as exc:
-                print(
-                    f"[WARN] Docling worker extraction failed: attachment={a.attachmentKey} err={exc}",
-                    file=sys.__stderr__,
-                )
-                chunks, quality_info = [], {}
-        elif not chunks and total_pages > 0:
+        chunks, quality_info = initial_scan.chunks, initial_scan.quality
+        initial_scan_route_reason = initial_scan.route_reason
+        attempted_local_ocr = initial_scan.attempted_local_ocr
+        scanned_ocr_replacement_attempted = initial_scan.replacement_attempted
+        scanned_ocr_batch_defer = initial_scan.batch_defer
+        if not scanned_ocr_replacement_attempted and not chunks and total_pages > 0:
             # RapidOCR/NDLOCR are retained for fixed-layout EPUBs and
             # explicit re-OCR overrides, but are not an ordinary PDF
             # route. Docling is the local PDF baseline.

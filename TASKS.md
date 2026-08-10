@@ -79,6 +79,12 @@
   `_extract_pdf_chunks`は450行から402行、同モジュールの未到達文予算は469から457へ下げた。
   coverage付き既定suiteは`1,548 passed / 4 skipped / 5 deselected`、
   実資料取込baselineは`5 passed`。
+- [x] **initial scan replacementを分離。** OCR layerの無いscanだけを対象に、
+  Mistral Batchの非正本defer、Docling/Granite置換、source provenanceと
+  OCR audit非適用タグの付与、local worker失敗時の空抽出をfixtureで固定。
+  `_run_initial_scan_replacement`へ切り出し、`_extract_pdf_chunks`は402行から379行、
+  同モジュールの未到達文予算は457から443へ下げた。coverage付き既定suiteは
+  `1,551 passed / 4 skipped / 5 deselected`、実資料取込baselineは`5 passed`。
 
 ## Active
 

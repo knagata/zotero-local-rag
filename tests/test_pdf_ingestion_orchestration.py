@@ -357,6 +357,103 @@ def test_mistral_deferral_cleans_only_a_matching_inflight_partial_write():
     assert manifest["inflight_attachments"] == []
 
 
+@pytest.mark.parametrize("route", ["docling", "granite"])
+def test_initial_scan_local_replacement_attaches_provenance_and_skips_layer_audit(route):
+    source = (
+        [],
+        {
+            "parser": "pymupdf",
+            "total_pages": 1,
+            "source_class": module.SCANNED_NO_TEXT,
+        },
+    )
+    replacement = (
+        [("ocr-p1", "recovered " * 20, {"page": 1, "reading_order": 0})],
+        {"parser": route, "total_pages": 1, "has_outline": True},
+    )
+    docling_worker = Mock()
+    granite_worker = Mock()
+    with (
+        patch.object(module, "extract_chunks_from_pdf", return_value=source),
+        patch.object(
+            module,
+            "_initial_scanned_pdf_ocr_route",
+            return_value=(route, f"structure_engine_{route}"),
+        ),
+        patch.object(module, "_structure_with_engine", return_value=replacement) as run_engine,
+        patch.object(
+            module,
+            "_audit_pdf_ocr_layer",
+            side_effect=lambda **values: (values["chunks"], values["quality"]),
+        ) as audit,
+        patch.object(module, "_scanned_pdf_ocr_route") as post_audit_route,
+        patch.object(module, "pymupdf_fast_path_passes", return_value=True),
+    ):
+        result = _extract_pdf(
+            docling_worker=docling_worker,
+            granite_worker=granite_worker,
+            source_metadata={
+                "source_class": module.SCANNED_NO_TEXT,
+                "pdf_producer": "synthetic scanner",
+            },
+            structure_recovery=True,
+        )
+
+    assert [row[0] for row in result.chunks] == ["ocr-p1"]
+    assert result.quality["parser"] == route
+    assert result.quality["source_class"] == module.SCANNED_NO_TEXT
+    assert result.quality["pdf_producer"] == "synthetic scanner"
+    assert result.quality["ocr_layer_quality"] == "not_applicable"
+    assert result.quality["ocr_layer_audit_reason"] == "not_applicable_no_ocr_layer"
+    run_engine.assert_called_once_with(
+        route,
+        Path("synthetic.pdf"),
+        "ATT",
+        {"itemKey": "ITEM"},
+        docling_worker=docling_worker,
+        granite_worker=granite_worker,
+    )
+    assert audit.call_args.kwargs["replacement_attempted"] is True
+    post_audit_route.assert_not_called()
+
+
+def test_initial_scan_local_replacement_failure_keeps_an_empty_extraction(capfd):
+    source = (
+        [],
+        {
+            "parser": "pymupdf",
+            "total_pages": 1,
+            "source_class": module.SCANNED_NO_TEXT,
+        },
+    )
+    with (
+        patch.object(module, "extract_chunks_from_pdf", return_value=source),
+        patch.object(
+            module,
+            "_initial_scanned_pdf_ocr_route",
+            return_value=("docling", "structure_engine_docling"),
+        ),
+        patch.object(
+            module,
+            "_structure_with_engine",
+            side_effect=RuntimeError("worker stopped"),
+        ),
+        patch.object(
+            module,
+            "_pdf_gate_plan_for_extraction",
+            return_value=module.PdfGatePlan(
+                action="local_ocr_exhausted",
+                local_ocr_exhausted=True,
+            ),
+        ),
+    ):
+        result = _extract_pdf(structure_recovery=True)
+
+    assert result.chunks == []
+    assert result.quality == {}
+    assert "attachment=ATT" in capfd.readouterr().err
+
+
 @pytest.mark.parametrize(
     "chunks,recovered,local_exhausted,expected_reason",
     [
