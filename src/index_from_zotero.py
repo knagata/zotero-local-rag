@@ -2308,6 +2308,89 @@ def _defer_pdf_to_mistral(
     return PdfExtraction([], {}, deferred=True)
 
 
+def _audit_pdf_ocr_layer(
+    *,
+    attachment_key: str,
+    scope_item_key: str,
+    file_path: Path,
+    chunks: list,
+    quality: dict[str, Any],
+    replacement_attempted: bool,
+    previous: dict[str, Any] | None,
+    mtime: float,
+    size: int,
+    show_progress: bool,
+) -> tuple[list, dict[str, Any]]:
+    """Measure scan-derived text and record why a measurement was unavailable."""
+    eligible = (
+        chunks
+        and str(quality.get("source_class") or "") in SCAN_DERIVED_CLASSES
+        and not replacement_attempted
+    )
+    if not eligible:
+        return chunks, quality
+    if not ocr_layer_audit_enabled():
+        quality = dict(quality)
+        quality["ocr_layer_audit_reason"] = OCR_LAYER_AUDIT_DISABLED
+        return chunks, quality
+
+    cached_audit = _cached_ocr_layer_audit(previous, mtime=mtime, size=size)
+    if cached_audit is not None:
+        quality = dict(quality)
+        quality.update(cached_audit)
+        quality["ocr_layer_audit_cached"] = True
+        if show_progress:
+            print(
+                f"[PROGRESS]   ↳ OCR layer audit cache hit: "
+                f"{cached_audit.get('ocr_layer_quality')} "
+                f"rate={cached_audit.get('ocr_layer_error_rate')}",
+                file=sys.__stderr__,
+            )
+        return chunks, quality
+
+    audit = audit_ocr_text_layer(file_path, scope_item_key)
+    quality = dict(quality)
+    quality.update(audit)
+    if show_progress:
+        print(
+            f"[PROGRESS]   ↳ OCR layer audit: "
+            f"{audit.get('ocr_layer_quality')} "
+            f"rate={audit.get('ocr_layer_error_rate')} "
+            f"({audit.get('ocr_layer_verified_count')} verified / "
+            f"{audit.get('ocr_layer_rejected_count')} rejected) "
+            f"{audit.get('ocr_layer_audit_reason')}",
+            file=sys.__stderr__,
+        )
+    if audit_was_transient_failure(quality):
+        quality["ocr_layer_needs_reaudit"] = True
+        mark_artifact_status(
+            scope_item_key, "extraction", "degraded",
+            attachment_key=attachment_key,
+            reason_code="ocr_layer_audit_deferred",
+            message=str(audit.get("ocr_layer_audit_reason") or "")[:500],
+            retryable=True,
+        )
+    elif audit_hit_file_problem(quality):
+        print(
+            f"[WARN] Could not sample {attachment_key} for the OCR "
+            f"audit: {audit.get('ocr_layer_audit_reason')}. The PDF "
+            "itself may be damaged -- repair or replace the file.",
+            file=sys.__stderr__,
+        )
+        mark_artifact_status(
+            scope_item_key, "extraction", "degraded",
+            attachment_key=attachment_key,
+            reason_code="source_file_unreadable",
+            message=str(audit.get("ocr_layer_audit_reason") or "")[:500],
+            retryable=False,
+        )
+    elif audit_sample_too_small(quality):
+        chunks, quality = _adopt_with_quality_uncertain(
+            chunks, quality, reason="ocr_layer_sample_too_small",
+        )
+    return chunks, quality
+
+
 def _extract_pdf_chunks(
     *,
     a: Any,
@@ -2620,92 +2703,20 @@ def _extract_pdf_chunks(
                         f"({len(quality_info['corrupted_pages'])} still unresolved)",
                         file=sys.__stderr__,
                     )
-        # Stage 2 (note 79): measure the OCR quality of a scan-derived
-        # text layer before deciding whether it can stand as canonical.
-        # Runs after page repair so it audits the text we would actually
-        # index, and before the fast-path gate, which consults its
-        # verdict. A cached verdict for an unchanged source is reused so
-        # reingestion costs no API calls.
-        if (
-            chunks
-            and str(quality_info.get("source_class") or "") in SCAN_DERIVED_CLASSES
-            and not scanned_ocr_replacement_attempted
-            and not ocr_layer_audit_enabled()
-        ):
-            # Record that measuring was declined, so the router can tell
-            # it apart from an audit that tried and failed. Without this
-            # the layer reads as "unverified" and every scanned PDF gets
-            # re-OCRed the moment the LLM is switched off (note 80 B).
-            quality_info = dict(quality_info)
-            quality_info["ocr_layer_audit_reason"] = OCR_LAYER_AUDIT_DISABLED
-        elif (
-            chunks
-            and str(quality_info.get("source_class") or "") in SCAN_DERIVED_CLASSES
-            and not scanned_ocr_replacement_attempted
-        ):
-            cached_audit = _cached_ocr_layer_audit(prev, mtime=mtime, size=size)
-            if cached_audit is not None:
-                quality_info = dict(quality_info)
-                quality_info.update(cached_audit)
-                quality_info["ocr_layer_audit_cached"] = True
-                if show_progress:
-                    print(
-                        f"[PROGRESS]   ↳ OCR layer audit cache hit: "
-                        f"{cached_audit.get('ocr_layer_quality')} "
-                        f"rate={cached_audit.get('ocr_layer_error_rate')}",
-                        file=sys.__stderr__,
-                    )
-            else:
-                audit = audit_ocr_text_layer(file_path, scope_item_key)
-                quality_info = dict(quality_info)
-                quality_info.update(audit)
-                if show_progress:
-                    print(
-                        f"[PROGRESS]   ↳ OCR layer audit: "
-                        f"{audit.get('ocr_layer_quality')} "
-                        f"rate={audit.get('ocr_layer_error_rate')} "
-                        f"({audit.get('ocr_layer_verified_count')} verified / "
-                        f"{audit.get('ocr_layer_rejected_count')} rejected) "
-                        f"{audit.get('ocr_layer_audit_reason')}",
-                        file=sys.__stderr__,
-                    )
-                # An audit that could not run says nothing about the
-                # text, so the text is kept -- but silently keeping it
-                # would hide the fact that it was never measured. Each
-                # outcome is surfaced differently because each needs a
-                # different follow-up (user decision 2026-07-27).
-                if audit_was_transient_failure(quality_info):
-                    # Not cached, so the next run measures it properly.
-                    quality_info["ocr_layer_needs_reaudit"] = True
-                    mark_artifact_status(
-                        scope_item_key, "extraction", "degraded",
-                        attachment_key=a.attachmentKey,
-                        reason_code="ocr_layer_audit_deferred",
-                        message=str(audit.get("ocr_layer_audit_reason") or "")[:500],
-                        retryable=True,
-                    )
-                elif audit_hit_file_problem(quality_info):
-                    # Re-OCR would hit the same unreadable file; this
-                    # needs the source repaired, not another attempt.
-                    print(
-                        f"[WARN] Could not sample {a.attachmentKey} for the OCR "
-                        f"audit: {audit.get('ocr_layer_audit_reason')}. The PDF "
-                        "itself may be damaged -- repair or replace the file.",
-                        file=sys.__stderr__,
-                    )
-                    mark_artifact_status(
-                        scope_item_key, "extraction", "degraded",
-                        attachment_key=a.attachmentKey,
-                        reason_code="source_file_unreadable",
-                        message=str(audit.get("ocr_layer_audit_reason") or "")[:500],
-                        retryable=False,
-                    )
-                elif audit_sample_too_small(quality_info):
-                    # Too little text to measure, and too little for a
-                    # re-OCR to improve on. Index it, marked unmeasured.
-                    chunks, quality_info = _adopt_with_quality_uncertain(
-                        chunks, quality_info, reason="ocr_layer_sample_too_small",
-                    )
+        # Stage 2 (note 79) runs after page repair, so it measures the text we
+        # would index, and before the fast-path gate that consumes its verdict.
+        chunks, quality_info = _audit_pdf_ocr_layer(
+            attachment_key=a.attachmentKey,
+            scope_item_key=scope_item_key,
+            file_path=file_path,
+            chunks=chunks,
+            quality=quality_info,
+            replacement_attempted=scanned_ocr_replacement_attempted,
+            previous=prev,
+            mtime=mtime,
+            size=size,
+            show_progress=bool(show_progress),
+        )
         # An OCR-layer scan is canonical only after the stage-2 audit
         # explicitly accepts it.  Failed/unavailable audits follow the
         # same page-count/cloud policy as a scan with no OCR layer.

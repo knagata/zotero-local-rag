@@ -55,6 +55,12 @@
   固定し、`_defer_pdf_to_mistral`へ切り出した。`_extract_pdf_chunks`は679行から625行、
   同モジュールの未到達文予算は542から515へ下げた。coverage付き既定suiteは
   `1,536 passed / 4 skipped / 5 deselected`、実資料取込baselineは`5 passed`。
+- [x] **OCR layer auditの結果処理を分離。** scan-derived textの実測前条件と、
+  audit無効、同一sourceのcache hit、LLM一時障害のre-audit、原本読取障害の非retryable status、
+  標本不足時のsearchableなquality-uncertain採用を、有料呼出し無しのfixtureで固定。
+  `_audit_pdf_ocr_layer`へ切り出し、`_extract_pdf_chunks`は625行から553行、
+  同モジュールの未到達文予算は515から493へ下げた。coverage付き既定suiteは
+  `1,541 passed / 4 skipped / 5 deselected`、実資料取込baselineは`5 passed`。
 
 ## Active
 

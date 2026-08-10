@@ -421,6 +421,106 @@ def test_mistral_deferral_reason_precedence_is_explicit(
     )
 
 
+def _audit_pdf(*, enabled=True, cached=None, audit=None):
+    source = (
+        [("p1", "scan-derived text", {"page": 1})],
+        {
+            "parser": "pymupdf",
+            "total_pages": 1,
+            "has_outline": True,
+            "source_class": "scanned_ocr_layer",
+        },
+    )
+    with (
+        patch.object(module, "extract_chunks_from_pdf", return_value=source),
+        patch.object(
+            module,
+            "_initial_scanned_pdf_ocr_route",
+            return_value=(None, "awaiting_ocr_layer_audit"),
+        ),
+        patch.object(
+            module,
+            "_scanned_pdf_ocr_route",
+            return_value=(None, "not_scan_ocr_replacement"),
+        ),
+        patch.object(module, "ocr_layer_audit_enabled", return_value=enabled),
+        patch.object(module, "_cached_ocr_layer_audit", return_value=cached) as cache,
+        patch.object(module, "audit_ocr_text_layer", return_value=audit or {}) as run_audit,
+        patch.object(module, "mark_artifact_status") as status,
+    ):
+        result = _extract_pdf(structure_recovery=False)
+    return result, cache, run_audit, status
+
+
+def test_disabled_ocr_layer_audit_is_distinct_from_an_unverified_failure():
+    result, cache, run_audit, status = _audit_pdf(enabled=False)
+
+    assert result.quality["ocr_layer_audit_reason"] == module.OCR_LAYER_AUDIT_DISABLED
+    cache.assert_not_called()
+    run_audit.assert_not_called()
+    status.assert_not_called()
+
+
+def test_cached_ocr_layer_audit_avoids_a_new_paid_measurement():
+    cached = {
+        "ocr_layer_quality": "acceptable",
+        "ocr_layer_error_rate": 0.001,
+        "ocr_layer_audit_reason": "measured",
+    }
+    result, cache, run_audit, status = _audit_pdf(cached=cached)
+
+    assert result.quality["ocr_layer_audit_cached"] is True
+    assert result.quality["ocr_layer_quality"] == "acceptable"
+    cache.assert_called_once_with(None, mtime=100.0, size=2048)
+    run_audit.assert_not_called()
+    status.assert_not_called()
+
+
+def test_transient_ocr_audit_failure_is_retryable_and_not_cached():
+    audit = {
+        "ocr_layer_quality": "unverified",
+        "ocr_layer_audit_reason": "llm_unavailable:no configured model",
+    }
+    result, _cache, run_audit, status = _audit_pdf(audit=audit)
+
+    assert result.quality["ocr_layer_needs_reaudit"] is True
+    run_audit.assert_called_once_with(Path("synthetic.pdf"), "ITEM")
+    status.assert_called_once_with(
+        "ITEM",
+        "extraction",
+        "degraded",
+        attachment_key="ATT",
+        reason_code="ocr_layer_audit_deferred",
+        message="llm_unavailable:no configured model",
+        retryable=True,
+    )
+
+
+def test_source_file_problem_is_nonretryable_ocr_audit_degradation(capfd):
+    audit = {
+        "ocr_layer_quality": "unverified",
+        "ocr_layer_audit_reason": "sampling_failed:broken xref",
+    }
+    _result, _cache, _run_audit, status = _audit_pdf(audit=audit)
+
+    assert "repair or replace the file" in capfd.readouterr().err
+    assert status.call_args.kwargs["reason_code"] == "source_file_unreadable"
+    assert status.call_args.kwargs["retryable"] is False
+
+
+def test_too_small_ocr_audit_sample_keeps_searchable_text_with_a_warning_tag():
+    audit = {
+        "ocr_layer_quality": "unverified",
+        "ocr_layer_audit_reason": "insufficient_sample",
+    }
+    result, _cache, _run_audit, status = _audit_pdf(audit=audit)
+
+    assert result.chunks[0][2]["quality_uncertain"] is True
+    assert result.chunks[0][2]["quality_uncertain_reason"] == "ocr_layer_sample_too_small"
+    assert result.quality["quality_uncertain"] is True
+    status.assert_not_called()
+
+
 def _status(**overrides):
     values = {
         "attachment": SimpleNamespace(attachmentKey="ATT"),
