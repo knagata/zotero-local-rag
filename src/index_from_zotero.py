@@ -2757,6 +2757,76 @@ def _run_post_audit_scan_replacement(
     )
 
 
+def _escalate_pdf_to_docling(
+    *,
+    attachment_key: str,
+    file_path: Path,
+    meta_base: dict[str, Any],
+    chunks: list,
+    quality: dict[str, Any],
+    source_metadata: dict[str, Any],
+    policy_reason: str,
+    docling_worker: Any,
+    show_progress: bool,
+) -> tuple[list, dict[str, Any]]:
+    """Try Docling, retaining a tagged local extraction if it cannot improve it."""
+    if show_progress:
+        reason = "produced no chunks" if not chunks else "fast-path gate failed"
+        route_reason = (
+            f"cloud policy requires local processing ({policy_reason})"
+            if policy_reason else "short PDF or Mistral queue disabled"
+        )
+        print(
+            f"[PROGRESS]   ↳ PyMuPDF {reason}; escalating to Docling "
+            f"({route_reason})...",
+            file=sys.__stderr__,
+        )
+    # Keep the local result so a failed or rejected escalation cannot remove
+    # the document from search when no better route is available.
+    pre_escalation = (list(chunks), dict(quality))
+    try:
+        chunks, quality = docling_worker.extract(
+            file_path, attachment_key, meta_base,
+        )
+        quality = _attach_pdf_source_provenance(quality, source_metadata)
+        quality = _carry_ocr_layer_audit(quality, pre_escalation[1])
+    except RuntimeError as exc:
+        print(
+            f"[WARN] Docling worker extraction failed: "
+            f"attachment={attachment_key} err={exc}",
+            file=sys.__stderr__,
+        )
+        chunks, quality = [], {}
+    if chunks:
+        acceptable, gate_counts = _docling_escalation_acceptable(chunks)
+        if not acceptable:
+            if show_progress:
+                print(
+                    f"[PROGRESS]   ↳ Docling escalation output rejected "
+                    f"by minimal quality gate: {gate_counts}",
+                    file=sys.__stderr__,
+                )
+            quality = dict(quality)
+            quality["docling_escalation_gate"] = gate_counts
+            chunks = []
+    if not chunks and pre_escalation[0]:
+        chunks, quality = _adopt_with_quality_uncertain(
+            *pre_escalation,
+            reason=(
+                "docling_escalation_unavailable"
+                if not quality else "docling_escalation_rejected"
+            ),
+        )
+        if show_progress:
+            print(
+                "[PROGRESS]   ↳ keeping local extraction with a "
+                f"quality-uncertain tag ({len(chunks)} chunks); "
+                "no better route is available",
+                file=sys.__stderr__,
+            )
+    return chunks, quality
+
+
 def _extract_pdf_chunks(
     *,
     a: Any,
@@ -3045,69 +3115,17 @@ def _extract_pdf_chunks(
                         file=sys.__stderr__,
                     )
             else:
-                if show_progress:
-                    reason = "produced no chunks" if not chunks else "fast-path gate failed"
-                    route_reason = (
-                        f"cloud policy requires local processing ({policy_reason})"
-                        if policy_reason else "short PDF or Mistral queue disabled"
-                    )
-                    print(
-                        f"[PROGRESS]   ↳ PyMuPDF {reason}; escalating to Docling "
-                        f"({route_reason})...", file=sys.__stderr__,
-                    )
-                # U4 (note 79): keep what the local extractor already
-                # produced. If Docling cannot improve on it -- and the
-                # cloud route is unavailable, which is why we are here --
-                # then discarding this would leave the document out of
-                # the index entirely. Indexing it with a quality tag is
-                # strictly better than not indexing it at all.
-                pre_escalation = (list(chunks), dict(quality_info))
-                try:
-                    chunks, quality_info = docling_worker.extract(file_path, a.attachmentKey, meta_base)
-                    # Docling returns a new quality object; retain the
-                    # source classification and already-measured
-                    # stage-2 verdict that selected this escalation.
-                    quality_info = _attach_pdf_source_provenance(quality_info, source_metadata)
-                    prior_quality = pre_escalation[1]
-                    for key in _OCR_LAYER_AUDIT_FIELDS:
-                        if key in prior_quality:
-                            quality_info[key] = prior_quality[key]
-                except RuntimeError as exc:
-                    print(
-                        f"[WARN] Docling worker extraction failed: attachment={a.attachmentKey} err={exc}",
-                        file=sys.__stderr__,
-                    )
-                    chunks, quality_info = [], {}
-                if chunks:
-                    # P2 (note 78): mirror the local-OCR route's content
-                    # checks so this escalation's output is no longer
-                    # adopted entirely ungated.
-                    acceptable, gate_counts = _docling_escalation_acceptable(chunks)
-                    if not acceptable:
-                        if show_progress:
-                            print(
-                                f"[PROGRESS]   ↳ Docling escalation output rejected "
-                                f"by minimal quality gate: {gate_counts}",
-                                file=sys.__stderr__,
-                            )
-                        quality_info = dict(quality_info)
-                        quality_info["docling_escalation_gate"] = gate_counts
-                        chunks = []
-                if not chunks and pre_escalation[0]:
-                    chunks, quality_info = _adopt_with_quality_uncertain(
-                        *pre_escalation,
-                        reason=(
-                            "docling_escalation_unavailable"
-                            if not quality_info else "docling_escalation_rejected"
-                        ),
-                    )
-                    if show_progress:
-                        print(
-                            "[PROGRESS]   ↳ keeping local extraction with a "
-                            f"quality-uncertain tag ({len(chunks)} chunks); "
-                            "no better route is available",
-                            file=sys.__stderr__,
-                        )
+                chunks, quality_info = _escalate_pdf_to_docling(
+                    attachment_key=a.attachmentKey,
+                    file_path=file_path,
+                    meta_base=meta_base,
+                    chunks=chunks,
+                    quality=quality_info,
+                    source_metadata=source_metadata,
+                    policy_reason=policy_reason,
+                    docling_worker=docling_worker,
+                    show_progress=bool(show_progress),
+                )
     return PdfExtraction(chunks, quality_info)
 
 

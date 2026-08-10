@@ -527,6 +527,112 @@ def test_empty_zero_page_pdf_does_not_start_docling_fallback():
     assert plan.call_args.kwargs["attempted_local_ocr"] is False
 
 
+def _generic_docling_gate_escalation(*, acceptable=True, worker_error=None):
+    source = (
+        [(
+            "pymupdf-p1",
+            "original searchable text",
+            {
+                "page": 1,
+                "reading_order": 0,
+                "quality_uncertain_reason": "page_level_warning",
+            },
+        )],
+        {
+            "parser": "pymupdf",
+            "total_pages": 1,
+            "has_outline": True,
+            "source_class": module.BORN_DIGITAL,
+            "quality_uncertain_reason": "page_level_warning",
+        },
+    )
+    replacement = (
+        [("docling-p1", "replacement text", {"page": 1, "reading_order": 0})],
+        {"parser": "docling", "total_pages": 1, "has_outline": True},
+    )
+    worker = Mock()
+    worker.extract.return_value = replacement
+    worker.extract.side_effect = worker_error
+    gate_counts = {"gibberish_blocks": 1, "repeat_artifacts": 0}
+    with (
+        patch.object(module, "extract_chunks_from_pdf", return_value=source),
+        patch.object(
+            module,
+            "_initial_scanned_pdf_ocr_route",
+            return_value=(None, "not_scan_ocr_replacement"),
+        ),
+        patch.object(
+            module,
+            "_pdf_gate_plan_for_extraction",
+            return_value=module.PdfGatePlan("docling_escalation"),
+        ),
+        patch.object(
+            module,
+            "_docling_escalation_acceptable",
+            return_value=(acceptable, gate_counts),
+        ) as content_gate,
+    ):
+        result = _extract_pdf(
+            docling_worker=worker,
+            source_metadata={
+                "source_class": module.BORN_DIGITAL,
+                "pdf_producer": "synthetic producer",
+            },
+            structure_recovery=True,
+        )
+    return result, worker, content_gate, gate_counts
+
+
+def test_generic_docling_gate_escalation_adopts_acceptable_output_with_provenance():
+    result, worker, content_gate, _counts = _generic_docling_gate_escalation()
+
+    assert [row[0] for row in result.chunks] == ["docling-p1"]
+    assert result.quality["parser"] == "docling"
+    assert result.quality["source_class"] == module.BORN_DIGITAL
+    assert result.quality["pdf_producer"] == "synthetic producer"
+    worker.extract.assert_called_once_with(
+        Path("synthetic.pdf"), "ATT", {"itemKey": "ITEM"},
+    )
+    content_gate.assert_called_once_with(result.chunks)
+
+
+def test_generic_docling_gate_rejection_keeps_original_chunks_with_merged_warning():
+    result, _worker, content_gate, counts = _generic_docling_gate_escalation(
+        acceptable=False,
+    )
+
+    assert [row[0] for row in result.chunks] == ["pymupdf-p1"]
+    assert result.chunks[0][2]["quality_uncertain"] is True
+    assert result.chunks[0][2]["quality_uncertain_reason"] == (
+        "page_level_warning,docling_escalation_rejected"
+    )
+    assert result.quality["parser"] == "pymupdf"
+    assert result.quality["quality_uncertain"] is True
+    assert result.quality["quality_uncertain_reason"] == (
+        "page_level_warning,docling_escalation_rejected"
+    )
+    assert "docling_escalation_gate" not in result.quality
+    assert content_gate.call_args.args[0][0][0] == "docling-p1"
+    assert counts == {"gibberish_blocks": 1, "repeat_artifacts": 0}
+
+
+def test_generic_docling_gate_worker_failure_keeps_original_chunks_as_unavailable(capfd):
+    result, _worker, content_gate, _counts = _generic_docling_gate_escalation(
+        worker_error=RuntimeError("worker stopped"),
+    )
+
+    assert [row[0] for row in result.chunks] == ["pymupdf-p1"]
+    assert result.chunks[0][2]["quality_uncertain_reason"] == (
+        "page_level_warning,docling_escalation_unavailable"
+    )
+    assert result.quality["parser"] == "pymupdf"
+    assert result.quality["quality_uncertain_reason"] == (
+        "page_level_warning,docling_escalation_unavailable"
+    )
+    content_gate.assert_not_called()
+    assert "attachment=ATT" in capfd.readouterr().err
+
+
 @pytest.mark.parametrize(
     "chunks,recovered,local_exhausted,expected_reason",
     [

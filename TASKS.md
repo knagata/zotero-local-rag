@@ -97,6 +97,12 @@
   `_run_post_audit_scan_replacement`へ切り出し、`_extract_pdf_chunks`は371行から352行、
   同モジュールの未到達文予算は435から421へ下げた。coverage付き既定suiteは
   `1,558 passed / 4 skipped / 5 deselected`、実資料取込baselineは`5 passed`。
+- [x] **generic gateのDocling escalationを分離。** Doclingの正常採用とsource provenance付与、
+  最小content gate不採用時のPyMuPDF chunk保持、worker例外時の元抽出保持、
+  既存のquality-uncertain理由に`rejected`/`unavailable`を追記する契約をfixtureで固定。
+  `_escalate_pdf_to_docling`へ切り出し、`_extract_pdf_chunks`は352行から300行、
+  同モジュールの未到達文予算は421から399へ下げた。coverage付き既定suiteは
+  `1,561 passed / 4 skipped / 5 deselected`、実資料取込baselineは`5 passed`。
 
 ## Active
 
