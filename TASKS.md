@@ -61,6 +61,12 @@
   `_audit_pdf_ocr_layer`へ切り出し、`_extract_pdf_chunks`は625行から553行、
   同モジュールの未到達文予算は515から493へ下げた。coverage付き既定suiteは
   `1,541 passed / 4 skipped / 5 deselected`、実資料取込baselineは`5 passed`。
+- [x] **born-digital PDFの画像頁patchを分離。** text layerが正本の場合だけ適用し、
+  Docling回復chunkの読順splice、quality再計算、worker失敗時の元chunk保持、文字0件でも
+  「試行済みのfigure頁」として解決する既存契約をfakeで固定し、
+  `_patch_born_digital_scanned_pages`へ切り出した。`_extract_pdf_chunks`は553行から499行、
+  同モジュールの未到達文予算は493から482へ下げた。coverage付き既定suiteは
+  `1,544 passed / 4 skipped / 5 deselected`、実資料取込baselineは`5 passed`。
 
 ## Active
 

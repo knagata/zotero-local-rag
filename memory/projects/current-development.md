@@ -26,9 +26,11 @@ Updated: 2026-08-10
   `_defer_pdf_to_mistral`に隔離し、実DBを使わない統合fixtureで固定した。
 - OCR layer auditの無効/cache/一時障害/原本障害/標本不足を
   `_audit_pdf_ocr_layer`に隔離し、LLMを呼ばないfixtureで固定した。
+- born-digital PDFの画像頁patchを`_patch_born_digital_scanned_pages`に隔離し、
+  読順splice・失敗時保持・文字0件のfigure解決をfixtureで固定した。
 - 150行超の関数は22件から17件へ減少。最大は
-  `index_from_zotero._index_library`（1,104行）、次が`_extract_pdf_chunks`（553行）。
-- 既定suiteは1,541 passed / 4 skipped / 5 deselected。実資料取込baselineは5 passed。
+  `index_from_zotero._index_library`（1,104行）、次が`_extract_pdf_chunks`（499行）。
+- 既定suiteは1,544 passed / 4 skipped / 5 deselected。実資料取込baselineは5 passed。
   抽出・取り込み・構造を変更したら
   `uv run pytest -m slow`も必要。
 - P1/P2の既知製品欠陥はない。残るP3はS2 author-less識別とflat PDF 3形状で、どちらも
@@ -53,9 +55,9 @@ Updated: 2026-08-10
 
 ## Next work, in order
 
-1. 次はborn-digital scanned-page patchの適用条件、patch失敗時の元chunk保持、
-   attempted pageの読順spliceとquality再計算をfakeで固定して分離する。
-2. その後にscan-derived/corrupted頁patchの順で、
+1. 次はscan-derived OCRの欠落頁patchで、対象頁の元chunk置換、`scanrepair`名前空間、
+   blank/empty page再計算、worker失敗時の元chunk保持をfakeで固定して分離する。
+2. その後にcorrupted頁patchに同じ方法を適用する。
    テストが届いた責務だけを`_extract_pdf_chunks`から抽出し、1 seamずつ対象テストと
    function-size ratchetを更新する。低coverage部分を機械的に移動して「検証済み」と扱わない。
 3. `_extract_pdf_chunks`の挙動不変分割が終わってから`_index_library`を同じ方法で分割する。

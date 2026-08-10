@@ -2391,6 +2391,70 @@ def _audit_pdf_ocr_layer(
     return chunks, quality
 
 
+def _patch_born_digital_scanned_pages(
+    *,
+    attachment_key: str,
+    file_path: Path,
+    meta_base: dict[str, Any],
+    chunks: list,
+    quality: dict[str, Any],
+    attempted_local_ocr: bool,
+    structure_recovery: bool,
+    docling_worker: Any,
+    total_pages: int,
+    show_progress: bool,
+) -> tuple[list, dict[str, Any]]:
+    """Patch image-only pages when the embedded text layer is authoritative."""
+    scanned_pages = list(quality.get("scanned_pages") or [])
+    source_class = str(quality.get("source_class") or "")
+    text_layer_is_authoritative = (
+        source_class == BORN_DIGITAL if source_class else not quality.get("is_scanned")
+    )
+    enabled = os.environ.get("PDF_SCANNED_PAGE_PATCH_ENABLE", "1").strip() == "1"
+    if not (
+        chunks
+        and scanned_pages
+        and not attempted_local_ocr
+        and structure_recovery
+        and enabled
+        and text_layer_is_authoritative
+    ):
+        return chunks, quality
+    try:
+        from docling_extract import patch_scanned_pages_with_docling
+    except ImportError:  # pragma: no cover - direct src entrypoint
+        from .docling_extract import patch_scanned_pages_with_docling
+    try:
+        patched, attempted_pages = patch_scanned_pages_with_docling(
+            file_path, scanned_pages, attachment_key=attachment_key,
+            meta_base=meta_base, worker=docling_worker,
+        )
+    except Exception as exc:
+        patched, attempted_pages = [], set()
+        if show_progress:
+            print(
+                f"[WARN] scanned-page Docling patch failed: "
+                f"attachment={attachment_key} err={exc}",
+                file=sys.__stderr__,
+            )
+    if not attempted_pages:
+        return chunks, quality
+    # Every attempted born-digital page is resolved even if Docling found no
+    # text: forcing more OCR on a figure/photo risks index-polluting garbage.
+    chunks = _sort_chunks_in_reading_order(list(chunks) + patched)
+    quality = recompute_scanned_quality_after_patch(
+        quality, attempted_pages, total_pages,
+    )
+    if show_progress:
+        print(
+            f"[PROGRESS]   ↳ scanned-page Docling patch: {len(patched)} text chunk(s) "
+            f"recovered from {len(attempted_pages)} page(s) "
+            f"({len(quality['scanned_pages'])} still unattempted)",
+            file=sys.__stderr__,
+        )
+    return chunks, quality
+
+
 def _extract_pdf_chunks(
     *,
     a: Any,
@@ -2515,74 +2579,20 @@ def _extract_pdf_chunks(
                     file=sys.__stderr__,
                 )
                 chunks, quality_info = [], {}
-        # Scanned/image-only pages inside an otherwise clean embedded-text
-        # PDF (figure plates, a scanned dedication page, etc.) currently
-        # fail-closed the PyMuPDF fast-path and AI-TOC gates entirely,
-        # sending the whole document to Mistral OCR even when most pages
-        # are fine. Patch those pages via a Docling sub-PDF pass first
-        # (E2c, dev-notes/current/77). Gate on ``is_scanned`` (ratio>=0.8,
-        # a genuine scan job where local text-page patching wouldn't help)
-        # rather than a raw scanned-page count: the page-level "attempted
-        # = resolved" semantics above already prevent garbage/index
-        # pollution regardless of how many pages that covers, so a count
-        # cap was never actually protecting anything (user decision
-        # 2026-07-25, following the M5TQ4HLZ case: a 127-page catalog
-        # with 60 genuine figure-plate pages was previously escalated
-        # whole to Mistral OCR and rejected outright by its repeat-
-        # artifact gate).
-        #
-        # Restricted to born-digital documents (note 79): the "no text
-        # here means a figure" reading only holds when the text layer is
-        # the typeset source. In a scan the same observation means OCR
-        # failed on that page, and marking it ``figure`` would record a
-        # gap as an illustration -- those pages go to the scan-derived
-        # page repair below instead.
-        scanned_pages = list(quality_info.get("scanned_pages") or [])
-        source_class = str(quality_info.get("source_class") or "")
-        text_layer_is_authoritative = (
-            source_class == BORN_DIGITAL if source_class
-            else not quality_info.get("is_scanned")
+        # For born-digital PDFs, a textless page can be treated as a figure;
+        # scan-derived pages use the separate repair path below.
+        chunks, quality_info = _patch_born_digital_scanned_pages(
+            attachment_key=a.attachmentKey,
+            file_path=file_path,
+            meta_base=meta_base,
+            chunks=chunks,
+            quality=quality_info,
+            attempted_local_ocr=attempted_local_ocr,
+            structure_recovery=bool(structure_recovery),
+            docling_worker=docling_worker,
+            total_pages=total_pages,
+            show_progress=bool(show_progress),
         )
-        if (
-            chunks and scanned_pages and not attempted_local_ocr
-            and structure_recovery
-            and os.environ.get("PDF_SCANNED_PAGE_PATCH_ENABLE", "1").strip() == "1"
-            and text_layer_is_authoritative
-        ):
-            try:
-                from docling_extract import patch_scanned_pages_with_docling
-            except ImportError:  # pragma: no cover - direct src entrypoint
-                from .docling_extract import patch_scanned_pages_with_docling
-            try:
-                patched, attempted_pages = patch_scanned_pages_with_docling(
-                    file_path, scanned_pages, attachment_key=a.attachmentKey, meta_base=meta_base,
-                    worker=docling_worker,
-                )
-            except Exception as exc:
-                patched, attempted_pages = [], set()
-                if show_progress:
-                    print(
-                        f"[WARN] scanned-page Docling patch failed: attachment={a.attachmentKey} err={exc}",
-                        file=sys.__stderr__,
-                    )
-            if attempted_pages:
-                # Every attempted page is resolved for the scanned-ratio
-                # gate, whether Docling recovered text or concluded the
-                # page has none (a figure/photo/poster plate): forcing
-                # more OCR on non-text content risks index-polluting
-                # garbage rather than recovering anything real.
-                # P5 (note 78): splice in reading order, not by appending.
-                chunks = _sort_chunks_in_reading_order(list(chunks) + patched)
-                quality_info = recompute_scanned_quality_after_patch(
-                    quality_info, attempted_pages, total_pages,
-                )
-                if show_progress:
-                    print(
-                        f"[PROGRESS]   ↳ scanned-page Docling patch: {len(patched)} text chunk(s) "
-                        f"recovered from {len(attempted_pages)} page(s) "
-                        f"({len(quality_info['scanned_pages'])} still unattempted)",
-                        file=sys.__stderr__,
-                    )
         # Scan-derived text: the same page-level repair, but a page
         # without usable text is an OCR failure rather than a figure
         # (note 79, U2). The document-level local-OCR gate is all-or-

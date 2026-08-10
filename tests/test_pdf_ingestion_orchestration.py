@@ -20,6 +20,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 import index_from_zotero as module  # noqa: E402
+import docling_extract  # noqa: E402
 
 
 def _extract_pdf(**overrides):
@@ -519,6 +520,71 @@ def test_too_small_ocr_audit_sample_keeps_searchable_text_with_a_warning_tag():
     assert result.chunks[0][2]["quality_uncertain_reason"] == "ocr_layer_sample_too_small"
     assert result.quality["quality_uncertain"] is True
     status.assert_not_called()
+
+
+def _born_digital_page_patch(*, patch_result=None, patch_error=None):
+    source = (
+        [
+            ("p1", "page one", {"page": 1, "reading_order": 0}),
+            ("p3", "page three", {"page": 3, "reading_order": 0}),
+        ],
+        {
+            "parser": "pymupdf",
+            "total_pages": 3,
+            "has_outline": True,
+            "source_class": module.BORN_DIGITAL,
+            "scanned_pages": [2],
+        },
+    )
+    patched = (
+        [("p2", "page two", {"page": 2, "reading_order": 0})]
+        if patch_result is None else patch_result
+    )
+    with (
+        patch.object(module, "extract_chunks_from_pdf", return_value=source),
+        patch.object(
+            docling_extract,
+            "patch_scanned_pages_with_docling",
+            return_value=(patched, {2}),
+            side_effect=patch_error,
+        ) as run_patch,
+        patch.object(
+            module,
+            "recompute_scanned_quality_after_patch",
+            return_value={**source[1], "scanned_pages": []},
+        ) as recompute,
+        patch.object(module, "pymupdf_fast_path_passes", return_value=True),
+    ):
+        result = _extract_pdf(structure_recovery=True)
+    return result, run_patch, recompute
+
+
+def test_born_digital_scanned_page_patch_splices_in_reading_order_and_recomputes_quality():
+    result, run_patch, recompute = _born_digital_page_patch()
+
+    assert [row[0] for row in result.chunks] == ["p1", "p2", "p3"]
+    assert result.quality["scanned_pages"] == []
+    assert run_patch.call_args.args[1] == [2]
+    recompute.assert_called_once()
+    assert recompute.call_args.args[1:] == ({2}, 3)
+
+
+def test_born_digital_scanned_page_patch_failure_keeps_the_original_extraction():
+    result, _run_patch, recompute = _born_digital_page_patch(
+        patch_error=RuntimeError("page worker stopped"),
+    )
+
+    assert [row[0] for row in result.chunks] == ["p1", "p3"]
+    assert result.quality["scanned_pages"] == [2]
+    recompute.assert_not_called()
+
+
+def test_born_digital_patch_attempt_with_no_text_still_resolves_a_figure_page():
+    result, _run_patch, recompute = _born_digital_page_patch(patch_result=[])
+
+    assert [row[0] for row in result.chunks] == ["p1", "p3"]
+    assert result.quality["scanned_pages"] == []
+    recompute.assert_called_once()
 
 
 def _status(**overrides):
