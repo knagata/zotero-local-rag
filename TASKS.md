@@ -1205,6 +1205,11 @@ A（PDF構造化）・B（課金LLM）は独立、C（構造抽出エンジン�
   意図して改善したCitation Graph、note、retrievalの未到達文上限を引き下げ、macOS/Linux差の
   ある4モジュールはCI値を維持した。coverage付き既定suiteは1,513 passed / 4 skipped /
   5 deselected、fatal Ruff・compileall・公開import・差分検査も通過。
+- [x] **次セッションの開始点と現DBの扱いを固定する** —
+  `memory/projects/current-development.md`に、開始順、次の挙動不変リファクタ、rebuildの時期、
+  判断境界を記録した。現V3はmanifest内部整合と16件のベクトル一致を確認した一方、現在環境との
+  model-state/pipeline fingerprint不一致とFTS孤立1行があるため、コード整理には使えても品質評価の
+  正本にはしない。抽出境界を固定後、`Setup.command`のclean rebuildと3監査を行う。
 
 - [ ] **セマンティックマップのクラスタ数が固定8である**
   `citation_graph/server.py`の`n_clusters: int = 8`。KMeansは指定された数に必ず分割する
