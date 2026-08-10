@@ -88,6 +88,20 @@ DERIVED_DATA_PLANE_VARIABLES = frozenset({
     "MANIFEST_PATH", "LEXICAL_DB_PATH", "CHROMA_DIR", "RELATIONS_DB_PATH",
 })
 
+# A test is not approval to spend money or send library text to a hosted
+# service. The baseline covers deterministic local ingestion; cloud-enabled
+# routes have mock contracts of their own. These explicit child values also
+# override a developer's .env because load_dotenv_native never replaces an
+# existing process variable.
+HOSTED_INGESTION_FEATURE_FLAGS = frozenset({
+    "PDF_AI_TOC_FAST_PATH_ENABLE",
+    "OCR_LAYER_AUDIT_ENABLE",
+    "PDF_MISTRAL_TOC_QUEUE_ENABLE",
+    "LLM_SUMMARIES_ENABLE",
+    "LLM_REFERENCE_EXTRACTION_ENABLE",
+    "QUERY_EXPANSION_ENABLE",
+})
+
 #: Values that differ between two runs of the same input and say nothing about
 #: what the loop decided.
 #:
@@ -168,6 +182,7 @@ def ingest(item_key: str, plane: Path, *, force: bool = True,
         "LEXICAL_DB_PATH": str(plane / "lexical_v3.sqlite3"),
         "RELATIONS_DB_PATH": str(plane / "relations.db"),
         "PYTHONPATH": str(ROOT / "src"),
+        **{name: "0" for name in HOSTED_INGESTION_FEATURE_FLAGS},
     })
     result = subprocess.run(
         [sys.executable, str(ROOT / "src" / "index_from_zotero.py"),

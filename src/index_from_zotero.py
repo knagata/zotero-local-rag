@@ -56,7 +56,7 @@ from ocr_layer_audit import (
     audit_was_transient_failure, replacement_required,
 )
 from feature_gates import (
-    mistral_batch_queue_enabled, ocr_layer_audit_enabled,
+    ai_toc_enabled, mistral_batch_queue_enabled, ocr_layer_audit_enabled,
     pdf_structure_recovery_enabled, structure_engine_for, verify_enabled_features,
 )
 from orphan_cleanup import live_item_keys, stale_identity_keys
@@ -846,6 +846,11 @@ def parse_args() -> argparse.Namespace:
              "Use after an extraction-code change. Requires --item/--attachment/--limit/--source-type to scope.",
     )
     p.add_argument(
+        "--refresh-ai-toc", action="store_true",
+        help="Re-run AI TOC for selected PDFs even when the identical source has a cached "
+             "no-structure verdict. Requires --force-reparse and --item/--attachment.",
+    )
+    p.add_argument(
         "--refetch-ocr", action="store_true",
         help="Ignore the archived raw OCR response and call the engine again. "
              "Only needed when the OCR output itself is suspect -- a parsing or "
@@ -904,6 +909,24 @@ def parse_args() -> argparse.Namespace:
         p.error("--limit must be zero or positive")
     if args.force_reparse and not (args.item or args.attachment or args.limit or args.source_type or args.reocr_candidates):
         p.error("--force-reparse requires a scope (--item, --attachment, --limit, or --source-type) to avoid re-parsing the whole corpus")
+    if args.refresh_ai_toc and not args.force_reparse:
+        p.error("--refresh-ai-toc requires --force-reparse so the selected PDF is re-extracted")
+    if args.refresh_ai_toc and not (args.item or args.attachment):
+        p.error("--refresh-ai-toc requires an exact --item or --attachment scope")
+    if args.refresh_ai_toc and args.source_type not in (None, "pdf"):
+        p.error("--refresh-ai-toc can only be combined with --source-type pdf")
+    if args.refresh_ai_toc and any((
+        args.use_docling, args.reparse_corrupted, args.reocr_candidates,
+        args.refetch_ocr, args.check_quality, args.retry_failed,
+    )):
+        p.error(
+            "--refresh-ai-toc cannot be combined with parser/OCR overrides, "
+            "--check-quality, or --retry-failed"
+        )
+    if args.refresh_ai_toc and not pdf_structure_recovery_enabled():
+        p.error("--refresh-ai-toc requires PDF_STRUCTURE_RECOVERY_ENABLE=1")
+    if args.refresh_ai_toc and not ai_toc_enabled():
+        p.error("--refresh-ai-toc requires PDF_AI_TOC_FAST_PATH_ENABLE=1")
     if args.sync_rag_exclusions_only and any((
         args.rebuild, args.item, args.attachment, args.limit, args.collection,
         args.source_type, args.reocr_candidates, args.retry_failed,
@@ -2839,15 +2862,18 @@ def _recover_pdf_outline_with_ai_toc(
     size: int,
     total_pages: int,
     minimum_pages: int,
+    refresh_ai_toc: bool,
     structure_recovery: bool,
     docling_worker: Any,
     show_progress: bool,
 ) -> tuple[list, dict[str, Any], Any]:
     """Reuse or run AI TOC recovery for an eligible unstructured PDF."""
     recovered = None
-    prior_no_structure = _prior_no_structure_ai_toc_status(
-        previous, mtime=mtime, size=size,
-    )
+    prior_no_structure = None
+    if not refresh_ai_toc:
+        prior_no_structure = _prior_no_structure_ai_toc_status(
+            previous, mtime=mtime, size=size,
+        )
     eligible = chunks and not quality.get("has_outline") and total_pages >= minimum_pages
     if eligible and prior_no_structure:
         quality = dict(quality)
@@ -3197,6 +3223,7 @@ def _extract_pdf_chunks(
         size=size,
         total_pages=state.total_pages,
         minimum_pages=state.minimum_pages,
+        refresh_ai_toc=bool(args.refresh_ai_toc),
         structure_recovery=bool(structure_recovery),
         docling_worker=docling_worker,
         show_progress=bool(show_progress),

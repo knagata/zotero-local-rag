@@ -26,7 +26,7 @@ import docling_extract  # noqa: E402
 def _extract_pdf(**overrides):
     values = {
         "a": SimpleNamespace(attachmentKey="ATT", title="Title"),
-        "args": SimpleNamespace(use_docling=False),
+        "args": SimpleNamespace(use_docling=False, refresh_ai_toc=False),
         "col": object(),
         "docling_worker": Mock(),
         "file_path": Path("synthetic.pdf"),
@@ -638,7 +638,9 @@ def test_generic_docling_gate_worker_failure_keeps_original_chunks_as_unavailabl
     assert "attachment=ATT" in capfd.readouterr().err
 
 
-def _ai_toc_recovery(*, recovered=None, previous=None, total_pages=30):
+def _ai_toc_recovery(
+    *, recovered=None, previous=None, total_pages=30, refresh_ai_toc=False,
+):
     source = (
         [("pymupdf-p1", "unstructured text", {"page": 1, "reading_order": 0})],
         {
@@ -669,6 +671,9 @@ def _ai_toc_recovery(*, recovered=None, previous=None, total_pages=30):
         result = _extract_pdf(
             prev=previous,
             structure_recovery=True,
+            args=SimpleNamespace(
+                use_docling=False, refresh_ai_toc=refresh_ai_toc,
+            ),
         )
     return result, run_recovery
 
@@ -685,6 +690,29 @@ def test_ai_toc_reuses_same_source_no_structure_verdict_without_a_new_call():
     assert result.quality["ai_toc_recovery_status"] == "insufficient_body_headings"
     assert result.quality["ai_toc_recovery_status_cached"] is True
     run_recovery.assert_not_called()
+
+
+def test_ai_toc_refresh_bypasses_same_source_no_structure_verdict():
+    previous = {
+        "mtime": 100.0,
+        "size": 2048,
+        "quality": {"ai_toc_recovery_status": "insufficient_body_headings"},
+    }
+    recovered = SimpleNamespace(
+        accepted=True,
+        reason="accepted",
+        chunks=[("structured-p1", "structured", {"page": 1})],
+        diagnostics={"body_coverage": 1.0, "matched_count": 4},
+    )
+
+    result, run_recovery = _ai_toc_recovery(
+        previous=previous, recovered=recovered, refresh_ai_toc=True,
+    )
+
+    assert [row[0] for row in result.chunks] == ["structured-p1"]
+    assert result.quality["ai_toc_recovery_status"] == "accepted"
+    assert "ai_toc_recovery_status_cached" not in result.quality
+    run_recovery.assert_called_once()
 
 
 def test_ai_toc_accepted_result_replaces_chunks_and_records_diagnostics():

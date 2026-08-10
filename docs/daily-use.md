@@ -149,6 +149,17 @@ uv run src/index_from_zotero.py --force-reparse --item ABCDEFGH
 # 親item内の特定添付だけを再抽出（queue worker向け。兄弟PDFは処理しない）
 uv run src/index_from_zotero.py --force-reparse --item ABCDEFGH --attachment IJKLMNOP --source-type pdf
 
+# 同一PDFの「見出しなし」判定も再評価してAI目次をやり直す
+uv run src/index_from_zotero.py --refresh-ai-toc --force-reparse \
+  --item ABCDEFGH --attachment IJKLMNOP --source-type pdf
+
 # 種別を絞って再抽出（--item / --limit / --source-type のいずれか必須）
 uv run src/index_from_zotero.py --force-reparse --source-type epub --limit 20
 ```
+
+`--refresh-ai-toc`は、同一mtime/sizeのPDFに保存された確定済みno-structure判定だけを
+再利用せず、通常の再抽出・再埋め込み経路でAI目次を再実行します。対象外への課金と再処理を
+避けるため、`--force-reparse`と`--item`または`--attachment`が必須です。通常は兄弟添付を
+巻き込まない`--attachment`を使ってください。AI目次とPDF構造復元が有効である必要があり、
+parser/OCR override、`--check-quality`、`--retry-failed`とは併用できません。
+ページ数、native outline、本文品質など既存のAI目次適格条件は変更しません。

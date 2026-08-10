@@ -144,6 +144,12 @@ LLMへ送り、フェーズ1のDB構築中にも課金が発生し得ます。�
 AIの印刷ページ番号は採用せず、本文で再発見した見出しのページとreading orderだけを構造境界に
 使います。
 
+同じPDFで過去に`insufficient_inferred_headings`または`insufficient_body_headings`が確定した
+場合は、有料呼出しを繰り返さないため、そのno-structure判定を再利用します。AI目次の実装改善後に
+対象PDFだけ再評価する場合は、`--refresh-ai-toc --force-reparse --attachment <KEY>`を使います
+（`--source-type pdf`も併用できます）。この明示指定時だけ負のキャッシュを迂回し、通常のmanifest commitが
+新しい判定へ置き換えます。manifestやfingerprintを手修正する必要はありません。
+
 ### ローカルOCR・クラウドOCR
 
 | 変数 | 用途 | 既定 |

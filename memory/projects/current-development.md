@@ -1,6 +1,6 @@
 # Current development handoff
 
-Updated: 2026-08-10
+Updated: 2026-08-11
 
 ## Objective
 
@@ -42,6 +42,10 @@ Updated: 2026-08-10
   `_escalate_pdf_to_docling`に隔離し、quality-uncertain理由の追記を固定した。
 - AI TOCの同一source no-structure継承、accepted/rejectedのchunkとdiagnostics更新を
   `_recover_pdf_outline_with_ai_toc`に隔離し、実LLM無しで固定した。
+- 同一sourceの確定済みAI TOC no-structure判定を、対象限定の`--refresh-ai-toc`＋
+  `--force-reparse`で安全に再評価できるようにした。item/attachment scopeとfeature enableを
+  必須にし、PDF以外・parser/OCR override・quality/retry modeとの曖昧な併用は拒否する。
+  通常の負キャッシュ節約とattachment commitは不変で、manifest/fingerprint手修正は不要。
 - 5種類のPDF gate action実行を`_dispatch_pdf_gate_action`に集約し、
   disabledタグとlocal-exhausted時のDocling非再実行を追加固定した。
 - 通常PDFのpre-gate sequenceを`_prepare_pdf_for_structure_gate`と`_PdfPreGateState`へ
@@ -66,12 +70,17 @@ Updated: 2026-08-10
   `data/backups/pre-clean-rebuild-20260810-4b58d6b`へ8.67GBのrollback snapshotを作り、別copyから
   Chroma 513,683、FTS 513,684、manifest 614、lexical/relations quick check `ok`を確認した。
   既知の孤立FTS 1行は修復していない。backup後も空き70.6GB、indexing lockは残っていない。
-- local `.env`ではAI TOC、OCR layer audit、query expansion、LLM summaries、LLM reference
-  extraction、Mistral queueを0へ変更済み。API keyは残るがfeatureはoffで、有料callはしない。
+- userの明示変更によりlocal `.env`はPDF構造復元とAI TOCが1。AI TOC採用後の参照節を再解析する
+  local Docling flagも1。OCR layer audit、query expansion、LLM summaries、LLM reference
+  extraction、Mistral queueは0のまま。M5を実行すると適格PDFのAI目次で有料LLMを呼び得るが、
+  M5承認前には実行しない。
   `docs/embedding-rebuild-readiness.md`がgo/no-go、実行入口、rollbackの記録である。
 - 150行超の関数は22件から16件へ減少。最大は
   `index_from_zotero._index_library`（1,092行）、次が`pdf_extract.extract_chunks_from_pdf`（607行）。
-- 既定suiteは1,579 passed / 4 skipped / 5 deselected。実資料取込baselineは5 passed。
+- 既定suiteは1,587 passed / 4 skipped / 5 deselected。実資料取込baselineは5 passed。
+  baseline子プロセスはlocal `.env`に関係なくhosted ingestion feature 6種を強制offにする。
+  初回slow差分のPDFは全3頁でAI目次の最小30頁未満、AI TOC statusも無かったため有料callは
+  発生していない。active V3への書込みもなく、防壁追加後の再検証は全件hosted-offでpass。
   抽出・取り込み・構造を変更したら
   `uv run pytest -m slow`も必要。
 - P1/P2の既知製品欠陥はない。残るP3はS2 author-less識別とflat PDF 3形状で、どちらも
@@ -98,7 +107,8 @@ Updated: 2026-08-10
 
 `TASKS.md`の「2026-08-10 埋め込み開始までのマイルストーン」を進捗の正本とする。
 到達点は全件埋め込みの実行ではなく、`Setup.command`の`REBUILD`確認直前で止める
-**Ready to Embed**。M0〜M4は完了し、M5はユーザーの明示承認待ちである。
+M0〜M4は完了。M4.1のAI TOC負キャッシュrefresh実装・検証も完了しており、実装commitを
+readinessへpinする短い記録commitだけが残る。pin完了まではM5をHOLDする。
 
 1. **M1（完了）**: 通常attachment dispatchとpending候補の組立を決定的fixtureで固定した。
 2. **M2（完了）**: 最終出力確定だけを純粋関数へ分け、現行抽出・chunk境界を今回の世代として
@@ -108,7 +118,9 @@ Updated: 2026-08-10
    `900.53 MB`を確認し、中断再開・補償・reopen・実queryも通した。
 4. **M4（完了）**: 対象commit、dry-run inventory、現V3 backup、容量、lock、埋め込み設定、
    有料機能無効、rollback点をgo/no-go表で確定し、`REBUILD`入力前で停止した。
-5. **M5（別承認）**: 明示承認後だけclean rebuildを実行する。完了後に
+5. **M4.1（pin待ち）**: 対象限定のAI TOC負キャッシュrefreshは実装・検証済み。実装commitを
+   `docs/embedding-rebuild-readiness.md`へpinしてReady to Embedへ戻す。
+6. **M5（別承認）**: 明示承認後だけclean rebuildを実行する。完了後に
    `uv run python scripts/run_db_audit.py`でZotero・原本・DBの3監査を通す。
 
 ## Decision boundaries
@@ -117,6 +129,7 @@ Updated: 2026-08-10
 - 抽出heuristic、OCR route、chunk境界、S2 author-less条件、flat PDF昇格条件、固定8クラスタの
   変更は生成物・実資料を読み、精度trade-offが見えた時点でユーザーへ判断材料を示す。
 - 現DBへの増分取り込み、fingerprintの手修正、全件rebuild、有料LLM/OCRは実行しない。
+  実資料baselineはhosted featureを強制offにして検証する。
   rebuildは上記の挙動不変リファクタ完了後に行う。
 - 実データを書き換えない診断では、`.env`を`load_dotenv_native(ROOT)`で読んでからactive planeを
   解決する。識別子、書名、絶対パスを追跡ファイルへ保存しない。

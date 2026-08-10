@@ -167,7 +167,15 @@ scopeを指定して `--force-reparse` を使います（無指定の全件再�
 ```bash
 uv run src/index_from_zotero.py --force-reparse --item ABCDEFGH
 uv run src/index_from_zotero.py --force-reparse --source-type epub --limit 20
+
+# 同一PDFの確定済みno-structure判定も対象限定で再評価
+uv run src/index_from_zotero.py --refresh-ai-toc --force-reparse \
+  --item ABCDEFGH --attachment IJKLMNOP --source-type pdf
 ```
+
+`--refresh-ai-toc`は独立したキャッシュ削除ではありません。指定したPDFの通常再取込中に限って
+manifest内のno-structure判定を再利用せず、再評価結果をattachmentの原子的commitで置き換えます。
+parser/OCR override経路とは併用できません。
 
 ### 主要な chunk ID 命名規則
 

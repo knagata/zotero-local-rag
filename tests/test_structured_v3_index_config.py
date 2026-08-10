@@ -337,6 +337,103 @@ class StructuredV3IndexConfigTests(unittest.TestCase):
                 with self.assertRaises(SystemExit):
                     module.parse_args()
 
+    def test_refresh_ai_toc_accepts_only_explicit_reparse_targets(self):
+        enabled = {
+            "PDF_STRUCTURE_RECOVERY_ENABLE": "1",
+            "PDF_AI_TOC_FAST_PATH_ENABLE": "1",
+        }
+        for scope in (("--item", "ITEM"), ("--attachment", "ATTACH")):
+            with self.subTest(scope=scope), patch.dict(os.environ, enabled), patch.object(
+                sys,
+                "argv",
+                [
+                    "index_from_zotero.py", "--refresh-ai-toc", "--force-reparse",
+                    *scope, "--source-type", "pdf",
+                ],
+            ):
+                args = module.parse_args()
+                self.assertTrue(args.refresh_ai_toc)
+
+    def test_refresh_ai_toc_requires_force_reparse(self):
+        enabled = {
+            "PDF_STRUCTURE_RECOVERY_ENABLE": "1",
+            "PDF_AI_TOC_FAST_PATH_ENABLE": "1",
+        }
+        with patch.dict(os.environ, enabled), patch.object(
+            sys, "argv", ["index_from_zotero.py", "--refresh-ai-toc", "--item", "ITEM"],
+        ), self.assertRaises(SystemExit):
+            module.parse_args()
+
+    def test_refresh_ai_toc_rejects_broad_force_reparse_scope(self):
+        enabled = {
+            "PDF_STRUCTURE_RECOVERY_ENABLE": "1",
+            "PDF_AI_TOC_FAST_PATH_ENABLE": "1",
+        }
+        with patch.dict(os.environ, enabled), patch.object(
+            sys,
+            "argv",
+            [
+                "index_from_zotero.py", "--refresh-ai-toc", "--force-reparse",
+                "--source-type", "pdf",
+            ],
+        ), self.assertRaises(SystemExit):
+            module.parse_args()
+
+    def test_refresh_ai_toc_rejects_non_pdf_and_parser_override_routes(self):
+        enabled = {
+            "PDF_STRUCTURE_RECOVERY_ENABLE": "1",
+            "PDF_AI_TOC_FAST_PATH_ENABLE": "1",
+        }
+        incompatible = (
+            ("--source-type", "epub"),
+            ("--use-docling",),
+            ("--reparse-corrupted",),
+            ("--reocr-candidates", "candidates.json"),
+            ("--refetch-ocr",),
+            ("--check-quality",),
+            ("--retry-failed",),
+        )
+        for extra in incompatible:
+            with self.subTest(extra=extra), patch.dict(os.environ, enabled), patch.object(
+                sys,
+                "argv",
+                [
+                    "index_from_zotero.py", "--refresh-ai-toc", "--force-reparse",
+                    "--attachment", "ATTACH", *extra,
+                ],
+            ), self.assertRaises(SystemExit):
+                module.parse_args()
+
+    def test_refresh_ai_toc_requires_structure_recovery(self):
+        flags = {
+            "PDF_STRUCTURE_RECOVERY_ENABLE": "0",
+            "PDF_AI_TOC_FAST_PATH_ENABLE": "1",
+        }
+        with patch.dict(os.environ, flags), patch.object(
+            sys,
+            "argv",
+            [
+                "index_from_zotero.py", "--refresh-ai-toc", "--force-reparse",
+                "--attachment", "ATTACH",
+            ],
+        ), self.assertRaises(SystemExit):
+            module.parse_args()
+
+    def test_refresh_ai_toc_requires_enabled_fast_path(self):
+        flags = {
+            "PDF_STRUCTURE_RECOVERY_ENABLE": "1",
+            "PDF_AI_TOC_FAST_PATH_ENABLE": "0",
+        }
+        with patch.dict(os.environ, flags), patch.object(
+            sys,
+            "argv",
+            [
+                "index_from_zotero.py", "--refresh-ai-toc", "--force-reparse",
+                "--attachment", "ATTACH",
+            ],
+        ), self.assertRaises(SystemExit):
+            module.parse_args()
+
 
 if __name__ == "__main__":
     unittest.main()

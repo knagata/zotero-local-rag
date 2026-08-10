@@ -240,6 +240,31 @@ Chroma/FTS書込み）の実行は、このマイルストーンとは別の明�
     function/lint/coverage/doc各予算、差分検査がpassした。M2で通した実資料baseline
     `5 passed`もこのrebuild runtimeの検証結果として維持する。
 
+- [~] **M4.1（必須）: AI目次の負キャッシュを対象限定で再評価可能にする**（2026-08-11）
+  - 同一mtime/sizeで保存済みの`insufficient_inferred_headings`／
+    `insufficient_body_headings`を通常は従来どおり再利用し、明示
+    `--refresh-ai-toc`時だけ迂回するようにした。独立したmanifest手術は行わず、通常の
+    attachment commitが再評価結果へ置き換える。
+  - `--force-reparse`と`--item`または`--attachment`を必須にし、PDF以外のsource type、
+    Docling/re-OCR override、`--check-quality`、`--retry-failed`との併用をfail-fastで拒否する。
+    構造復元またはAI目次featureがoffの場合も起動前に拒否する。通常運用は兄弟添付を
+    巻き込まない`--attachment`を推奨する。
+  - 実LLM無しのfixtureで、既定時は負キャッシュを維持し、refresh時はAI目次を1回呼んで
+    accepted結果を採用し、cached markerを残さない契約を固定した。CLIの正・負組合せ、
+    force reparseによるunchanged skip回避、attachment exact scopeも決定的テストで確認した。
+  - 初回の実資料baselineがlocal `.env`変更後に1件差分になった。対象は全3頁でAI目次の
+    最小30頁未満、`ai_toc_recovery_status`も無く、OCR-layer auditもoffだったためhosted callは
+    発生していない。今後のfixture変更でもテストが有料機能を起動しないよう、baseline子プロセスで
+    hosted ingestion feature 6種を強制offにする防壁と真偽テストを追加した。差分を読んだ結果、
+    既存baselineが記録していたOCR-layer auditの
+    `acceptable/measured`と標本情報4項目が`audit_disabled`になるだけで、chunk数・本文・ID・
+    階層は不変だったため、gitignore配下のbaselineを採択した。
+  - 対象93テスト、coverage付き既定suite
+    `1,587 passed / 4 skipped / 5 deselected`、hosted feature強制off後の実資料baseline
+    `5 passed`、compileall、fatal Ruff、公開import、function/lint/coverage各予算、差分検査に合格。
+    `index_from_zotero.py`の未到達文上限385、150行超16件、lint 309件は悪化せず、品質予算の
+    採択変更は不要だった。実装commitをreadinessへpinするまでM5はHOLD。
+
 - [ ] **M5（必須・ユーザー承認待ち）: clean rebuildと全件埋め込みを実行する**
   - M4到達後の別作業。明示承認を得てからのみ実行し、完了後は
     `uv run python scripts/run_db_audit.py`でZotero・原本・DBの3監査を通す。
