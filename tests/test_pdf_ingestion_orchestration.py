@@ -653,6 +653,77 @@ def test_scan_derived_page_repair_failure_keeps_the_original_failed_page():
     recompute.assert_not_called()
 
 
+def _corrupted_text_page_patch(*, patch_error=None):
+    source = (
+        [
+            ("p1", "clean", {"page": 1, "reading_order": 0}),
+            ("old-p2", "garbled", {"page": 2, "reading_order": 0}),
+            ("p3", "clean", {"page": 3, "reading_order": 0}),
+        ],
+        {
+            "parser": "pymupdf",
+            "total_pages": 3,
+            "has_outline": True,
+            "source_class": module.BORN_DIGITAL,
+            "corrupted_pages": [2],
+            "corrupted_ratio": 0.333,
+            "is_corrupted": False,
+            "extraction_failure_pages": [2],
+            "extraction_failure_ratio": 0.333,
+            "content_corruption_pages": [],
+        },
+    )
+    patched = [("new-p2", "recovered", {"page": 2, "reading_order": 0})]
+    repaired_quality = {
+        **source[1],
+        "corrupted_pages": [],
+        "corrupted_ratio": 0.0,
+        "extraction_failure_pages": [],
+        "extraction_failure_ratio": 0.0,
+    }
+    with (
+        patch.dict("os.environ", {"PDF_CORRUPTED_PAGE_PATCH_ENABLE": "1"}),
+        patch.object(module, "extract_chunks_from_pdf", return_value=source),
+        patch.object(
+            docling_extract,
+            "patch_corrupted_pages_with_docling",
+            return_value=(patched, {2}),
+            side_effect=patch_error,
+        ) as run_patch,
+        patch.object(
+            module,
+            "recompute_corrupted_quality_after_patch",
+            return_value=repaired_quality,
+        ) as recompute,
+        patch.object(module, "pymupdf_fast_path_passes", return_value=True),
+    ):
+        result = _extract_pdf(structure_recovery=True)
+    return result, run_patch, recompute
+
+
+def test_corrupted_text_page_patch_replaces_garbled_chunks_and_recomputes_quality():
+    result, run_patch, recompute = _corrupted_text_page_patch()
+
+    assert [row[0] for row in result.chunks] == ["p1", "new-p2", "p3"]
+    assert result.quality["corrupted_pages"] == []
+    assert result.quality["extraction_failure_pages"] == []
+    assert run_patch.call_args.args[1] == [2]
+    recompute.assert_called_once()
+    assert recompute.call_args.args[0]["corrupted_pages"] == [2]
+    assert recompute.call_args.args[1:] == ({2}, 3)
+
+
+def test_corrupted_text_page_patch_failure_keeps_the_garbled_chunks():
+    result, _run_patch, recompute = _corrupted_text_page_patch(
+        patch_error=RuntimeError("repair worker stopped"),
+    )
+
+    assert [row[0] for row in result.chunks] == ["p1", "old-p2", "p3"]
+    assert result.quality["corrupted_pages"] == [2]
+    assert result.quality["extraction_failure_pages"] == [2]
+    recompute.assert_not_called()
+
+
 def _status(**overrides):
     values = {
         "attachment": SimpleNamespace(attachmentKey="ATT"),

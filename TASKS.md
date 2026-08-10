@@ -73,6 +73,12 @@
   `_repair_scan_derived_pages`へ切り出し、`_extract_pdf_chunks`は499行から450行、
   同モジュールの未到達文予算は482から469へ下げた。coverage付き既定suiteは
   `1,546 passed / 4 skipped / 5 deselected`、実資料取込baselineは`5 passed`。
+- [x] **corrupted text page patchを分離。** garbledな旧chunkの全置換、読順splice、
+  corruption内訳・ratioの再計算呼出し、worker失敗時の元chunkとquality保持を
+  実extractor無しのfixtureで固定し、`_patch_corrupted_text_pages`へ切り出した。
+  `_extract_pdf_chunks`は450行から402行、同モジュールの未到達文予算は469から457へ下げた。
+  coverage付き既定suiteは`1,548 passed / 4 skipped / 5 deselected`、
+  実資料取込baselineは`5 passed`。
 
 ## Active
 

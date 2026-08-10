@@ -2517,6 +2517,71 @@ def _repair_scan_derived_pages(
     return chunks, quality
 
 
+def _patch_corrupted_text_pages(
+    *,
+    attachment_key: str,
+    file_path: Path,
+    meta_base: dict[str, Any],
+    chunks: list,
+    quality: dict[str, Any],
+    attempted_local_ocr: bool,
+    structure_recovery: bool,
+    docling_worker: Any,
+    total_pages: int,
+    show_progress: bool,
+) -> tuple[list, dict[str, Any]]:
+    """Replace garbled text-layer pages with Docling page results."""
+    corrupted_pages = list(quality.get("corrupted_pages") or [])
+    enabled = os.environ.get("PDF_CORRUPTED_PAGE_PATCH_ENABLE", "0").strip() == "1"
+    if not (
+        chunks
+        and corrupted_pages
+        and not attempted_local_ocr
+        and structure_recovery
+        and enabled
+        and not quality.get("is_corrupted")
+    ):
+        return chunks, quality
+    try:
+        from docling_extract import patch_corrupted_pages_with_docling
+    except ImportError:  # pragma: no cover - direct src entrypoint
+        from .docling_extract import patch_corrupted_pages_with_docling
+    try:
+        patched, attempted_pages = patch_corrupted_pages_with_docling(
+            file_path,
+            corrupted_pages,
+            attachment_key=attachment_key,
+            meta_base=meta_base,
+            worker=docling_worker,
+        )
+    except Exception as exc:
+        patched, attempted_pages = [], set()
+        if show_progress:
+            print(
+                f"[WARN] corrupted-page Docling patch failed: "
+                f"attachment={attachment_key} err={exc}",
+                file=sys.__stderr__,
+            )
+    if not attempted_pages:
+        return chunks, quality
+    kept = [
+        (cid, text, md) for cid, text, md in chunks
+        if int(md.get("page") or 0) not in attempted_pages
+    ]
+    chunks = _sort_chunks_in_reading_order(kept + patched)
+    quality = recompute_corrupted_quality_after_patch(
+        quality, attempted_pages, total_pages,
+    )
+    if show_progress:
+        print(
+            f"[PROGRESS]   ↳ corrupted-page Docling patch: {len(patched)} chunk(s) "
+            f"recovered from {len(attempted_pages)} page(s) "
+            f"({len(quality['corrupted_pages'])} still unresolved)",
+            file=sys.__stderr__,
+        )
+    return chunks, quality
+
+
 def _extract_pdf_chunks(
     *,
     a: Any,
@@ -2666,66 +2731,18 @@ def _extract_pdf_chunks(
             total_pages=total_pages,
             show_progress=bool(show_progress),
         )
-        # Text-corrupted pages (font-encoding mismatch or OCR/linguistic
-        # noise already baked into the PDF's text layer -- see
-        # pdf_extract.analyze_text_quality's is_corrupted) inside an
-        # otherwise clean PDF get the same "patch just the bad pages"
-        # treatment as scanned pages above (E2d, dev-notes/current/77,
-        # user decision 2026-07-26). Unlike scanned pages, corrupted
-        # pages already produced (garbled) chunks upstream, so those
-        # must be dropped before splicing in the Docling-recovered
-        # replacements -- otherwise both the garbage and the fix would
-        # be indexed side by side. Gated on ``is_corrupted`` (ratio
-        # >=0.6, a genuinely corrupted document where per-page local
-        # patching wouldn't help) rather than a raw corrupted-page
-        # count, mirroring the scanned-page patch's reasoning: the
-        # page-level "attempted = resolved" semantics below already
-        # prevent garbage/index pollution regardless of how many pages
-        # that covers.
-        corrupted_pages = list(quality_info.get("corrupted_pages") or [])
-        if (
-            chunks and corrupted_pages and not attempted_local_ocr
-            and structure_recovery
-            and os.environ.get("PDF_CORRUPTED_PAGE_PATCH_ENABLE", "0").strip() == "1"
-            and not quality_info.get("is_corrupted")
-        ):
-            try:
-                from docling_extract import patch_corrupted_pages_with_docling
-            except ImportError:  # pragma: no cover - direct src entrypoint
-                from .docling_extract import patch_corrupted_pages_with_docling
-            try:
-                corrupt_patched, corrupt_attempted_pages = patch_corrupted_pages_with_docling(
-                    file_path, corrupted_pages, attachment_key=a.attachmentKey, meta_base=meta_base,
-                    worker=docling_worker,
-                )
-            except Exception as exc:
-                corrupt_patched, corrupt_attempted_pages = [], set()
-                if show_progress:
-                    print(
-                        f"[WARN] corrupted-page Docling patch failed: attachment={a.attachmentKey} err={exc}",
-                        file=sys.__stderr__,
-                    )
-            if corrupt_attempted_pages:
-                # Drop the pre-patch (garbled) chunks for every attempted
-                # page first -- the patch output (recovered text or the
-                # corrupted_unresolved marker) is their full replacement,
-                # not an addition alongside the original mojibake.
-                chunks = [
-                    (cid, text, md) for cid, text, md in chunks
-                    if int(md.get("page") or 0) not in corrupt_attempted_pages
-                ]
-                # P5 (note 78): splice in reading order, not by appending.
-                chunks = _sort_chunks_in_reading_order(list(chunks) + corrupt_patched)
-                quality_info = recompute_corrupted_quality_after_patch(
-                    quality_info, corrupt_attempted_pages, total_pages,
-                )
-                if show_progress:
-                    print(
-                        f"[PROGRESS]   ↳ corrupted-page Docling patch: {len(corrupt_patched)} chunk(s) "
-                        f"recovered from {len(corrupt_attempted_pages)} page(s) "
-                        f"({len(quality_info['corrupted_pages'])} still unresolved)",
-                        file=sys.__stderr__,
-                    )
+        chunks, quality_info = _patch_corrupted_text_pages(
+            attachment_key=a.attachmentKey,
+            file_path=file_path,
+            meta_base=meta_base,
+            chunks=chunks,
+            quality=quality_info,
+            attempted_local_ocr=attempted_local_ocr,
+            structure_recovery=bool(structure_recovery),
+            docling_worker=docling_worker,
+            total_pages=total_pages,
+            show_progress=bool(show_progress),
+        )
         # Stage 2 (note 79) runs after page repair, so it measures the text we
         # would index, and before the fast-path gate that consumes its verdict.
         chunks, quality_info = _audit_pdf_ocr_layer(
