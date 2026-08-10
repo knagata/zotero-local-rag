@@ -2886,6 +2886,87 @@ def _recover_pdf_outline_with_ai_toc(
     return chunks, quality, recovered
 
 
+def _dispatch_pdf_gate_action(
+    *,
+    gate_plan: PdfGatePlan,
+    attachment: Any,
+    scope_item_key: str,
+    col: Any,
+    manifest: dict[str, Any],
+    files_manifest: dict[str, Any],
+    previous: dict[str, Any] | None,
+    file_path: Path,
+    meta_base: dict[str, Any],
+    chunks: list,
+    quality: dict[str, Any],
+    recovered: Any,
+    scanned_batch_defer: bool,
+    total_pages: int,
+    mtime: float,
+    size: int,
+    stored_signature: str | None,
+    pipeline_fingerprint: str | None,
+    source_metadata: dict[str, Any],
+    docling_worker: Any,
+    show_progress: bool,
+) -> PdfExtraction:
+    """Apply a planned PDF gate action without revisiting its routing decision."""
+    if gate_plan.action == "disabled":
+        quality = dict(quality)
+        quality["pdf_structure_recovery"] = "disabled"
+        return PdfExtraction(chunks, quality)
+    if gate_plan.action == "keep":
+        return PdfExtraction(chunks, quality)
+
+    local_ocr_exhausted = gate_plan.local_ocr_exhausted
+    policy_reason = gate_plan.policy_reason
+    if gate_plan.action == "defer":
+        return _defer_pdf_to_mistral(
+            attachment=attachment,
+            scope_item_key=scope_item_key,
+            col=col,
+            manifest=manifest,
+            files_manifest=files_manifest,
+            previous=previous,
+            file_path=file_path,
+            quality=quality,
+            chunks=chunks,
+            recovered=recovered,
+            scanned_batch_defer=scanned_batch_defer,
+            local_ocr_exhausted=local_ocr_exhausted,
+            total_pages=total_pages,
+            mtime=mtime,
+            size=size,
+            stored_signature=stored_signature,
+            pipeline_fingerprint=pipeline_fingerprint,
+            show_progress=show_progress,
+        )
+    if gate_plan.action == "local_ocr_exhausted":
+        if show_progress:
+            print(
+                "[PROGRESS]   ↳ local OCR exhausted (Docling already "
+                "rejected); not re-running Docling ungated"
+                + (
+                    f"; cloud policy requires local processing ({policy_reason})"
+                    if policy_reason else "; Mistral queue disabled"
+                ),
+                file=sys.__stderr__,
+            )
+        return PdfExtraction(chunks, quality)
+    chunks, quality = _escalate_pdf_to_docling(
+        attachment_key=attachment.attachmentKey,
+        file_path=file_path,
+        meta_base=meta_base,
+        chunks=chunks,
+        quality=quality,
+        source_metadata=source_metadata,
+        policy_reason=policy_reason,
+        docling_worker=docling_worker,
+        show_progress=show_progress,
+    )
+    return PdfExtraction(chunks, quality)
+
+
 def _extract_pdf_chunks(
     *,
     a: Any,
@@ -3076,80 +3157,29 @@ def _extract_pdf_chunks(
             minimum_pages=minimum_pages,
             initial_route_reason=initial_scan_route_reason,
         )
-        if gate_plan.action == "disabled":
-            # Plain-text indexing was requested: PyMuPDF chunks (or the
-            # local OCR output above) are the final answer, so the
-            # structural gate has nothing to escalate to.
-            quality_info = dict(quality_info)
-            quality_info["pdf_structure_recovery"] = "disabled"
-        elif gate_plan.action != "keep":
-            # A document whose local OCR chain (rapidocr/ndlocr →
-            # Docling fallback) was tried and rejected by
-            # evaluate_local_ocr_gate: local engines are exhausted.
-            local_ocr_exhausted = gate_plan.local_ocr_exhausted
-            # P7 (note 78): the queue is governed by its own flag
-            # alone -- it is not an AI-TOC subfeature, so
-            # PDF_AI_TOC_FAST_PATH_ENABLE no longer gates it.
-            # P2 (note 78): scanned documents whose local OCR chain
-            # was exhausted are exactly the class where Mistral OCR
-            # is the strongest engine (bake-off 0.973 vs Docling
-            # 0.753), so they may queue regardless of the AI-TOC
-            # page minimum; the minimum still applies to the
-            # structure-recovery deferrals it was designed for.
-            policy_reason = gate_plan.policy_reason
-            if gate_plan.action == "defer":
-                return _defer_pdf_to_mistral(
-                    attachment=a,
-                    scope_item_key=scope_item_key,
-                    col=col,
-                    manifest=manifest,
-                    files_manifest=files_manifest,
-                    previous=prev,
-                    file_path=file_path,
-                    quality=quality_info,
-                    chunks=chunks,
-                    recovered=recovered,
-                    scanned_batch_defer=scanned_ocr_batch_defer,
-                    local_ocr_exhausted=local_ocr_exhausted,
-                    total_pages=total_pages,
-                    mtime=mtime,
-                    size=size,
-                    stored_signature=stored_signature,
-                    pipeline_fingerprint=v3_pipeline_fingerprint,
-                    show_progress=bool(show_progress),
-                )
-            if gate_plan.action == "local_ocr_exhausted":
-                # P2 (note 78): Docling already ran (and was rejected
-                # by evaluate_local_ocr_gate) as run_local_ocr's own
-                # fallback for this exact document -- re-running it
-                # here would duplicate the work only to adopt, ungated,
-                # the same output that was just rejected. With cloud
-                # queueing unavailable too, this document is
-                # unextractable right now: fall through to the
-                # no-chunks failure handling (visible artifact status,
-                # existing index left untouched).
-                if show_progress:
-                    print(
-                        "[PROGRESS]   ↳ local OCR exhausted (Docling already "
-                        "rejected); not re-running Docling ungated"
-                        + (
-                            f"; cloud policy requires local processing ({policy_reason})"
-                            if policy_reason else "; Mistral queue disabled"
-                        ),
-                        file=sys.__stderr__,
-                    )
-            else:
-                chunks, quality_info = _escalate_pdf_to_docling(
-                    attachment_key=a.attachmentKey,
-                    file_path=file_path,
-                    meta_base=meta_base,
-                    chunks=chunks,
-                    quality=quality_info,
-                    source_metadata=source_metadata,
-                    policy_reason=policy_reason,
-                    docling_worker=docling_worker,
-                    show_progress=bool(show_progress),
-                )
+        return _dispatch_pdf_gate_action(
+            gate_plan=gate_plan,
+            attachment=a,
+            scope_item_key=scope_item_key,
+            col=col,
+            manifest=manifest,
+            files_manifest=files_manifest,
+            previous=prev,
+            file_path=file_path,
+            meta_base=meta_base,
+            chunks=chunks,
+            quality=quality_info,
+            recovered=recovered,
+            scanned_batch_defer=scanned_ocr_batch_defer,
+            total_pages=total_pages,
+            mtime=mtime,
+            size=size,
+            stored_signature=stored_signature,
+            pipeline_fingerprint=v3_pipeline_fingerprint,
+            source_metadata=source_metadata,
+            docling_worker=docling_worker,
+            show_progress=bool(show_progress),
+        )
     return PdfExtraction(chunks, quality_info)
 
 

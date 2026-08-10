@@ -109,6 +109,12 @@
   `_recover_pdf_outline_with_ai_toc`へ切り出し、`_extract_pdf_chunks`は300行から265行、
   同モジュールの未到達文予算は399から385へ下げた。coverage付き既定suiteは
   `1,565 passed / 4 skipped / 5 deselected`、実資料取込baselineは`5 passed`。
+- [x] **PDF gate action dispatchを分離。** 純粋planの`disabled / keep / defer /
+  local_ocr_exhausted / docling_escalation`を実行する境界を`_dispatch_pdf_gate_action`へ集約。
+  disabledの明示qualityタグ、local OCR尽き時にDoclingを再実行しないことを追加固定し、
+  既存fixtureでkeep/defer/escalationも再検証。`_extract_pdf_chunks`は265行から214行へ縮小。
+  未到達文予算385とcoverage付き既定suite
+  `1,565 passed / 4 skipped / 5 deselected`を維持し、実資料取込baselineは`5 passed`。
 
 ## Active
 

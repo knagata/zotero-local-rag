@@ -426,6 +426,7 @@ def test_initial_scan_local_replacement_failure_keeps_an_empty_extraction(capfd)
             "source_class": module.SCANNED_NO_TEXT,
         },
     )
+    docling_worker = Mock()
     with (
         patch.object(module, "extract_chunks_from_pdf", return_value=source),
         patch.object(
@@ -447,10 +448,14 @@ def test_initial_scan_local_replacement_failure_keeps_an_empty_extraction(capfd)
             ),
         ),
     ):
-        result = _extract_pdf(structure_recovery=True)
+        result = _extract_pdf(
+            docling_worker=docling_worker,
+            structure_recovery=True,
+        )
 
     assert result.chunks == []
     assert result.quality == {}
+    docling_worker.extract.assert_not_called()
     assert "attachment=ATT" in capfd.readouterr().err
 
 
@@ -834,6 +839,7 @@ def test_disabled_ocr_layer_audit_is_distinct_from_an_unverified_failure():
     result, cache, run_audit, status = _audit_pdf(enabled=False)
 
     assert result.quality["ocr_layer_audit_reason"] == module.OCR_LAYER_AUDIT_DISABLED
+    assert result.quality["pdf_structure_recovery"] == "disabled"
     cache.assert_not_called()
     run_audit.assert_not_called()
     status.assert_not_called()

@@ -42,8 +42,10 @@ Updated: 2026-08-10
   `_escalate_pdf_to_docling`に隔離し、quality-uncertain理由の追記を固定した。
 - AI TOCの同一source no-structure継承、accepted/rejectedのchunkとdiagnostics更新を
   `_recover_pdf_outline_with_ai_toc`に隔離し、実LLM無しで固定した。
+- 5種類のPDF gate action実行を`_dispatch_pdf_gate_action`に集約し、
+  disabledタグとlocal-exhausted時のDocling非再実行を追加固定した。
 - 150行超の関数は22件から17件へ減少。最大は
-  `index_from_zotero._index_library`（1,104行）、次が`_extract_pdf_chunks`（265行）。
+  `index_from_zotero._index_library`（1,104行）、次が`_extract_pdf_chunks`（214行）。
 - 既定suiteは1,565 passed / 4 skipped / 5 deselected。実資料取込baselineは5 passed。
   抽出・取り込み・構造を変更したら
   `uv run pytest -m slow`も必要。
@@ -69,8 +71,8 @@ Updated: 2026-08-10
 
 ## Next work, in order
 
-1. 次は残るPDF gate action dispatchで、disabled/keep/local-exhausted/Docling/deferの
-   状態変化と早期`PdfExtraction`を既存fixtureに追加し、十分に届く範囲だけ分離する。
+1. 次は現在すべてfixtureが届いた通常PDFのpre-gate sequenceを状態オブジェクトにまとめ、
+   `_extract_pdf_chunks`を150行以下へ下げる。route順序・heuristic・chunk境界は変えない。
 2. `_extract_pdf_chunks`が150行以下まで安全に分割できたら、次に`_index_library`の
    決定的な責務を同じ方法で分離する。
    テストが届いた責務だけを`_extract_pdf_chunks`から抽出し、1 seamずつ対象テストと
