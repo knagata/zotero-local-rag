@@ -111,9 +111,9 @@ Updated: 2026-08-11
 ## Next work, in order
 
 `TASKS.md`の「2026-08-10 埋め込み開始までのマイルストーン」を進捗の正本とする。
-到達点は全件埋め込みの実行ではなく、`Setup.command`の`REBUILD`確認直前で止める
-M0〜M4.2は完了。M4.3のpilot再利用拒否も実装・検証済みで、実装commitをreadinessへ
-pinする記録commitだけが残る。pin完了まではM5をHOLDする。
+到達点は全件埋め込みの実行ではなく、`Setup.command`の`REBUILD`確認直前で止める。
+M0〜M4.3は完了し、runtime `781f59b461f75a3f2c9f666dc3edc46a5cbfd750`をreadinessへ
+pinした。現在はReady to Embedで、M5は別の明示承認を待つ。
 
 1. **M1（完了）**: 通常attachment dispatchとpending候補の組立を決定的fixtureで固定した。
 2. **M2（完了）**: 最終出力確定だけを純粋関数へ分け、現行抽出・chunk境界を今回の世代として
@@ -127,8 +127,8 @@ pinする記録commitだけが残る。pin完了まではM5をHOLDする。
    `docs/embedding-rebuild-readiness.md`へpinしてReady to Embedへ戻した。
 6. **M4.2（完了）**: pilot/backupの稼働データ防壁とrefresh解決後scopeを修正・検証し、
    runtimeをreadinessへpinしてReady to Embedへ戻した。
-7. **M4.3（pin待ち）**: pilotの開始data planeを新規/空に限定し、既存planeの測定誤報を拒否。
-   実装commitをreadinessへpinしてReady to Embedへ戻す。
+7. **M4.3（完了）**: pilotの開始data planeを新規/空に限定し、既存planeの測定誤報を拒否。
+   実装runtimeをreadinessへpinしてReady to Embedへ戻した。
 8. **M5（別承認）**: 明示承認後だけclean rebuildを実行する。完了後に
    `uv run python scripts/run_db_audit.py`でZotero・原本・DBの3監査を通す。
 
