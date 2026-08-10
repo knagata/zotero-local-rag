@@ -24,6 +24,8 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT / "src") not in sys.path:
     sys.path.insert(0, str(ROOT / "src"))
@@ -148,3 +150,59 @@ def test_the_server_asks_the_same_place_where_the_lock_is():
     import indexing_lock
 
     assert Path(server.INDEXING_LOCK_PATH) == indexing_lock.default_path(Path(server.ROOT))
+
+
+def test_an_explicitly_unvalidated_generation_cannot_open_for_queries(tmp_path):
+    manifest = tmp_path / "manifest_v3.json"
+    manifest.write_text('{"hnsw_validated": false}', encoding="utf-8")
+    absent_lock = tmp_path / "indexing.lock"
+
+    # A cached collection must not bypass the durable generation state. This
+    # is the post-crash shape: the process lock is gone, but the clean rebuild
+    # never reached its completeness and HNSW publication boundary.
+    with patch.object(server, "MANIFEST_PATH", str(manifest)), \
+            patch.object(server, "INDEXING_LOCK_PATH", str(absent_lock)), \
+            patch.object(server, "_COL", object()):
+        blocked, message = server._check_indexing_lock()
+        assert blocked
+        assert "incomplete" in (message or "")
+        with pytest.raises(RuntimeError, match="incomplete.*HNSW"):
+            server._col()
+
+
+def test_a_validated_generation_remains_queryable(tmp_path):
+    manifest = tmp_path / "manifest_v3.json"
+    manifest.write_text('{"hnsw_validated": true}', encoding="utf-8")
+    collection = object()
+
+    with patch.object(server, "MANIFEST_PATH", str(manifest)), \
+            patch.object(server, "_COL", collection), \
+            patch.object(server, "_db_mtimes", return_value=(0.0, 0.0)), \
+            patch.object(server, "_COL_INIT_DB_MTIME", 0.0), \
+            patch.object(server, "_COL_INIT_MANIFEST_MTIME", 0.0):
+        assert server._col() is collection
+
+
+def test_generation_guard_distinguishes_absent_and_corrupt_manifests(tmp_path):
+    manifest = tmp_path / "manifest_v3.json"
+    with patch.object(server, "MANIFEST_PATH", str(manifest)):
+        assert server._index_generation_problem() is None
+        manifest.write_text("{not json", encoding="utf-8")
+        assert "unreadable" in (server._index_generation_problem() or "")
+        manifest.write_text("[]", encoding="utf-8")
+        assert "root" in (server._index_generation_problem() or "")
+
+
+def test_server_status_surfaces_an_unvalidated_generation(tmp_path):
+    manifest = tmp_path / "manifest_v3.json"
+    manifest.write_text('{"hnsw_validated": false}', encoding="utf-8")
+    absent_chroma = tmp_path / "missing-chroma"
+
+    with patch.object(server, "MANIFEST_PATH", str(manifest)), \
+            patch.object(server, "CHROMA_DIR", str(absent_chroma)), \
+            patch.object(server, "_check_writer_lock", return_value=(False, None)):
+        report = server.server_status()
+
+    assert report["status"] == "error"
+    assert report["index_generation_ready"] is False
+    assert any("incomplete" in error for error in report["errors"])

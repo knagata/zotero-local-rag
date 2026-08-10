@@ -87,7 +87,36 @@ _log = _setup_logger()
 # Indexing-lock guard — prevents queries during active ChromaDB writes.
 # ---------------------------------------------------------------------------
 
-def _check_indexing_lock() -> tuple:
+def _index_generation_problem() -> str | None:
+    """Explain why the published manifest cannot authorize Chroma reads.
+
+    A clean rebuild publishes ``hnsw_validated=false`` before its first data
+    write and changes it to true only after source completeness and a real HNSW
+    query both pass. The process lock disappears on failure, so this durable
+    manifest bit is what keeps a partial replacement generation offline.
+
+    A missing manifest keeps the historical startup behavior: collection open
+    supplies the actionable "build the index" error. Once a manifest exists,
+    however, an unreadable or explicitly unvalidated value must fail closed.
+    """
+    path = Path(MANIFEST_PATH)
+    if not path.exists():
+        return None
+    try:
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return f"V3 manifest is unreadable: {exc}"
+    if not isinstance(manifest, dict):
+        return "V3 manifest root is not an object"
+    if "hnsw_validated" in manifest and manifest.get("hnsw_validated") is not True:
+        return (
+            "The active V3 index generation is incomplete or its HNSW index "
+            "was not validated. Retry the clean rebuild or restore the verified backup."
+        )
+    return None
+
+
+def _check_writer_lock() -> tuple:
     """Check whether the indexer is currently writing to ChromaDB.
 
     Returns ``(is_blocked: bool, message: str | None)``.
@@ -166,6 +195,22 @@ def _check_indexing_lock() -> tuple:
         "Zotero 書誌検索（search_zotero_items）や get_item_details など "
         "ChromaDB 非依存の機能は通常通りご利用いただけます。"
     )
+
+
+def _check_indexing_lock() -> tuple:
+    """Block reads during a live write or from a non-query-ready generation.
+
+    The historical name remains the call-site contract for every search tool.
+    The process lock covers a live writer; the manifest gate covers the same
+    generation after a failed process has released that lock.
+    """
+    blocked, message = _check_writer_lock()
+    if blocked:
+        return blocked, message
+    generation_problem = _index_generation_problem()
+    if generation_problem:
+        return True, generation_problem
+    return False, None
 
 
 # Collection name is intentionally configurable.
@@ -396,6 +441,9 @@ def _reset_col() -> None:
 
 
 def _col():
+    generation_problem = _index_generation_problem()
+    if generation_problem:
+        raise RuntimeError(generation_problem)
     with _col_lock:
         return _col_locked()
 
@@ -787,10 +835,16 @@ def server_status() -> Dict[str, Any]:
     }
 
     # Surface indexing-lock state for observability
-    blocked, lock_msg = _check_indexing_lock()
+    blocked, lock_msg = _check_writer_lock()
     report["indexing_lock"] = blocked
     if blocked:
         report["indexing_lock_message"] = lock_msg
+
+    generation_problem = _index_generation_problem()
+    report["index_generation_ready"] = generation_problem is None
+    if generation_problem:
+        report["status"] = "error"
+        report["errors"].append(generation_problem)
 
     try:
         cfg = resolve_embedder_settings(Path(ROOT))

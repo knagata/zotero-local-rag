@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextlib
+import sys
 from unittest.mock import patch
 
 from scripts import rebuild_document_structure
@@ -247,3 +249,26 @@ def test_an_unreachable_source_file_still_aborts_the_item():
             )
 
     replace.assert_not_called()
+
+
+def test_non_dry_run_cli_holds_the_shared_indexing_lock():
+    events: list[str] = []
+
+    @contextlib.contextmanager
+    def held(_path):
+        events.append("entered")
+        try:
+            yield
+        finally:
+            events.append("released")
+
+    def run(_args):
+        assert events == ["entered"], "structure writes began before the shared lock"
+        return "test-run", [], 0
+
+    with patch.object(sys, "argv", ["rebuild_document_structure.py", "--all"]), \
+            patch.object(rebuild_document_structure, "indexing_lock_held", side_effect=held), \
+            patch.object(rebuild_document_structure, "_run", side_effect=run):
+        rebuild_document_structure.main()
+
+    assert events == ["entered", "released"]

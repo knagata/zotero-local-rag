@@ -6,7 +6,7 @@
     "citation_graph"
   ],
   "functions": {
-    "src/index_from_zotero.py::_index_library": 1092,
+    "src/index_from_zotero.py::_index_library": 1087,
     "src/pdf_extract.py::extract_chunks_from_pdf": 607,
     "src/html_extract.py::extract_chunks_from_epub_snapshot": 347,
     "citation_graph/server.py::_build_sigma_html": 307,

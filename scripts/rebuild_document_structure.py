@@ -29,6 +29,8 @@ from src.v3_data_plane import V3_COLLECTION
 from src.document_structure import STRUCTURE_VERSION, build_document_structure
 from src.orphan_cleanup import note_only_item
 from src.source_structure_refresh import refresh_source_structure_metadata
+from src.indexing_lock import default_path as indexing_lock_path
+from src.indexing_lock import held as indexing_lock_held
 
 
 @contextlib.contextmanager
@@ -267,29 +269,8 @@ def rebuild_item(
         raise
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    selector = parser.add_mutually_exclusive_group(required=True)
-    selector.add_argument("--item", action="append", help="Zotero parent item key; repeatable")
-    selector.add_argument("--all", action="store_true", help="Process every item with indexed chunks")
-    parser.add_argument(
-        "--dry-run", action="store_true",
-        help="Build and validate without writing structure or chunk metadata",
-    )
-    parser.add_argument("--force", action="store_true", help="Rebuild even when source fingerprint is unchanged")
-    parser.add_argument("--limit", type=int, default=0, help="Maximum number of selected items (0 = all)")
-    parser.add_argument("--retry-failed", action="store_true", help="Select retryable failed structure items only")
-    parser.add_argument(
-        "--no-source-refresh", action="store_true",
-        help="Do not re-read supported source files for heading metadata",
-    )
-    parser.add_argument(
-        "--collection", default=V3_COLLECTION,
-        help="Source Chroma collection (V3 only).",
-    )
-    args = parser.parse_args()
-    if args.collection != V3_COLLECTION:
-        parser.error(f"--collection must be {V3_COLLECTION!r}; the legacy data plane is retired")
+def _run(args: argparse.Namespace) -> tuple[str, list[dict], int]:
+    """Run the selected structure writes while the caller holds the writer lock."""
     keys = list(dict.fromkeys(args.item or list_item_keys(collection_name=args.collection))) if args.all or args.item else []
     if args.retry_failed:
         keys = [
@@ -315,6 +296,44 @@ def main() -> None:
             except Exception as exc:  # continue so one bad document does not stop maintenance
                 failed += 1
                 results.append({"item_key": item_key, "status": "failed", "error": str(exc)})
+    return run_id, results, failed
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    selector = parser.add_mutually_exclusive_group(required=True)
+    selector.add_argument("--item", action="append", help="Zotero parent item key; repeatable")
+    selector.add_argument("--all", action="store_true", help="Process every item with indexed chunks")
+    parser.add_argument(
+        "--dry-run", action="store_true",
+        help="Build and validate without writing structure or chunk metadata",
+    )
+    parser.add_argument("--force", action="store_true", help="Rebuild even when source fingerprint is unchanged")
+    parser.add_argument("--limit", type=int, default=0, help="Maximum number of selected items (0 = all)")
+    parser.add_argument("--retry-failed", action="store_true", help="Select retryable failed structure items only")
+    parser.add_argument(
+        "--no-source-refresh", action="store_true",
+        help="Do not re-read supported source files for heading metadata",
+    )
+    parser.add_argument(
+        "--collection", default=V3_COLLECTION,
+        help="Source Chroma collection (V3 only).",
+    )
+    args = parser.parse_args()
+    if args.collection != V3_COLLECTION:
+        parser.error(f"--collection must be {V3_COLLECTION!r}; the legacy data plane is retired")
+
+    # Dry runs write no canonical state and keep their historical lock-free
+    # behavior. Every real run updates relations state and Chroma metadata, so
+    # it must exclude the indexer and re-OCR adoption for the complete unit.
+    lock_context = (
+        contextlib.nullcontext()
+        if args.dry_run
+        else indexing_lock_held(indexing_lock_path(ROOT))
+    )
+    with lock_context:
+        run_id, results, failed = _run(args)
+
     stale_source = [row["item_key"] for row in results if row.get("source_refresh_error")]
     if stale_source:
         # These items were rebuilt, but from the chunks as indexed: their source

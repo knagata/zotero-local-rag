@@ -301,6 +301,23 @@ Chroma/FTS書込み）の実行は、このマイルストーンとは別の明�
     失敗した。M2で旧上限207をmacOS値202へ採択した際の環境差なので、CI実測の205へ補正した。
     M2以前の207より厳しいラチェットは維持し、製品コード・抽出挙動・M4.3 runtimeは変更しない。
 
+- [x] **M4.4（必須）: clean rebuildの不完全世代を公開せず、後段writerを排他する**（2026-08-11）
+  - clean rebuildの抽出失敗・defer・manifest欠落検査をHNSW最終検証より前へ移した。開始時に
+    永続化した`hnsw_validated=false`を失敗時に維持し、MCPはprocess lock解放後もその世代を
+    vector/FTS fallbackを含む全検索入口で拒否する。server statusにも世代ready状態を表示する。
+  - `rebuild_document_structure.py`の非dry-run全体を、indexer・re-OCR adoptionと同じ
+    `data/indexing.lock`で囲んだ。relationsの構造更新とChroma metadata同期が検索・別writerと
+    混在しない。dry-runは従来どおりcanonical writeもlock取得も行わない。
+  - 合成clean rebuildで1添付を空抽出にして、例外後もHNSW validator未実行・manifest false・
+    MCP拒否となることを固定した。構造CLIはwriter開始前から例外後の解放まで共有lockを保持する。
+  - coverage付き既定suite`1,607 passed / 4 skipped / 5 deselected`、実資料baseline`5 passed`、
+    compileall、fatal Ruff、公開import、function/lint/coverage/doc各予算、差分検査に合格。
+    `_index_library`は1,092行から1,087行へ縮小してfunction-size予算を採択した。抽出heuristic、
+    OCR route、chunk本文・ID、active V3、有料call、rebuildには触れていない。indexer code
+    fingerprintは`sha256:f3f1ebbac3e383b0c94d22c696caaad45c62d7eabc8b169d0b96a9ae01f5eec5`。
+  - reviewで見つかった監査report出力先の一般化された保護は埋め込み処理そのものではないため
+    今回は実装せず、follow-up registerへ残した。現在の3出力先は全て`data/quality/`配下である。
+
 - [ ] **M5（必須・ユーザー承認待ち）: clean rebuildと全件埋め込みを実行する**
   - M4到達後の別作業。明示承認を得てからのみ実行し、完了後は
     `uv run python scripts/run_db_audit.py`でZotero・原本・DBの3監査を通す。

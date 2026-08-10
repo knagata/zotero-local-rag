@@ -21,7 +21,10 @@ The only active search and ingestion plane is V3:
 An attachment is processed transactionally.  Canonical chunks retain source
 locator, zone, extraction provenance, policy, and structure-node metadata.
 The manifest, Chroma IDs, and FTS IDs must agree; pending/inflight state or an
-unvalidated HNSW index fails the cutover gate.  Notes are searchable annotations
+unvalidated HNSW index fails the cutover gate.  A live indexing lock blocks MCP
+reads, and an explicitly unvalidated manifest continues to block them after a
+failed writer has released its process lock; a partial clean-rebuild generation
+must never become the active retrieval source.  Notes are searchable annotations
 but are not canonical document structure.
 
 ## Extraction and quality routing

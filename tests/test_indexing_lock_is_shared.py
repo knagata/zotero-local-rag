@@ -51,6 +51,7 @@ def test_every_writer_asks_the_same_function_where_the_lock_is():
     for relative in (
         "src/index_from_zotero.py",
         "scripts/run_reocr_queue.py",
+        "scripts/rebuild_document_structure.py",
         # The reader counts too: the MCP server decides whether to serve from
         # this file, and it had a third spelling of the path.
         "src/rag_mcp_server.py",

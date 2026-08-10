@@ -1999,6 +1999,25 @@ def _finalize_index_storage(
     return last_written_id
 
 
+def _require_complete_rebuild(
+    *, rebuild: bool, attachments: list[Any], files_manifest: dict[str, Any],
+    failed_extract: int, deferred_extract: int,
+) -> None:
+    """Keep a partial clean generation unvalidated and therefore offline."""
+    if not rebuild:
+        return
+    resolved = {str(row.attachmentKey) for row in attachments}
+    missing = sorted(resolved - {str(value) for value in files_manifest})
+    if failed_extract or deferred_extract or missing:
+        # hnsw_validated was durably set false before the first write. The MCP
+        # read path keeps that generation offline after this process exits.
+        raise RuntimeError(
+            "Clean rebuild is incomplete: "
+            f"failed={failed_extract} deferred={deferred_extract} "
+            f"missing_manifest_attachments={missing[:20]}"
+        )
+
+
 def _quality_warnings(
     files_manifest: dict[str, dict[str, Any]],
 ) -> list[QualityWarning]:
@@ -4637,6 +4656,12 @@ async def _index_library(
     skipped_notes = note_outcome.skipped
     deleted_stale_notes = note_outcome.deleted_stale
 
+    _require_complete_rebuild(
+        rebuild=bool(args.rebuild), attachments=attachments,
+        files_manifest=files_manifest, failed_extract=failed_extract,
+        deferred_extract=deferred_extract,
+    )
+
     last_written_id = _finalize_index_storage(
         col,
         manifest=manifest,
@@ -4671,17 +4696,6 @@ async def _index_library(
 
     _close_chroma_collection(col)
     _release_indexing_lock()
-
-    if args.rebuild:
-        resolved_attachment_keys = {str(row.attachmentKey) for row in attachments}
-        indexed_attachment_keys = {str(value) for value in files_manifest}
-        missing_after_rebuild = sorted(resolved_attachment_keys - indexed_attachment_keys)
-        if failed_extract or deferred_extract or missing_after_rebuild:
-            raise RuntimeError(
-                "Clean rebuild is incomplete: "
-                f"failed={failed_extract} deferred={deferred_extract} "
-                f"missing_manifest_attachments={missing_after_rebuild[:20]}"
-            )
 
 
 if __name__ == "__main__":

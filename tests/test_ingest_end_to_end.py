@@ -138,3 +138,28 @@ def test_nothing_is_written_outside_the_temporary_plane(indexed):
     assert plane.chroma_dir.exists()
     assert not (ROOT / "data" / "manifest_v3.json").samefile(plane.manifest_path) \
         if (ROOT / "data" / "manifest_v3.json").exists() else True
+
+
+def test_an_incomplete_clean_rebuild_never_publishes_a_query_ready_generation(tmp_path: Path):
+    import index_from_zotero
+
+    original_dispatch = index_from_zotero._extract_attachment_by_source_type
+
+    def one_empty_attachment(**kwargs):
+        if kwargs["attachment_key"] == "SYNPDF001":
+            return index_from_zotero.PdfExtraction([], {})
+        return original_dispatch(**kwargs)
+
+    with temporary_data_plane(tmp_path) as plane:
+        source = SyntheticZoteroSource(build_library(tmp_path))
+        with patch.object(
+            index_from_zotero,
+            "_extract_attachment_by_source_type",
+            side_effect=one_empty_attachment,
+        ), patch.object(index_from_zotero, "_flush_and_verify_hnsw") as validate_hnsw:
+            with pytest.raises(RuntimeError, match="Clean rebuild is incomplete"):
+                _run(source, plane, "--rebuild")
+
+        manifest = _manifest(plane)
+        assert manifest["hnsw_validated"] is False
+        validate_hnsw.assert_not_called()

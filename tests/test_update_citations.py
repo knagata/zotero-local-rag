@@ -97,5 +97,19 @@ class GetAllItemsConnectionFailureTests(unittest.TestCase):
         self.assertEqual(len(result), 100)
 
 
+class MaintenanceUtilityTests(unittest.TestCase):
+    def setUp(self):
+        self.module = _reload_with_env({})
+
+    def test_duration_format_covers_seconds_minutes_and_hours(self):
+        self.assertEqual(self.module._fmt_duration(42.9), "42s")
+        self.assertEqual(self.module._fmt_duration(125), "2m 5s")
+        self.assertEqual(self.module._fmt_duration(7_323), "2h 2m")
+
+    def test_missing_chroma_database_has_no_chunk_count(self):
+        with mock.patch.object(self.module.os.path, "exists", return_value=False):
+            self.assertEqual(self.module._get_chunk_count("ITEM"), -1)
+
+
 if __name__ == "__main__":
     unittest.main()

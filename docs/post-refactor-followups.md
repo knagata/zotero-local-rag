@@ -2,7 +2,7 @@
 
 Opened: 2026-08-04, from the review after the indexing, repository, MCP and
 FastAPI refactoring.
-Last triaged: 2026-08-10. No production incident is known for anything here.
+Last triaged: 2026-08-11. No production incident is known for anything here.
 
 Every item below was re-read against the code on the triage date and names the
 file and symbol it lives in, so a fix that lands without updating this file
@@ -13,11 +13,27 @@ than deleted silently, because the same review would otherwise raise them again.
 
 Priority means: **P1** can lose or corrupt data, or has no bound; **P2** is a
 robustness or cost defect within the local-only workflow; **P3** costs accuracy
-or clarity in what the user is shown. **P1 and P2 are empty as of 2026-08-10**;
-what is left is in P3 and both items need data this repository does not have
+or clarity in what the user is shown. P1 has one deferred audit-path guard;
+P2 is empty. The two P3 items need data this repository does not have
 (a re-measurement, and the corpus). Everything closed is in [Closed](#closed).
 Structural work is prioritized separately below; the size ratchet
 (`tests/test_function_size_ratchet.py`) enforces each improvement once adopted.
+
+## P1
+
+### 1. Protect DB-audit report paths from the active data plane
+
+- Location: `scripts/run_db_audit.py` (`main`)
+- `SERVER_DB_GATE_PATH` is unlinked before environment validation, and the two
+  report paths are passed to JSON writers without checking whether any resolves
+  to the manifest, lexical/relations SQLite files, pipeline config, or a file
+  below active Chroma. A mistaken override can therefore delete or overwrite
+  operational data.
+- The current local values all resolve below `data/quality/`, so this does not
+  block the pinned M5 embedding run or its audit with the present configuration.
+  Before supporting redirected report paths, reject protected files, SQLite
+  sidecars, Chroma descendants and collisions among the three outputs before
+  unlinking or starting a subprocess.
 
 ## P3
 

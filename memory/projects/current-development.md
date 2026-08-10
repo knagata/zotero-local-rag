@@ -91,8 +91,13 @@ Updated: 2026-08-11
 - coverage予算の`pdf_extract.py`は、M2以前の207からCI Linux実測205へ下げている。macOSでは
   同じ`not slow and not corpus` selectorが202だが、その値を全環境へ要求するとLinux CIだけが
   失敗するため、クロスプラットフォーム上限は205とする。製品コードや抽出挙動の差ではない。
-- P1/P2の既知製品欠陥はない。残るP3はS2 author-less識別とflat PDF 3形状で、どちらも
-  実データを読んでから方針を決める。
+- M4.4で、clean rebuildの完全性検査をHNSW ready公開より前へ移し、失敗時の
+  `hnsw_validated=false`をMCP read pathが永続的に拒否するようにした。後段の
+  `rebuild_document_structure.py`も非dry-run全体で共有indexing lockを持つ。indexer code
+  fingerprintは`sha256:f3f1ebbac3e383b0c94d22c696caaad45c62d7eabc8b169d0b96a9ae01f5eec5`。
+- review残件のP1は`run_db_audit.py`のreport出力先保護。現在の設定は全て`data/quality/`で安全だが、
+  任意設定でactive DBを指せるためfollow-upへ記録した。埋め込み開始条件には含めず、今回未修正。
+  残るP3はS2 author-less識別とflat PDF 3形状で、どちらも実データを読んでから方針を決める。
 
 ## Existing V3 database assessment
 
@@ -132,7 +137,9 @@ pinした。現在はReady to Embedで、M5は別の明示承認を待つ。
    runtimeをreadinessへpinしてReady to Embedへ戻した。
 7. **M4.3（完了）**: pilotの開始data planeを新規/空に限定し、既存planeの測定誤報を拒否。
    実装runtimeをreadinessへpinしてReady to Embedへ戻した。
-8. **M5（別承認）**: 明示承認後だけclean rebuildを実行する。完了後に
+8. **M4.4（完了）**: 不完全clean generationをHNSW readyにせず、MCPもmanifest gateで拒否。
+   後段structure writerを共有lockで排他し、埋め込み開始に直接必要なreview指摘を解消した。
+9. **M5（別承認）**: 明示承認後だけclean rebuildを実行する。完了後に
    `uv run python scripts/run_db_audit.py`でZotero・原本・DBの3監査を通す。
 
 ## Decision boundaries
