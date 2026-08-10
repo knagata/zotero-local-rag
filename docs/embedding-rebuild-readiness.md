@@ -10,20 +10,20 @@ rollback source, not a quality baseline.
 
 | Gate | Result | Evidence |
 |---|---|---|
-| Rebuild code generation | HOLD | Review fixes now protect the active relations DB from pilot report output, reject backup destinations inside source Chroma, and validate resolved AI-TOC refresh targets as nonempty/PDF-only. Their verified implementation commit must be pinned here before M5. |
+| Rebuild code generation | GO | Extraction/ingestion and rebuild-preparation runtime is pinned at `4c8fffce8d491cb5a0f4d999b811fb2f7aab86ed`. It protects the active relations DB from pilot report output, rejects backup destinations inside source Chroma, and validates resolved AI-TOC refresh targets as nonempty/PDF-only. Extraction heuristics, OCR routes, chunk text/IDs and boundaries remain frozen. |
 | PDF extraction/chunk scheme | GO | Current heuristic, OCR fallback, language thresholds, chunk ID format and merge/rescue behavior are frozen. A rebuild must re-extract every attachment and must not reuse old chunks. |
 | Zotero inventory | GO | `--rebuild --dry-run` resolved 590 items / 616 attachments: PDF 364, EPUB 208, HTML 44. It reported `canonical_data_modified=false` and zero legacy OCR reuse candidates. |
-| Rollback snapshot | GO | `data/backups/pre-clean-rebuild-20260810-4b58d6b` is 8,672,747,653 bytes and was read back successfully: Chroma 513,683 rows, lexical 513,684 rows, manifest 614 attachments, both SQLite quick checks `ok`. The known one-row lexical orphan is preserved, not repaired. |
+| Rollback snapshot | GO | `data/backups/pre-clean-rebuild-20260810-4b58d6b` is 8,672,747,653 bytes and was read back successfully: Chroma 513,683 rows, lexical 513,684 rows, manifest 614 attachments, both SQLite quick checks `ok`. The known one-row lexical orphan is preserved, not repaired. New snapshot creation rejects any destination resolving to source Chroma or its descendants before copying. |
 | Active Chroma read health | GO | Read-only `check_chroma_health.py --no-repair-fts` found no integrity issue and no orphaned segment directory; no repair was attempted. |
 | Capacity | GO | After keeping the snapshot, 70.6 GB remained free. The isolated 300-chunk pilot projected about 7.49 GB of Chroma growth for 513,683 chunks; one complete active-generation equivalent is 8.67 GB. The remaining space covers either estimate with a wide margin. |
 | Indexing lock | GO | No `data/indexing.lock` remains. Snapshot creation held the production indexing lock and released it after verification. The rebuild entry point acquires the same lock. |
 | Embedder | GO | Local `bge-m3`, MPS, 1,024 dimensions, normalized output. M0 measured deterministic output; M3 measured batch 128 / HNSW sync 10,000 and successful recovery/reopen/query behavior. The next generation will write the current model-state fingerprint; the old saved fingerprint is not edited or adopted. |
 | Paid LLM/OCR | GO | The user explicitly enabled AI TOC; a rebuild can therefore send eligible PDF samples to the configured paid LLM after M5 approval. OCR-layer audit, query expansion, LLM summaries/reference extraction and Mistral queue remain `0`. The slow-baseline difference was a 3-page PDF below the 30-page AI-TOC threshold and had no AI-TOC status, so no hosted call occurred. The baseline now forces all hosted ingestion features off. `PDF_AI_TOC_DOCLING_REFERENCES_ENABLE=1` is local Docling enrichment, not a hosted call. |
-| Prohibited shortcuts | GO | No active-V3 incremental ingest, fingerprint edit, orphan-row repair, saved-chunk-only re-embedding, paid LLM/OCR call or rebuild was performed. The new child-environment guard keeps validation independent of local feature approval. |
+| Prohibited shortcuts | GO | No active-V3 incremental ingest, fingerprint edit, orphan-row repair, saved-chunk-only re-embedding, paid LLM/OCR call or rebuild was performed. The baseline child-environment guard keeps validation independent of local feature approval; pilot reports cannot target active Chroma, manifest, lexical or relations SQLite artifacts. |
 
-The data-plane, embedder and review-fix tests are ready, but M5 is on hold until
-the verified review-fix runtime commit is pinned above. It will still require a
-separate explicit approval, including paid AI-TOC calls for eligible PDFs.
+The current state is **Ready to Embed**, conditional only on a separate explicit
+M5 approval. With AI TOC enabled, that approval also permits paid AI-TOC calls
+for eligible PDFs during the rebuild.
 
 ## Start point (do not run without M5 approval)
 

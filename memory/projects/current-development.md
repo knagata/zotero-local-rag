@@ -67,7 +67,7 @@ Updated: 2026-08-11
   `_finalize_pdf_output`へ分離した。`extract_chunks_from_pdf`は614行から607行になった。
   今回のrebuild世代では現行heuristic、OCR route、chunk本文・IDを凍結し、P3 flat-PDF候補は
   実資料評価を要する次世代変更へ送る。clean rebuildは旧chunkを流用せず全件再抽出する。
-- M4は完了し、現在は**Ready to Embed**。rebuild runtimeは`4b58d6b`、dry-run inventoryは
+- M4の元preflightはruntime `4b58d6b`で完了し、dry-run inventoryは
   590 items / 616 attachments（PDF 364、EPUB 208、HTML 44）、canonical writeなし。
   `data/backups/pre-clean-rebuild-20260810-4b58d6b`へ8.67GBのrollback snapshotを作り、別copyから
   Chroma 513,683、FTS 513,684、manifest 614、lexical/relations quick check `ok`を確認した。
@@ -110,8 +110,9 @@ Updated: 2026-08-11
 
 `TASKS.md`の「2026-08-10 埋め込み開始までのマイルストーン」を進捗の正本とする。
 到達点は全件埋め込みの実行ではなく、`Setup.command`の`REBUILD`確認直前で止める
-M0〜M4.1は完了。M4.2のreview修正も実装・検証済みで、実装commitをreadinessへpinする
-記録commitだけが残る。pin完了まではM5をHOLDする。
+**Ready to Embed**。M0〜M4.2は完了。review修正を含む検証済みruntime
+`4c8fffce8d491cb5a0f4d999b811fb2f7aab86ed`をreadinessへpin済みで、M5はユーザーの
+明示承認待ちである。AI TOC有効のため、M5承認は適格PDFの有料LLM呼出しも含む。
 
 1. **M1（完了）**: 通常attachment dispatchとpending候補の組立を決定的fixtureで固定した。
 2. **M2（完了）**: 最終出力確定だけを純粋関数へ分け、現行抽出・chunk境界を今回の世代として
@@ -123,8 +124,8 @@ M0〜M4.1は完了。M4.2のreview修正も実装・検証済みで、実装comm
    有料機能無効、rollback点をgo/no-go表で確定し、`REBUILD`入力前で停止した。
 5. **M4.1（完了）**: 対象限定のAI TOC負キャッシュrefreshを実装・検証し、runtimeを
    `docs/embedding-rebuild-readiness.md`へpinしてReady to Embedへ戻した。
-6. **M4.2（pin待ち）**: pilot/backupの稼働データ防壁とrefresh解決後scopeを修正・検証済み。
-   実装commitをreadinessへpinしてReady to Embedへ戻す。
+6. **M4.2（完了）**: pilot/backupの稼働データ防壁とrefresh解決後scopeを修正・検証し、
+   runtimeをreadinessへpinしてReady to Embedへ戻した。
 7. **M5（別承認）**: 明示承認後だけclean rebuildを実行する。完了後に
    `uv run python scripts/run_db_audit.py`でZotero・原本・DBの3監査を通す。
 
