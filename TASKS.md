@@ -49,6 +49,12 @@
   `_extract_pdf_chunks`は685行から679行、同モジュールの未到達文予算は
   549から542へ下げた。coverage付き既定suiteは`1,530 passed / 4 skipped / 5 deselected`、
   実資料取込baselineは`5 passed`。
+- [x] **Mistral deferの非正本commit境界を分離。** 実extractor・実DB無しの統合fixtureで、
+  `blocked/awaiting_mistral_ocr_batch`のartifact payload、従来のcanonical qualityとchunkの保持、
+  audit/provenanceだけのmanifest更新、inflightに限定した部分書込み清掃、gate reasonの優先順を
+  固定し、`_defer_pdf_to_mistral`へ切り出した。`_extract_pdf_chunks`は679行から625行、
+  同モジュールの未到達文予算は542から515へ下げた。coverage付き既定suiteは
+  `1,536 passed / 4 skipped / 5 deselected`、実資料取込baselineは`5 passed`。
 
 ## Active
 

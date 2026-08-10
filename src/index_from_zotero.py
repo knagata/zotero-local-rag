@@ -2225,6 +2225,89 @@ def _pdf_gate_plan_for_extraction(
     )
 
 
+def _defer_pdf_to_mistral(
+    *,
+    attachment: Any,
+    scope_item_key: str,
+    col: Any,
+    manifest: dict[str, Any],
+    files_manifest: dict[str, Any],
+    previous: dict[str, Any] | None,
+    file_path: Path,
+    quality: dict[str, Any],
+    chunks: list,
+    recovered: Any,
+    scanned_batch_defer: bool,
+    local_ocr_exhausted: bool,
+    total_pages: int,
+    mtime: float,
+    size: int,
+    stored_signature: str | None,
+    pipeline_fingerprint: str | None,
+    show_progress: bool,
+) -> PdfExtraction:
+    """Record a non-canonical Mistral Batch deferral and preserve current data."""
+    diagnostics = recovered.diagnostics if recovered is not None else {}
+    fast_path_reason = (
+        None if not chunks else pymupdf_fast_path_rejection_reason(quality)
+    )
+    ai_toc_rejection_reason = (
+        recovered.reason if recovered is not None and not recovered.accepted else None
+    )
+    if scanned_batch_defer:
+        gate_reason = "scanned_pdf_ocr_replacement"
+    elif local_ocr_exhausted:
+        gate_reason = "local_ocr_quality_gate_failed"
+    elif not chunks:
+        gate_reason = "pymupdf_no_chunks"
+    elif recovered is not None:
+        gate_reason = recovered.reason
+    else:
+        gate_reason = fast_path_reason or "pymupdf_fast_path_rejected"
+    mark_artifact_status(
+        scope_item_key, "extraction", "blocked",
+        attachment_key=attachment.attachmentKey,
+        reason_code=MISTRAL_TOC_QUEUE_REASON,
+        message=f"AI TOC/PyMuPDF gate failed: {gate_reason}",
+        retryable=False,
+        source_fingerprint=f"stat:{mtime}:{size}",
+        processor_version=MISTRAL_TOC_QUEUE_PROCESSOR_VERSION,
+        counts={
+            "source_mtime": mtime, "source_size": size,
+            "total_pages": total_pages, "ai_toc_reason": gate_reason,
+            "fast_path_reason": fast_path_reason,
+            "ai_toc_rejection_reason": ai_toc_rejection_reason,
+            "local_ocr_exhausted": local_ocr_exhausted,
+            "ai_toc_diagnostics": diagnostics,
+        },
+        fallback_kind="mistral_ocr",
+    )
+    inflight = {
+        str(value) for value in manifest.get("inflight_attachments", []) if value
+    }
+    if attachment.attachmentKey in inflight:
+        _delete_by_attachment_keys(col, [attachment.attachmentKey], strict=True)
+        manifest["inflight_attachments"] = [
+            value for value in manifest.get("inflight_attachments", [])
+            if value != attachment.attachmentKey
+        ]
+    # A Mistral deferral is deliberately non-canonical: current chunks remain
+    # searchable until an explicitly adopted Batch result passes the gate.
+    files_manifest[attachment.attachmentKey] = _deferred_manifest_entry(
+        previous, mtime=mtime, size=size, source_path=file_path,
+        title=attachment.title, quality=quality,
+        content_signature_value=stored_signature,
+        pipeline_fingerprint=pipeline_fingerprint,
+    )
+    save_manifest(paths().manifest_path, manifest)
+    if show_progress:
+        print(
+            f"[PROGRESS]   ↳ deferred to Mistral OCR batch: reason={gate_reason}",
+            file=sys.__stderr__,
+        )
+    return PdfExtraction([], {}, deferred=True)
+
+
 def _extract_pdf_chunks(
     *,
     a: Any,
@@ -2745,80 +2828,26 @@ def _extract_pdf_chunks(
             # structure-recovery deferrals it was designed for.
             policy_reason = gate_plan.policy_reason
             if gate_plan.action == "defer":
-                diagnostics = recovered.diagnostics if recovered is not None else {}
-                # P6 (note 78): record the fast-path reason and the
-                # AI-TOC rejection reason separately -- the AI-TOC
-                # reason used to overwrite the fast-path one even when
-                # the fast path was what actually sent the document
-                # here. gate_reason keeps its historical precedence
-                # (and the counts key "ai_toc_reason" keeps carrying
-                # it) for existing queue-listing consumers.
-                fast_path_reason = (
-                    None if not chunks
-                    else pymupdf_fast_path_rejection_reason(quality_info)
-                )
-                ai_toc_rejection_reason = (
-                    recovered.reason
-                    if recovered is not None and not recovered.accepted else None
-                )
-                if scanned_ocr_batch_defer:
-                    gate_reason = "scanned_pdf_ocr_replacement"
-                elif local_ocr_exhausted:
-                    gate_reason = "local_ocr_quality_gate_failed"
-                elif not chunks:
-                    gate_reason = "pymupdf_no_chunks"
-                elif recovered is not None:
-                    gate_reason = recovered.reason
-                else:
-                    gate_reason = fast_path_reason or "pymupdf_fast_path_rejected"
-                mark_artifact_status(
-                    scope_item_key, "extraction", "blocked",
-                    attachment_key=a.attachmentKey,
-                    reason_code=MISTRAL_TOC_QUEUE_REASON,
-                    message=f"AI TOC/PyMuPDF gate failed: {gate_reason}",
-                    retryable=False,
-                    source_fingerprint=f"stat:{mtime}:{size}",
-                    processor_version=MISTRAL_TOC_QUEUE_PROCESSOR_VERSION,
-                    counts={
-                        "source_mtime": mtime, "source_size": size,
-                        "total_pages": total_pages, "ai_toc_reason": gate_reason,
-                        "fast_path_reason": fast_path_reason,
-                        "ai_toc_rejection_reason": ai_toc_rejection_reason,
-                        "local_ocr_exhausted": local_ocr_exhausted,
-                        "ai_toc_diagnostics": diagnostics,
-                    },
-                    fallback_kind="mistral_ocr",
-                )
-                inflight = {
-                    str(value) for value in manifest.get("inflight_attachments", []) if value
-                }
-                if a.attachmentKey in inflight:
-                    _delete_by_attachment_keys(col, [a.attachmentKey], strict=True)
-                    manifest["inflight_attachments"] = [
-                        value for value in manifest.get("inflight_attachments", [])
-                        if value != a.attachmentKey
-                    ]
-                # A Mistral deferral is deliberately non-canonical:
-                # its current chunks remain searchable until an
-                # explicitly adopted Batch result passes the gate.
-                # Its stage-2 audit is still final for this exact
-                # source fingerprint, so persist just that cache and
-                # provenance (not the transient extraction quality).
-                files_manifest[a.attachmentKey] = _deferred_manifest_entry(
-                    prev, mtime=mtime, size=size, source_path=file_path,
-                    title=a.title, quality=quality_info,
-                    content_signature_value=stored_signature,
+                return _defer_pdf_to_mistral(
+                    attachment=a,
+                    scope_item_key=scope_item_key,
+                    col=col,
+                    manifest=manifest,
+                    files_manifest=files_manifest,
+                    previous=prev,
+                    file_path=file_path,
+                    quality=quality_info,
+                    chunks=chunks,
+                    recovered=recovered,
+                    scanned_batch_defer=scanned_ocr_batch_defer,
+                    local_ocr_exhausted=local_ocr_exhausted,
+                    total_pages=total_pages,
+                    mtime=mtime,
+                    size=size,
+                    stored_signature=stored_signature,
                     pipeline_fingerprint=v3_pipeline_fingerprint,
+                    show_progress=bool(show_progress),
                 )
-                save_manifest(paths().manifest_path, manifest)
-                if show_progress:
-                    print(
-                        f"[PROGRESS]   ↳ deferred to Mistral OCR batch: "
-                        f"reason={gate_reason}", file=sys.__stderr__,
-                    )
-                # The attachment is queued, not extracted. The caller counts it
-                # and moves on; nothing below this point applies to it.
-                return PdfExtraction([], {}, deferred=True)
             if gate_plan.action == "local_ocr_exhausted":
                 # P2 (note 78): Docling already ran (and was rejected
                 # by evaluate_local_ocr_gate) as run_local_ocr's own

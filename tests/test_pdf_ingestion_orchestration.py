@@ -263,6 +263,164 @@ def test_a_fast_path_rejection_consults_the_queue_once():
     queue_enabled.assert_called_once_with()
 
 
+def _mistral_deferral(*, inflight=False):
+    files_manifest = {}
+    manifest = {"inflight_attachments": ["ATT"] if inflight else []}
+    previous = {
+        "mtime": 90.0,
+        "size": 1024,
+        "quality": {"parser": "previous_canonical"},
+        "previous_field": "preserved",
+    }
+    pymupdf_result = (
+        [("transient", "not canonical", {"page": 1})],
+        {
+            "parser": "pymupdf",
+            "total_pages": 30,
+            "source_class": "scanned_no_text",
+            "pdf_producer": "synthetic scanner",
+        },
+    )
+    with (
+        patch.object(module, "extract_chunks_from_pdf", return_value=pymupdf_result),
+        patch.object(
+            module,
+            "_initial_scanned_pdf_ocr_route",
+            return_value=("mistral_batch", "structure_engine_mistral"),
+        ),
+        patch.object(module, "mark_artifact_status") as status,
+        patch.object(module, "save_manifest") as save,
+        patch.object(module, "_delete_by_attachment_keys") as delete,
+        patch.object(
+            module,
+            "paths",
+            return_value=SimpleNamespace(manifest_path=Path("manifest.json")),
+        ),
+    ):
+        result = _extract_pdf(
+            files_manifest=files_manifest,
+            manifest=manifest,
+            prev=previous,
+            structure_recovery=True,
+            stored_signature="sha256:source",
+        )
+    return result, files_manifest, manifest, status, save, delete
+
+
+def test_mistral_deferral_records_status_and_preserves_existing_canonical_chunks():
+    result, files_manifest, manifest, status, save, delete = _mistral_deferral()
+
+    assert result.deferred is True
+    assert result.chunks == []
+    assert result.quality == {}
+    delete.assert_not_called()
+    status.assert_called_once_with(
+        "ITEM",
+        "extraction",
+        "blocked",
+        attachment_key="ATT",
+        reason_code=module.MISTRAL_TOC_QUEUE_REASON,
+        message="AI TOC/PyMuPDF gate failed: scanned_pdf_ocr_replacement",
+        retryable=False,
+        source_fingerprint="stat:100.0:2048",
+        processor_version=module.MISTRAL_TOC_QUEUE_PROCESSOR_VERSION,
+        counts={
+            "source_mtime": 100.0,
+            "source_size": 2048,
+            "total_pages": 30,
+            "ai_toc_reason": "scanned_pdf_ocr_replacement",
+            "fast_path_reason": None,
+            "ai_toc_rejection_reason": None,
+            "local_ocr_exhausted": False,
+            "ai_toc_diagnostics": {},
+        },
+        fallback_kind="mistral_ocr",
+    )
+    assert manifest["inflight_attachments"] == []
+    assert files_manifest["ATT"]["previous_field"] == "preserved"
+    assert files_manifest["ATT"]["quality"] == {
+        "parser": "previous_canonical",
+        "source_class": "scanned_no_text",
+        "pdf_producer": "synthetic scanner",
+    }
+    assert files_manifest["ATT"]["content_signature"] == "sha256:source"
+    save.assert_called_once_with(Path("manifest.json"), manifest)
+
+
+def test_mistral_deferral_cleans_only_a_matching_inflight_partial_write():
+    _result, _files, manifest, _status, _save, delete = _mistral_deferral(inflight=True)
+
+    delete.assert_called_once()
+    assert delete.call_args.args[1] == ["ATT"]
+    assert delete.call_args.kwargs == {"strict": True}
+    assert manifest["inflight_attachments"] == []
+
+
+@pytest.mark.parametrize(
+    "chunks,recovered,local_exhausted,expected_reason",
+    [
+        ([], None, True, "local_ocr_quality_gate_failed"),
+        ([], None, False, "pymupdf_no_chunks"),
+        (
+            [("p1", "text", {})],
+            SimpleNamespace(
+                accepted=False,
+                reason="body_coverage_below_threshold",
+                diagnostics={"body_coverage": 0.5},
+            ),
+            False,
+            "body_coverage_below_threshold",
+        ),
+        ([("p1", "text", {})], None, False, "fast_path_rejected"),
+    ],
+)
+def test_mistral_deferral_reason_precedence_is_explicit(
+    chunks, recovered, local_exhausted, expected_reason,
+):
+    manifest = {"inflight_attachments": []}
+    with (
+        patch.object(module, "mark_artifact_status") as status,
+        patch.object(module, "save_manifest"),
+        patch.object(
+            module,
+            "paths",
+            return_value=SimpleNamespace(manifest_path=Path("manifest.json")),
+        ),
+        patch.object(
+            module,
+            "pymupdf_fast_path_rejection_reason",
+            return_value="fast_path_rejected",
+        ),
+    ):
+        module._defer_pdf_to_mistral(
+            attachment=SimpleNamespace(attachmentKey="ATT", title="Title"),
+            scope_item_key="ITEM",
+            col=object(),
+            manifest=manifest,
+            files_manifest={},
+            previous=None,
+            file_path=Path("source.pdf"),
+            quality={},
+            chunks=chunks,
+            recovered=recovered,
+            scanned_batch_defer=False,
+            local_ocr_exhausted=local_exhausted,
+            total_pages=30,
+            mtime=100.0,
+            size=2048,
+            stored_signature=None,
+            pipeline_fingerprint="pipeline",
+            show_progress=False,
+        )
+
+    fields = status.call_args.kwargs
+    assert fields["message"] == f"AI TOC/PyMuPDF gate failed: {expected_reason}"
+    assert fields["counts"]["ai_toc_reason"] == expected_reason
+    assert fields["counts"]["ai_toc_diagnostics"] == (
+        recovered.diagnostics if recovered is not None else {}
+    )
+
+
 def _status(**overrides):
     values = {
         "attachment": SimpleNamespace(attachmentKey="ATT"),
