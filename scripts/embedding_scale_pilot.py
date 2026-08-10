@@ -4,7 +4,8 @@ The default command is intentionally explicit: use ``--fake`` for a fast,
 deterministic check, or ``--real-bge`` when a local BGE-M3 snapshot is already
 available.  Neither mode resolves or downloads a model.  The real pilot never
 uses the active V3 paths; its collection and (for the compensation check) FTS
-file live under the supplied temporary data-plane directory.
+file live under a new or empty data-plane directory. Reusing an earlier pilot
+plane is rejected so a zero-write rerun cannot masquerade as throughput.
 """
 from __future__ import annotations
 
@@ -92,6 +93,17 @@ def _assert_isolated_data_plane(root: Path) -> None:
             raise ValueError(
                 f"pilot data plane overlaps the active V3 plane: {candidate} / {active}"
             )
+
+
+def _assert_empty_pilot_plane(root: Path) -> None:
+    """Require a fresh measurement plane; internal resume happens after this check."""
+    candidate = root.expanduser().resolve()
+    if not candidate.exists():
+        return
+    if not candidate.is_dir() or any(candidate.iterdir()):
+        raise ValueError(
+            f"pilot data plane must be a new or empty directory: {candidate}"
+        )
 
 
 def _assert_safe_output(path: Path | None) -> None:
@@ -237,6 +249,7 @@ def run_pilot(
     if exercise_recovery and chunk_count <= batch_size:
         raise ValueError("recovery exercise requires chunk_count greater than batch_size")
     _assert_isolated_data_plane(root)
+    _assert_empty_pilot_plane(root)
     root.mkdir(parents=True, exist_ok=True)
     rows = synthetic_chunks(chunk_count)
     started = time.perf_counter()
@@ -307,7 +320,10 @@ def main(argv: list[str] | None = None) -> int:
     mode.add_argument("--real-bge", action="store_true", help="use an existing local BGE-M3 snapshot")
     parser.add_argument("--model", help="local BGE-M3 directory (only with --real-bge)")
     parser.add_argument("--device", default="mps", choices=("mps", "cpu", "cuda"))
-    parser.add_argument("--data-plane", type=Path, help="isolated output directory; defaults to a temporary directory")
+    parser.add_argument(
+        "--data-plane", type=Path,
+        help="new or empty isolated output directory; defaults to a temporary directory",
+    )
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--sync-threshold", type=int, default=100)
     parser.add_argument("--chunks", type=int, default=30)
@@ -315,9 +331,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output", type=Path, help="write the JSON report to this path")
     args = parser.parse_args(argv)
     _assert_safe_output(args.output)
-    embedder, profile = _embedder(args)
-    if args.real_bge:
-        print(f"Running explicit real pilot with {profile} on {args.device}", file=sys.stderr)
     import tempfile
     temporary = None
     root = args.data_plane
@@ -325,6 +338,11 @@ def main(argv: list[str] | None = None) -> int:
         temporary = tempfile.TemporaryDirectory(prefix="zotero-rag-embedding-pilot-")
         root = Path(temporary.name)
     try:
+        _assert_isolated_data_plane(root)
+        _assert_empty_pilot_plane(root)
+        embedder, profile = _embedder(args)
+        if args.real_bge:
+            print(f"Running explicit real pilot with {profile} on {args.device}", file=sys.stderr)
         report = run_pilot(root, embedder, batch_size=args.batch_size, sync_threshold=args.sync_threshold,
                            chunk_count=args.chunks, exercise_recovery=not args.no_recovery)
         report["profile"] = profile

@@ -61,6 +61,8 @@ Updated: 2026-08-11
   `4.59 chunks/s`、peak RSS `900.53 MB`、close/reopen後300 IDs一致、HNSW query成功。
   batch 8の部分中断再開と、途中upsert失敗後のvector/FTS補償も成功した。
   `--output`はactive relations DB本体とSQLite sidecarもpilot開始前に拒否する。
+  計測開始時は新規または空のdata planeを必須とし、既存pilot planeのID skipをthroughputとして
+  誤報しない。同一呼出し内の意図的な中断・resumeだけが既存IDを利用する。
 - M2は完了。`pdf_extract.py`の既定suite到達は73%だが、フェーズ別ではfallback/OCR 6%、
   finalize/error 28%に留まり、実資料baselineもcorrupted/OCR routeを対象外としている。そこで
   chunk生成・OCR本体は動かさず、最終chunk ID検査とtext-defect付与だけを純粋な
@@ -80,7 +82,7 @@ Updated: 2026-08-11
   `docs/embedding-rebuild-readiness.md`がgo/no-go、実行入口、rollbackの記録である。
 - 150行超の関数は22件から16件へ減少。最大は
   `index_from_zotero._index_library`（1,092行）、次が`pdf_extract.extract_chunks_from_pdf`（607行）。
-- 既定suiteは1,598 passed / 4 skipped / 5 deselected。実資料取込baselineは5 passed。
+- 既定suiteは1,599 passed / 4 skipped / 5 deselected。実資料取込baselineは5 passed。
   baseline子プロセスはlocal `.env`に関係なくhosted ingestion feature 6種を強制offにする。
   初回slow差分のPDFは全3頁でAI目次の最小30頁未満、AI TOC statusも無かったため有料callは
   発生していない。active V3への書込みもなく、防壁追加後の再検証は全件hosted-offでpass。
@@ -110,9 +112,8 @@ Updated: 2026-08-11
 
 `TASKS.md`の「2026-08-10 埋め込み開始までのマイルストーン」を進捗の正本とする。
 到達点は全件埋め込みの実行ではなく、`Setup.command`の`REBUILD`確認直前で止める
-**Ready to Embed**。M0〜M4.2は完了。review修正を含む検証済みruntime
-`4c8fffce8d491cb5a0f4d999b811fb2f7aab86ed`をreadinessへpin済みで、M5はユーザーの
-明示承認待ちである。AI TOC有効のため、M5承認は適格PDFの有料LLM呼出しも含む。
+M0〜M4.2は完了。M4.3のpilot再利用拒否も実装・検証済みで、実装commitをreadinessへ
+pinする記録commitだけが残る。pin完了まではM5をHOLDする。
 
 1. **M1（完了）**: 通常attachment dispatchとpending候補の組立を決定的fixtureで固定した。
 2. **M2（完了）**: 最終出力確定だけを純粋関数へ分け、現行抽出・chunk境界を今回の世代として
@@ -126,7 +127,9 @@ Updated: 2026-08-11
    `docs/embedding-rebuild-readiness.md`へpinしてReady to Embedへ戻した。
 6. **M4.2（完了）**: pilot/backupの稼働データ防壁とrefresh解決後scopeを修正・検証し、
    runtimeをreadinessへpinしてReady to Embedへ戻した。
-7. **M5（別承認）**: 明示承認後だけclean rebuildを実行する。完了後に
+7. **M4.3（pin待ち）**: pilotの開始data planeを新規/空に限定し、既存planeの測定誤報を拒否。
+   実装commitをreadinessへpinしてReady to Embedへ戻す。
+8. **M5（別承認）**: 明示承認後だけclean rebuildを実行する。完了後に
    `uv run python scripts/run_db_audit.py`でZotero・原本・DBの3監査を通す。
 
 ## Decision boundaries

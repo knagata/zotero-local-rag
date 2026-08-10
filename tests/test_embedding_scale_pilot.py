@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -73,6 +74,33 @@ def test_recovery_exercise_requires_a_partial_first_batch(tmp_path: Path):
             tmp_path / "pilot", deterministic_embedding_function(),
             batch_size=8, chunk_count=8,
         )
+
+
+def test_pilot_refuses_to_measure_an_existing_pilot_plane(tmp_path: Path):
+    root = tmp_path / "pilot"
+    first = run_pilot(
+        root, deterministic_embedding_function(),
+        chunk_count=3, exercise_recovery=False,
+    )
+
+    with pytest.raises(ValueError, match="must be a new or empty directory"):
+        run_pilot(
+            root, deterministic_embedding_function(),
+            chunk_count=3, exercise_recovery=False,
+        )
+    with patch(
+        "scripts.embedding_scale_pilot._embedder",
+        side_effect=AssertionError("embedder must not be created"),
+    ) as create_embedder, pytest.raises(
+        ValueError, match="must be a new or empty directory",
+    ):
+        main([
+            "--fake", "--data-plane", str(root),
+            "--chunks", "3", "--no-recovery",
+        ])
+
+    assert first["count_after_reopen"] == 3
+    create_embedder.assert_not_called()
 
 
 @pytest.mark.parametrize("suffix", ["", "-wal", "-shm", "-journal"])

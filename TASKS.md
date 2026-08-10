@@ -284,6 +284,19 @@ Chroma/FTS書込み）の実行は、このマイルストーンとは別の明�
     検証済みruntime `4c8fffce8d491cb5a0f4d999b811fb2f7aab86ed`をreadinessへpinし、
     Ready to Embedへ戻した。
 
+- [~] **M4.3（高）: embedding scale pilotの既存plane再利用を拒否する**（2026-08-11）
+  - `--data-plane`が存在し、directoryでないか1 entryでも持つ場合は、embedder生成・Chroma open・
+    計測開始より前にfail-fastとした。新規または空directoryだけを開始点とし、既存ID全件skipを
+    全chunk処理済みthroughputとして誤報する経路を閉じた。
+  - 再開検証は同じ`run_pilot`呼出し内で初回batchを書いた後にだけ行うため、開始時の空plane検査と
+    両立する。fresh planeの完走後に同じpathで2回目を実行すると拒否され、初回countは3のまま、
+    既存の中断・resume・補償・reopen・HNSW query契約も維持されることをfixtureで固定した。
+  - 対象9テスト、coverage付き既定suite`1,599 passed / 4 skipped / 5 deselected`、compileall、
+    fatal Ruff、公開import、function/lint/coverage各予算、差分検査に合格。計測済みM3は新規の
+    temporary planeを使ったため、既存の`4.59 chunks/s`を無効にしない。品質予算の変更は不要。
+    active V3、既存pilot/snapshot、有料機能、rebuildには触れていない。実装commitをreadinessへ
+    pinするまでM5はHOLD。
+
 - [ ] **M5（必須・ユーザー承認待ち）: clean rebuildと全件埋め込みを実行する**
   - M4到達後の別作業。明示承認を得てからのみ実行し、完了後は
     `uv run python scripts/run_db_audit.py`でZotero・原本・DBの3監査を通す。
