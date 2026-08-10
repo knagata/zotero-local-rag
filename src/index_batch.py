@@ -55,6 +55,17 @@ class PendingIndexBatch:
                 expected[attachment_key].add(str(chunk_id))
         return expected
 
+    def add_attachment(self, candidate: "PendingAttachmentCandidate") -> None:
+        """Stage one already-validated attachment as one in-memory unit."""
+        self.ids.extend(candidate.ids)
+        self.documents.extend(candidate.documents)
+        self.metadatas.extend(candidate.metadatas)
+        self.manifest_updates[candidate.attachment_key] = candidate.manifest_entry
+        self.extraction_statuses[candidate.attachment_key] = candidate.extraction_status
+        self.delete_attachment_keys.add(candidate.attachment_key)
+        self.source_types[candidate.attachment_key] = candidate.source_type
+        self.item_keys[candidate.attachment_key] = candidate.item_key
+
     def clear(self) -> None:
         self.ids.clear()
         self.documents.clear()
@@ -64,6 +75,20 @@ class PendingIndexBatch:
         self.delete_attachment_keys.clear()
         self.source_types.clear()
         self.item_keys.clear()
+
+
+@dataclass(frozen=True)
+class PendingAttachmentCandidate:
+    """All state an accepted attachment contributes to the next flush."""
+
+    attachment_key: str
+    item_key: str
+    source_type: str
+    ids: list[str]
+    documents: list[str]
+    metadatas: list[dict[str, Any]]
+    manifest_entry: dict[str, Any]
+    extraction_status: tuple[str, str, dict[str, Any]]
 
 
 @dataclass(frozen=True)

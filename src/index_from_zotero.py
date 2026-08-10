@@ -69,7 +69,8 @@ from lexical_index import delete_by_note_key as delete_lexical_note
 from lexical_index import chunk_ids_by_attachment_keys as lexical_chunk_ids_by_attachment_keys
 from lexical_index import upsert_chunks as upsert_lexical_chunks
 from index_batch import (
-    AttachmentBatch, FlushOutcome, PendingIndexBatch, replace_attachment_batch,
+    AttachmentBatch, FlushOutcome, PendingAttachmentCandidate, PendingIndexBatch,
+    replace_attachment_batch,
 )
 from index_run import (
     DiscoveryResult, NoteIndexOutcome, PdfExtraction, PdfGatePlan, QualityWarning,
@@ -3295,6 +3296,38 @@ def _extraction_status(
     )
 
 
+def _build_pending_attachment_candidate(
+    *,
+    attachment_key: str,
+    item_key: str,
+    source_type: str,
+    chunks: list[tuple[str, str, dict[str, Any]]],
+    extraction_status: tuple[str, str, dict[str, Any]],
+    mtime: float,
+    size: int,
+    source_path: Path,
+    title: str | None,
+    quality: dict[str, Any],
+    content_signature_value: str | None,
+    pipeline_fingerprint: str,
+) -> PendingAttachmentCandidate:
+    """Build one accepted attachment's pending state without writing it."""
+    return PendingAttachmentCandidate(
+        attachment_key=attachment_key,
+        item_key=item_key,
+        source_type=source_type,
+        ids=[chunk_id for chunk_id, _text, _metadata in chunks],
+        documents=[text for _chunk_id, text, _metadata in chunks],
+        metadatas=[metadata for _chunk_id, _text, metadata in chunks],
+        manifest_entry=_manifest_entry(
+            mtime=mtime, size=size, source_path=source_path, title=title,
+            quality=quality, content_signature_value=content_signature_value,
+            pipeline_fingerprint=pipeline_fingerprint,
+        ),
+        extraction_status=extraction_status,
+    )
+
+
 def _report_purge(purge_counts: dict[str, int]) -> None:
     """Say what the relations purge did, and say it differently when refused.
 
@@ -3845,16 +3878,10 @@ async def _index_library(
     coverage_adopted_extract = 0  # indexed despite a partial-coverage gap
 
     pending = PendingIndexBatch.empty()
-    # Compatibility aliases keep the extraction loop readable while all
-    # mutable flush state now has one owner and one clear/commit operation.
+    # Threshold/final-flush checks read the batch directly; attachment staging
+    # itself has one owner and one all-fields-at-once operation.
     pending_ids = pending.ids
-    pending_docs = pending.documents
-    pending_metas = pending.metadatas
     pending_manifest_updates = pending.manifest_updates
-    pending_extraction_statuses = pending.extraction_statuses
-    pending_delete_attachment_keys = pending.delete_attachment_keys
-    pending_source_types = pending.source_types
-    pending_item_keys = pending.item_keys
     processing_item_keys: set[str] = set()
     last_written_id: str | None = None
 
@@ -4487,21 +4514,16 @@ async def _index_library(
                 skipped_pdf += 1
             continue
 
-        pending_delete_attachment_keys.add(a.attachmentKey)
-        pending_extraction_statuses[a.attachmentKey] = extraction_status
-
-        for cid, text, md in chunks:
-            pending_ids.append(cid)
-            pending_docs.append(text)
-            pending_metas.append(md)
-
-        pending_manifest_updates[a.attachmentKey] = _manifest_entry(
+        pending.add_attachment(_build_pending_attachment_candidate(
+            attachment_key=a.attachmentKey,
+            item_key=str(a.parentItemKey or a.attachmentKey),
+            source_type=stype,
+            chunks=chunks,
+            extraction_status=extraction_status,
             mtime=mtime, size=size, source_path=file_path, title=a.title,
             quality=quality_info, content_signature_value=stored_signature,
             pipeline_fingerprint=v3_pipeline_fingerprint,
-        )
-        pending_source_types[a.attachmentKey] = stype
-        pending_item_keys[a.attachmentKey] = str(a.parentItemKey or a.attachmentKey)
+        ))
         if len(pending_ids) >= FLUSH_SIZE:
             outcome = _flush_pending_index_batch(
                 col, pending,

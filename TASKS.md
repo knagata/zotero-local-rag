@@ -138,7 +138,7 @@ Chroma/FTS書込み）の実行は、このマイルストーンとは別の明�
   - 保存済み16文書の再計算vectorが全件cosine `1.0`だった既存測定と合わせ、モデル空間の
     互換性には強い証拠がある。ただし保存済みfingerprintは変更せず、現V3も品質正本にしない。
 
-- [ ] **M1（必須・次）: `_index_library`の書込み前責務を決定的fixtureで固定して分離する**
+- [x] **M1（必須）: `_index_library`の書込み前責務を決定的fixtureで固定して分離する**（2026-08-10）
   - まずattachment種別dispatch、次に抽出結果からpending batch・artifact status・manifest候補を
     組み立てる境界を棚卸しし、実extractor・実DBを使わないfixtureが届く順に1 seamずつ分離する。
   - flush、attachment別ID照合、post-index pending、失敗時補償の既存順序を変えず、抽出heuristic、
@@ -149,10 +149,19 @@ Chroma/FTS書込み）の実行は、このマイルストーンとは別の明�
     `_index_library`は1,104行から1,103行へ縮小し、function-size予算を採択した。
     対象59テスト、coverage付き既定suite`1,570 passed / 4 skipped / 5 deselected`、
     実資料取込baseline`5 passed`を確認した。次はpending候補の純粋組立を分離する。
+  - **進捗2**: 抽出・coverage・structure検査を通過した1 attachment分を
+    `PendingAttachmentCandidate`として副作用なしに組み立て、`PendingIndexBatch.add_attachment`で
+    chunk列、manifest/status候補、delete対象、source/item keyを一括stageするようにした。
+    重複IDは従来どおり候補段階では保持し、flush境界で処理する。empty、coverage rejection、
+    quality-only、flush、post-index、補償の順序は変更していない。
+  - `_index_library`は1,103行から1,092行へ縮小してfunction-size予算を採択した。
+    対象16テスト、coverage付き既定suite`1,574 passed / 4 skipped / 5 deselected`、
+    実資料取込baseline`5 passed`、compileall、fatal Ruff、公開import、function/lint/coverage各予算、
+    差分検査を確認し、M1を完了した。
   - 完了条件: 対象契約テスト、coverage付き既定suite、`uv run pytest -m slow`、function-size/
     coverage/lint各品質予算、compileall、fatal Ruff、公開import、差分検査がpassし、縮小値を採択する。
 
-- [ ] **M2（必須）: 抽出・chunk境界を今回のrebuild世代向けに凍結できるか判定する**
+- [ ] **M2（必須・次）: 抽出・chunk境界を今回のrebuild世代向けに凍結できるか判定する**
   - `_index_library`分割後、`pdf_extract.extract_chunks_from_pdf`の決定フェーズに既存の合成fixtureと
     実資料baselineがどこまで届くかを測り直す。届く責務の挙動不変分割だけは完了してよいが、
     614行全体の分割自体を埋め込み開始条件にはしない。
