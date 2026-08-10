@@ -2455,6 +2455,68 @@ def _patch_born_digital_scanned_pages(
     return chunks, quality
 
 
+def _repair_scan_derived_pages(
+    *,
+    attachment_key: str,
+    file_path: Path,
+    meta_base: dict[str, Any],
+    chunks: list,
+    quality: dict[str, Any],
+    structure_recovery: bool,
+    docling_worker: Any,
+    total_pages: int,
+    show_progress: bool,
+) -> tuple[list, dict[str, Any]]:
+    """Replace failed OCR pages in scan-derived text, preserving page order."""
+    enabled = os.environ.get("PDF_SCAN_PAGE_REPAIR_ENABLE", "1").strip() == "1"
+    if not (
+        chunks
+        and str(quality.get("source_class") or "") in SCAN_DERIVED_CLASSES
+        and structure_recovery
+        and enabled
+    ):
+        return chunks, quality
+    failed_pages = _scan_pages_needing_repair(chunks, total_pages)
+    if not failed_pages:
+        return chunks, quality
+    try:
+        from docling_extract import patch_corrupted_pages_with_docling
+    except ImportError:  # pragma: no cover - direct src entrypoint
+        from .docling_extract import patch_corrupted_pages_with_docling
+    try:
+        patched, attempted_pages = patch_corrupted_pages_with_docling(
+            file_path, failed_pages,
+            attachment_key=attachment_key,
+            meta_base=meta_base,
+            worker=docling_worker,
+            # Keep IDs disjoint from the later text-corruption repair.
+            chunk_namespace="scanrepair",
+        )
+    except Exception as exc:
+        patched, attempted_pages = [], set()
+        if show_progress:
+            print(
+                f"[WARN] scan-derived page repair failed: "
+                f"attachment={attachment_key} err={exc}",
+                file=sys.__stderr__,
+            )
+    if not attempted_pages:
+        return chunks, quality
+    kept = [
+        row for row in chunks
+        if int((row[2] or {}).get("page") or 0) not in attempted_pages
+    ]
+    chunks = _sort_chunks_in_reading_order(kept + patched)
+    quality = recompute_blank_pages_after_patch(quality, attempted_pages)
+    if show_progress:
+        print(
+            f"[PROGRESS]   ↳ scan-derived page repair: {len(patched)} chunk(s) "
+            f"from {len(attempted_pages)} failed OCR page(s)",
+            file=sys.__stderr__,
+        )
+    return chunks, quality
+
+
 def _extract_pdf_chunks(
     *,
     a: Any,
@@ -2593,66 +2655,17 @@ def _extract_pdf_chunks(
             total_pages=total_pages,
             show_progress=bool(show_progress),
         )
-        # Scan-derived text: the same page-level repair, but a page
-        # without usable text is an OCR failure rather than a figure
-        # (note 79, U2). The document-level local-OCR gate is all-or-
-        # nothing, so before this there was no way to fix a scan whose
-        # OCR failed on only part of its pages -- the whole document had
-        # to be re-OCRed or accepted as-is. Marker chunks for pages that
-        # stay unrecovered say ``corrupted_unresolved``, never
-        # ``figure``.
-        if (
-            chunks and str(quality_info.get("source_class") or "") in SCAN_DERIVED_CLASSES
-            and structure_recovery
-            and os.environ.get("PDF_SCAN_PAGE_REPAIR_ENABLE", "1").strip() == "1"
-        ):
-            failed_pages = _scan_pages_needing_repair(chunks, total_pages)
-            if failed_pages:
-                try:
-                    from docling_extract import patch_corrupted_pages_with_docling
-                except ImportError:  # pragma: no cover - direct src entrypoint
-                    from .docling_extract import patch_corrupted_pages_with_docling
-                try:
-                    patched, attempted_pages = patch_corrupted_pages_with_docling(
-                        file_path, failed_pages,
-                        attachment_key=a.attachmentKey, meta_base=meta_base,
-                        worker=docling_worker,
-                        # This uses the corrupted-page marker semantics
-                        # for scan-derived OCR failures, but is a
-                        # separate repair provenance from the later
-                        # text-corruption pass below.  Keep their IDs
-                        # disjoint when both target the same page.
-                        chunk_namespace="scanrepair",
-                    )
-                except Exception as exc:
-                    patched, attempted_pages = [], set()
-                    if show_progress:
-                        print(
-                            f"[WARN] scan-derived page repair failed: "
-                            f"attachment={a.attachmentKey} err={exc}",
-                            file=sys.__stderr__,
-                        )
-                if attempted_pages:
-                    kept = [
-                        row for row in chunks
-                        if int((row[2] or {}).get("page") or 0) not in attempted_pages
-                    ]
-                    chunks = _sort_chunks_in_reading_order(kept + patched)
-                    # Unlike the scanned-page patch above (which calls
-                    # recompute_scanned_quality_after_patch), nothing
-                    # here reconciled empty_pages/blank_pages with the
-                    # pages this just recovered -- see
-                    # recompute_blank_pages_after_patch's docstring
-                    # (found 2026-08-02, diagnosing YX3MMS4D page 444).
-                    quality_info = recompute_blank_pages_after_patch(
-                        quality_info, attempted_pages,
-                    )
-                    if show_progress:
-                        print(
-                            f"[PROGRESS]   ↳ scan-derived page repair: {len(patched)} chunk(s) "
-                            f"from {len(attempted_pages)} failed OCR page(s)",
-                            file=sys.__stderr__,
-                        )
+        chunks, quality_info = _repair_scan_derived_pages(
+            attachment_key=a.attachmentKey,
+            file_path=file_path,
+            meta_base=meta_base,
+            chunks=chunks,
+            quality=quality_info,
+            structure_recovery=bool(structure_recovery),
+            docling_worker=docling_worker,
+            total_pages=total_pages,
+            show_progress=bool(show_progress),
+        )
         # Text-corrupted pages (font-encoding mismatch or OCR/linguistic
         # noise already baked into the PDF's text layer -- see
         # pdf_extract.analyze_text_quality's is_corrupted) inside an

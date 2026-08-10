@@ -67,6 +67,12 @@
   `_patch_born_digital_scanned_pages`へ切り出した。`_extract_pdf_chunks`は553行から499行、
   同モジュールの未到達文予算は493から482へ下げた。coverage付き既定suiteは
   `1,544 passed / 4 skipped / 5 deselected`、実資料取込baselineは`5 passed`。
+- [x] **scan-derived OCRの欠落頁修復を分離。** 無文字・過少文字頁の選択は既存純粋helperを使い、
+  attempted pageの古いchunkを全置換して読順に戻すこと、後段の破損文字修復と衝突しない
+  `scanrepair` namespace、blank/empty page再計算、worker失敗時の元chunk保持をfakeで固定。
+  `_repair_scan_derived_pages`へ切り出し、`_extract_pdf_chunks`は499行から450行、
+  同モジュールの未到達文予算は482から469へ下げた。coverage付き既定suiteは
+  `1,546 passed / 4 skipped / 5 deselected`、実資料取込baselineは`5 passed`。
 
 ## Active
 

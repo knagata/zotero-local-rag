@@ -587,6 +587,72 @@ def test_born_digital_patch_attempt_with_no_text_still_resolves_a_figure_page():
     recompute.assert_called_once()
 
 
+def _scan_derived_page_patch(*, patch_error=None):
+    source = (
+        [
+            ("p1", "x" * 100, {"page": 1, "reading_order": 0}),
+            ("old-p2", "broken", {"page": 2, "reading_order": 0}),
+        ],
+        {
+            "parser": "pymupdf",
+            "total_pages": 2,
+            "has_outline": True,
+            "source_class": "scanned_ocr_layer",
+            "blank_pages": [2],
+        },
+    )
+    patched = [("new-p2", "recovered", {"page": 2, "reading_order": 0})]
+    with (
+        patch.object(module, "extract_chunks_from_pdf", return_value=source),
+        patch.object(
+            module,
+            "_initial_scanned_pdf_ocr_route",
+            return_value=(None, "awaiting_ocr_layer_audit"),
+        ),
+        patch.object(
+            module,
+            "_scanned_pdf_ocr_route",
+            return_value=(None, "not_scan_ocr_replacement"),
+        ),
+        patch.object(module, "ocr_layer_audit_enabled", return_value=False),
+        patch.object(
+            docling_extract,
+            "patch_corrupted_pages_with_docling",
+            return_value=(patched, {2}),
+            side_effect=patch_error,
+        ) as run_patch,
+        patch.object(
+            module,
+            "recompute_blank_pages_after_patch",
+            return_value={**source[1], "blank_pages": []},
+        ) as recompute,
+    ):
+        result = _extract_pdf(structure_recovery=True)
+    return result, run_patch, recompute
+
+
+def test_scan_derived_page_repair_replaces_the_failed_page_and_recomputes_blanks():
+    result, run_patch, recompute = _scan_derived_page_patch()
+
+    assert [row[0] for row in result.chunks] == ["p1", "new-p2"]
+    assert result.quality["blank_pages"] == []
+    assert run_patch.call_args.args[1] == [2]
+    assert run_patch.call_args.kwargs["chunk_namespace"] == "scanrepair"
+    recompute.assert_called_once()
+    assert recompute.call_args.args[0]["blank_pages"] == [2]
+    assert recompute.call_args.args[1] == {2}
+
+
+def test_scan_derived_page_repair_failure_keeps_the_original_failed_page():
+    result, _run_patch, recompute = _scan_derived_page_patch(
+        patch_error=RuntimeError("repair worker stopped"),
+    )
+
+    assert [row[0] for row in result.chunks] == ["p1", "old-p2"]
+    assert result.quality["blank_pages"] == [2]
+    recompute.assert_not_called()
+
+
 def _status(**overrides):
     values = {
         "attachment": SimpleNamespace(attachmentKey="ATT"),
