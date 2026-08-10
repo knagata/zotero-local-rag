@@ -3109,6 +3109,34 @@ def _prepare_pdf_for_structure_gate(
     )
 
 
+def _extract_attachment_by_source_type(
+    *,
+    source_type: str,
+    file_path: Path,
+    attachment_key: str,
+    metadata: dict[str, Any],
+    extract_pdf: Callable[[], PdfExtraction],
+) -> PdfExtraction:
+    """Dispatch one ordinary attachment without exposing loop state.
+
+    Explicit Mistral adoption is a separate route because it may consume a
+    staged result and update artifact state. Every other attachment reaches
+    exactly one of these three extractors. Keeping the PDF call lazy avoids a
+    second context object for its orchestration dependencies.
+    """
+    if source_type == "html":
+        chunks, quality = extract_chunks_from_html_snapshot(
+            file_path, attachment_key, metadata,
+        )
+        return PdfExtraction(chunks, quality)
+    if source_type == "epub":
+        chunks, quality = extract_chunks_from_epub_snapshot(
+            file_path, attachment_key, metadata,
+        )
+        return PdfExtraction(chunks, quality)
+    return extract_pdf()
+
+
 def _extract_pdf_chunks(
     *,
     a: Any,
@@ -4118,22 +4146,21 @@ async def _index_library(
                         file=sys.__stderr__,
                     )
                     chunks, quality_info = [], {}
-        elif stype == "html":
-            chunks, quality_info = extract_chunks_from_html_snapshot(file_path, a.attachmentKey, meta_base)
-        elif stype == "epub":
-            chunks, quality_info = extract_chunks_from_epub_snapshot(file_path, a.attachmentKey, meta_base)
         else:
-            extraction = _extract_pdf_chunks(
-                a=a, args=args, col=col, docling_worker=docling_worker,
-                file_path=file_path, files_manifest=files_manifest,
-                force_docling=force_docling, force_ndlocr=force_ndlocr,
-                granite_worker=granite_worker, manifest=manifest,
-                meta_base=meta_base, mtime=mtime, prev=prev,
-                scope_item_key=scope_item_key, show_progress=show_progress,
-                size=size, source_metadata=source_metadata,
-                stored_signature=stored_signature,
-                structure_recovery=structure_recovery,
-                v3_pipeline_fingerprint=v3_pipeline_fingerprint,
+            extraction = _extract_attachment_by_source_type(
+                source_type=stype, file_path=file_path, attachment_key=a.attachmentKey, metadata=meta_base,
+                extract_pdf=lambda: _extract_pdf_chunks(
+                    a=a, args=args, col=col, docling_worker=docling_worker,
+                    file_path=file_path, files_manifest=files_manifest,
+                    force_docling=force_docling, force_ndlocr=force_ndlocr,
+                    granite_worker=granite_worker, manifest=manifest,
+                    meta_base=meta_base, mtime=mtime, prev=prev,
+                    scope_item_key=scope_item_key, show_progress=show_progress,
+                    size=size, source_metadata=source_metadata,
+                    stored_signature=stored_signature,
+                    structure_recovery=structure_recovery,
+                    v3_pipeline_fingerprint=v3_pipeline_fingerprint,
+                ),
             )
             if extraction.deferred:
                 skipped_pdf += 1

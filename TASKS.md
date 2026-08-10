@@ -143,6 +143,12 @@ Chroma/FTS書込み）の実行は、このマイルストーンとは別の明�
     組み立てる境界を棚卸しし、実extractor・実DBを使わないfixtureが届く順に1 seamずつ分離する。
   - flush、attachment別ID照合、post-index pending、失敗時補償の既存順序を変えず、抽出heuristic、
     OCR route、chunk境界には触れない。
+  - **進捗1**: 強制Mistral採用とは分けた通常HTML/EPUB/PDF dispatchを
+    `_extract_attachment_by_source_type`へ分離し、各routeが他extractorを呼ばないことと、
+    PDFのdeferred結果を同一objectのまま返すことを合成fixtureで固定した。
+    `_index_library`は1,104行から1,103行へ縮小し、function-size予算を採択した。
+    対象59テスト、coverage付き既定suite`1,570 passed / 4 skipped / 5 deselected`、
+    実資料取込baseline`5 passed`を確認した。次はpending候補の純粋組立を分離する。
   - 完了条件: 対象契約テスト、coverage付き既定suite、`uv run pytest -m slow`、function-size/
     coverage/lint各品質予算、compileall、fatal Ruff、公開import、差分検査がpassし、縮小値を採択する。
 
