@@ -454,6 +454,79 @@ def test_initial_scan_local_replacement_failure_keeps_an_empty_extraction(capfd)
     assert "attachment=ATT" in capfd.readouterr().err
 
 
+def _empty_pdf_docling_fallback(*, total_pages=2, worker_error=None):
+    source = (
+        [],
+        {
+            "parser": "pymupdf",
+            "total_pages": total_pages,
+            "source_class": module.BORN_DIGITAL,
+        },
+    )
+    replacement = (
+        [("docling-p1", "recovered", {"page": 1, "reading_order": 0})],
+        {"parser": "docling", "total_pages": total_pages, "has_outline": True},
+    )
+    worker = Mock()
+    worker.extract.return_value = replacement
+    worker.extract.side_effect = worker_error
+    gate = module.PdfGatePlan(
+        action="local_ocr_exhausted" if worker_error or total_pages == 0 else "keep",
+        local_ocr_exhausted=bool(worker_error or total_pages == 0),
+    )
+    with (
+        patch.object(module, "extract_chunks_from_pdf", return_value=source),
+        patch.object(
+            module,
+            "_initial_scanned_pdf_ocr_route",
+            return_value=(None, "not_scan_ocr_replacement"),
+        ),
+        patch.object(module, "_pdf_gate_plan_for_extraction", return_value=gate) as plan,
+    ):
+        result = _extract_pdf(
+            docling_worker=worker,
+            source_metadata={
+                "source_class": module.BORN_DIGITAL,
+                "pdf_producer": "synthetic producer",
+            },
+            structure_recovery=True,
+        )
+    return result, worker, plan
+
+
+def test_empty_pdf_docling_fallback_attaches_provenance_and_marks_local_attempt():
+    result, worker, plan = _empty_pdf_docling_fallback()
+
+    assert [row[0] for row in result.chunks] == ["docling-p1"]
+    assert result.quality["parser"] == "docling"
+    assert result.quality["source_class"] == module.BORN_DIGITAL
+    assert result.quality["pdf_producer"] == "synthetic producer"
+    worker.extract.assert_called_once_with(
+        Path("synthetic.pdf"), "ATT", {"itemKey": "ITEM"},
+    )
+    assert plan.call_args.kwargs["attempted_local_ocr"] is True
+
+
+def test_empty_pdf_docling_fallback_failure_remains_empty(capfd):
+    result, _worker, plan = _empty_pdf_docling_fallback(
+        worker_error=RuntimeError("worker stopped"),
+    )
+
+    assert result.chunks == []
+    assert result.quality == {}
+    assert plan.call_args.kwargs["attempted_local_ocr"] is True
+    assert "attachment=ATT" in capfd.readouterr().err
+
+
+def test_empty_zero_page_pdf_does_not_start_docling_fallback():
+    result, worker, plan = _empty_pdf_docling_fallback(total_pages=0)
+
+    assert result.chunks == []
+    assert result.quality["total_pages"] == 0
+    worker.extract.assert_not_called()
+    assert plan.call_args.kwargs["attempted_local_ocr"] is False
+
+
 @pytest.mark.parametrize(
     "chunks,recovered,local_exhausted,expected_reason",
     [

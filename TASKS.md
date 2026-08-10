@@ -85,6 +85,12 @@
   `_run_initial_scan_replacement`へ切り出し、`_extract_pdf_chunks`は402行から379行、
   同モジュールの未到達文予算は457から443へ下げた。coverage付き既定suiteは
   `1,551 passed / 4 skipped / 5 deselected`、実資料取込baselineは`5 passed`。
+- [x] **empty PDFのgeneric Docling fallbackを分離。** PyMuPDFが頁数を取得したが
+  chunkを返さず、scan replacementが先行していない場合だけDoclingを一度起動する。
+  provenance付与、local OCR試行済み状態、worker失敗時の空抽出、頁数0の短絡を
+  fixtureで固定し、`_extract_empty_pdf_with_docling`へ切り出した。`_extract_pdf_chunks`は
+  379行から371行、同モジュールの未到達文予算は443から435へ下げた。coverage付き既定suiteは
+  `1,554 passed / 4 skipped / 5 deselected`、実資料取込baselineは`5 passed`。
 
 ## Active
 

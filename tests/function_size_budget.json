@@ -8,7 +8,7 @@
   "functions": {
     "src/index_from_zotero.py::_index_library": 1104,
     "src/pdf_extract.py::extract_chunks_from_pdf": 614,
-    "src/index_from_zotero.py::_extract_pdf_chunks": 379,
+    "src/index_from_zotero.py::_extract_pdf_chunks": 371,
     "src/html_extract.py::extract_chunks_from_epub_snapshot": 347,
     "citation_graph/server.py::_build_sigma_html": 307,
     "citation_graph/server.py::compute_layout": 262,

@@ -2656,6 +2656,44 @@ def _run_initial_scan_replacement(
     )
 
 
+def _extract_empty_pdf_with_docling(
+    *,
+    attachment_key: str,
+    file_path: Path,
+    meta_base: dict[str, Any],
+    chunks: list,
+    quality: dict[str, Any],
+    source_metadata: dict[str, Any],
+    total_pages: int,
+    replacement_attempted: bool,
+    attempted_local_ocr: bool,
+    docling_worker: Any,
+    show_progress: bool,
+) -> tuple[list, dict[str, Any], bool]:
+    """Use Docling once when PyMuPDF found pages but produced no chunks."""
+    if replacement_attempted or chunks or total_pages <= 0:
+        return chunks, quality, attempted_local_ocr
+    attempted_local_ocr = True
+    if show_progress:
+        print(
+            "[PROGRESS]   ↳ no usable text layer; parsing with IBM Docling...",
+            file=sys.__stderr__,
+        )
+    try:
+        chunks, quality = docling_worker.extract(
+            file_path, attachment_key, meta_base,
+        )
+        quality = _attach_pdf_source_provenance(quality, source_metadata)
+    except RuntimeError as exc:
+        print(
+            f"[WARN] Docling worker extraction failed: "
+            f"attachment={attachment_key} err={exc}",
+            file=sys.__stderr__,
+        )
+        chunks, quality = [], {}
+    return chunks, quality, attempted_local_ocr
+
+
 def _extract_pdf_chunks(
     *,
     a: Any,
@@ -2736,27 +2774,19 @@ def _extract_pdf_chunks(
         attempted_local_ocr = initial_scan.attempted_local_ocr
         scanned_ocr_replacement_attempted = initial_scan.replacement_attempted
         scanned_ocr_batch_defer = initial_scan.batch_defer
-        if not scanned_ocr_replacement_attempted and not chunks and total_pages > 0:
-            # RapidOCR/NDLOCR are retained for fixed-layout EPUBs and
-            # explicit re-OCR overrides, but are not an ordinary PDF
-            # route. Docling is the local PDF baseline.
-            attempted_local_ocr = True
-            if show_progress:
-                print(
-                    "[PROGRESS]   ↳ no usable text layer; parsing with IBM Docling...",
-                    file=sys.__stderr__,
-                )
-            try:
-                chunks, quality_info = docling_worker.extract(
-                    file_path, a.attachmentKey, meta_base,
-                )
-                quality_info = _attach_pdf_source_provenance(quality_info, source_metadata)
-            except RuntimeError as exc:
-                print(
-                    f"[WARN] Docling worker extraction failed: attachment={a.attachmentKey} err={exc}",
-                    file=sys.__stderr__,
-                )
-                chunks, quality_info = [], {}
+        chunks, quality_info, attempted_local_ocr = _extract_empty_pdf_with_docling(
+            attachment_key=a.attachmentKey,
+            file_path=file_path,
+            meta_base=meta_base,
+            chunks=chunks,
+            quality=quality_info,
+            source_metadata=source_metadata,
+            total_pages=total_pages,
+            replacement_attempted=scanned_ocr_replacement_attempted,
+            attempted_local_ocr=attempted_local_ocr,
+            docling_worker=docling_worker,
+            show_progress=bool(show_progress),
+        )
         # For born-digital PDFs, a textless page can be treated as a figure;
         # scan-derived pages use the separate repair path below.
         chunks, quality_info = _patch_born_digital_scanned_pages(
