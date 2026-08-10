@@ -61,9 +61,17 @@ Updated: 2026-08-10
   `_finalize_pdf_output`へ分離した。`extract_chunks_from_pdf`は614行から607行になった。
   今回のrebuild世代では現行heuristic、OCR route、chunk本文・IDを凍結し、P3 flat-PDF候補は
   実資料評価を要する次世代変更へ送る。clean rebuildは旧chunkを流用せず全件再抽出する。
+- M4は完了し、現在は**Ready to Embed**。rebuild runtimeは`4b58d6b`、dry-run inventoryは
+  590 items / 616 attachments（PDF 364、EPUB 208、HTML 44）、canonical writeなし。
+  `data/backups/pre-clean-rebuild-20260810-4b58d6b`へ8.67GBのrollback snapshotを作り、別copyから
+  Chroma 513,683、FTS 513,684、manifest 614、lexical/relations quick check `ok`を確認した。
+  既知の孤立FTS 1行は修復していない。backup後も空き70.6GB、indexing lockは残っていない。
+- local `.env`ではAI TOC、OCR layer audit、query expansion、LLM summaries、LLM reference
+  extraction、Mistral queueを0へ変更済み。API keyは残るがfeatureはoffで、有料callはしない。
+  `docs/embedding-rebuild-readiness.md`がgo/no-go、実行入口、rollbackの記録である。
 - 150行超の関数は22件から16件へ減少。最大は
   `index_from_zotero._index_library`（1,092行）、次が`pdf_extract.extract_chunks_from_pdf`（607行）。
-- 既定suiteは1,576 passed / 4 skipped / 5 deselected。実資料取込baselineは5 passed。
+- 既定suiteは1,579 passed / 4 skipped / 5 deselected。実資料取込baselineは5 passed。
   抽出・取り込み・構造を変更したら
   `uv run pytest -m slow`も必要。
 - P1/P2の既知製品欠陥はない。残るP3はS2 author-less識別とflat PDF 3形状で、どちらも
@@ -90,7 +98,7 @@ Updated: 2026-08-10
 
 `TASKS.md`の「2026-08-10 埋め込み開始までのマイルストーン」を進捗の正本とする。
 到達点は全件埋め込みの実行ではなく、`Setup.command`の`REBUILD`確認直前で止める
-**Ready to Embed**。現在はM0〜M3完了、M4が次の作業である。
+**Ready to Embed**。M0〜M4は完了し、M5はユーザーの明示承認待ちである。
 
 1. **M1（完了）**: 通常attachment dispatchとpending候補の組立を決定的fixtureで固定した。
 2. **M2（完了）**: 最終出力確定だけを純粋関数へ分け、現行抽出・chunk境界を今回の世代として
@@ -98,8 +106,8 @@ Updated: 2026-08-10
 3. **M3（完了）**: 暫定bulk設定は`UPSERT_BATCH_SIZE=128`、
    `CHROMA_HNSW_SYNC_THRESHOLD=10000`。300合成chunkで`4.59 chunks/s`・peak RSS
    `900.53 MB`を確認し、中断再開・補償・reopen・実queryも通した。
-4. **M4（必須・次）**: 対象commit、dry-run inventory、現V3 backup、容量、lock、埋め込み設定、
-   有料機能無効、rollback点をgo/no-go表で確定し、`REBUILD`入力前で停止する。
+4. **M4（完了）**: 対象commit、dry-run inventory、現V3 backup、容量、lock、埋め込み設定、
+   有料機能無効、rollback点をgo/no-go表で確定し、`REBUILD`入力前で停止した。
 5. **M5（別承認）**: 明示承認後だけclean rebuildを実行する。完了後に
    `uv run python scripts/run_db_audit.py`でZotero・原本・DBの3監査を通す。
 

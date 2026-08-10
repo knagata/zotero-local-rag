@@ -212,13 +212,33 @@ Chroma/FTS書込み）の実行は、このマイルストーンとは別の明�
     同時保持できることを改めて確認する。対象14テストとcoverage付き既定suite
     `1,572 passed / 4 skipped / 5 deselected`、compileall、fatal Ruff、各品質予算を確認した。
 
-- [ ] **M4（必須）: clean rebuildの実行前チェックリストを確定する**
+- [x] **M4（必須）: clean rebuildの実行前チェックリストを確定する**（2026-08-10）
   - M1〜M3の完了、worktree clean、対象commit固定、Zotero inventory dry-run、現在V3のbackupと
     読取確認、必要空き容量、indexing lock、BGE-M3/1024次元/正規化設定を確認する。
   - 有料LLM/OCRを無効のままにし、現V3への増分取り込み、fingerprint手修正、孤立FTS行の
     先行修復、保存済みchunkだけの再埋め込みを行わない。
   - 完了条件: go/no-go表が全項目goになり、実行コマンドとrollback点を提示して、
     `Setup.command`の`REBUILD`入力前で停止する。この状態を **Ready to Embed** とする。
+  - `docs/embedding-rebuild-readiness.md`にgo/no-go表、実行入口、rollback点を固定した。
+    rebuild runtimeは`4b58d6b18a07e4e10373ad17fb3dc7f698290923`。dry-run inventoryは
+    590 items / 616 attachments（PDF 364、EPUB 208、HTML 44）で、canonical writeなし、
+    legacy OCR reuse候補0だった。
+  - `scripts/backup_v3_generation.py`を追加し、indexing lock保持中にChroma/manifestをcopy、
+    lexical/relationsをSQLite backup APIでsnapshotした。rollback snapshotは
+    `data/backups/pre-clean-rebuild-20260810-4b58d6b`（8,672,747,653 bytes）。別copyから
+    Chroma 513,683、FTS 513,684、manifest 614を読め、SQLite quick checkも両方`ok`。
+    既知のFTS孤立1行は修復せず、そのまま保存した。
+  - backup保持後の空きは70.6GB。pilotのChroma増分見積7.49GBと現世代一式8.67GBのどちらにも
+    十分で、lockは解放済み。Chromaのread-only health checkもrepairなしでpassした。
+  - local `.env`の有料LLM/OCR feature 6種を0へ固定した。keyは保持しているが、AI TOC、OCR layer
+    audit、query expansion、LLM summary/reference extraction、Mistral queueはいずれもoff。
+    現runtimeはlocal BGE-M3/MPS/1024次元/normalizeあり、batch 128・sync 10000。
+  - **Ready to Embed**。M5の明示承認までは`REBUILD`を入力せず、active V3への増分取込、
+    fingerprint修正、孤立行修復、旧chunkだけの再埋め込み、有料callを行わない。
+  - backup contract対象3テスト、coverage付き既定suite
+    `1,579 passed / 4 skipped / 5 deselected`、compileall、fatal Ruff、公開import、
+    function/lint/coverage/doc各予算、差分検査がpassした。M2で通した実資料baseline
+    `5 passed`もこのrebuild runtimeの検証結果として維持する。
 
 - [ ] **M5（必須・ユーザー承認待ち）: clean rebuildと全件埋め込みを実行する**
   - M4到達後の別作業。明示承認を得てからのみ実行し、完了後は
