@@ -44,8 +44,10 @@ Updated: 2026-08-10
   `_recover_pdf_outline_with_ai_toc`に隔離し、実LLM無しで固定した。
 - 5種類のPDF gate action実行を`_dispatch_pdf_gate_action`に集約し、
   disabledタグとlocal-exhausted時のDocling非再実行を追加固定した。
-- 150行超の関数は22件から17件へ減少。最大は
-  `index_from_zotero._index_library`（1,104行）、次が`_extract_pdf_chunks`（214行）。
+- 通常PDFのpre-gate sequenceを`_prepare_pdf_for_structure_gate`と`_PdfPreGateState`へ
+  呼出し順不変で集約し、`_extract_pdf_chunks`を113行まで縮小した。
+- 150行超の関数は22件から16件へ減少。最大は
+  `index_from_zotero._index_library`（1,104行）、次が`pdf_extract.extract_chunks_from_pdf`（614行）。
 - 既定suiteは1,565 passed / 4 skipped / 5 deselected。実資料取込baselineは5 passed。
   抽出・取り込み・構造を変更したら
   `uv run pytest -m slow`も必要。
@@ -71,13 +73,14 @@ Updated: 2026-08-10
 
 ## Next work, in order
 
-1. 次は現在すべてfixtureが届いた通常PDFのpre-gate sequenceを状態オブジェクトにまとめ、
-   `_extract_pdf_chunks`を150行以下へ下げる。route順序・heuristic・chunk境界は変えない。
-2. `_extract_pdf_chunks`が150行以下まで安全に分割できたら、次に`_index_library`の
-   決定的な責務を同じ方法で分離する。
-   テストが届いた責務だけを`_extract_pdf_chunks`から抽出し、1 seamずつ対象テストと
-   function-size ratchetを更新する。低coverage部分を機械的に移動して「検証済み」と扱わない。
-3. `_extract_pdf_chunks`の挙動不変分割が終わってから`_index_library`を同じ方法で分割する。
+1. PDF取込責務の挙動不変分割は完了。次は`_index_library`の決定的な責務を棚卸し、
+   合成fixtureが届く境界から1 seamずつ分離する。まずattachment種別dispatchと
+   extraction結果のartifact/manifest更新のどちらが独立可能かを調査する。
+2. 並行して`pdf_extract.extract_chunks_from_pdf`（614行）の分割点は、実資料baselineが
+   届く決定フェーズが確認できるまで実装しない。
+   今後もテストが届いた責務だけを1 seamずつ分離し、対象テストと
+   function-size ratchetを同期する。低coverage部分を機械的に移動して「検証済み」と扱わない。
+3. `_index_library`の挙動不変分割が終わったら、抽出・chunk境界を固定できたか再評価する。
 4. 抽出・chunk境界を一度固定した時点でV3をバックアップし、`Setup.command`の`REBUILD`から
    clean rebuildする。保存済みfingerprintの手修正や孤立FTS 1行だけの先行修復はしない。
 5. rebuild後に`uv run python scripts/run_db_audit.py`を実行し、Zotero・原本・DBの3監査を

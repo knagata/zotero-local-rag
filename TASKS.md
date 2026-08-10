@@ -115,6 +115,12 @@
   既存fixtureでkeep/defer/escalationも再検証。`_extract_pdf_chunks`は265行から214行へ縮小。
   未到達文予算385とcoverage付き既定suite
   `1,565 passed / 4 skipped / 5 deselected`を維持し、実資料取込baselineは`5 passed`。
+- [x] **通常PDFのpre-gate sequenceを状態化。** 個別fixtureが届いた初回抽出、initial scan置換、
+  empty fallback、三種の頁修復、OCR layer audit、post-audit置換を、呼出し順を変えず
+  `_prepare_pdf_for_structure_gate`と`_PdfPreGateState`へ分離。前者は129行、
+  `_extract_pdf_chunks`は214行から113行になり、150行超ラチェットから外れた。
+  150行超は17件から16件へ減少。未到達文予算385、coverage付き既定suite
+  `1,565 passed / 4 skipped / 5 deselected`、実資料取込baseline`5 passed`を維持。
 
 ## Active
 

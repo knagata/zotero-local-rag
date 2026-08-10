@@ -2967,6 +2967,148 @@ def _dispatch_pdf_gate_action(
     return PdfExtraction(chunks, quality)
 
 
+@dataclass(frozen=True)
+class _PdfPreGateState:
+    chunks: list
+    quality: dict[str, Any]
+    total_pages: int
+    minimum_pages: int
+    attempted_local_ocr: bool
+    scanned_batch_defer: bool
+    initial_route_reason: str
+
+
+def _prepare_pdf_for_structure_gate(
+    *,
+    attachment_key: str,
+    scope_item_key: str,
+    file_path: Path,
+    meta_base: dict[str, Any],
+    source_metadata: dict[str, Any],
+    previous: dict[str, Any] | None,
+    mtime: float,
+    size: int,
+    structure_recovery: bool,
+    docling_worker: Any,
+    granite_worker: Any,
+    show_progress: bool,
+) -> _PdfPreGateState:
+    """Run the ordered text-layer, page-repair, and OCR-audit stages."""
+    chunks, quality = extract_chunks_from_pdf(
+        file_path, attachment_key, meta_base,
+    )
+    quality = _attach_pdf_source_provenance(quality, source_metadata)
+    total_pages = int(quality.get("total_pages") or 0)
+    minimum_pages = int(os.environ.get("PDF_AI_TOC_MIN_PAGES", "30"))
+    initial_scan = _run_initial_scan_replacement(
+        attachment_key=attachment_key,
+        scope_item_key=scope_item_key,
+        file_path=file_path,
+        meta_base=meta_base,
+        chunks=chunks,
+        quality=quality,
+        source_metadata=source_metadata,
+        total_pages=total_pages,
+        docling_worker=docling_worker,
+        granite_worker=granite_worker,
+        show_progress=show_progress,
+    )
+    chunks, quality = initial_scan.chunks, initial_scan.quality
+    attempted_local_ocr = initial_scan.attempted_local_ocr
+    replacement_attempted = initial_scan.replacement_attempted
+    chunks, quality, attempted_local_ocr = _extract_empty_pdf_with_docling(
+        attachment_key=attachment_key,
+        file_path=file_path,
+        meta_base=meta_base,
+        chunks=chunks,
+        quality=quality,
+        source_metadata=source_metadata,
+        total_pages=total_pages,
+        replacement_attempted=replacement_attempted,
+        attempted_local_ocr=attempted_local_ocr,
+        docling_worker=docling_worker,
+        show_progress=show_progress,
+    )
+    chunks, quality = _patch_born_digital_scanned_pages(
+        attachment_key=attachment_key,
+        file_path=file_path,
+        meta_base=meta_base,
+        chunks=chunks,
+        quality=quality,
+        attempted_local_ocr=attempted_local_ocr,
+        structure_recovery=structure_recovery,
+        docling_worker=docling_worker,
+        total_pages=total_pages,
+        show_progress=show_progress,
+    )
+    chunks, quality = _repair_scan_derived_pages(
+        attachment_key=attachment_key,
+        file_path=file_path,
+        meta_base=meta_base,
+        chunks=chunks,
+        quality=quality,
+        structure_recovery=structure_recovery,
+        docling_worker=docling_worker,
+        total_pages=total_pages,
+        show_progress=show_progress,
+    )
+    chunks, quality = _patch_corrupted_text_pages(
+        attachment_key=attachment_key,
+        file_path=file_path,
+        meta_base=meta_base,
+        chunks=chunks,
+        quality=quality,
+        attempted_local_ocr=attempted_local_ocr,
+        structure_recovery=structure_recovery,
+        docling_worker=docling_worker,
+        total_pages=total_pages,
+        show_progress=show_progress,
+    )
+    chunks, quality = _audit_pdf_ocr_layer(
+        attachment_key=attachment_key,
+        scope_item_key=scope_item_key,
+        file_path=file_path,
+        chunks=chunks,
+        quality=quality,
+        replacement_attempted=replacement_attempted,
+        previous=previous,
+        mtime=mtime,
+        size=size,
+        show_progress=show_progress,
+    )
+    (
+        chunks,
+        quality,
+        attempted_local_ocr,
+        _replacement_attempted,
+        scanned_batch_defer,
+    ) = _run_post_audit_scan_replacement(
+        attachment_key=attachment_key,
+        scope_item_key=scope_item_key,
+        file_path=file_path,
+        meta_base=meta_base,
+        chunks=chunks,
+        quality=quality,
+        source_metadata=source_metadata,
+        total_pages=total_pages,
+        replacement_attempted=replacement_attempted,
+        attempted_local_ocr=attempted_local_ocr,
+        batch_defer=initial_scan.batch_defer,
+        docling_worker=docling_worker,
+        granite_worker=granite_worker,
+        show_progress=show_progress,
+    )
+    return _PdfPreGateState(
+        chunks=chunks,
+        quality=quality,
+        total_pages=total_pages,
+        minimum_pages=minimum_pages,
+        attempted_local_ocr=attempted_local_ocr,
+        scanned_batch_defer=scanned_batch_defer,
+        initial_route_reason=initial_scan.route_reason,
+    )
+
+
 def _extract_pdf_chunks(
     *,
     a: Any,
@@ -2990,24 +3132,7 @@ def _extract_pdf_chunks(
     structure_recovery: Any,
     v3_pipeline_fingerprint: Any,
 ) -> PdfExtraction:
-    """Read a PDF, choosing and escalating between extractors as it goes.
-
-    Six hundred and sixty-five lines of main_async's per-attachment loop, which
-    is most of what that loop was: PyMuPDF first, then the OCR-layer audit, then
-    Docling or NDLOCR or Granite depending on what the pages turn out to be,
-    then the coverage checks that decide whether what came back is enough to
-    index.
-
-    Lifted whole rather than in pieces because the interface is narrow --
-    ``chunks`` and ``quality`` are the only names that escaped, and the one
-    ``continue`` is now the deferred flag -- and because its own size is easier
-    to see, and to split further, once it is somewhere of its own.
-
-    The parameter list is long and deliberately unreduced. Grouping the per-run
-    values apart from the per-attachment ones is the obvious next move and a
-    separate one: doing both at once would leave no way to tell which change
-    caused a difference.
-    """
+    """Coordinate explicit overrides, measured extraction, and the PDF gate."""
     override = _extract_pdf_override(
         attachment_key=a.attachmentKey,
         file_path=file_path,
@@ -3018,169 +3143,68 @@ def _extract_pdf_chunks(
         show_progress=bool(show_progress),
     )
     if override is not None:
-        chunks, quality_info = override.chunks, override.quality
-    else:
-        # Approved routing (evaluations/ocr_bakeoff_v3/results/routing_proposal.md):
-        # PyMuPDF is only canonical for embedded-text PDFs with a usable
-        # outline; everything else escalates to Docling, the higher-scoring
-        # local default. Legacy (non-V3) ingestion keeps its prior behavior.
-        chunks, quality_info = extract_chunks_from_pdf(file_path, a.attachmentKey, meta_base)
-        quality_info = _attach_pdf_source_provenance(quality_info, source_metadata)
-        recovered = None
-        total_pages = int(quality_info.get("total_pages") or 0)
-        minimum_pages = int(os.environ.get("PDF_AI_TOC_MIN_PAGES", "30"))
-        initial_scan = _run_initial_scan_replacement(
-            attachment_key=a.attachmentKey,
-            scope_item_key=scope_item_key,
-            file_path=file_path,
-            meta_base=meta_base,
-            chunks=chunks,
-            quality=quality_info,
-            source_metadata=source_metadata,
-            total_pages=total_pages,
-            docling_worker=docling_worker,
-            granite_worker=granite_worker,
-            show_progress=bool(show_progress),
-        )
-        chunks, quality_info = initial_scan.chunks, initial_scan.quality
-        initial_scan_route_reason = initial_scan.route_reason
-        attempted_local_ocr = initial_scan.attempted_local_ocr
-        scanned_ocr_replacement_attempted = initial_scan.replacement_attempted
-        scanned_ocr_batch_defer = initial_scan.batch_defer
-        chunks, quality_info, attempted_local_ocr = _extract_empty_pdf_with_docling(
-            attachment_key=a.attachmentKey,
-            file_path=file_path,
-            meta_base=meta_base,
-            chunks=chunks,
-            quality=quality_info,
-            source_metadata=source_metadata,
-            total_pages=total_pages,
-            replacement_attempted=scanned_ocr_replacement_attempted,
-            attempted_local_ocr=attempted_local_ocr,
-            docling_worker=docling_worker,
-            show_progress=bool(show_progress),
-        )
-        # For born-digital PDFs, a textless page can be treated as a figure;
-        # scan-derived pages use the separate repair path below.
-        chunks, quality_info = _patch_born_digital_scanned_pages(
-            attachment_key=a.attachmentKey,
-            file_path=file_path,
-            meta_base=meta_base,
-            chunks=chunks,
-            quality=quality_info,
-            attempted_local_ocr=attempted_local_ocr,
-            structure_recovery=bool(structure_recovery),
-            docling_worker=docling_worker,
-            total_pages=total_pages,
-            show_progress=bool(show_progress),
-        )
-        chunks, quality_info = _repair_scan_derived_pages(
-            attachment_key=a.attachmentKey,
-            file_path=file_path,
-            meta_base=meta_base,
-            chunks=chunks,
-            quality=quality_info,
-            structure_recovery=bool(structure_recovery),
-            docling_worker=docling_worker,
-            total_pages=total_pages,
-            show_progress=bool(show_progress),
-        )
-        chunks, quality_info = _patch_corrupted_text_pages(
-            attachment_key=a.attachmentKey,
-            file_path=file_path,
-            meta_base=meta_base,
-            chunks=chunks,
-            quality=quality_info,
-            attempted_local_ocr=attempted_local_ocr,
-            structure_recovery=bool(structure_recovery),
-            docling_worker=docling_worker,
-            total_pages=total_pages,
-            show_progress=bool(show_progress),
-        )
-        # Stage 2 (note 79) runs after page repair, so it measures the text we
-        # would index, and before the fast-path gate that consumes its verdict.
-        chunks, quality_info = _audit_pdf_ocr_layer(
-            attachment_key=a.attachmentKey,
-            scope_item_key=scope_item_key,
-            file_path=file_path,
-            chunks=chunks,
-            quality=quality_info,
-            replacement_attempted=scanned_ocr_replacement_attempted,
-            previous=prev,
-            mtime=mtime,
-            size=size,
-            show_progress=bool(show_progress),
-        )
-        (
-            chunks,
-            quality_info,
-            attempted_local_ocr,
-            scanned_ocr_replacement_attempted,
-            scanned_ocr_batch_defer,
-        ) = _run_post_audit_scan_replacement(
-            attachment_key=a.attachmentKey,
-            scope_item_key=scope_item_key,
-            file_path=file_path,
-            meta_base=meta_base,
-            chunks=chunks,
-            quality=quality_info,
-            source_metadata=source_metadata,
-            total_pages=total_pages,
-            replacement_attempted=scanned_ocr_replacement_attempted,
-            attempted_local_ocr=attempted_local_ocr,
-            batch_defer=scanned_ocr_batch_defer,
-            docling_worker=docling_worker,
-            granite_worker=granite_worker,
-            show_progress=bool(show_progress),
-        )
-        chunks, quality_info, recovered = _recover_pdf_outline_with_ai_toc(
-            file_path=file_path,
-            scope_item_key=scope_item_key,
-            chunks=chunks,
-            quality=quality_info,
-            previous=prev,
-            mtime=mtime,
-            size=size,
-            total_pages=total_pages,
-            minimum_pages=minimum_pages,
-            structure_recovery=bool(structure_recovery),
-            docling_worker=docling_worker,
-            show_progress=bool(show_progress),
-        )
-        gate_plan = _pdf_gate_plan_for_extraction(
-            structure_recovery=bool(structure_recovery),
-            scanned_batch_defer=scanned_ocr_batch_defer,
-            chunks=chunks,
-            attempted_local_ocr=attempted_local_ocr,
-            quality=quality_info,
-            total_pages=total_pages,
-            minimum_pages=minimum_pages,
-            initial_route_reason=initial_scan_route_reason,
-        )
-        return _dispatch_pdf_gate_action(
-            gate_plan=gate_plan,
-            attachment=a,
-            scope_item_key=scope_item_key,
-            col=col,
-            manifest=manifest,
-            files_manifest=files_manifest,
-            previous=prev,
-            file_path=file_path,
-            meta_base=meta_base,
-            chunks=chunks,
-            quality=quality_info,
-            recovered=recovered,
-            scanned_batch_defer=scanned_ocr_batch_defer,
-            total_pages=total_pages,
-            mtime=mtime,
-            size=size,
-            stored_signature=stored_signature,
-            pipeline_fingerprint=v3_pipeline_fingerprint,
-            source_metadata=source_metadata,
-            docling_worker=docling_worker,
-            show_progress=bool(show_progress),
-        )
-    return PdfExtraction(chunks, quality_info)
+        return override
+    state = _prepare_pdf_for_structure_gate(
+        attachment_key=a.attachmentKey,
+        scope_item_key=scope_item_key,
+        file_path=file_path,
+        meta_base=meta_base,
+        source_metadata=source_metadata,
+        previous=prev,
+        mtime=mtime,
+        size=size,
+        structure_recovery=bool(structure_recovery),
+        docling_worker=docling_worker,
+        granite_worker=granite_worker,
+        show_progress=bool(show_progress),
+    )
+    chunks, quality_info, recovered = _recover_pdf_outline_with_ai_toc(
+        file_path=file_path,
+        scope_item_key=scope_item_key,
+        chunks=state.chunks,
+        quality=state.quality,
+        previous=prev,
+        mtime=mtime,
+        size=size,
+        total_pages=state.total_pages,
+        minimum_pages=state.minimum_pages,
+        structure_recovery=bool(structure_recovery),
+        docling_worker=docling_worker,
+        show_progress=bool(show_progress),
+    )
+    gate_plan = _pdf_gate_plan_for_extraction(
+        structure_recovery=bool(structure_recovery),
+        scanned_batch_defer=state.scanned_batch_defer,
+        chunks=chunks,
+        attempted_local_ocr=state.attempted_local_ocr,
+        quality=quality_info,
+        total_pages=state.total_pages,
+        minimum_pages=state.minimum_pages,
+        initial_route_reason=state.initial_route_reason,
+    )
+    return _dispatch_pdf_gate_action(
+        gate_plan=gate_plan,
+        attachment=a,
+        scope_item_key=scope_item_key,
+        col=col,
+        manifest=manifest,
+        files_manifest=files_manifest,
+        previous=prev,
+        file_path=file_path,
+        meta_base=meta_base,
+        chunks=chunks,
+        quality=quality_info,
+        recovered=recovered,
+        scanned_batch_defer=state.scanned_batch_defer,
+        total_pages=state.total_pages,
+        mtime=mtime,
+        size=size,
+        stored_signature=stored_signature,
+        pipeline_fingerprint=v3_pipeline_fingerprint,
+        source_metadata=source_metadata,
+        docling_worker=docling_worker,
+        show_progress=bool(show_progress),
+    )
 
 
 

@@ -62,7 +62,7 @@ Verified against `tests/baselines/structure_recovery.json` on 2026-08-09, where
 ## Longer-term maintainability
 
 The four ordered seams from the 2026-08-09 triage were completed on 2026-08-10
-and are recorded under [Closed](#closed). The function-size ratchet now has 17
+and are recorded under [Closed](#closed). The function-size ratchet now has 16
 entries, down from 22 at the start of the pass. Further ingestion and extraction
 splits remain intentionally gated on a wider measured ingestion net; their low
 route coverage makes an otherwise mechanical extraction unsafe.
@@ -93,9 +93,10 @@ that the size number does not say.
 ### What the splitters need to know
 
 - `index_from_zotero._index_library` (1,104 lines) is the largest remaining
-  function. The PDF route came out of it in 2026-08-09 as `_extract_pdf_chunks`
-  (705 lines), which is now the second largest: the seam moved rather than
-  disappeared, and the same measured-interface approach applies to it.
+  function. Its PDF route came out in 2026-08-09 as `_extract_pdf_chunks`
+  (705 lines); deterministic orchestration fixtures then reduced that function
+  to 113 lines on 2026-08-10 without changing route heuristics or chunk bounds.
+  The same measured-interface approach now applies to `_index_library`.
 - The ingestion net (`tests/test_ingestion_baseline.py`, `slow`-marked) reaches
   28% of the loop and about 15% of the PDF route, so verification is the
   expensive half of any split here. **Measure a block's reach before lifting
