@@ -41,7 +41,7 @@
     "src/hierarchical_retrieval.py": 5,
     "src/html_extract.py": 124,
     "src/index_batch.py": 4,
-    "src/index_from_zotero.py": 399,
+    "src/index_from_zotero.py": 385,
     "src/index_run.py": 0,
     "src/indexing_lock.py": 14,
     "src/item_vectors.py": 27,

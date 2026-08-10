@@ -2827,6 +2827,65 @@ def _escalate_pdf_to_docling(
     return chunks, quality
 
 
+def _recover_pdf_outline_with_ai_toc(
+    *,
+    file_path: Path,
+    scope_item_key: str,
+    chunks: list,
+    quality: dict[str, Any],
+    previous: dict[str, Any] | None,
+    mtime: float,
+    size: int,
+    total_pages: int,
+    minimum_pages: int,
+    structure_recovery: bool,
+    docling_worker: Any,
+    show_progress: bool,
+) -> tuple[list, dict[str, Any], Any]:
+    """Reuse or run AI TOC recovery for an eligible unstructured PDF."""
+    recovered = None
+    prior_no_structure = _prior_no_structure_ai_toc_status(
+        previous, mtime=mtime, size=size,
+    )
+    eligible = chunks and not quality.get("has_outline") and total_pages >= minimum_pages
+    if eligible and prior_no_structure:
+        quality = dict(quality)
+        quality["ai_toc_recovery_status"] = prior_no_structure
+        quality["ai_toc_recovery_status_cached"] = True
+        if show_progress:
+            print(
+                f"[PROGRESS]   ↳ AI TOC skipped: prior run confirmed no "
+                f"structure ({prior_no_structure}); indexing unstructured",
+                file=sys.__stderr__,
+            )
+    elif eligible and structure_recovery:
+        recovered = try_ai_toc_fast_path(
+            file_path,
+            scope_item_key,
+            chunks,
+            quality,
+            docling_worker=docling_worker,
+        )
+        quality = dict(quality)
+        quality["ai_toc_recovery_status"] = (
+            "accepted" if recovered.accepted else recovered.reason
+        )
+        if recovered.diagnostics:
+            quality["ai_toc_body_coverage"] = recovered.diagnostics.get("body_coverage")
+            quality["ai_toc_matched_count"] = recovered.diagnostics.get("matched_count")
+            quality["ai_toc_diagnostics"] = recovered.diagnostics
+        if recovered.accepted:
+            chunks = recovered.chunks
+            if show_progress:
+                print(
+                    f"[PROGRESS]   ↳ AI TOC fast path accepted: "
+                    f"coverage={recovered.diagnostics.get('body_coverage')} "
+                    f"anchors={recovered.diagnostics.get('matched_count')}",
+                    file=sys.__stderr__,
+                )
+    return chunks, quality, recovered
+
+
 def _extract_pdf_chunks(
     *,
     a: Any,
@@ -2993,55 +3052,20 @@ def _extract_pdf_chunks(
             granite_worker=granite_worker,
             show_progress=bool(show_progress),
         )
-        # P1 (note 78): a prior run of this identical source file may
-        # already have established that the document has no headings
-        # (the LLM itself said so). That verdict is final for the file
-        # -- skip the fast path (saving the DeepSeek call and the
-        # full-document page sweep) and carry the status forward so
-        # the manifest keeps confirming it for the next reingest too.
-        prior_no_structure = _prior_no_structure_ai_toc_status(
-            prev, mtime=mtime, size=size,
+        chunks, quality_info, recovered = _recover_pdf_outline_with_ai_toc(
+            file_path=file_path,
+            scope_item_key=scope_item_key,
+            chunks=chunks,
+            quality=quality_info,
+            previous=prev,
+            mtime=mtime,
+            size=size,
+            total_pages=total_pages,
+            minimum_pages=minimum_pages,
+            structure_recovery=bool(structure_recovery),
+            docling_worker=docling_worker,
+            show_progress=bool(show_progress),
         )
-        if (
-            chunks and not quality_info.get("has_outline")
-            and total_pages >= minimum_pages
-            and prior_no_structure
-        ):
-            quality_info = dict(quality_info)
-            quality_info["ai_toc_recovery_status"] = prior_no_structure
-            quality_info["ai_toc_recovery_status_cached"] = True
-            if show_progress:
-                print(
-                    f"[PROGRESS]   ↳ AI TOC skipped: prior run confirmed no "
-                    f"structure ({prior_no_structure}); indexing unstructured",
-                    file=sys.__stderr__,
-                )
-        elif (
-            chunks and not quality_info.get("has_outline")
-            and total_pages >= minimum_pages
-            and structure_recovery
-        ):
-            recovered = try_ai_toc_fast_path(
-                file_path, scope_item_key, chunks, quality_info,
-                docling_worker=docling_worker,
-            )
-            quality_info = dict(quality_info)
-            quality_info["ai_toc_recovery_status"] = (
-                "accepted" if recovered.accepted else recovered.reason
-            )
-            if recovered.diagnostics:
-                quality_info["ai_toc_body_coverage"] = recovered.diagnostics.get("body_coverage")
-                quality_info["ai_toc_matched_count"] = recovered.diagnostics.get("matched_count")
-                quality_info["ai_toc_diagnostics"] = recovered.diagnostics
-            if recovered.accepted:
-                chunks = recovered.chunks
-                if show_progress:
-                    print(
-                        f"[PROGRESS]   ↳ AI TOC fast path accepted: "
-                        f"coverage={recovered.diagnostics.get('body_coverage')} "
-                        f"anchors={recovered.diagnostics.get('matched_count')}",
-                        file=sys.__stderr__,
-                    )
         gate_plan = _pdf_gate_plan_for_extraction(
             structure_recovery=bool(structure_recovery),
             scanned_batch_defer=scanned_ocr_batch_defer,

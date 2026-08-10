@@ -633,6 +633,107 @@ def test_generic_docling_gate_worker_failure_keeps_original_chunks_as_unavailabl
     assert "attachment=ATT" in capfd.readouterr().err
 
 
+def _ai_toc_recovery(*, recovered=None, previous=None, total_pages=30):
+    source = (
+        [("pymupdf-p1", "unstructured text", {"page": 1, "reading_order": 0})],
+        {
+            "parser": "pymupdf",
+            "total_pages": total_pages,
+            "has_outline": False,
+            "source_class": module.BORN_DIGITAL,
+        },
+    )
+    with (
+        patch.object(module, "extract_chunks_from_pdf", return_value=source),
+        patch.object(
+            module,
+            "_initial_scanned_pdf_ocr_route",
+            return_value=(None, "not_scan_ocr_replacement"),
+        ),
+        patch.object(
+            module,
+            "try_ai_toc_fast_path",
+            return_value=recovered,
+        ) as run_recovery,
+        patch.object(
+            module,
+            "_pdf_gate_plan_for_extraction",
+            return_value=module.PdfGatePlan("keep"),
+        ),
+    ):
+        result = _extract_pdf(
+            prev=previous,
+            structure_recovery=True,
+        )
+    return result, run_recovery
+
+
+def test_ai_toc_reuses_same_source_no_structure_verdict_without_a_new_call():
+    previous = {
+        "mtime": 100.0,
+        "size": 2048,
+        "quality": {"ai_toc_recovery_status": "insufficient_body_headings"},
+    }
+    result, run_recovery = _ai_toc_recovery(previous=previous)
+
+    assert [row[0] for row in result.chunks] == ["pymupdf-p1"]
+    assert result.quality["ai_toc_recovery_status"] == "insufficient_body_headings"
+    assert result.quality["ai_toc_recovery_status_cached"] is True
+    run_recovery.assert_not_called()
+
+
+def test_ai_toc_accepted_result_replaces_chunks_and_records_diagnostics():
+    recovered = SimpleNamespace(
+        accepted=True,
+        reason="accepted",
+        chunks=[("structured-p1", "structured", {"page": 1})],
+        diagnostics={"body_coverage": 0.9, "matched_count": 3, "anchors": 4},
+    )
+    result, run_recovery = _ai_toc_recovery(recovered=recovered)
+
+    assert [row[0] for row in result.chunks] == ["structured-p1"]
+    assert result.quality["ai_toc_recovery_status"] == "accepted"
+    assert result.quality["ai_toc_body_coverage"] == 0.9
+    assert result.quality["ai_toc_matched_count"] == 3
+    assert result.quality["ai_toc_diagnostics"] == recovered.diagnostics
+    run_recovery.assert_called_once()
+    assert run_recovery.call_args.args[0:4] == (
+        Path("synthetic.pdf"),
+        "ITEM",
+        [("pymupdf-p1", "unstructured text", {"page": 1, "reading_order": 0})],
+        {
+            "parser": "pymupdf",
+            "total_pages": 30,
+            "has_outline": False,
+            "source_class": module.BORN_DIGITAL,
+        },
+    )
+
+
+def test_ai_toc_rejected_result_keeps_chunks_and_records_the_reason():
+    recovered = SimpleNamespace(
+        accepted=False,
+        reason="body_coverage_below_threshold",
+        chunks=[("unused", "unused", {})],
+        diagnostics={"body_coverage": 0.4, "matched_count": 1},
+    )
+    result, _run_recovery = _ai_toc_recovery(recovered=recovered)
+
+    assert [row[0] for row in result.chunks] == ["pymupdf-p1"]
+    assert result.quality["ai_toc_recovery_status"] == recovered.reason
+    assert result.quality["ai_toc_body_coverage"] == 0.4
+    assert result.quality["ai_toc_matched_count"] == 1
+    assert result.quality["ai_toc_diagnostics"] == recovered.diagnostics
+
+
+def test_ai_toc_does_not_run_below_the_page_threshold():
+    result, run_recovery = _ai_toc_recovery(total_pages=29)
+
+    assert [row[0] for row in result.chunks] == ["pymupdf-p1"]
+    assert "ai_toc_recovery_status" not in result.quality
+    run_recovery.assert_not_called()
+
+
 @pytest.mark.parametrize(
     "chunks,recovered,local_exhausted,expected_reason",
     [

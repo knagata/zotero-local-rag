@@ -40,9 +40,11 @@ Updated: 2026-08-10
   `_run_post_audit_scan_replacement`に隔離し、audit継承と失敗時の状態を固定した。
 - generic gateのDocling正常採用と不採用/例外時のPyMuPDF fallback保持を
   `_escalate_pdf_to_docling`に隔離し、quality-uncertain理由の追記を固定した。
+- AI TOCの同一source no-structure継承、accepted/rejectedのchunkとdiagnostics更新を
+  `_recover_pdf_outline_with_ai_toc`に隔離し、実LLM無しで固定した。
 - 150行超の関数は22件から17件へ減少。最大は
-  `index_from_zotero._index_library`（1,104行）、次が`_extract_pdf_chunks`（300行）。
-- 既定suiteは1,561 passed / 4 skipped / 5 deselected。実資料取込baselineは5 passed。
+  `index_from_zotero._index_library`（1,104行）、次が`_extract_pdf_chunks`（265行）。
+- 既定suiteは1,565 passed / 4 skipped / 5 deselected。実資料取込baselineは5 passed。
   抽出・取り込み・構造を変更したら
   `uv run pytest -m slow`も必要。
 - P1/P2の既知製品欠陥はない。残るP3はS2 author-less識別とflat PDF 3形状で、どちらも
@@ -67,9 +69,10 @@ Updated: 2026-08-10
 
 ## Next work, in order
 
-1. 次はAI TOC fast pathで、同一sourceの既存no-structure verdictの継承と、
-   accepted/rejected結果からstatus・diagnostics・chunkを更新する責務をfakeで固定して分離する。
-2. その後に残るPDF gate action dispatchと最終`PdfExtraction`組み立てを棚卸しする。
+1. 次は残るPDF gate action dispatchで、disabled/keep/local-exhausted/Docling/deferの
+   状態変化と早期`PdfExtraction`を既存fixtureに追加し、十分に届く範囲だけ分離する。
+2. `_extract_pdf_chunks`が150行以下まで安全に分割できたら、次に`_index_library`の
+   決定的な責務を同じ方法で分離する。
    テストが届いた責務だけを`_extract_pdf_chunks`から抽出し、1 seamずつ対象テストと
    function-size ratchetを更新する。低coverage部分を機械的に移動して「検証済み」と扱わない。
 3. `_extract_pdf_chunks`の挙動不変分割が終わってから`_index_library`を同じ方法で分割する。

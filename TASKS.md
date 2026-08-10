@@ -103,6 +103,12 @@
   `_escalate_pdf_to_docling`へ切り出し、`_extract_pdf_chunks`は352行から300行、
   同モジュールの未到達文予算は421から399へ下げた。coverage付き既定suiteは
   `1,561 passed / 4 skipped / 5 deselected`、実資料取込baselineは`5 passed`。
+- [x] **AI TOC fast path orchestrationを分離。** 同一mtime/sizeで確定したno-structure verdictは
+  有料LLMを再実行せず継承し、acceptedならstructured chunkへ置換、rejectedなら元chunkを保持して
+  status・body coverage・matched count・diagnosticsを記録する契約と、頁数thresholdの短絡をmockで固定。
+  `_recover_pdf_outline_with_ai_toc`へ切り出し、`_extract_pdf_chunks`は300行から265行、
+  同モジュールの未到達文予算は399から385へ下げた。coverage付き既定suiteは
+  `1,565 passed / 4 skipped / 5 deselected`、実資料取込baselineは`5 passed`。
 
 ## Active
 
