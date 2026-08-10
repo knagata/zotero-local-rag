@@ -161,13 +161,31 @@ Chroma/FTS書込み）の実行は、このマイルストーンとは別の明�
   - 完了条件: rebuild対象コードを固定し、同じ世代内でchunk本文・chunk IDを変える未解決変更が
     ないと明記する。抽出コード変更済み資料はclean rebuildで全件再抽出し、旧chunkを流用しない。
 
-- [ ] **M3（高・M1/M2と並行可）: 隔離collectionで埋め込みscale pilotを通す**
+- [x] **M3（高・M1/M2と並行可）: 隔離collectionで埋め込みscale pilotを通す**（2026-08-10）
   - active V3とは別の一時data planeに、短文・長文・多言語を含む合成chunkをBGE-M3/MPSで書き、
     batch throughput、peak RSS、安定する`UPSERT_BATCH_SIZE`とHNSW sync条件を記録する。
   - 正常完走に加え、中断後の再開、途中upsert失敗の補償、close/reopen後のcount・ID集合一致、
     HNSW実queryを確認する。現V3、manifest、fingerprint、FTS孤立行には触れない。
   - 完了条件: clean rebuildに使うbatch設定、停止条件、概算所要時間・空き容量を再現可能な
     コマンドと測定値で残す。
+  - `scripts/embedding_scale_pilot.py`を追加した。既定テストは明示`--fake`だけを使い、
+    実モデルは`--real-bge`、出力先は一時planeを明示しない限り自動削除される。active V3と
+    重なるdata plane/report pathはfail-closedで拒否し、HNSW環境値も実行後に復元する。
+  - 60合成chunk・sync 100の比較ではbatch 8=`2.48 chunks/s`、32=`2.44`、128=`4.50`。
+    batch 128・sync 10000は`4.60`で、peak RSSは864MB前後。300 chunkの確認値は
+    `4.59 chunks/s`、peak RSS `900.53 MB`、close/reopen後300 IDs一致、HNSW query成功。
+    暫定設定は`UPSERT_BATCH_SIZE=128`、bulk時`CHROMA_HNSW_SYNC_THRESHOLD=10000`とする。
+  - batch 8・30 chunkの中断fixtureは8件書込み後に再開して30 IDsへ収束した。途中upsert失敗も
+    旧vector/FTS行へ補償され、両storeのIDが一致した。再現例:
+
+    ```bash
+    HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 uv run python scripts/embedding_scale_pilot.py --real-bge --device mps --batch-size 8 --sync-threshold 10000 --chunks 30
+    ```
+
+  - 300 chunkからの単純外挿は約31.1時間・Chroma増分約7.49GB。ただし長文を意図的に多くした
+    小規模pilotなので運用保証ではない。M4では現V3実サイズと空き容量からbackup・新世代を
+    同時保持できることを改めて確認する。対象14テストとcoverage付き既定suite
+    `1,572 passed / 4 skipped / 5 deselected`、compileall、fatal Ruff、各品質予算を確認した。
 
 - [ ] **M4（必須）: clean rebuildの実行前チェックリストを確定する**
   - M1〜M3の完了、worktree clean、対象commit固定、Zotero inventory dry-run、現在V3のbackupと

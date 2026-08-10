@@ -50,9 +50,13 @@ Updated: 2026-08-10
   `_extract_attachment_by_source_type`へ分離した。合成fixtureで各extractorの排他選択と
   PDF deferred結果の保持を固定した。次は抽出済みchunk・status・manifest情報から
   attachment 1件分のpending候補を副作用なしで組み立てる境界を分離する。
+- M3の隔離scale pilotは完了。`scripts/embedding_scale_pilot.py`がfake/real BGEを明示的に分け、
+  active V3とのpath重複を拒否する。BGE-M3/MPSの300合成chunkはbatch 128・sync 10000で
+  `4.59 chunks/s`、peak RSS `900.53 MB`、close/reopen後300 IDs一致、HNSW query成功。
+  batch 8の部分中断再開と、途中upsert失敗後のvector/FTS補償も成功した。
 - 150行超の関数は22件から16件へ減少。最大は
   `index_from_zotero._index_library`（1,103行）、次が`pdf_extract.extract_chunks_from_pdf`（614行）。
-- 既定suiteは1,570 passed / 4 skipped / 5 deselected。実資料取込baselineは5 passed。
+- 既定suiteは1,572 passed / 4 skipped / 5 deselected。実資料取込baselineは5 passed。
   抽出・取り込み・構造を変更したら
   `uv run pytest -m slow`も必要。
 - P1/P2の既知製品欠陥はない。残るP3はS2 author-less識別とflat PDF 3形状で、どちらも
@@ -86,8 +90,9 @@ Updated: 2026-08-10
 2. **M2（必須）**: 分割後に抽出・chunk境界を固定できるか再評価する。
    `pdf_extract.extract_chunks_from_pdf`（614行）は、実資料baselineが届く決定フェーズの
    挙動不変分割だけを行い、全体分割は開始条件にしない。実資料判断が必要なら実装前に止める。
-3. **M3（高、並行可）**: active V3と別の一時data planeでBGE-M3/MPSのscale pilotを行い、
-   throughput、peak RSS、batch/HNSW設定、中断再開、ID一致、実queryを測る。
+3. **M3（完了）**: 暫定bulk設定は`UPSERT_BATCH_SIZE=128`、
+   `CHROMA_HNSW_SYNC_THRESHOLD=10000`。300合成chunkで`4.59 chunks/s`・peak RSS
+   `900.53 MB`を確認し、中断再開・補償・reopen・実queryも通した。
 4. **M4（必須）**: 対象commit、dry-run inventory、現V3 backup、容量、lock、埋め込み設定、
    有料機能無効、rollback点をgo/no-go表で確定し、`REBUILD`入力前で停止する。
 5. **M5（別承認）**: 明示承認後だけclean rebuildを実行する。完了後に
