@@ -63,6 +63,15 @@ class PdfExtraction:
 
 
 @dataclass(frozen=True)
+class PdfGatePlan:
+    """The next step after a normal PDF extractor has returned."""
+
+    action: str
+    local_ocr_exhausted: bool = False
+    policy_reason: str = ""
+
+
+@dataclass(frozen=True)
 class SourceVerdict:
     """Whether an attachment still holds what was indexed from it, and so what
     the run owes it: extraction, a quality reading only, or nothing.

@@ -41,6 +41,14 @@
 - [x] **検証。** 既定suiteは`1,521 passed / 4 skipped / 5 deselected`、実資料取込baselineは
   `5 passed`。coverage付き既定suiteで追加契約が実行され、公開CLI import、compileall、
   fatal Ruff、function/lint/coverage各ラチェット、`git diff --check`も合格した。
+- [x] **PDF gate decisionを純粋関数化。** 通常PDF抽出後の
+  `disabled / keep / defer / local_ocr_exhausted / docling_escalation`を、構造復元可否、
+  chunk有無、local OCR試行、fast-path gate、頁数、Mistral queue可否だけから選ぶ
+  `_pdf_gate_plan`へ分離。全actionと、構造復元無効時にfast-path/queueの環境照会すら
+  行わない短絡条件をfixtureで固定した。経験則・threshold・chunk境界は不変。
+  `_extract_pdf_chunks`は685行から679行、同モジュールの未到達文予算は
+  549から542へ下げた。coverage付き既定suiteは`1,530 passed / 4 skipped / 5 deselected`、
+  実資料取込baselineは`5 passed`。
 
 ## Active
 

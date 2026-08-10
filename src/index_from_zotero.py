@@ -72,7 +72,7 @@ from index_batch import (
     AttachmentBatch, FlushOutcome, PendingIndexBatch, replace_attachment_batch,
 )
 from index_run import (
-    DiscoveryResult, NoteIndexOutcome, PdfExtraction, QualityWarning,
+    DiscoveryResult, NoteIndexOutcome, PdfExtraction, PdfGatePlan, QualityWarning,
     ReparseDecision, SourceVerdict,
     ResolvedAttachmentSource,
 )
@@ -2144,6 +2144,87 @@ def _extract_pdf_override(
     return PdfExtraction(chunks, quality)
 
 
+def _pdf_gate_plan(
+    *,
+    structure_recovery: bool,
+    scanned_batch_defer: bool,
+    chunks_present: bool,
+    attempted_local_ocr: bool,
+    fast_path_accepted: bool,
+    queue_enabled: bool,
+    total_pages: int,
+    minimum_pages: int,
+    initial_route_reason: str = "",
+) -> PdfGatePlan:
+    """Choose the post-extraction PDF action without mutating any store."""
+    if not structure_recovery:
+        return PdfGatePlan("disabled")
+    needs_gate = (
+        scanned_batch_defer
+        or not chunks_present
+        or (not attempted_local_ocr and not fast_path_accepted)
+    )
+    if not needs_gate:
+        return PdfGatePlan("keep")
+    local_ocr_exhausted = attempted_local_ocr and not chunks_present
+    if scanned_batch_defer:
+        return PdfGatePlan(
+            "defer",
+            local_ocr_exhausted=local_ocr_exhausted,
+            policy_reason=initial_route_reason,
+        )
+    if queue_enabled and (
+        local_ocr_exhausted
+        or (not attempted_local_ocr and total_pages >= minimum_pages)
+    ):
+        return PdfGatePlan(
+            "defer",
+            local_ocr_exhausted=local_ocr_exhausted,
+            policy_reason="mistral_batch_queue",
+        )
+    if local_ocr_exhausted:
+        return PdfGatePlan("local_ocr_exhausted", local_ocr_exhausted=True)
+    return PdfGatePlan("docling_escalation")
+
+
+def _pdf_gate_plan_for_extraction(
+    *,
+    structure_recovery: bool,
+    scanned_batch_defer: bool,
+    chunks: list,
+    attempted_local_ocr: bool,
+    quality: dict[str, Any],
+    total_pages: int,
+    minimum_pages: int,
+    initial_route_reason: str,
+) -> PdfGatePlan:
+    """Adapt current extractor state and feature flags to the pure gate plan."""
+    fast_path_accepted = False
+    if (
+        structure_recovery
+        and not scanned_batch_defer
+        and chunks
+        and not attempted_local_ocr
+    ):
+        fast_path_accepted = pymupdf_fast_path_passes(quality)
+    needs_queue_check = (
+        structure_recovery
+        and not scanned_batch_defer
+        and (not chunks or (not attempted_local_ocr and not fast_path_accepted))
+    )
+    return _pdf_gate_plan(
+        structure_recovery=structure_recovery,
+        scanned_batch_defer=scanned_batch_defer,
+        chunks_present=bool(chunks),
+        attempted_local_ocr=attempted_local_ocr,
+        fast_path_accepted=fast_path_accepted,
+        queue_enabled=mistral_batch_queue_enabled() if needs_queue_check else False,
+        total_pages=total_pages,
+        minimum_pages=minimum_pages,
+        initial_route_reason=initial_route_reason,
+    )
+
+
 def _extract_pdf_chunks(
     *,
     a: Any,
@@ -2632,22 +2713,27 @@ def _extract_pdf_chunks(
                         f"anchors={recovered.diagnostics.get('matched_count')}",
                         file=sys.__stderr__,
                     )
-        if not structure_recovery:
+        gate_plan = _pdf_gate_plan_for_extraction(
+            structure_recovery=bool(structure_recovery),
+            scanned_batch_defer=scanned_ocr_batch_defer,
+            chunks=chunks,
+            attempted_local_ocr=attempted_local_ocr,
+            quality=quality_info,
+            total_pages=total_pages,
+            minimum_pages=minimum_pages,
+            initial_route_reason=initial_scan_route_reason,
+        )
+        if gate_plan.action == "disabled":
             # Plain-text indexing was requested: PyMuPDF chunks (or the
             # local OCR output above) are the final answer, so the
             # structural gate has nothing to escalate to.
             quality_info = dict(quality_info)
             quality_info["pdf_structure_recovery"] = "disabled"
-        elif scanned_ocr_batch_defer or not chunks or (
-            not attempted_local_ocr
-            and not pymupdf_fast_path_passes(quality_info)
-        ):
-            use_mistral_queue = False
-            policy_reason = ""
+        elif gate_plan.action != "keep":
             # A document whose local OCR chain (rapidocr/ndlocr →
             # Docling fallback) was tried and rejected by
             # evaluate_local_ocr_gate: local engines are exhausted.
-            local_ocr_exhausted = attempted_local_ocr and not chunks
+            local_ocr_exhausted = gate_plan.local_ocr_exhausted
             # P7 (note 78): the queue is governed by its own flag
             # alone -- it is not an AI-TOC subfeature, so
             # PDF_AI_TOC_FAST_PATH_ENABLE no longer gates it.
@@ -2657,19 +2743,8 @@ def _extract_pdf_chunks(
             # 0.753), so they may queue regardless of the AI-TOC
             # page minimum; the minimum still applies to the
             # structure-recovery deferrals it was designed for.
-            if scanned_ocr_batch_defer:
-                use_mistral_queue = True
-                policy_reason = initial_scan_route_reason
-            elif (
-                mistral_batch_queue_enabled()
-                and (
-                    local_ocr_exhausted
-                    or (not attempted_local_ocr and total_pages >= minimum_pages)
-                )
-            ):
-                use_mistral_queue = True
-                policy_reason = "mistral_batch_queue"
-            if use_mistral_queue:
+            policy_reason = gate_plan.policy_reason
+            if gate_plan.action == "defer":
                 diagnostics = recovered.diagnostics if recovered is not None else {}
                 # P6 (note 78): record the fast-path reason and the
                 # AI-TOC rejection reason separately -- the AI-TOC
@@ -2744,7 +2819,7 @@ def _extract_pdf_chunks(
                 # The attachment is queued, not extracted. The caller counts it
                 # and moves on; nothing below this point applies to it.
                 return PdfExtraction([], {}, deferred=True)
-            if local_ocr_exhausted:
+            if gate_plan.action == "local_ocr_exhausted":
                 # P2 (note 78): Docling already ran (and was rejected
                 # by evaluate_local_ocr_gate) as run_local_ocr's own
                 # fallback for this exact document -- re-running it

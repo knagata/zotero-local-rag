@@ -104,6 +104,165 @@ def test_override_helper_leaves_the_normal_route_untouched():
     worker.extract.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    "inputs,action,local_exhausted,policy_reason",
+    [
+        (
+            {
+                "structure_recovery": False,
+                "scanned_batch_defer": True,
+                "chunks_present": False,
+                "attempted_local_ocr": False,
+                "fast_path_accepted": False,
+                "queue_enabled": True,
+            },
+            "disabled",
+            False,
+            "",
+        ),
+        (
+            {
+                "structure_recovery": True,
+                "scanned_batch_defer": False,
+                "chunks_present": True,
+                "attempted_local_ocr": False,
+                "fast_path_accepted": True,
+                "queue_enabled": True,
+            },
+            "keep",
+            False,
+            "",
+        ),
+        (
+            {
+                "structure_recovery": True,
+                "scanned_batch_defer": True,
+                "chunks_present": False,
+                "attempted_local_ocr": False,
+                "fast_path_accepted": False,
+                "queue_enabled": False,
+                "initial_route_reason": "structure_engine_mistral",
+            },
+            "defer",
+            False,
+            "structure_engine_mistral",
+        ),
+        (
+            {
+                "structure_recovery": True,
+                "scanned_batch_defer": False,
+                "chunks_present": True,
+                "attempted_local_ocr": False,
+                "fast_path_accepted": False,
+                "queue_enabled": True,
+                "total_pages": 30,
+                "minimum_pages": 30,
+            },
+            "defer",
+            False,
+            "mistral_batch_queue",
+        ),
+        (
+            {
+                "structure_recovery": True,
+                "scanned_batch_defer": False,
+                "chunks_present": False,
+                "attempted_local_ocr": True,
+                "fast_path_accepted": False,
+                "queue_enabled": True,
+                "total_pages": 1,
+                "minimum_pages": 30,
+            },
+            "defer",
+            True,
+            "mistral_batch_queue",
+        ),
+        (
+            {
+                "structure_recovery": True,
+                "scanned_batch_defer": False,
+                "chunks_present": False,
+                "attempted_local_ocr": True,
+                "fast_path_accepted": False,
+                "queue_enabled": False,
+            },
+            "local_ocr_exhausted",
+            True,
+            "",
+        ),
+        (
+            {
+                "structure_recovery": True,
+                "scanned_batch_defer": False,
+                "chunks_present": True,
+                "attempted_local_ocr": False,
+                "fast_path_accepted": False,
+                "queue_enabled": False,
+            },
+            "docling_escalation",
+            False,
+            "",
+        ),
+    ],
+)
+def test_pdf_gate_plan_preserves_the_existing_route_truth_table(
+    inputs, action, local_exhausted, policy_reason,
+):
+    inputs = dict(inputs)
+    plan = module._pdf_gate_plan(
+        total_pages=inputs.pop("total_pages", 10),
+        minimum_pages=inputs.pop("minimum_pages", 30),
+        initial_route_reason=inputs.pop("initial_route_reason", ""),
+        **inputs,
+    )
+
+    assert plan.action == action
+    assert plan.local_ocr_exhausted is local_exhausted
+    assert plan.policy_reason == policy_reason
+
+
+def test_gate_environment_is_not_consulted_when_structure_recovery_is_disabled():
+    with (
+        patch.object(module, "pymupdf_fast_path_passes") as fast_path,
+        patch.object(module, "mistral_batch_queue_enabled") as queue_enabled,
+    ):
+        plan = module._pdf_gate_plan_for_extraction(
+            structure_recovery=False,
+            scanned_batch_defer=False,
+            chunks=[("p1", "text", {})],
+            attempted_local_ocr=False,
+            quality={},
+            total_pages=100,
+            minimum_pages=30,
+            initial_route_reason="",
+        )
+
+    assert plan.action == "disabled"
+    fast_path.assert_not_called()
+    queue_enabled.assert_not_called()
+
+
+def test_a_fast_path_rejection_consults_the_queue_once():
+    with (
+        patch.object(module, "pymupdf_fast_path_passes", return_value=False) as fast_path,
+        patch.object(module, "mistral_batch_queue_enabled", return_value=True) as queue_enabled,
+    ):
+        plan = module._pdf_gate_plan_for_extraction(
+            structure_recovery=True,
+            scanned_batch_defer=False,
+            chunks=[("p1", "text", {})],
+            attempted_local_ocr=False,
+            quality={"parser": "pymupdf"},
+            total_pages=30,
+            minimum_pages=30,
+            initial_route_reason="",
+        )
+
+    assert plan.action == "defer"
+    fast_path.assert_called_once_with({"parser": "pymupdf"})
+    queue_enabled.assert_called_once_with()
+
+
 def _status(**overrides):
     values = {
         "attachment": SimpleNamespace(attachmentKey="ATT"),
