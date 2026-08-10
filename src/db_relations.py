@@ -6,6 +6,7 @@ import unicodedata
 import hashlib
 import json
 import threading
+from functools import wraps
 from difflib import SequenceMatcher
 from typing import List, Dict, Any, Iterable, Optional
 
@@ -34,6 +35,7 @@ PURGE_MIN_KEYS = 10
 _db_initialized = False
 _initialized_db_path: str | None = None
 _db_init_lock = threading.Lock()
+_SCHEMA_VERSION = 1
 
 
 def _cache_repository() -> CacheRepository:
@@ -67,6 +69,9 @@ def get_db_connection():
         if not _db_initialized or _initialized_db_path != DB_PATH:
             with _db_init_lock:
                 if not _db_initialized or _initialized_db_path != DB_PATH:
+                    # Reject a database created by newer code before changing
+                    # even persistent connection settings such as journal_mode.
+                    _assert_supported_schema_version(conn)
                     # journal_mode is persistent database state. Running this on
                     # several first-use connections before taking the init lock
                     # makes those connections contend with the schema migration.
@@ -79,8 +84,7 @@ def get_db_connection():
         conn.close()
         raise
 
-def _init_db(conn: sqlite3.Connection) -> None:
-    cursor = conn.cursor()
+def _migrate_relation_base(cursor: sqlite3.Cursor) -> None:
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS global_citations (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -157,6 +161,8 @@ def _init_db(conn: sqlite3.Connection) -> None:
     for sql in _migrations:
         add_column(cursor, sql)
 
+
+def _migrate_relation_identity(cursor: sqlite3.Cursor) -> None:
     # SQLite considers every NULL distinct in a UNIQUE constraint.  The
     # original table-level constraints therefore let retries accumulate rows
     # whenever S2 did not provide a context or a paper id.  These expression
@@ -263,6 +269,8 @@ def _init_db(conn: sqlite3.Connection) -> None:
         'ON item_citation_status(s2_paper_id)'
     )
 
+
+def _migrate_legacy_summaries(cursor: sqlite3.Cursor) -> None:
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS item_summaries (
             item_key    TEXT PRIMARY KEY,
@@ -303,6 +311,8 @@ def _init_db(conn: sqlite3.Connection) -> None:
         )
     ''')
 
+
+def _migrate_v3_structure(cursor: sqlite3.Cursor) -> None:
     # v2 document structure.  These tables are deliberately separate from the
     # legacy item/section summary tables so a failed or partial migration never
     # removes an existing usable index.
@@ -418,6 +428,9 @@ def _init_db(conn: sqlite3.Connection) -> None:
         )
     ''')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_node_summary_reuse_item ON document_node_summary_reuse_cache(item_key)')
+
+
+def _migrate_artifact_ledger(cursor: sqlite3.Cursor) -> None:
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS artifact_processing_status (
             item_key TEXT NOT NULL,
@@ -537,6 +550,8 @@ def _init_db(conn: sqlite3.Connection) -> None:
         )
     ''')
 
+
+def _migrate_works_and_review(cursor: sqlite3.Cursor) -> None:
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS query_expansion_cache (
             query_hash  TEXT PRIMARY KEY,
@@ -670,6 +685,8 @@ def _init_db(conn: sqlite3.Connection) -> None:
         "ON reference_review_queue(status, item_key)"
     )
 
+
+def _migrate_relation_reports(cursor: sqlite3.Cursor) -> None:
     # Human-in-the-loop exception layer for S2 citation/reference relations.
     # The stable identity is direction + local item key + external paper ID, so
     # a disabled relation stays disabled even when S2 data is refreshed.
@@ -707,6 +724,8 @@ def _init_db(conn: sqlite3.Connection) -> None:
     ):
         add_column(cursor, sql)
 
+
+def _migrate_quality_reports(cursor: sqlite3.Cursor) -> None:
     # Runtime quality reports for LLM summary routing. Reports are tied to a
     # summary fingerprint so regeneration automatically retires stale decisions.
     cursor.execute('''
@@ -776,7 +795,69 @@ def _init_db(conn: sqlite3.Connection) -> None:
         "ON chunk_quality_reports(status, item_key)"
     )
 
-    conn.commit()
+
+def _assert_supported_schema_version(conn: sqlite3.Connection) -> int:
+    """Return the schema version, rejecting databases created by newer code."""
+    current_version = conn.execute("PRAGMA user_version").fetchone()[0]
+    if current_version > _SCHEMA_VERSION:
+        raise RuntimeError(
+            f"database schema version {current_version} is newer than "
+            f"supported version {_SCHEMA_VERSION}"
+        )
+    return current_version
+
+
+def _versioned_schema_initialization(fn):
+    """Run the legacy schema batch atomically and record its version.
+
+    The individual ``ALTER TABLE`` statements remain deliberately
+    idempotent: version 1 is the first version marker for databases that
+    predate ``user_version``.  A savepoint gives failures a rollback boundary
+    even when a caller already has a transaction open.
+    """
+    @wraps(fn)
+    def wrapped(conn: sqlite3.Connection) -> None:
+        current_version = _assert_supported_schema_version(conn)
+        if current_version == _SCHEMA_VERSION:
+            return
+
+        had_transaction = conn.in_transaction
+        if had_transaction:
+            conn.execute("SAVEPOINT schema_initialization")
+        else:
+            conn.execute("BEGIN")
+        savepoint_active = had_transaction
+        try:
+            fn(conn)
+            conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
+            if had_transaction:
+                conn.execute("RELEASE SAVEPOINT schema_initialization")
+                savepoint_active = False
+            else:
+                conn.commit()
+        except BaseException:
+            if savepoint_active:
+                conn.execute("ROLLBACK TO SAVEPOINT schema_initialization")
+                conn.execute("RELEASE SAVEPOINT schema_initialization")
+            else:
+                conn.rollback()
+            raise
+
+    return wrapped
+
+
+@_versioned_schema_initialization
+def _init_db(conn: sqlite3.Connection) -> None:
+    cursor = conn.cursor()
+    _migrate_relation_base(cursor)
+    _migrate_relation_identity(cursor)
+    _migrate_legacy_summaries(cursor)
+    _migrate_v3_structure(cursor)
+    _migrate_artifact_ledger(cursor)
+    _migrate_works_and_review(cursor)
+    _migrate_relation_reports(cursor)
+    _migrate_quality_reports(cursor)
+
 
 
 def _deduplicate_relation_rows(

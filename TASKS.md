@@ -1184,6 +1184,28 @@ A（PDF構造化）・B（課金LLM）は独立、C（構造抽出エンジン�
     「着手前に測り直す」と明記した。
   - 完了分は消さずに Closed へ1行ずつ残した。消すと同じレビューが同じ指摘を再生産する。
 
+### 2026-08-10 安全に分離できる保守境界を完了
+
+- [x] **Citation Graphの組立とlayout/cacheを分離する** — citer/referenceで重複していた
+  外部node・edge・DOI/ISBN/S2 ID統合を共通化し、edge方向・self-loop・所蔵資料への吸収を
+  対称テストで固定した。layoutは実node ID集合のcache key、exact hit、stale warm start、
+  corrupt cacheからの再計算を独立契約にした。`build_graph_data`は463行から150行以下。
+- [x] **S2 citations/referencesの双方向処理を共通化する** — ページング、context照合、保存、
+  limit/partial failure時のstatus確定をhelperへ分離し、空context・複数page・page hint・後続page
+  失敗を両方向で確認した。`map_item_global_citations`は444行から150行。
+- [x] **relations schemaをversion付き原子migrationにする** — 既存のad-hoc migration順を
+  責務別helperへ分割し、`PRAGMA user_version=1`をtransaction内でのみ確定するようにした。
+  旧DBの行保持、途中DDL失敗のrollback、将来versionの書込み前拒否、呼出元transaction上の
+  savepoint成功/失敗をfixtureで固定した。`_init_db`は698行から150行以下。
+- [x] **note索引と階層検索の残る大型境界を分割する** — noteの削除・metadata/chunk化・batch
+  upsert、およびsummary候補・descendant route・leaf/item/direct検索を分離した。stable note ID、
+  stale/empty/strict lexical契約と、route失敗時warning/direct fallbackを追加テストで固定。
+  `index_notes`は185行、`hierarchical_search`は166行から、ともに150行以下。
+- [x] **品質ラチェットを更新してCI相当で検証する** — 150行超の記録は22件から17件へ減少。
+  意図して改善したCitation Graph、note、retrievalの未到達文上限を引き下げ、macOS/Linux差の
+  ある4モジュールはCI値を維持した。coverage付き既定suiteは1,513 passed / 4 skipped /
+  5 deselected、fatal Ruff・compileall・公開import・差分検査も通過。
+
 - [ ] **セマンティックマップのクラスタ数が固定8である**
   `citation_graph/server.py`の`n_clusters: int = 8`。KMeansは指定された数に必ず分割する
   ので、蔵書の実際のまとまりが3つでも20でも8つに割られる。ノイズ（どのクラスタにも属さ

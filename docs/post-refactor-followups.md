@@ -13,7 +13,7 @@ than deleted silently, because the same review would otherwise raise them again.
 
 Priority means: **P1** can lose or corrupt data, or has no bound; **P2** is a
 robustness or cost defect within the local-only workflow; **P3** costs accuracy
-or clarity in what the user is shown. **P1 and P2 are empty as of 2026-08-09**;
+or clarity in what the user is shown. **P1 and P2 are empty as of 2026-08-10**;
 what is left is in P3 and both items need data this repository does not have
 (a re-measurement, and the corpus). Everything closed is in [Closed](#closed).
 Structural work is prioritized separately below; the size ratchet
@@ -61,21 +61,11 @@ Verified against `tests/baselines/structure_recovery.json` on 2026-08-09, where
 
 ## Longer-term maintainability
 
-These are maintenance risks rather than known product defects. Priority is
-`(impact + risk) × (6 - effort)`, each input scored 1–5; effort estimates are
-for the refactor and its deterministic tests, not corpus validation.
-
-| Order | Seam | Score | Estimate | Why next |
-|---|---|---:|---:|---|
-| 1 | Common external citer/reference node construction in `citation_graph/server.py` | 28 | 0.5–1 day | Two near-copies can drift in IDs, overrides and self-loop handling |
-| 2 | Separate layout/cache from graph assembly in `citation_graph/server.py` | 24 | 0.5–1 day | Makes the 463-line data boundary deterministic and directly testable |
-| 3 | Replace `db_relations._init_db` with versioned migrations | 24 | 2–4 days | The 698-line highest-coupling persistence boundary needs rollbackable upgrades |
-| 4 | Common S2 citation/reference paging and context matching in `src/citation_mapper.py` | 21 | 1–2 days | Asymmetric fixes can silently omit one direction of the graph |
-
-Do orders 1 and 4 alongside citation feature work, order 2 before changing layout
-or clustering, and order 3 as its own migration phase. Split the ingestion giants
-only after widening their measured ingestion net; their low route coverage makes
-an otherwise mechanical extraction unsafe.
+The four ordered seams from the 2026-08-09 triage were completed on 2026-08-10
+and are recorded under [Closed](#closed). The function-size ratchet now has 17
+entries, down from 22 at the start of the pass. Further ingestion and extraction
+splits remain intentionally gated on a wider measured ingestion net; their low
+route coverage makes an otherwise mechanical extraction unsafe.
 
 The sizes below are held by the function-size ratchet
 (`tests/function_size_budget.json`, checked by
@@ -116,13 +106,10 @@ that the size number does not say.
   cloud. The way past this is to separate the deterministic decisions inside the
   PDF route from the extractor calls they choose between, so the decisions can
   be netted and the calls mocked.
-- `db_relations._init_db` (698 lines) wants versioned migrations, not a mechanical
-  split into helpers: each schema step needs an explicit version, rollback and
-  old-database fixture.
-- `pdf_extract.extract_chunks_from_pdf` (614) and
-  `citation_graph.build_graph_data` (463) divide along their existing decision
-  phases. `citation_mapper.map_item_global_citations` (444) is a fourth over 400
-  and holds the citations/references asymmetry that produced item 3.
+- `pdf_extract.extract_chunks_from_pdf` (614) divides along its existing decision
+  phases, but changes there still require slow extraction fixtures. The former
+  graph (463), citation mapper (444), DB initializer (698), note indexer (185),
+  and hierarchical retrieval (166) entries are all now at or below 150 lines.
 
 ### Checking layers CI does not have
 
@@ -131,6 +118,23 @@ that the size number does not say.
   `RuntimeWarning`.
 
 ## Closed
+
+- **The four prioritized post-refactor seams remained coupled** (fixed
+  2026-08-10). Citation Graph now shares external citer/reference assembly and
+  isolates layout-cache loading, warm starts and replacement; exact-hit, stale
+  and corrupt-cache contracts are deterministic tests. S2 citations and
+  references share pagination, context matching and final status handling.
+  Relations schema initialization now records `PRAGMA user_version`, rejects a
+  newer schema, and runs the legacy-to-v1 batch transactionally with old-data,
+  interruption and caller-savepoint fixtures. `build_graph_data`,
+  `map_item_global_citations` and `_init_db` all left the >150-line budget.
+
+- **The note and hierarchical retrieval boundaries were still oversized**
+  (fixed 2026-08-10). Note deletion, metadata/chunk extraction and batched
+  upsert now have explicit contracts for stable IDs, empty notes, stale rows and
+  strict lexical failures. Hierarchical routing separates summary candidates,
+  descendant routes and evidence searches while preserving warnings and direct
+  fallback. Both public functions moved from 185/166 lines to at most 150.
 
 - **`rag_search` mixed every retrieval phase in one function** (fixed
   2026-08-10). The 432-line MCP handler is now a 110-line public contract over

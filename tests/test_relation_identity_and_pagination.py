@@ -168,6 +168,16 @@ class CitationPaginationTests(unittest.TestCase):
             result["next"] = next_offset
         return result
 
+    @staticmethod
+    def _reference_page(*, next_offset=None, contexts=None):
+        result = {"data": [{
+            "citedPaper": {"paperId": "REF", "title": "Reference", "authors": []},
+            "contexts": ["reference context"] if contexts is None else contexts,
+        }]}
+        if next_offset is not None:
+            result["next"] = next_offset
+        return result
+
     def _map_with(self, responses, *, max_citations=50):
         statuses = []
         with patch.object(citation_mapper, "find_s2_paper_id", return_value={"paperId": "TARGET"}), \
@@ -225,6 +235,57 @@ class CitationPaginationTests(unittest.TestCase):
         saved.assert_not_called()
         references.assert_called_once()
         self.assertEqual(statuses[-1], ("ITEM", "s2_done"))
+
+    def test_empty_contexts_are_saved_symmetrically(self):
+        citation = self._citation_page()
+        citation["data"][0]["contexts"] = []
+        result, statuses, saved, references = self._map_with([
+            citation,
+            self._reference_page(contexts=[]),
+        ])
+        saved.assert_called_once()
+        references.assert_called_once()
+        self.assertEqual(saved.call_args.kwargs["chunk_status"], "no_context")
+        self.assertEqual(references.call_args.kwargs["s2_status"], "no_context")
+        self.assertEqual(saved.call_args.kwargs["context_snippet"], "")
+        self.assertEqual(references.call_args.kwargs["context_snippet"], "")
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(statuses[-1], ("ITEM", "s2_done"))
+
+    def test_multiple_pages_and_page_hints_are_symmetric(self):
+        citation_first = self._citation_page(next_offset=10)
+        citation_first["data"][0]["contexts"] = ["p. 12 citation"]
+        citation_second = self._citation_page()
+        citation_second["data"][0]["citingPaper"]["paperId"] = "CITER2"
+        citation_second["data"][0]["contexts"] = ["page 13 citation"]
+        reference_first = self._reference_page(next_offset=20, contexts=["pp. 22 reference"])
+        reference_second = self._reference_page(contexts=["note: 23 reference"])
+        result, _statuses, saved, references = self._map_with([
+            citation_first, citation_second, reference_first, reference_second,
+        ])
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(saved.call_count, 2)
+        self.assertEqual(references.call_count, 2)
+        self.assertEqual(
+            [call.kwargs["page_hint"] for call in saved.call_args_list], ["12", "13"],
+        )
+        self.assertEqual(
+            [call.kwargs["page_hint"] for call in references.call_args_list], ["22", "23"],
+        )
+
+    def test_reference_pagination_limit_is_not_marked_done(self):
+        result, statuses, _saved, references = self._map_with([
+            {"data": []},
+            self._reference_page(next_offset=1),
+        ], max_citations=1)
+
+        self.assertEqual(result["status"], "error")
+        self.assertFalse(result["retryable"])
+        self.assertEqual(result["incomplete_parts"], ["references"])
+        self.assertEqual(statuses[-1], ("ITEM", "limited"))
+        self.assertNotIn(("ITEM", "s2_done"), statuses)
+        references.assert_called_once()
 
     def test_pagination_limit_is_not_marked_done(self):
         result, statuses, saved, _references = self._map_with([

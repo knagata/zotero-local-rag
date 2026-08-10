@@ -24,11 +24,10 @@ class RetrievalService:
         self._summary_collection_name = summary_collection_name
         self._rrf_k = rrf_k
 
-    def hierarchical_search(
-        self, queries: list[str], *, k: int, k_items: int, where: Any,
-        include_direct: bool, return_summaries: bool, paragraph_collection: Any,
-    ) -> dict[str, Any]:
-        """Route summary-node hits to descendants and fuse direct evidence."""
+    def _collect_summary_candidates(
+        self, queries: list[str], k_items: int, paragraph_collection: Any,
+    ) -> tuple[list[dict[str, Any]], dict[str, float], dict[str, dict[str, Any]], list[str]]:
+        """Query summary nodes, retaining only candidates with usable identity."""
         warnings: list[str] = []
         candidate_nodes: list[dict[str, Any]] = []
         candidate_scores: dict[str, float] = {}
@@ -42,11 +41,11 @@ class RetrievalService:
                 where={"summary_kind": "llm"},
                 include=["metadatas", "documents", "distances"],
             )
-            response_documents = response.get("documents") or []
+            documents_by_query = response.get("documents") or []
             for query_index, metadata_rows in enumerate(response.get("metadatas") or []):
                 documents = (
-                    response_documents[query_index]
-                    if query_index < len(response_documents) else []
+                    documents_by_query[query_index]
+                    if query_index < len(documents_by_query) else []
                 )
                 for rank, metadata in enumerate(metadata_rows or [], start=1):
                     if not isinstance(metadata, dict):
@@ -69,7 +68,17 @@ class RetrievalService:
                         })
         except Exception as exc:
             warnings.append(f"sum_node collection unavailable: {exc}")
+        return candidate_nodes, candidate_scores, candidate_items, warnings
 
+    def _prepare_hierarchical_routes(
+        self,
+        candidate_nodes: list[dict[str, Any]],
+        candidate_scores: dict[str, float],
+        candidate_items: dict[str, dict[str, Any]],
+        k_items: int,
+        warnings: list[str],
+    ) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]], list[str], list[str], dict[str, list[str]]]:
+        """Filter summary candidates and resolve their descendant routes."""
         candidate_nodes.sort(
             key=lambda row: (-candidate_scores[row["node_id"]], row["node_id"]),
         )
@@ -117,12 +126,17 @@ class RetrievalService:
                 ])
             except Exception as exc:
                 warnings.append(f"leaf node lookup failed: {exc}")
-        leaf_ids = list(dict.fromkeys(leaf_ids))
         candidate_item_keys = sorted(
             candidate_item_scores,
             key=lambda key: (-candidate_item_scores[key], key),
         )[:k_items]
+        return candidate_nodes, candidate_items, candidate_item_keys, leaf_ids, routed_nodes_by_chunk
 
+    def _search_hierarchical_evidence(
+        self, queries: list[str], *, k: int, where: Any,
+        candidate_item_keys: list[str], leaf_ids: list[str], include_direct: bool,
+    ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+        """Run leaf, same-item, and optional direct evidence searches."""
         leaf_response = self._deps.search(
             queries, k=max(k * 12, 60), where=where, include_leaf_ids=leaf_ids,
             auto_expand=False, hybrid=False,
@@ -136,6 +150,27 @@ class RetrievalService:
             queries, k=max(k * 20, 100), where=where,
             auto_expand=False, hybrid=True,
         ) if include_direct else {"results": []}
+        return leaf_response, item_response, direct_response
+
+    def hierarchical_search(
+        self, queries: list[str], *, k: int, k_items: int, where: Any,
+        include_direct: bool, return_summaries: bool, paragraph_collection: Any,
+    ) -> dict[str, Any]:
+        """Route summary-node hits to descendants and fuse direct evidence."""
+        candidate_nodes, candidate_scores, candidate_items, warnings = (
+            self._collect_summary_candidates(queries, k_items, paragraph_collection)
+        )
+        (
+            candidate_nodes, candidate_items, candidate_item_keys, leaf_ids,
+            routed_nodes_by_chunk,
+        ) = self._prepare_hierarchical_routes(
+            candidate_nodes, candidate_scores, candidate_items, k_items, warnings,
+        )
+        leaf_ids = list(dict.fromkeys(leaf_ids))
+        leaf_response, item_response, direct_response = self._search_hierarchical_evidence(
+            queries, k=k, where=where, candidate_item_keys=candidate_item_keys,
+            leaf_ids=leaf_ids, include_direct=include_direct,
+        )
 
         bib_by_item: dict[str, dict[str, Any]] = {}
         for rows in (

@@ -12,7 +12,7 @@ import sqlite3
 import difflib
 import unicodedata
 import numpy as np
-from typing import Dict, Any, Optional, List, Tuple
+from typing import Callable, Dict, Any, Optional, List, Tuple
 
 from pathlib import Path
 
@@ -882,6 +882,239 @@ def find_s2_paper_id(title: str, year: Optional[int] = None, creators: str = "",
 # Main citation mapping functions
 # ---------------------------------------------------------------------------
 
+
+def _fetch_s2_relation_pages(
+    paper_id: str,
+    relation: str,
+    max_items: int,
+    limit: int = 1000,
+) -> Tuple[List[Dict[str, Any]], bool, bool]:
+    """Fetch one complete S2 relation list, retaining retry/limit state.
+
+    Citations and references use the same S2 pagination contract.  Keeping the
+    partial rows is intentional: they are useful to the user, while the
+    ``incomplete`` flag prevents a partial refresh from being reported as
+    complete.  The caller handles the historical difference that a failed
+    first citations page is an immediate error.
+    """
+    fields = "title,year,authors,contexts,citationCount,influentialCitationCount,externalIds"
+    if relation == "citations":
+        fields = "title,year,authors,contexts,intents,citationCount,influentialCitationCount,externalIds"
+
+    data_items: List[Dict[str, Any]] = []
+    offset = 0
+    incomplete = False
+    limit_reached = False
+    while True:
+        url = (
+            f"https://api.semanticscholar.org/graph/v1/paper/{paper_id}/{relation}"
+            f"?fields={fields}&limit={limit}&offset={offset}"
+        )
+        try:
+            response = s2_request(url)
+        except S2RetryExhaustedError:
+            response = None
+
+        if response is None:
+            incomplete = True
+            break
+
+        page_data = response.get("data", [])
+        if not page_data:
+            break
+        data_items.extend(page_data)
+
+        if len(data_items) >= max_items:
+            data_items = data_items[:max_items]
+            limit_reached = bool(response.get("next"))
+            break
+
+        next_offset = response.get("next")
+        if not next_offset:
+            break
+        offset = next_offset
+
+    return data_items, incomplete, limit_reached
+
+
+def _map_s2_relation_contexts(
+    data_items: List[Dict[str, Any]],
+    item_key: str,
+    relation: str,
+    save_relation: Callable[..., None],
+) -> Tuple[int, int]:
+    """Match relation contexts to local chunks and pass rows to a saver.
+
+    The matching, page-hint extraction, diagnostics, and no-context behavior
+    are deliberately shared.  ``save_relation`` remains relation-specific so
+    the asymmetric citation/reference database columns stay explicit.
+    """
+    paper_key = "citingPaper" if relation == "citations" else "citedPaper"
+    debug_path = _debug_log() if relation == "citations" else _debug_ref_log()
+    debug_label = "Global Context" if relation == "citations" else "Local Context"
+    no_hit_label = "Global Context" if relation == "citations" else "Context"
+    progress_label = "  citing  " if relation == "citations" else "  reference"
+    mapped_count = 0
+    total_contexts = 0
+
+    for index, item in enumerate(data_items):
+        _pbar(index + 1, len(data_items), progress_label, file=sys.stderr)
+        paper = item.get(paper_key, {})
+        metadata = {
+            "paper_id": paper.get("paperId", ""),
+            "title": paper.get("title", ""),
+            "year": paper.get("year"),
+            "citation_count": paper.get("citationCount", 0),
+            "influential_count": paper.get("influentialCitationCount", 0),
+            "doi": (paper.get("externalIds") or {}).get("DOI"),
+            "authors": _fmt_authors(paper.get("authors") or []),
+        }
+        contexts = item.get("contexts", [])
+
+        if not contexts:
+            save_relation(
+                item_key=item_key, metadata=metadata, context="", page_hint=None,
+                matched_chunk_id=None, matched_distance=None, status="no_context",
+            )
+            continue
+
+        for context in contexts:
+            total_contexts += 1
+            page_match = re.search(
+                r"\b(?:p\.|page|pp\.|:)\s*(\d+)\b", context, re.IGNORECASE,
+            )
+            page_hint = page_match.group(1) if page_match else None
+            hits = search_chunks(context, item_key, n_results=1)
+            matched_chunk_id = None
+            matched_distance = None
+            status = "no_chunk"
+
+            if hits:
+                best_distance = hits[0]["distance"]
+                with open(debug_path, "a") as log_file:
+                    log_file.write(f"{debug_label}: {context[:100]}...\n")
+                    log_file.write(f"  -> Best Hit Distance: {best_distance:.4f}\n")
+                if best_distance < _MAX_COSINE_DISTANCE:
+                    matched_chunk_id = hits[0]["id"]
+                    matched_distance = best_distance
+                    status = "matched"
+                    mapped_count += 1
+            else:
+                with open(debug_path, "a") as log_file:
+                    log_file.write(f"{no_hit_label}: {context[:100]}...\n")
+                    log_file.write("  -> No chunks found in DB for this item.\n")
+
+            save_relation(
+                item_key=item_key, metadata=metadata, context=context,
+                page_hint=page_hint, matched_chunk_id=matched_chunk_id,
+                matched_distance=matched_distance, status=status,
+            )
+
+    return mapped_count, total_contexts
+
+
+def _save_global_citation(
+    *, item_key: str, metadata: Dict[str, Any], context: str,
+    page_hint: Optional[str], matched_chunk_id: Optional[str],
+    matched_distance: Optional[float], status: str,
+) -> None:
+    """Persist one incoming citation row."""
+    insert_citation(
+        citing_paper_id=metadata["paper_id"], citing_title=metadata["title"],
+        citing_year=metadata["year"], context_snippet=context,
+        cited_item_key=item_key, cited_chunk_id=matched_chunk_id,
+        similarity_distance=matched_distance, page_hint=page_hint,
+        citing_citation_count=metadata["citation_count"],
+        citing_influential_count=metadata["influential_count"],
+        chunk_status=status, citing_doi=metadata["doi"],
+        citing_authors=metadata["authors"] or None,
+    )
+
+
+def _save_global_reference(
+    *, item_key: str, metadata: Dict[str, Any], context: str,
+    page_hint: Optional[str], matched_chunk_id: Optional[str],
+    matched_distance: Optional[float], status: str,
+) -> None:
+    """Persist one outgoing reference row (whose columns differ from citations)."""
+    if __package__:
+        from .db_relations import insert_reference
+    else:  # pragma: no cover - direct script imports
+        from db_relations import insert_reference
+    insert_reference(
+        cited_paper_id=metadata["paper_id"], cited_title=metadata["title"],
+        cited_year=metadata["year"], context_snippet=context,
+        citing_item_key=item_key, citing_chunk_id=matched_chunk_id,
+        similarity_distance=matched_distance, page_hint=page_hint,
+        source="s2", s2_status=status,
+        cited_citation_count=metadata["citation_count"],
+        cited_influential_count=metadata["influential_count"],
+        cited_doi=metadata["doi"], cited_authors=metadata["authors"] or None,
+    )
+
+
+def _finish_global_mapping(
+    item_key: str,
+    s2_paper: Dict[str, Any],
+    mapped_count: int,
+    total_contexts: int,
+    ref_mapped_count: int,
+    ref_total_contexts: int,
+    citation_incomplete: bool,
+    reference_incomplete: bool,
+    citation_limited: bool,
+    reference_limited: bool,
+) -> Dict[str, Any]:
+    """Write the final mapping diagnostic and preserve retryable statuses."""
+    message = (
+        f"Global Citations: {mapped_count}/{total_contexts} contexts mapped. "
+        f"Local References: {ref_mapped_count}/{ref_total_contexts} contexts mapped."
+    )
+    with open(_debug_log(), "a") as log_file:
+        log_file.write(f"Result for {item_key}: {message}\n")
+
+    incomplete_parts = [
+        name for name, incomplete in (
+            ("citations", citation_incomplete), ("references", reference_incomplete),
+        ) if incomplete
+    ]
+    common = {
+        "s2_paper": s2_paper,
+        "total_contexts_analyzed": total_contexts,
+        "mapped_count": mapped_count,
+        "references_contexts_analyzed": ref_total_contexts,
+        "references_mapped_count": ref_mapped_count,
+    }
+    if incomplete_parts:
+        update_item_citation_status(item_key, "error")
+        return {
+            "status": "error",
+            "message": (
+                f"S2 pagination incomplete for {', '.join(incomplete_parts)}; "
+                "partial relations were saved and will be retried."
+            ),
+            "retryable": True, "incomplete_parts": incomplete_parts, **common,
+        }
+
+    limited_parts = [
+        name for name, limited in (
+            ("citations", citation_limited), ("references", reference_limited),
+        ) if limited
+    ]
+    if limited_parts:
+        update_item_citation_status(item_key, "limited")
+        return {
+            "status": "error",
+            "message": (
+                "S2 pagination reached max_citations for "
+                f"{', '.join(limited_parts)}; increase the limit before retrying."
+            ),
+            "retryable": False, "incomplete_parts": limited_parts, **common,
+        }
+
+    update_item_citation_status(item_key, "s2_done")
+    return {"status": "success", "s2_resolved": True, "message": message, **common}
+
 def map_item_global_citations(item_key: str, title: str = "", year: str = "", creators: str = "", doi: str = "", isbn: str = "", max_citations: int = 50) -> Dict[str, Any]:
     """
     Fetches global citations from S2 for a given Zotero item and maps them to local chunks.
@@ -984,348 +1217,54 @@ def map_item_global_citations(item_key: str, title: str = "", year: str = "", cr
     paper_id = s2_paper["paperId"]
     limit = 1000  # Max limit per request for S2 graph API
 
-    # 3. Fetch citations
-    data_items = []
-    offset = 0
-    citation_pages_incomplete = False
-    citation_limit_reached = False
-    while True:
-        citations_url = (
-            f"https://api.semanticscholar.org/graph/v1/paper/{paper_id}/citations"
-            f"?fields=title,year,authors,contexts,intents,citationCount,influentialCitationCount,externalIds"
-            f"&limit={limit}&offset={offset}"
-        )
-        try:
-            citations_res = s2_request(citations_url)
-        except S2RetryExhaustedError:
-            citations_res = None
-
-        if citations_res is None:
-            if not data_items:
-                update_item_citation_status(item_key, "error")
-                return {"status": "error", "message": "S2 API Error while fetching citations.", "mapped_count": 0, "s2_paper": s2_paper}
-            # Keep the rows already fetched below, but never treat a partial
-            # pagination run as complete.  The next run must retry it.
-            citation_pages_incomplete = True
-            break
-
-        page_data = citations_res.get("data", [])
-        if not page_data:
-            break
-
-        data_items.extend(page_data)
-
-        if len(data_items) >= max_citations:
-            data_items = data_items[:max_citations]
-            citation_limit_reached = bool(citations_res.get("next"))
-            break
-
-        next_offset = citations_res.get("next")
-        if not next_offset:
-            break
-        offset = next_offset
-
-    mapped_count = 0
-    total_contexts = 0
-
-    # 旧行を落としてよいのは、手元のデータが完全な置き換えになるときだけ。
-    # 1ページ目の失敗は上で早期 return 済みだが、2ページ目以降で失敗した場合や
-    # max_citations で打ち切った場合は部分集合しかないので、消すと完全だった
-    # 一覧が黙って短くなる（次回の再試行まで戻らない）。
-    if not (citation_pages_incomplete or citation_limit_reached):
-        _clear_previous(references=False)
-
-    n_cit = len(data_items)
-    if n_cit:
-        print(f"        -> Found {n_cit} citing papers on Semantic Scholar. Mapping to local chunks...", file=sys.stderr)
-    else:
-        print("        -> No citing papers found on Semantic Scholar.", file=sys.stderr)
-
-    for i, item in enumerate(data_items):
-        _pbar(i + 1, n_cit, "  citing  ", file=sys.stderr)
-
-        citing_paper = item.get("citingPaper", {})
-        contexts = item.get("contexts", [])
-
-        c_paper_id = citing_paper.get("paperId", "")
-        c_title = citing_paper.get("title", "")
-        c_year = citing_paper.get("year")
-        c_citation_count = citing_paper.get("citationCount", 0)
-        c_influential_count = citing_paper.get("influentialCitationCount", 0)
-        c_doi = (citing_paper.get("externalIds") or {}).get("DOI")
-        c_authors = _fmt_authors(citing_paper.get("authors") or [])
-
-        if not contexts:
-            # S2 often reports a citing paper without extracting a quotable
-            # sentence from it; discarding those lost roughly two thirds of the
-            # citation graph, because knowing *who* cited a work does not
-            # require a quotable context. The references loop below has always
-            # kept its equivalents as 'no_context', so this is the same rule on
-            # both sides. The empty string matches what that loop stores; either
-            # it or NULL would dedupe correctly, because the identity these rows
-            # collide on is uq_global_citations_identity, whose expression
-            # COALESCEs the snippet rather than relying on the table-level
-            # UNIQUE (SQLite would treat NULL snippets as distinct there).
-            insert_citation(
-                citing_paper_id=c_paper_id,
-                citing_title=c_title,
-                citing_year=c_year,
-                context_snippet="",
-                cited_item_key=item_key,
-                cited_chunk_id=None,
-                similarity_distance=None,
-                page_hint=None,
-                citing_citation_count=c_citation_count,
-                citing_influential_count=c_influential_count,
-                chunk_status='no_context',
-                citing_doi=c_doi,
-                citing_authors=c_authors or None,
-            )
-            continue
-
-        for ctx in contexts:
-            total_contexts += 1
-            page_hint = None
-            page_match = re.search(r'\b(?:p\.|page|pp\.|:)\s*(\d+)\b', ctx, re.IGNORECASE)
-            if page_match:
-                page_hint = page_match.group(1)
-
-            # チャンクマッチを試みる（失敗しても引用自体は必ず記録する）
-            hits = search_chunks(ctx, item_key, n_results=1)
-            matched_chunk_id = None
-            matched_dist = None
-            cit_status = 'no_chunk'
-
-            if hits:
-                best_dist = hits[0]["distance"]
-                with open(_debug_log(), "a") as f:
-                    f.write(f"Global Context: {ctx[:100]}...\n")
-                    f.write(f"  -> Best Hit Distance: {best_dist:.4f}\n")
-                if best_dist < _MAX_COSINE_DISTANCE:
-                    matched_chunk_id = hits[0]["id"]
-                    matched_dist = best_dist
-                    cit_status = 'matched'
-                    mapped_count += 1
-            else:
-                with open(_debug_log(), "a") as f:
-                    f.write(f"Global Context: {ctx[:100]}...\n")
-                    f.write("  -> No chunks found in DB for this item.\n")
-
-            # チャンクマッチの成否に関わらず引用を記録
-            insert_citation(
-                citing_paper_id=c_paper_id,
-                citing_title=c_title,
-                citing_year=c_year,
-                context_snippet=ctx,
-                cited_item_key=item_key,
-                cited_chunk_id=matched_chunk_id,
-                similarity_distance=matched_dist,
-                page_hint=page_hint,
-                citing_citation_count=c_citation_count,
-                citing_influential_count=c_influential_count,
-                chunk_status=cit_status,
-                citing_doi=c_doi,
-                citing_authors=c_authors or None,
-            )
-
-    # 4. Fetch References
-    if __package__:
-        from .db_relations import insert_reference
-    else:  # pragma: no cover - direct script imports
-        from db_relations import insert_reference
-    r_data_items = []
-    offset = 0
-    reference_pages_incomplete = False
-    reference_limit_reached = False
-    while True:
-        references_url = (
-            f"https://api.semanticscholar.org/graph/v1/paper/{paper_id}/references"
-            f"?fields=title,year,authors,contexts,citationCount,influentialCitationCount,externalIds"
-            f"&limit={limit}&offset={offset}"
-        )
-        try:
-            r_res = s2_request(references_url)
-        except S2RetryExhaustedError:
-            r_res = None
-
-        if r_res is None:
-            # As for incoming citations, partial reference rows are useful,
-            # but status must remain retryable instead of claiming s2_done.
-            reference_pages_incomplete = True
-            break
-
-        page_data = r_res.get("data", [])
-        if not page_data:
-            break
-
-        r_data_items.extend(page_data)
-
-        if len(r_data_items) >= max_citations:
-            r_data_items = r_data_items[:max_citations]
-            reference_limit_reached = bool(r_res.get("next"))
-            break
-
-        next_offset = r_res.get("next")
-        if not next_offset:
-            break
-        offset = next_offset
-
-    ref_mapped_count = 0
-    ref_total_contexts = 0
-
-    # 参照側も同じ条件。0件で完走した場合（S2 が本当に参照を持たない）は消すのが
-    # 正しく、途中失敗や打ち切りによる0件・部分集合とは区別する。
-    if not (reference_pages_incomplete or reference_limit_reached):
-        _clear_previous(citations=False)
-
-    if r_data_items:
-        n_ref = len(r_data_items)
-        print(f"        -> Found {n_ref} referenced papers on Semantic Scholar. Mapping to local chunks...", file=sys.stderr)
-    else:
-        print("        -> No referenced papers found on Semantic Scholar.", file=sys.stderr)
-
-    if r_data_items:
-        for i, item in enumerate(r_data_items):
-            _pbar(i + 1, n_ref, "  reference", file=sys.stderr)
-
-            cited_paper = item.get("citedPaper", {})
-            contexts = item.get("contexts", [])
-
-            c_paper_id = cited_paper.get("paperId", "")
-            c_title = cited_paper.get("title", "")
-            c_year = cited_paper.get("year")
-            c_citation_count = cited_paper.get("citationCount", 0)
-            c_influential_count = cited_paper.get("influentialCitationCount", 0)
-            c_doi = (cited_paper.get("externalIds") or {}).get("DOI")
-            c_authors = _fmt_authors(cited_paper.get("authors") or [])
-
-            if not contexts:
-                # S2にコンテキストなし → 論文情報だけ記録・AI解析候補としてマーク。
-                # 空文字は引用側と揃えるためで、重複防止のためではない。照合は
-                # uq_global_references_identity（snippetをCOALESCEする式索引）で
-                # 行われるため、NULLでも空文字でも再実行で重複しない。
-                insert_reference(
-                    cited_paper_id=c_paper_id,
-                    cited_title=c_title,
-                    cited_year=c_year,
-                    context_snippet="",
-                    citing_item_key=item_key,
-                    citing_chunk_id=None,
-                    similarity_distance=None,
-                    page_hint=None,
-                    source='s2',
-                    s2_status='no_context',
-                    cited_citation_count=c_citation_count,
-                    cited_influential_count=c_influential_count,
-                    cited_doi=c_doi,
-                    cited_authors=c_authors or None,
-                )
-                continue
-
-            for ctx in contexts:
-                ref_total_contexts += 1
-                page_hint = None
-                page_match = re.search(r'\b(?:p\.|page|pp\.|:)\s*(\d+)\b', ctx, re.IGNORECASE)
-                if page_match:
-                    page_hint = page_match.group(1)
-
-                # チャンクマッチを試みる（失敗しても参照自体は必ず記録する）
-                hits = search_chunks(ctx, item_key, n_results=1)
-                matched_chunk_id = None
-                matched_dist = None
-                ref_status = 'no_chunk'
-
-                if hits:
-                    best_dist = hits[0]["distance"]
-                    with open(_debug_ref_log(), "a") as f:
-                        f.write(f"Local Context: {ctx[:100]}...\n")
-                        f.write(f"  -> Best Hit Distance: {best_dist:.4f}\n")
-                    if best_dist < _MAX_COSINE_DISTANCE:
-                        matched_chunk_id = hits[0]["id"]
-                        matched_dist = best_dist
-                        ref_status = 'matched'
-                        ref_mapped_count += 1
-                else:
-                    with open(_debug_ref_log(), "a") as f:
-                        f.write(f"Context: {ctx[:100]}...\n")
-                        f.write("  -> No chunks found in DB for this item.\n")
-
-                # チャンクマッチの成否に関わらず参照を記録
-                insert_reference(
-                    cited_paper_id=c_paper_id,
-                    cited_title=c_title,
-                    cited_year=c_year,
-                    context_snippet=ctx,
-                    citing_item_key=item_key,
-                    citing_chunk_id=matched_chunk_id,
-                    similarity_distance=matched_dist,
-                    page_hint=page_hint,
-                    source='s2',
-                    s2_status=ref_status,
-                    cited_citation_count=c_citation_count,
-                    cited_influential_count=c_influential_count,
-                    cited_doi=c_doi,
-                    cited_authors=c_authors or None,
-                )
-
-    msg = f"Global Citations: {mapped_count}/{total_contexts} contexts mapped. Local References: {ref_mapped_count}/{ref_total_contexts} contexts mapped."
-    with open(_debug_log(), "a") as f:
-        f.write(f"Result for {item_key}: {msg}\n")
-
-    incomplete_parts = []
-    if citation_pages_incomplete:
-        incomplete_parts.append("citations")
-    if reference_pages_incomplete:
-        incomplete_parts.append("references")
-    if incomplete_parts:
-        incomplete = ", ".join(incomplete_parts)
+    data_items, citation_incomplete, citation_limited = _fetch_s2_relation_pages(
+        paper_id, "citations", max_citations, limit,
+    )
+    if citation_incomplete and not data_items:
         update_item_citation_status(item_key, "error")
         return {
             "status": "error",
-            "message": f"S2 pagination incomplete for {incomplete}; partial relations were saved and will be retried.",
-            "retryable": True,
-            "incomplete_parts": incomplete_parts,
+            "message": "S2 API Error while fetching citations.",
+            "mapped_count": 0,
             "s2_paper": s2_paper,
-            "total_contexts_analyzed": total_contexts,
-            "mapped_count": mapped_count,
-            "references_contexts_analyzed": ref_total_contexts,
-            "references_mapped_count": ref_mapped_count,
         }
 
-    limited_parts = []
-    if citation_limit_reached:
-        limited_parts.append("citations")
-    if reference_limit_reached:
-        limited_parts.append("references")
-    if limited_parts:
-        update_item_citation_status(item_key, "limited")
-        return {
-            "status": "error",
-            "message": (
-                "S2 pagination reached max_citations for "
-                f"{', '.join(limited_parts)}; increase the limit before retrying."
-            ),
-            "retryable": False,
-            "incomplete_parts": limited_parts,
-            "s2_paper": s2_paper,
-            "total_contexts_analyzed": total_contexts,
-            "mapped_count": mapped_count,
-            "references_contexts_analyzed": ref_total_contexts,
-            "references_mapped_count": ref_mapped_count,
-        }
+    # A complete, uncapped response is the only safe replacement for old rows.
+    if not (citation_incomplete or citation_limited):
+        _clear_previous(references=False)
+    if data_items:
+        print(
+            f"        -> Found {len(data_items)} citing papers on Semantic Scholar. "
+            "Mapping to local chunks...", file=sys.stderr,
+        )
+    else:
+        print("        -> No citing papers found on Semantic Scholar.", file=sys.stderr)
+    mapped_count, total_contexts = _map_s2_relation_contexts(
+        data_items, item_key, "citations", _save_global_citation,
+    )
 
-    update_item_citation_status(item_key, "s2_done")
-        
-    return {
-        "status": "success",
-        "s2_resolved": True,
-        "message": msg,
-        "s2_paper": s2_paper,
-        "total_contexts_analyzed": total_contexts,
-        "mapped_count": mapped_count,
-        "references_contexts_analyzed": ref_total_contexts,
-        "references_mapped_count": ref_mapped_count
-    }
+    r_data_items, reference_incomplete, reference_limited = _fetch_s2_relation_pages(
+        paper_id, "references", max_citations, limit,
+    )
+    if not (reference_incomplete or reference_limited):
+        _clear_previous(citations=False)
+    if r_data_items:
+        print(
+            f"        -> Found {len(r_data_items)} referenced papers on Semantic Scholar. "
+            "Mapping to local chunks...", file=sys.stderr,
+        )
+    else:
+        print("        -> No referenced papers found on Semantic Scholar.", file=sys.stderr)
+    ref_mapped_count, ref_total_contexts = _map_s2_relation_contexts(
+        r_data_items, item_key, "references", _save_global_reference,
+    )
+
+    return _finish_global_mapping(
+        item_key, s2_paper, mapped_count, total_contexts,
+        ref_mapped_count, ref_total_contexts,
+        citation_incomplete, reference_incomplete,
+        citation_limited, reference_limited,
+    )
 
 def map_item_local_references(item_key: str, epub_path: str = "", epub_budget: int = 50) -> Dict[str, Any]:
     """

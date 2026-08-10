@@ -44,6 +44,7 @@ import sqlite3
 import sys
 import time
 import webbrowser
+from dataclasses import dataclass
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -1592,6 +1593,462 @@ def _load_identifier_overrides(db_path: str) -> dict[str, dict]:
     return overrides
 
 
+def _apply_identifier_override(
+    overrides: dict[str, dict], nid: str, doi_val: str,
+    isbn_val: str = "", title_val: str = "", year_val: str = "",
+    authors_val: str = "", citations_val: str = "",
+) -> tuple[str, str, str, str, str, str]:
+    """Apply the hand-corrected fields for one graph node, if present."""
+    override = overrides.get(nid)
+    if override:
+        if override.get("doi") is not None:
+            doi_val = override["doi"]
+        if override.get("isbn") is not None:
+            isbn_val = override["isbn"]
+        if override.get("title") is not None:
+            title_val = override["title"]
+        if override.get("year") is not None:
+            year_val = override["year"]
+        if override.get("authors") is not None:
+            authors_val = override["authors"]
+        if override.get("citations") is not None:
+            citations_val = override["citations"]
+    return doi_val, isbn_val, title_val, year_val, authors_val, citations_val
+
+
+def _normalize_isbn(value: str) -> str:
+    """Normalize an ISBN for comparisons across external records."""
+    return value.replace("-", "").replace(" ", "").strip().lower()
+
+
+def _prepare_owned_identifier_maps(
+    items: list[dict], overrides: dict[str, dict],
+) -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
+    """Build DOI, ISBN, and S2-paper ownership maps for Zotero items."""
+    doi_to_item: dict[str, str] = {}
+    isbn_to_item: dict[str, str] = {}
+    paper_to_item: dict[str, str] = {}
+    ambiguous_paper_ids: set[str] = set()
+    for row in items:
+        item_nid = f"item:{row['item_key']}"
+        doi, isbn, *_ = _apply_identifier_override(
+            overrides, item_nid, row.get("doi") or "", row.get("isbn") or "",
+        )
+        if doi.strip():
+            doi_to_item[doi.strip().lower()] = item_nid
+        for isbn_part in (isbn or "").split():
+            isbn_key = _normalize_isbn(isbn_part)
+            if isbn_key:
+                isbn_to_item[isbn_key] = item_nid
+        paper_id = str(row.get("s2_paper_id") or "").strip()
+        if not paper_id:
+            continue
+        if paper_id in paper_to_item and paper_to_item[paper_id] != item_nid:
+            ambiguous_paper_ids.add(paper_id)
+        else:
+            paper_to_item[paper_id] = item_nid
+    for paper_id in ambiguous_paper_ids:
+        owner = paper_to_item.pop(paper_id, None)
+        print(
+            f"   [warn] s2_paper_id {paper_id[:12]} is claimed by more than one owned "
+            f"item (first was {owner}); not merging it into any of them",
+            file=sys.stderr,
+        )
+    return doi_to_item, isbn_to_item, paper_to_item
+
+
+def _resolve_external_nid(
+    nid_candidate: str, doi_raw: str, isbn_raw: str, paper_id: str,
+    doi_to_item: dict[str, str], isbn_to_item: dict[str, str],
+    paper_to_item: dict[str, str],
+    doi_to_external: dict[str, str], isbn_to_external: dict[str, str],
+) -> str:
+    """Resolve an external work to an owned or previously-seen node ID."""
+    if paper_id:
+        owned = paper_to_item.get(paper_id.strip())
+        if owned:
+            return owned
+    if doi_raw:
+        doi_key = doi_raw.strip().lower()
+        if doi_key in doi_to_item:
+            return doi_to_item[doi_key]
+        if doi_key in doi_to_external:
+            return doi_to_external[doi_key]
+    if isbn_raw:
+        for isbn_part in isbn_raw.split():
+            isbn_key = _normalize_isbn(isbn_part)
+            if not isbn_key:
+                continue
+            if isbn_key in isbn_to_item:
+                return isbn_to_item[isbn_key]
+            if isbn_key in isbn_to_external:
+                return isbn_to_external[isbn_key]
+    return nid_candidate
+
+
+def _build_zotero_item_node(
+    row: dict, metadata: dict, ref_counts: dict[str, int],
+    layout_positions: dict[str, tuple[float, float]],
+    overrides: dict[str, dict], palette: dict[str, str],
+) -> dict:
+    """Build the public node shape for one Zotero-owned item."""
+    key = row["item_key"]
+    count = row["citer_count"]
+    status = row.get("s2_status") or "unknown"
+    full = metadata.get("title", "") or ""
+    creators = _fmt_creators(metadata.get("creators", "") or "")
+    year = str(row.get("s2_year") or metadata.get("year") or "")
+    s2_citations = row.get("s2_citation_count")
+    ref_count = ref_counts.get(key, 0)
+    citations_text = str(s2_citations) if s2_citations is not None else str(count)
+    doi, isbn, title, year, authors, citations = _apply_identifier_override(
+        overrides, f"item:{key}", row.get("doi") or "", row.get("isbn") or "",
+        full or "", year, creators, citations_text,
+    )
+    full = title or full
+    year = year or ""
+    creators = authors or creators
+    if citations:
+        try:
+            s2_citations = int(citations)
+        except ValueError:
+            pass
+    extra = [("Key", key)]
+    if creators:
+        extra.append(("Authors", creators))
+    extra += [
+        ("Year", year or "—"),
+        ("DOI", doi or "—"),
+        ("ISBN", isbn or "—"),
+        *_tooltip_citation_rows(s2_total=s2_citations, drawn=count),
+        ("References", f"{ref_count:,}" if ref_count else "—"),
+        ("Contexts", f"{row['context_count']:,}"),
+        ("Status", status),
+    ]
+    node_id = f"item:{key}"
+    xy = layout_positions.get(node_id)
+    return {
+        "id": node_id,
+        "label": _short(full, 28) if full else key,
+        "size": _node_size(count),
+        "color": palette["nodeZotero"],
+        "tooltip": _tooltip(full or key, extra),
+        "group": "zotero",
+        "fullTitle": full or key,
+        "authors": creators or "",
+        "year": year,
+        "doi": doi or "",
+        "isbn": isbn or "",
+        "citations": s2_citations if s2_citations is not None else count,
+        "citationsSource": "s2" if s2_citations is not None else "graph",
+        "citationsInGraph": count,
+        "refCount": ref_count,
+        "itemKey": key,
+        **({"x": round(xy[0], 1), "y": round(xy[1], 1)} if xy else {}),
+    }
+
+
+def _format_external_fields(
+    overrides: dict[str, dict], nid: str, title: str, year: str,
+    authors: str, citations: int, doi: str,
+) -> tuple[str, str, str, str, str, int]:
+    """Apply overrides and return normalized external-paper display fields."""
+    raw_doi, raw_isbn, title_override, year_override, authors_override, citation_override = (
+        _apply_identifier_override(
+            overrides, nid, doi, "", title, year, authors, str(citations),
+        )
+    )
+    title = title_override or title
+    year = year_override or year
+    authors = authors_override or authors
+    if citation_override:
+        try:
+            citations = int(citation_override)
+        except ValueError:
+            pass
+    return raw_doi, raw_isbn, title, year, authors, citations
+
+
+def _finish_absorbed_papers(
+    nodes: list[dict], absorbed_by_item: dict[str, dict[str, str]], printer,
+) -> None:
+    """Attach absorbed external-paper details and print the audit trail."""
+    if not absorbed_by_item:
+        return
+    node_by_id = {node["id"]: node for node in nodes}
+    for item_nid, absorbed in absorbed_by_item.items():
+        node = node_by_id.get(item_nid)
+        if node is not None:
+            node["absorbedPapers"] = [
+                {"paperId": paper_id, "title": title}
+                for paper_id, title in sorted(absorbed.items())
+            ]
+    printer(
+        f"   Merged by s2_paper_id: {sum(len(v) for v in absorbed_by_item.values())} "
+        f"external paper(s) into {len(absorbed_by_item)} owned item(s)"
+    )
+    for item_nid, absorbed in sorted(absorbed_by_item.items()):
+        for paper_id, title in sorted(absorbed.items()):
+            printer(f"     {item_nid} <- {paper_id[:12]} {title[:60]!r}")
+
+
+@dataclass
+class _GraphAssembly:
+    """Mutable state shared while node and edge records are assembled."""
+
+    nodes: list[dict]
+    edges: list[dict]
+    added_papers: set[str]
+    ref_set: set[str]
+    paper_to_item_nid: dict[str, str]
+    doi_to_ext_nid: dict[str, str]
+    isbn_to_ext_nid: dict[str, str]
+    absorbed_by_item: dict[str, dict[str, str]]
+    layout_positions: dict[str, tuple[float, float]]
+    palette: dict[str, str]
+    edge_counter: int = 0
+
+    def next_edge_id(self) -> str:
+        self.edge_counter += 1
+        return f"e{self.edge_counter}"
+
+
+def _append_external_relation(
+    state: _GraphAssembly, *, nid: str, title: str, year: str, cc: int,
+    authors: str, raw_doi: str, raw_isbn: str, pid: str, processed_nid: str,
+    group: str, direction: str, source_nid: str, target_nid: str,
+    item_key: str, edge_size: float,
+) -> None:
+    """Add one external node (if new) and its relation edge."""
+    if nid not in state.added_papers and not nid.startswith("item:"):
+        state.added_papers.add(nid)
+        if group == "reference":
+            state.ref_set.add(nid)
+        if raw_doi:
+            state.doi_to_ext_nid.setdefault(raw_doi.strip().lower(), nid)
+        for isbn_part in (raw_isbn or "").split():
+            isbn_key = _normalize_isbn(isbn_part)
+            if isbn_key:
+                state.isbn_to_ext_nid.setdefault(isbn_key, nid)
+        xy = state.layout_positions.get(nid)
+        state.nodes.append({
+            "id": nid,
+            "label": _short(title, 24),
+            "size": _node_size(cc),
+            "color": state.palette["nodeExternal"],
+            "tooltip": _tooltip(title, [
+                ("Authors", authors or "—"),
+                ("Year", year or "—"),
+                ("DOI", raw_doi or "—"),
+                ("Citations", f"{cc:,}" if cc else "—"),
+                ("References", "—"),
+            ]),
+            "group": group,
+            "cc": cc,
+            "fullTitle": title,
+            "year": year,
+            "doi": raw_doi,
+            "isbn": raw_isbn,
+            "authors": authors,
+            **({"x": round(xy[0], 1), "y": round(xy[1], 1)}
+               if xy else {"x": 0.0, "y": 0.0}),
+        })
+    elif nid.startswith("item:"):
+        state.added_papers.add(processed_nid)
+        if state.paper_to_item_nid.get(pid) == nid:
+            state.absorbed_by_item.setdefault(nid, {})[pid] = title
+
+    owned_nid = target_nid if direction == "citations" else source_nid
+    if nid != owned_nid:
+        state.edges.append({
+            "id": state.next_edge_id(),
+            "source": source_nid,
+            "target": target_nid,
+            "size": edge_size,
+            "color": state.palette["edgeDefault"],
+            "type": "arrow",
+            "direction": direction,
+            "itemKey": item_key,
+            "externalPaperId": pid,
+            "externalTitle": title,
+            "relationKey": f"{direction}:{item_key}:{pid}",
+        })
+
+
+def _assemble_external_relations(
+    state: _GraphAssembly, citers: list[dict], refs: list[dict],
+    overrides: dict[str, dict], doi_to_item: dict[str, str],
+    isbn_to_item: dict[str, str],
+) -> int:
+    """Append citer/reference nodes and edges, returning the citer count."""
+    for row in citers:
+        pid = row["citing_paper_id"]
+        title = row["citing_title"] or pid
+        year = str(row["citing_year"] or "")
+        citations = row["citing_citation_count"] or 0
+        authors = row.get("citing_authors") or ""
+        raw_doi, raw_isbn, title, year, authors, citations = _format_external_fields(
+            overrides, f"paper:{pid}", title, year, authors, citations,
+            row.get("citing_doi") or "",
+        )
+        nid = _resolve_external_nid(
+            f"paper:{pid}", raw_doi, raw_isbn, pid,
+            doi_to_item, isbn_to_item, state.paper_to_item_nid,
+            state.doi_to_ext_nid, state.isbn_to_ext_nid,
+        )
+        target_nid = f"item:{row['cited_item_key']}"
+        _append_external_relation(
+            state, nid=nid, title=title, year=year, cc=citations, authors=authors,
+            raw_doi=raw_doi, raw_isbn=raw_isbn, pid=pid,
+            processed_nid=f"paper:{pid}", group="external", direction="citations",
+            source_nid=nid, target_nid=target_nid, item_key=row["cited_item_key"],
+            edge_size=max(0.5, min(4.0, row["context_count"] * 0.4)),
+        )
+
+    n_citer = len(state.added_papers)
+    for row in refs:
+        pid = row["cited_paper_id"]
+        title = row["cited_title"] or pid
+        year = str(row["cited_year"] or "")
+        citations = row["cited_citation_count"] or 0
+        base_nid = f"paper:{pid}" if f"paper:{pid}" in state.added_papers else f"ref:{pid}"
+        authors = row.get("cited_authors") or ""
+        raw_doi, raw_isbn, title, year, authors, citations = _format_external_fields(
+            overrides, base_nid, title, year, authors, citations,
+            row.get("cited_doi") or "",
+        )
+        nid = _resolve_external_nid(
+            base_nid, raw_doi, raw_isbn, pid,
+            doi_to_item, isbn_to_item, state.paper_to_item_nid,
+            state.doi_to_ext_nid, state.isbn_to_ext_nid,
+        )
+        source_nid = f"item:{row['citing_item_key']}"
+        _append_external_relation(
+            state, nid=nid, title=title, year=year, cc=citations, authors=authors,
+            raw_doi=raw_doi, raw_isbn=raw_isbn, pid=pid,
+            processed_nid=base_nid, group="reference", direction="references",
+            source_nid=source_nid, target_nid=nid, item_key=row["citing_item_key"],
+            edge_size=max(0.5, min(3.0, row["context_count"] * 0.3)),
+        )
+    return n_citer
+
+
+def _layout_node_ids(
+    items: list[dict], citers: list[dict], refs: list[dict],
+) -> list[str]:
+    """Return the node IDs whose exact set determines the layout cache key."""
+    citer_ids = {
+        f"paper:{row['citing_paper_id']}"
+        for row in citers if row.get("citing_paper_id")
+    }
+    ref_ids = {
+        (f"paper:{row['cited_paper_id']}"
+         if f"paper:{row['cited_paper_id']}" in citer_ids
+         else f"ref:{row['cited_paper_id']}")
+        for row in refs if row.get("cited_paper_id")
+    }
+    item_ids = {f"item:{row['item_key']}" for row in items}
+    return sorted(item_ids | citer_ids | ref_ids)
+
+
+def _layout_node_sizes(
+    items: list[dict], citers: list[dict], refs: list[dict],
+) -> dict[str, float]:
+    """Compute the rendered sizes used by the overlap-removal layout phase."""
+    citer_ids = {
+        f"paper:{row['citing_paper_id']}"
+        for row in citers if row.get("citing_paper_id")
+    }
+    sizes = {
+        f"item:{row['item_key']}": _node_size(row.get("citer_count"))
+        for row in items
+    }
+    for row in citers:
+        paper_id = row.get("citing_paper_id")
+        if paper_id:
+            sizes[f"paper:{paper_id}"] = _node_size(
+                row.get("citing_citation_count"),
+            )
+    for row in refs:
+        paper_id = row.get("cited_paper_id")
+        if paper_id:
+            node_id = (
+                f"paper:{paper_id}" if f"paper:{paper_id}" in citer_ids
+                else f"ref:{paper_id}"
+            )
+            sizes.setdefault(node_id, _node_size(row.get("cited_citation_count")))
+    return sizes
+
+
+def _load_or_compute_layout(
+    items: list[dict], citers: list[dict], refs: list[dict],
+    *, cache_path: Path | None = None,
+) -> tuple[dict[str, tuple[float, float]], bool]:
+    """Load an exact layout cache or compute and atomically replace it."""
+    import hashlib
+
+    started_at = time.time()
+    item_keys = [row["item_key"] for row in items]
+    node_ids = _layout_node_ids(items, citers, refs)
+    cache_key = hashlib.sha1(
+        (LAYOUT_VERSION + "\n" + "\n".join(node_ids)).encode(),
+    ).hexdigest()[:16]
+    cache_path = cache_path or (
+        Path(__file__).parent.parent / "data" / "layout_cache.json"
+    )
+    positions: dict[str, tuple[float, float]] = {}
+    stale_positions: dict[str, tuple[float, float]] = {}
+
+    if cache_path.exists():
+        try:
+            cached = json.loads(cache_path.read_text())
+            cached_positions = {
+                key: tuple(value) for key, value in cached["positions"].items()
+            }
+            if cached.get("key") == cache_key:
+                print(
+                    f"Layout cache hit ({len(cached_positions)} nodes, key={cache_key})",
+                    file=sys.stderr,
+                )
+                return cached_positions, True
+            stale_positions = cached_positions
+            print(
+                "Layout cache stale (key changed) – warm-starting from "
+                f"{len(stale_positions)} nodes",
+                file=sys.stderr,
+            )
+        except Exception as error:
+            print(f"Layout cache load error: {error}", file=sys.stderr)
+
+    semantic_vectors = get_item_vectors(item_keys)
+    print(
+        f"Semantic vectors: {len(semantic_vectors)}/{len(item_keys)} items",
+        file=sys.stderr,
+    )
+    print("Computing layout (FA2 LinLog + semantic edges)…", end=" ", flush=True, file=sys.stderr)
+    positions = compute_layout(
+        item_keys, citers, refs,
+        warm_start=stale_positions or None,
+        semantic_vectors=semantic_vectors or None,
+        node_sizes=_layout_node_sizes(items, citers, refs),
+    )
+    print(
+        f"done in {time.time() - started_at:.1f}s  ({len(positions)} nodes placed)",
+        file=sys.stderr,
+    )
+    try:
+        temporary = cache_path.with_suffix(".tmp")
+        temporary.write_text(json.dumps({
+            "key": cache_key,
+            "positions": {key: list(value) for key, value in positions.items()},
+        }))
+        temporary.replace(cache_path)
+        print(f"Layout cache saved → {cache_path.name}", file=sys.stderr)
+    except Exception as error:
+        print(f"Layout cache save error: {error}", file=sys.stderr)
+    return positions, False
+
+
 def build_graph_data(
     items: list[dict],
     citers: list[dict],
@@ -1603,8 +2060,6 @@ def build_graph_data(
     """ノード・エッジを構築し、FastAPI で返却するデータ dict を返す。
     エッジコンテキストはオンデマンド取得のため埋め込まない。
     """
-    import json as _json
-
     meta      = item_meta or {}
     item_rcnt = item_ref_counts or {}
 
@@ -1613,429 +2068,44 @@ def build_graph_data(
     _css_root = _CSS_ROOT
     _js_theme = _JS_THEME
 
-    C_ZOTERO   = PALETTE["nodeZotero"]
-    C_EXTERNAL = PALETTE["nodeExternal"]
-
     # ── Server-side layout (FA2 + sector placement) ─────────────────────────
-    import sys as _sys, time as _time, hashlib as _hashlib
-    _t0 = _time.time()
-    _print = lambda *a, **kw: print(*a, file=_sys.stderr, **kw)
-    item_keys_for_layout = [d["item_key"] for d in items]
-
-    # キャッシュキー: レイアウトバージョン + ノードIDのソート済みリストをSHA1ハッシュ化
-    # （LAYOUT_VERSION を含めることで、物理パラメータ変更時に再計算がトリガーされる）
-    _all_node_ids = sorted(
-        [f"item:{d['item_key']}" for d in items] +
-        [f"paper:{d['citing_paper_id']}" for d in citers] +
-        list({f"paper:{d['cited_paper_id']}" if f"paper:{d['cited_paper_id']}" not in
-              {f"paper:{c['citing_paper_id']}" for c in citers} else f"ref:{d['cited_paper_id']}"
-              for d in refs})
-    )
-    _cache_key = _hashlib.sha1(
-        (LAYOUT_VERSION + "\n" + "\n".join(_all_node_ids)).encode()
-    ).hexdigest()[:16]
-    _cache_path = Path(__file__).parent.parent / "data" / "layout_cache.json"
-
-    layout_positions: dict = {}
-    _cache_hit = False
-    _stale_positions: dict = {}  # キャッシュキーが変わった場合の旧座標（warm_start 用）
-    if _cache_path.exists():
-        try:
-            _cached = _json.loads(_cache_path.read_text())
-            if _cached.get("key") == _cache_key:
-                layout_positions = {k: tuple(v) for k, v in _cached["positions"].items()}
-                _cache_hit = True
-                _print(f"Layout cache hit ({len(layout_positions)} nodes, key={_cache_key})")
-            else:
-                # キャッシュキーは変わったが旧座標を warm_start として再利用する
-                _stale_positions = {k: tuple(v) for k, v in _cached["positions"].items()}
-                _print(f"Layout cache stale (key changed) – warm-starting from {len(_stale_positions)} nodes")
-        except Exception as _e:
-            _print(f"Layout cache load error: {_e}")
-
-    if not _cache_hit:
-        # 意味ベクトル（②A: 内容が近いアイテムを近くに配置するための仮想エッジ用）
-        _sem_vectors = get_item_vectors(item_keys_for_layout)
-        _print(f"Semantic vectors: {len(_sem_vectors)}/{len(item_keys_for_layout)} items")
-
-        # noverlap 用のノード描画サイズ（build時と同じ式で先に計算）
-        _citer_pids = {f"paper:{c['citing_paper_id']}" for c in citers if c.get("citing_paper_id")}
-        _node_sizes: dict[str, float] = {}
-        for d in items:
-            _node_sizes[f"item:{d['item_key']}"] = _node_size(d.get("citer_count"))
-        for r in citers:
-            pid = r.get("citing_paper_id")
-            if pid:
-                _node_sizes[f"paper:{pid}"] = _node_size(r.get("citing_citation_count"))
-        for r in refs:
-            pid = r.get("cited_paper_id")
-            if pid:
-                nid = f"paper:{pid}" if f"paper:{pid}" in _citer_pids else f"ref:{pid}"
-                _node_sizes.setdefault(nid, _node_size(r.get("cited_citation_count")))
-
-        _print("Computing layout (FA2 LinLog + semantic edges)…", end=" ", flush=True)
-        layout_positions = compute_layout(
-            item_keys_for_layout, citers, refs,
-            warm_start=_stale_positions or None,
-            semantic_vectors=_sem_vectors or None,
-            node_sizes=_node_sizes,
-        )
-        _print(f"done in {_time.time()-_t0:.1f}s  ({len(layout_positions)} nodes placed)")
-        # アトミック書き込み: tempファイルに書いてからrename（中断時に既存キャッシュを壊さない）
-        try:
-            _tmp = _cache_path.with_suffix(".tmp")
-            _tmp.write_text(_json.dumps({
-                "key":       _cache_key,
-                "positions": {k: list(v) for k, v in layout_positions.items()},
-            }))
-            _tmp.replace(_cache_path)  # POSIX では atomic
-            _print(f"Layout cache saved → {_cache_path.name}")
-        except Exception as _e:
-            _print(f"Layout cache save error: {_e}")
+    _print = lambda *args, **kwargs: print(*args, file=sys.stderr, **kwargs)
+    layout_positions, _cache_hit = _load_or_compute_layout(items, citers, refs)
 
     nodes: list[dict] = []
     edges: list[dict] = []
-    added_papers: set[str] = set()
-    edge_counter = 0
-
-    def _eid() -> str:
-        nonlocal edge_counter
-        edge_counter += 1
-        return f"e{edge_counter}"
-
     _id_overrides = _load_identifier_overrides(db_path or DB_PATH)
 
-    def _apply_id_override(
-        nid: str, doi_val: str, isbn_val: str = "", title_val: str = "",
-        year_val: str = "", authors_val: str = "", citations_val: str = ""
-    ) -> tuple[str, str, str, str, str, str]:
-        """オーバーライドがあればDOI/ISBN/タイトル/年/著者/被引用数を上書きして返す。"""
-        ov = _id_overrides.get(nid)
-        if ov:
-            if ov.get("doi")       is not None: doi_val       = ov["doi"]
-            if ov.get("isbn")      is not None: isbn_val      = ov["isbn"]
-            if ov.get("title")     is not None: title_val     = ov["title"]
-            if ov.get("year")      is not None: year_val      = ov["year"]
-            if ov.get("authors")   is not None: authors_val   = ov["authors"]
-            if ov.get("citations") is not None: citations_val = ov["citations"]
-        return doi_val, isbn_val, title_val, year_val, authors_val, citations_val
-
-    def _norm_isbn(s: str) -> str:
-        """ISBN を正規化（ハイフン・スペース除去、小文字化）して比較キーにする。"""
-        return s.replace("-", "").replace(" ", "").strip().lower()
-
     # ── DOI / ISBN → item:KEY マップ（外部論文との重複排除に使用）─────────
-    doi_to_item_nid: dict[str, str] = {}
-    isbn_to_item_nid: dict[str, str] = {}
-    # S2 paper ID → item:KEY マップ。DOI/ISBN より強い同一性の証拠であり、かつ
-    # S2 の書籍レコードは DOI も ISBN も持たないことが多い（例: Bratton "The
-    # Stack" は externalIds が MAG/CorpusId のみ）。これが無いと、所蔵資料が
-    # 自分のノードと外部ノードの二重で描画される。
-    paper_to_item_nid: dict[str, str] = {}
-    ambiguous_paper_ids: set[str] = set()
-    for d in items:
-        item_nid = f"item:{d['item_key']}"
-        # overrides が適用されたDOI/ISBNを使う
-        doi_ov, isbn_ov, *_ = _apply_id_override(
-            item_nid, d.get("doi") or "", d.get("isbn") or ""
-        )
-        raw_doi = doi_ov.strip().lower()
-        if raw_doi:
-            doi_to_item_nid[raw_doi] = item_nid
-        for isbn_part in (isbn_ov or "").split():
-            nk = _norm_isbn(isbn_part)
-            if nk:
-                isbn_to_item_nid[nk] = item_nid
-        pid_own = str(d.get("s2_paper_id") or "").strip()
-        if pid_own:
-            if pid_own in paper_to_item_nid and paper_to_item_nid[pid_own] != item_nid:
-                # 2件以上の所蔵資料が同じ paper ID を主張している（原著と翻訳が
-                # 同じS2レコードに解決された等）。どちらへ寄せても他方から辺が
-                # 消えるので、この paper ID は統合に使わない。外部ノードとして
-                # 残れば重複が見えるため、原因側を直す手掛かりになる。
-                ambiguous_paper_ids.add(pid_own)
-            else:
-                paper_to_item_nid[pid_own] = item_nid
-    for pid_own in ambiguous_paper_ids:
-        owner = paper_to_item_nid.pop(pid_own, None)
-        _print(
-            f"   [warn] s2_paper_id {pid_own[:12]} is claimed by more than one owned "
-            f"item (first was {owner}); not merging it into any of them"
-        )
-
-    # 外部論文間のDOI/ISBN重複排除マップ（初出のnidを正規IDとして記録）
-    doi_to_ext_nid:  dict[str, str] = {}
-    isbn_to_ext_nid: dict[str, str] = {}
+    doi_to_item_nid, isbn_to_item_nid, paper_to_item_nid = _prepare_owned_identifier_maps(
+        items, _id_overrides,
+    )
 
     # paper ID 経由で所蔵ノードに吸収された外部論文の記録。s2_paper_id は検証を
     # 経ていない保存値なので、誤同定なら「別作品を丸ごと飲み込む」形になり、しかも
     # 統合前なら見えていた重複ノードという症状ごと消える。何を吸収したかを必ず
     # 残し、ノード側からも stderr からも確認できるようにする。
-    absorbed_by_item: dict[str, dict[str, str]] = {}
-
-    def _resolve_external_nid(
-        nid_candidate: str, doi_raw: str, isbn_raw: str = "", paper_id: str = ""
-    ) -> str:
-        """外部論文のノードIDを返す。
-        1. S2 paper IDがZoteroアイテムのs2_paper_idと一致 → item:KEY に統合
-        2. DOI/ISBNがZoteroアイテムと一致 → item:KEY に統合
-        3. DOI/ISBNが既出の外部論文と一致 → 先に追加された外部論文のnidに統合
-        """
-        if paper_id:
-            owned = paper_to_item_nid.get(paper_id.strip())
-            if owned: return owned
-        if doi_raw:
-            doi_key = doi_raw.strip().lower()
-            if doi_key in doi_to_item_nid: return doi_to_item_nid[doi_key]
-            if doi_key in doi_to_ext_nid:  return doi_to_ext_nid[doi_key]
-        if isbn_raw:
-            for isbn_part in isbn_raw.split():
-                nk = _norm_isbn(isbn_part)
-                if not nk: continue
-                if nk in isbn_to_item_nid: return isbn_to_item_nid[nk]
-                if nk in isbn_to_ext_nid:  return isbn_to_ext_nid[nk]
-        return nid_candidate
+    state = _GraphAssembly(
+        nodes=nodes, edges=edges, added_papers=set(), ref_set=set(),
+        paper_to_item_nid=paper_to_item_nid, doi_to_ext_nid={},
+        isbn_to_ext_nid={}, absorbed_by_item={}, layout_positions=layout_positions,
+        palette=PALETTE,
+    )
 
     # ── Zotero item nodes ──────────────────────────────────────────────────
     for d in items:
-        key      = d["item_key"]
-        count    = d["citer_count"]
-        status   = d.get("s2_status") or "unknown"
-        m        = meta.get(key, {})
-        full     = m.get("title", "") or ""
-        creators = _fmt_creators(m.get("creators", "") or "")
-        # Year: S2 データ優先、なければ ChromaDB の year
-        year_val = str(d.get("s2_year") or m.get("year") or "")
-        # S2 総被引用数（s2_citation_count）が取得済みならそちらを表示
-        s2_cc    = d.get("s2_citation_count")
-        rcount   = item_rcnt.get(key, 0)
-        # Every row here is a Zotero-owned item, so it gets the "Zotero アイテム"
-        # colour the legend names. Whether S2 could identify the work is a
-        # property of S2's coverage, not of ownership; greying those items out
-        # made owned books look like they belonged to no category at all (the
-        # legend has no entry for grey).  The S2 outcome stays visible in the
-        # tooltip's Status row.
-        color    = C_ZOTERO
-
-        _cc_str = str(s2_cc) if s2_cc is not None else str(count)
-        doi_val, isbn_val, title_ov_z, year_ov_z, authors_ov_z, citations_ov_z = _apply_id_override(
-            f"item:{d['item_key']}", d.get("doi") or "", d.get("isbn") or "",
-            full or "", year_val, creators, _cc_str,
-        )
-        if title_ov_z:    full     = title_ov_z
-        if year_ov_z:     year_val = year_ov_z
-        if authors_ov_z:  creators = authors_ov_z
-        if citations_ov_z:
-            try: s2_cc = int(citations_ov_z)
-            except ValueError: pass
-
-        extra = [("Key", key)]
-        if creators:
-            extra.append(("Authors", creators))
-        extra += [
-            ("Year",       year_val or "—"),
-            ("DOI",        doi_val  or "—"),
-            ("ISBN",       isbn_val or "—"),
-            *_tooltip_citation_rows(s2_total=s2_cc, drawn=count),
-            ("References", f"{rcount:,}" if rcount else "—"),
-            ("Contexts",   f"{d['context_count']:,}"),
-            ("Status",     status),
-        ]
-
-        _nid = f"item:{key}"
-        _xy  = layout_positions.get(_nid)
-        nodes.append({
-            "id":        _nid,
-            "label":     _short(full, 28) if full else key,
-            "size":      _node_size(count),
-            "color":     color,
-            "tooltip":   _tooltip(full or key, extra),
-            "group":     "zotero",
-            # Sidebar list/detail 用の構造化データ
-            "fullTitle": full or key,
-            "authors":   creators or "",
-            "year":      year_val or "",
-            "doi":       doi_val or "",
-            "isbn":      isbn_val or "",
-            # Two different numbers used to share the label 被引用数: S2's total
-            # for the work, and the citing papers this graph actually holds.
-            # They differ by a lot -- one item shows 4,188 against 191 drawn --
-            # and a reader comparing nodes was comparing whichever each node
-            # happened to have. Both are reported, each as itself.
-            "citations": s2_cc if s2_cc is not None else count,
-            "citationsSource": "s2" if s2_cc is not None else "graph",
-            "citationsInGraph": count,
-            "refCount":  rcount,
-            "itemKey":   key,
-            **( {"x": round(_xy[0], 1), "y": round(_xy[1], 1)} if _xy else {} ),
-        })
-
-    # ── external citing-paper nodes + edges ───────────────────────────────
-    for d in citers:
-        pid   = d["citing_paper_id"]
-        title = d["citing_title"] or pid
-        year  = str(d["citing_year"] or "")
-        cc    = d["citing_citation_count"] or 0
-        authors = d.get("citing_authors") or ""
-        raw_doi, raw_isbn, title_ov, year_ov, authors_ov, citations_ov = _apply_id_override(
-            f"paper:{pid}", d.get("citing_doi") or "", "", title, year,
-            authors, str(cc),
-        )
-        if title_ov:    title   = title_ov
-        if year_ov:     year    = year_ov
-        if authors_ov:  authors = authors_ov
-        if citations_ov:
-            try: cc = int(citations_ov)
-            except ValueError: pass
-        nid   = _resolve_external_nid(f"paper:{pid}", raw_doi, raw_isbn, pid)
-
-        if nid not in added_papers and not nid.startswith("item:"):
-            added_papers.add(nid)
-            if raw_doi:
-                doi_to_ext_nid.setdefault(raw_doi.strip().lower(), nid)
-            for _ip in (raw_isbn or "").split():
-                _nik = _norm_isbn(_ip)
-                if _nik: isbn_to_ext_nid.setdefault(_nik, nid)
-            _xy = layout_positions.get(nid)
-            nodes.append({
-                "id":      nid,
-                "label":   _short(title, 24),
-                "size":    _node_size(cc),
-                "color":   C_EXTERNAL,
-                "tooltip": _tooltip(title, [
-                    ("Authors",    authors or "—"),
-                    ("Year",       year or "—"),
-                    ("DOI",        raw_doi or "—"),
-                    ("Citations",  f"{cc:,}" if cc else "—"),
-                    ("References", "—"),
-                ]),
-                "group":     "external",
-                "cc":        cc,
-                "fullTitle": title,
-                "year":      year,
-                "doi":       raw_doi,
-                "isbn":      raw_isbn,
-                "authors":   authors,
-                **( {"x": round(_xy[0], 1), "y": round(_xy[1], 1)} if _xy else {"x": 0.0, "y": 0.0} ),
-            })
-        elif nid.startswith("item:"):
-            added_papers.add(f"paper:{pid}")  # paper:PID は処理済みとしてマーク
-            if paper_to_item_nid.get(pid) == nid:
-                absorbed_by_item.setdefault(nid, {})[pid] = title
-
-        target_nid = f"item:{d['cited_item_key']}"
-        if nid != target_nid:  # 自己ループを防止
-            edges.append({
-                "id":     _eid(),
-                "source": nid,
-                "target": target_nid,
-                "size":   max(0.5, min(4.0, d["context_count"] * 0.4)),
-                "color":  PALETTE["edgeDefault"],
-                "type":   "arrow",
-                "direction": "citations",
-                "itemKey": d["cited_item_key"],
-                "externalPaperId": pid,
-                "externalTitle": title,
-                "relationKey": f"citations:{d['cited_item_key']}:{pid}",
-            })
-
-    # ── reference-paper nodes + edges ─────────────────────────────────────
-    n_citer = len(added_papers)
-    ref_set: set[str] = set()
-
-    for d in refs:
-        pid     = d["cited_paper_id"]
-        title   = d["cited_title"] or pid
-        year    = str(d["cited_year"] or "")
-        cc      = d["cited_citation_count"] or 0
-        base_nid = f"paper:{pid}" if f"paper:{pid}" in added_papers else f"ref:{pid}"
-        authors  = d.get("cited_authors") or ""
-        raw_doi, raw_isbn, title_ov, year_ov, authors_ov, citations_ov = _apply_id_override(
-            base_nid, d.get("cited_doi") or "", "", title, year,
-            authors, str(cc),
-        )
-        if title_ov:    title   = title_ov
-        if year_ov:     year    = year_ov
-        if authors_ov:  authors = authors_ov
-        if citations_ov:
-            try: cc = int(citations_ov)
-            except ValueError: pass
-        nid      = _resolve_external_nid(base_nid, raw_doi, raw_isbn, pid)
-
-        if nid not in added_papers and not nid.startswith("item:"):
-            added_papers.add(nid)
-            ref_set.add(nid)
-            if raw_doi:
-                doi_to_ext_nid.setdefault(raw_doi.strip().lower(), nid)
-            for _ip in (raw_isbn or "").split():
-                _nik = _norm_isbn(_ip)
-                if _nik: isbn_to_ext_nid.setdefault(_nik, nid)
-            _xy = layout_positions.get(nid)
-            nodes.append({
-                "id":      nid,
-                "label":   _short(title, 24),
-                "size":    _node_size(cc),
-                "color":   C_EXTERNAL,
-                "tooltip": _tooltip(title, [
-                    ("Authors",    authors or "—"),
-                    ("Year",       year or "—"),
-                    ("DOI",        raw_doi or "—"),
-                    ("Citations",  f"{cc:,}" if cc else "—"),
-                    ("References", "—"),
-                ]),
-                "group":     "reference",
-                "cc":        cc,
-                "fullTitle": title,
-                "year":      year,
-                "doi":       raw_doi,
-                "isbn":      raw_isbn,
-                "authors":   authors,
-                **( {"x": round(_xy[0], 1), "y": round(_xy[1], 1)} if _xy else {"x": 0.0, "y": 0.0} ),
-            })
-        elif nid.startswith("item:"):
-            added_papers.add(base_nid)  # 元のIDを処理済みとしてマーク
-            if paper_to_item_nid.get(pid) == nid:
-                absorbed_by_item.setdefault(nid, {})[pid] = title
-
-        source_nid = f"item:{d['citing_item_key']}"
-        if nid != source_nid:  # 自己ループを防止
-            edges.append({
-                "id":     _eid(),
-                "source": source_nid,
-                "target": nid,
-                "size":   max(0.5, min(3.0, d["context_count"] * 0.3)),
-                "color":  PALETTE["edgeDefault"],
-                "type":   "arrow",
-                "direction": "references",
-                "itemKey": d["citing_item_key"],
-                "externalPaperId": pid,
-                "externalTitle": title,
-                "relationKey": f"references:{d['citing_item_key']}:{pid}",
-            })
-
-    # 吸収された外部論文を所蔵ノードに残す。s2_paper_id が誤っていた場合、ここが
-    # 「なぜこの資料が別作品の引用を持っているのか」を辿れる唯一の手掛かりになる。
-    if absorbed_by_item:
-        node_by_id = {n["id"]: n for n in nodes}
-        for item_nid, absorbed in absorbed_by_item.items():
-            node = node_by_id.get(item_nid)
-            if node is None:
-                continue
-            node["absorbedPapers"] = [
-                {"paperId": pid_a, "title": title_a}
-                for pid_a, title_a in sorted(absorbed.items())
-            ]
-        _print(
-            f"   Merged by s2_paper_id: {sum(len(v) for v in absorbed_by_item.values())} "
-            f"external paper(s) into {len(absorbed_by_item)} owned item(s)"
-        )
-        for item_nid, absorbed in sorted(absorbed_by_item.items()):
-            for pid_a, title_a in sorted(absorbed.items()):
-                _print(f"     {item_nid} <- {pid_a[:12]} {title_a[:60]!r}")
+        nodes.append(_build_zotero_item_node(
+            d, meta.get(d["item_key"], {}), item_rcnt, layout_positions,
+            _id_overrides, PALETTE,
+        ))
+    n_citer = _assemble_external_relations(
+        state, citers, refs, _id_overrides, doi_to_item_nid, isbn_to_item_nid,
+    )
+    _finish_absorbed_papers(nodes, state.absorbed_by_item, _print)
 
     n_nodes = len(nodes)
     n_edges = len(edges)
-    n_ref   = len(ref_set)
+    n_ref   = len(state.ref_set)
 
     print(f"   {n_nodes} nodes  |  {n_edges} edges")
     print(f"   Rose={len(items)} Zotero  Grey={n_citer} citers  Grey={n_ref} refs")

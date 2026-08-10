@@ -27,6 +27,126 @@ DedupeFn = Callable[
 UpsertFn = Callable[..., None]
 
 
+def _delete_note_rows(
+    col: Any,
+    note_key: str,
+    lexical_delete_fn: Callable[[str], None] | None,
+    strict_lexical: bool,
+) -> bool:
+    """Delete one note from Chroma and the optional lexical index."""
+    chroma_deleted = False
+    try:
+        col.delete(where={"noteKey": note_key})
+        chroma_deleted = True
+    except Exception:
+        if strict_lexical:
+            raise
+    if lexical_delete_fn:
+        try:
+            lexical_delete_fn(note_key)
+        except Exception:
+            if strict_lexical:
+                raise
+    return chroma_deleted
+
+
+def _flush_note_batch(
+    col: Any,
+    pending_ids: list[str],
+    pending_docs: list[str],
+    pending_metas: list[dict[str, Any]],
+    *,
+    batch_size: int,
+    show_progress: bool,
+    dedupe_fn: DedupeFn,
+    upsert_fn: UpsertFn,
+    label: str,
+    strict_lexical: bool,
+) -> tuple[list[str], list[str], list[dict[str, Any]]]:
+    """Dedupe and upsert pending note chunks, then reset the buffers."""
+    if not pending_ids:
+        return pending_ids, pending_docs, pending_metas
+    ids, docs, metas = dedupe_fn(pending_ids, pending_docs, pending_metas)
+    kwargs: dict[str, Any] = {
+        "subbatch_size": batch_size,
+        "show_progress": show_progress,
+        "label": label,
+    }
+    if strict_lexical:
+        kwargs["strict_lexical"] = True
+    upsert_fn(col, ids, docs, metas, **kwargs)
+    return [], [], []
+
+
+def _note_metadata(note: dict[str, Any], note_key: str) -> dict[str, Any]:
+    creators = note.get("creators")
+    creators_str: Optional[str] = None
+    if isinstance(creators, list):
+        creators_str = "; ".join(
+            c for c in creators if isinstance(c, str) and c.strip()
+        ) or None
+    return {
+        "itemKey": note.get("parentItemKey"),
+        "attachmentKey": None,
+        "noteKey": note_key,
+        "title": note.get("title"),
+        "year": note.get("year"),
+        "creators": creators_str,
+        "source_type": "note",
+        "path": None,
+        "pdf_path": None,
+        "locator": None,
+        "lang": detect_lang("", note.get("language")),
+    }
+
+
+def _extract_note_chunks(
+    note: dict[str, Any],
+    note_key: str,
+    meta_base: dict[str, Any],
+) -> list[tuple[str, str, dict[str, Any]]]:
+    """Extract valid note chunks, returning an empty list for unusable text."""
+    note_html = note.get("note_html") or ""
+    raw_html = note_html if isinstance(note_html, str) else ""
+    note_text = clean_extracted_text(extract_main_text_from_html(raw_html))
+    joiner = joiner_for_text(note_text[:20000])
+    paras = normalize_paragraphs(note_text, joiner=joiner)
+    if not paras:
+        return []
+    joined = "\n\n".join(paras)
+    if looks_like_gibberish(joined):
+        return []
+
+    is_cjk = is_no_space_language_document(joined)
+    local_min = MIN_CHUNK_CHARS_NO_SPACE if is_cjk else MIN_CHUNK_CHARS
+    local_max = MAX_CHARS_CJK if is_cjk else MAX_CHARS
+    local_target = TARGET_CHARS_CJK if is_cjk else TARGET_CHARS
+    chunks: list[tuple[str, str, dict[str, Any]]] = []
+    for para_index, para_text in enumerate(paras):
+        para_text = para_text.strip()
+        if not para_text:
+            continue
+        parts = split_long_paragraph(
+            para_text, max_chars=local_max, target_chars=local_target,
+        )
+        for part_index, part in enumerate(parts):
+            part = part.strip()
+            if len(part) < HARD_MIN_CHARS:
+                continue
+            chunk_id = f"{note_key}:note:para{para_index}:part{part_index}"
+            metadata = dict(meta_base)
+            metadata.update({
+                "locator": f"note:para{para_index}",
+                "para_index": int(para_index),
+                "part_index": int(part_index),
+                "lang": detect_lang(part, note.get("language")),
+            })
+            chunks.append((chunk_id, part, metadata))
+    return merge_short_chunk_records(
+        chunks, min_chars=local_min, max_chars=local_max,
+    )
+
+
 def index_notes(
     notes: list[dict[str, Any]],
     *,
@@ -49,7 +169,6 @@ def index_notes(
     - Returns (updated_notes_manifest, stats).
     """
 
-    # --- stale note delete ---
     current_note_keys = {n.get("noteKey") for n in notes if isinstance(n, dict) and n.get("noteKey")}
     stale_note_keys = (
         set(notes_manifest.keys()) - set(current_note_keys) if delete_stale else set()
@@ -57,18 +176,9 @@ def index_notes(
 
     deleted_stale_notes = 0
     for nk in stale_note_keys:
-        try:
-            col.delete(where={"noteKey": nk})
-            deleted_stale_notes += 1
-        except Exception:
-            if strict_lexical:
-                raise
-        if lexical_delete_fn:
-            try:
-                lexical_delete_fn(nk)
-            except Exception:
-                if strict_lexical:
-                    raise
+        deleted_stale_notes += int(
+            _delete_note_rows(col, nk, lexical_delete_fn, strict_lexical)
+        )
         notes_manifest.pop(nk, None)
 
     updated_notes = 0
@@ -77,23 +187,6 @@ def index_notes(
     pending_ids: list[str] = []
     pending_docs: list[str] = []
     pending_metas: list[dict[str, Any]] = []
-
-    def _flush(label: str) -> None:
-        nonlocal pending_ids, pending_docs, pending_metas
-        if not pending_ids:
-            return
-        ids, docs, metas = dedupe_fn(pending_ids, pending_docs, pending_metas)
-        kwargs = {
-            "subbatch_size": batch_size,
-            "show_progress": show_progress,
-            "label": label,
-        }
-        if strict_lexical:
-            kwargs["strict_lexical"] = True
-        upsert_fn(col, ids, docs, metas, **kwargs)
-        pending_ids = []
-        pending_docs = []
-        pending_metas = []
 
     for n in notes:
         if not isinstance(n, dict):
@@ -110,88 +203,9 @@ def index_notes(
             skipped_notes += 1
             continue
 
-        # delete existing chunks for this noteKey (best-effort)
-        try:
-            col.delete(where={"noteKey": note_key})
-        except Exception:
-            if strict_lexical:
-                raise
-        if lexical_delete_fn:
-            try:
-                lexical_delete_fn(note_key)
-            except Exception:
-                if strict_lexical:
-                    raise
-
-        creators_str: Optional[str] = None
-        creators = n.get("creators")
-        if isinstance(creators, list):
-            creators_str = "; ".join([c for c in creators if isinstance(c, str) and c.strip()]) or None
-
-        meta_base: dict[str, Any] = {
-            "itemKey": n.get("parentItemKey"),
-            "attachmentKey": None,
-            "noteKey": note_key,
-            "title": n.get("title"),
-            "year": n.get("year"),
-            "creators": creators_str,
-            "source_type": "note",
-            "path": None,
-            "pdf_path": None,
-            "locator": None,
-            "lang": detect_lang("", n.get("language")),
-        }
-
-        note_html = n.get("note_html") or ""
-        note_text = clean_extracted_text(extract_main_text_from_html(note_html if isinstance(note_html, str) else ""))
-
-        # normalize paragraphing
-        joiner = joiner_for_text(note_text[:20000])
-        paras = normalize_paragraphs(note_text, joiner=joiner)
-
-        # still update manifest even if empty/gibberish, so we don't retry forever
-        if not paras:
-            notes_manifest[note_key] = {"version": ver}
-            updated_notes += 1
-            continue
-
-        joined = "\n\n".join(paras)
-        if looks_like_gibberish(joined):
-            notes_manifest[note_key] = {"version": ver}
-            updated_notes += 1
-            continue
-
-        is_cjk = is_no_space_language_document(joined)
-        local_min_chunk = MIN_CHUNK_CHARS_NO_SPACE if is_cjk else MIN_CHUNK_CHARS
-        local_max_chars = MAX_CHARS_CJK if is_cjk else MAX_CHARS
-        local_target_chars = TARGET_CHARS_CJK if is_cjk else TARGET_CHARS
-
-        note_chunks: list[tuple[str, str, dict[str, Any]]] = []
-
-        for para_index, para_text in enumerate(paras):
-            para_text = para_text.strip()
-            if not para_text:
-                continue
-
-            parts = split_long_paragraph(para_text, max_chars=local_max_chars, target_chars=local_target_chars)
-            for part_index, part in enumerate(parts):
-                part = part.strip()
-                if len(part) < HARD_MIN_CHARS:
-                    continue
-
-                cid = f"{note_key}:note:para{para_index}:part{part_index}"
-                md = dict(meta_base)
-                md.update(
-                    {
-                        "locator": f"note:para{para_index}",
-                        "para_index": int(para_index),
-                        "part_index": int(part_index),
-                        "lang": detect_lang(part, n.get("language")),
-                    }
-                )
-                note_chunks.append((cid, part, md))
-
-        note_chunks = merge_short_chunk_records(note_chunks, min_chars=local_min_chunk, max_chars=local_max_chars)
+        _delete_note_rows(col, note_key, lexical_delete_fn, strict_lexical)
+        meta_base = _note_metadata(n, note_key)
+        note_chunks = _extract_note_chunks(n, note_key, meta_base)
 
         for cid, part, md in note_chunks:
             pending_ids.append(cid)
@@ -199,9 +213,19 @@ def index_notes(
             pending_metas.append(md)
 
             if len(pending_ids) >= batch_size:
-                _flush(label="notes upsert")
+                pending_ids, pending_docs, pending_metas = _flush_note_batch(
+                    col, pending_ids, pending_docs, pending_metas,
+                    batch_size=batch_size, show_progress=show_progress,
+                    dedupe_fn=dedupe_fn, upsert_fn=upsert_fn,
+                    label="notes upsert", strict_lexical=strict_lexical,
+                )
 
-        _flush(label="notes upsert")
+        pending_ids, pending_docs, pending_metas = _flush_note_batch(
+            col, pending_ids, pending_docs, pending_metas,
+            batch_size=batch_size, show_progress=show_progress,
+            dedupe_fn=dedupe_fn, upsert_fn=upsert_fn,
+            label="notes upsert", strict_lexical=strict_lexical,
+        )
 
         notes_manifest[note_key] = {"version": ver}
         updated_notes += 1

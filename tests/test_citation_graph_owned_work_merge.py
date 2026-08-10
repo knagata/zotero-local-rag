@@ -162,6 +162,148 @@ class OwnedWorkMergeTests(unittest.TestCase):
 
         self.assertEqual(graph["edges"], [])
 
+    def test_external_node_shape_and_edge_are_symmetric_by_direction(self):
+        """Citer and reference paths share the same external-node contract."""
+        for direction in ("citer", "reference"):
+            with self.subTest(direction=direction):
+                item = self._item("VBRN4WYR", s2_paper_id="OWNED")
+                if direction == "citer":
+                    row = {
+                        "cited_item_key": "VBRN4WYR", "citing_paper_id": "EXTERNAL",
+                        "citing_title": "An external work", "citing_year": 2020,
+                        "citing_citation_count": 12, "citing_doi": "10.1/ext",
+                        "citing_authors": "A. Author", "context_count": 2,
+                    }
+                    graph = _build([item], citers=[row])
+                    node_id = "paper:EXTERNAL"
+                    group = "external"
+                    expected_edge = (node_id, "item:VBRN4WYR")
+                else:
+                    row = self._ref(
+                        citing_item_key="VBRN4WYR", cited_paper_id="EXTERNAL",
+                        cited_title="An external work", cited_year=2020,
+                        cited_citation_count=12, cited_doi="10.1/ext",
+                        cited_authors="A. Author", context_count=2,
+                    )
+                    graph = _build([item], refs=[row])
+                    node_id = "ref:EXTERNAL"
+                    group = "reference"
+                    expected_edge = ("item:VBRN4WYR", node_id)
+
+                node = next(n for n in graph["nodes"] if n["id"] == node_id)
+                self.assertEqual(node["group"], group)
+                self.assertEqual(
+                    set(node),
+                    {"id", "label", "size", "color", "tooltip", "group", "cc",
+                     "fullTitle", "year", "doi", "isbn", "authors", "x", "y"},
+                )
+                self.assertEqual(
+                    (graph["edges"][0]["source"], graph["edges"][0]["target"]),
+                    expected_edge,
+                )
+                self.assertEqual(graph["edges"][0]["externalPaperId"], "EXTERNAL")
+
+    def test_identifier_override_is_applied_to_both_external_directions(self):
+        override = {
+            "doi": "10.9/corrected", "isbn": "", "title": "Corrected title",
+            "year": "2001", "authors": "C. Corrector", "citations": "17",
+        }
+        for direction in ("citer", "reference"):
+            with self.subTest(direction=direction):
+                item = self._item("VBRN4WYR", s2_paper_id="OWNED")
+                key = "paper:EXTERNAL" if direction == "citer" else "ref:EXTERNAL"
+                if direction == "citer":
+                    row = {
+                        "cited_item_key": "VBRN4WYR", "citing_paper_id": "EXTERNAL",
+                        "citing_title": "Original title", "citing_year": 2020,
+                        "citing_citation_count": 12, "citing_doi": "10.1/ext",
+                        "citing_authors": "A. Author", "context_count": 1,
+                    }
+                    kwargs = {"citers": [row]}
+                else:
+                    row = self._ref(
+                        citing_item_key="VBRN4WYR", cited_paper_id="EXTERNAL",
+                        cited_title="Original title", cited_year=2020,
+                        cited_citation_count=12, cited_doi="10.1/ext",
+                        cited_authors="A. Author", context_count=1,
+                    )
+                    kwargs = {"refs": [row]}
+                with mock.patch.object(
+                    server, "_load_identifier_overrides", return_value={key: override}
+                ):
+                    graph = _build([item], **kwargs)
+                node = next(n for n in graph["nodes"] if n["id"] in {"paper:EXTERNAL", "ref:EXTERNAL"})
+                self.assertEqual(node["fullTitle"], "Corrected title")
+                self.assertEqual(node["year"], "2001")
+                self.assertEqual(node["authors"], "C. Corrector")
+                self.assertEqual(node["doi"], "10.9/corrected")
+                self.assertEqual(node["cc"], 17)
+
+    def test_self_loop_and_owned_identifier_merge_are_symmetric_by_direction(self):
+        for direction in ("citer", "reference"):
+            with self.subTest(direction=direction):
+                item = self._item("VBRN4WYR", s2_paper_id="OWNED", doi="10.1/owned")
+                if direction == "citer":
+                    row = {
+                        "cited_item_key": "VBRN4WYR", "citing_paper_id": "EXTERNAL",
+                        "citing_title": "Same work", "citing_year": 2020,
+                        "citing_citation_count": 12, "citing_doi": "10.1/OWNED",
+                        "citing_authors": "A. Author", "context_count": 1,
+                    }
+                    graph = _build([item], citers=[row])
+                else:
+                    row = self._ref(
+                        citing_item_key="VBRN4WYR", cited_paper_id="EXTERNAL",
+                        cited_title="Same work", cited_year=2020,
+                        cited_citation_count=12, cited_doi="10.1/OWNED",
+                        cited_authors="A. Author", context_count=1,
+                    )
+                    graph = _build([item], refs=[row])
+                self.assertEqual([n["id"] for n in graph["nodes"]], ["item:VBRN4WYR"])
+                self.assertEqual(graph["edges"], [])
+
+    def test_duplicate_external_identifiers_are_deduplicated_in_both_directions(self):
+        for direction in ("citer", "reference"):
+            with self.subTest(direction=direction):
+                item = self._item("VBRN4WYR", s2_paper_id="OWNED")
+                if direction == "citer":
+                    rows = [
+                        {
+                            "cited_item_key": "VBRN4WYR", "citing_paper_id": "FIRST",
+                            "citing_title": "First title", "citing_year": 2020,
+                            "citing_citation_count": 12, "citing_doi": "10.1/shared",
+                            "citing_authors": "A. Author", "context_count": 1,
+                        },
+                        {
+                            "cited_item_key": "VBRN4WYR", "citing_paper_id": "SECOND",
+                            "citing_title": "Second title", "citing_year": 2021,
+                            "citing_citation_count": 8, "citing_doi": "10.1/SHARED",
+                            "citing_authors": "B. Author", "context_count": 1,
+                        },
+                    ]
+                    graph = _build([item], citers=rows)
+                    external_ids = {"paper:FIRST", "paper:SECOND"}
+                    expected_external_id = "paper:FIRST"
+                else:
+                    rows = [
+                        self._ref(
+                            citing_item_key="VBRN4WYR", cited_paper_id="FIRST",
+                            cited_title="First title", cited_year=2020,
+                            cited_citation_count=12, cited_doi="10.1/shared",
+                        ),
+                        self._ref(
+                            citing_item_key="VBRN4WYR", cited_paper_id="SECOND",
+                            cited_title="Second title", cited_year=2021,
+                            cited_citation_count=8, cited_doi="10.1/SHARED",
+                        ),
+                    ]
+                    graph = _build([item], refs=rows)
+                    external_ids = {"ref:FIRST", "ref:SECOND"}
+                    expected_external_id = "ref:FIRST"
+                external_nodes = [n["id"] for n in graph["nodes"] if n["id"] in external_ids]
+                self.assertEqual(external_nodes, [expected_external_id])
+                self.assertEqual(len(graph["edges"]), 2)
+
 
 if __name__ == "__main__":
     unittest.main()
