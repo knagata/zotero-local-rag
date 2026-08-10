@@ -26,6 +26,22 @@
   ローカル計測は88モジュール・5,482未到達文。環境差が既知のモジュールはローカル値へ下げず、
   今回直接改善した2モジュールだけを採択した予算は5,496文。
 
+### 2026-08-10 PDF取込経路の決定的テスト網と最初の分離
+
+- [x] **取込テストの到達範囲を測定。** 合成E2Eは通常のテキスト層PDFと、3種の
+  source typeを通る一方、`_extract_pdf_chunks`内の明示NDLOCR/Docling、scan replacement、
+  頁patch、OCR layer audit、Mistral defer、Docling escalationはCIテスト未到達と確認。
+  実extractorをfakeに置き換えるorchestration testを新設した。
+- [x] **明示parser overrideを最初のseamとして分離。** NDLOCR優先、明示Docling、
+  Docling worker失敗時の空結果、通常routeへの非介入を直接固定し、
+  `_extract_pdf_override`へ切り出した。同時に抽出成功/部分成功のartifact statusが、
+  欠落頁・出力文字数・retryable性・AI-TOC理由を正確に記録する契約を追加した。
+  `_extract_pdf_chunks`は705行から685行、`index_from_zotero.py`の未到達文予算は
+  558から549へ下げた。
+- [x] **検証。** 既定suiteは`1,521 passed / 4 skipped / 5 deselected`、実資料取込baselineは
+  `5 passed`。coverage付き既定suiteで追加契約が実行され、公開CLI import、compileall、
+  fatal Ruff、function/lint/coverage各ラチェット、`git diff --check`も合格した。
+
 ## Active
 
 ### 2026-08-09 事故: テスト実行が実 relations.db を消した

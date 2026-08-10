@@ -2101,6 +2101,49 @@ def _reparse_decision(
 
 
 
+def _extract_pdf_override(
+    *,
+    attachment_key: str,
+    file_path: Path,
+    meta_base: dict[str, Any],
+    force_ndlocr: bool,
+    use_docling: bool,
+    docling_worker: Any,
+    show_progress: bool,
+) -> PdfExtraction | None:
+    """Run an explicitly selected PDF parser, or leave normal routing alone."""
+    if force_ndlocr:
+        if show_progress:
+            print(
+                "[PROGRESS]   ↳ parsing Japanese re-OCR candidate with NDLOCR-Lite...",
+                file=sys.__stderr__,
+            )
+        chunks, quality = extract_chunks_from_pdf_with_ndlocr(
+            file_path, attachment_key, meta_base,
+        )
+        return PdfExtraction(chunks, quality)
+    if not use_docling:
+        return None
+    if show_progress:
+        print(
+            "[PROGRESS]   ↳ parsing with high-fidelity IBM Docling...",
+            file=sys.__stderr__,
+        )
+    try:
+        chunks, quality = docling_worker.extract(
+            file_path, attachment_key, meta_base,
+        )
+    except RuntimeError as exc:
+        print(
+            f"[WARN] Docling worker extraction failed: attachment={attachment_key} err={exc}",
+            file=sys.__stderr__,
+        )
+        chunks, quality = [], {}
+    # PyTorch/MPS-CUDA cache clearing happens inside the worker subprocess
+    # (see docling_worker._worker_loop), which owns the torch state.
+    return PdfExtraction(chunks, quality)
+
+
 def _extract_pdf_chunks(
     *,
     a: Any,
@@ -2142,37 +2185,17 @@ def _extract_pdf_chunks(
     separate one: doing both at once would leave no way to tell which change
     caused a difference.
     """
-    chunks: list = []
-    quality_info: dict = {}
-    use_docling_for_this_file = force_docling or args.use_docling
-    if force_ndlocr:
-        if show_progress:
-            print(
-                "[PROGRESS]   ↳ parsing Japanese re-OCR candidate with NDLOCR-Lite...",
-                file=sys.__stderr__,
-            )
-        chunks, quality_info = extract_chunks_from_pdf_with_ndlocr(
-            file_path, a.attachmentKey, meta_base,
-        )
-    elif use_docling_for_this_file:
-        if show_progress:
-            print(
-                "[PROGRESS]   ↳ parsing with high-fidelity IBM Docling...",
-                file=sys.__stderr__,
-            )
-        try:
-            chunks, quality_info = docling_worker.extract(
-                file_path, a.attachmentKey, meta_base,
-            )
-        except RuntimeError as exc:
-            print(
-                f"[WARN] Docling worker extraction failed: attachment={a.attachmentKey} err={exc}",
-                file=sys.__stderr__,
-            )
-            chunks, quality_info = [], {}
-        # Note: PyTorch/MPS-CUDA cache clearing now happens inside the
-        # worker subprocess itself (see docling_worker._worker_loop),
-        # since the worker -- not this process -- holds the torch state.
+    override = _extract_pdf_override(
+        attachment_key=a.attachmentKey,
+        file_path=file_path,
+        meta_base=meta_base,
+        force_ndlocr=bool(force_ndlocr),
+        use_docling=bool(force_docling or args.use_docling),
+        docling_worker=docling_worker,
+        show_progress=bool(show_progress),
+    )
+    if override is not None:
+        chunks, quality_info = override.chunks, override.quality
     else:
         # Approved routing (evaluations/ocr_bakeoff_v3/results/routing_proposal.md):
         # PyMuPDF is only canonical for embedded-text PDFs with a usable

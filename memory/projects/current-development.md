@@ -17,11 +17,13 @@ Updated: 2026-08-10
 
 ## Current repository state
 
-- 直近コミットは`9495279`（graph/citation/schema/note/retrieval分割）と`09d1942`
-  （search分割・保守テスト）。記録時点で`main`は`origin/main`より2コミット先行している。
+- PDF取込の最初のseamとして明示NDLOCR/Docling overrideを
+  `_extract_pdf_override`へ分離し、実extractorを呼ばない決定的テストで固定した。
+  部分成功とartifact statusの純粋契約も追加した。
 - 150行超の関数は22件から17件へ減少。最大は
-  `index_from_zotero._index_library`（1,104行）、次が`_extract_pdf_chunks`（705行）。
-- 既定suiteは1,513 passed / 4 skipped / 5 deselected。抽出・取り込み・構造を変更したら
+  `index_from_zotero._index_library`（1,104行）、次が`_extract_pdf_chunks`（685行）。
+- 既定suiteは1,521 passed / 4 skipped / 5 deselected。実資料取込baselineは5 passed。
+  抽出・取り込み・構造を変更したら
   `uv run pytest -m slow`も必要。
 - P1/P2の既知製品欠陥はない。残るP3はS2 author-less識別とflat PDF 3形状で、どちらも
   実データを読んでから方針を決める。
@@ -45,11 +47,13 @@ Updated: 2026-08-10
 
 ## Next work, in order
 
-1. `tests/test_ingestion_baseline.py`と関連する合成E2E・route testsを読み、
-   `_extract_pdf_chunks`のどの分岐に決定的テストが届いていないか測る。
-2. extractor本体を呼ばずに検証できるroute decision、fallback、partial-success、artifact statusの
-   契約をテストする。経験則・threshold・公開出力はまだ変えない。
-3. テストが届いた責務だけを`_extract_pdf_chunks`から抽出し、1 seamずつ対象テストと
+1. 次は通常PyMuPDF結果からのPDF gate decisionをfakeで固定する。
+   `structure_recovery`、local OCR試行、chunk有無、page minimum、Mistral queue可否から
+   `disabled / defer / local_exhausted / docling_escalation / keep`を選ぶ部分は純粋関数化できる。
+2. Mistral deferのartifact payload・manifest保存・既存chunk保持を、extractorと実DBを
+   呼ばず統合テストする。経験則・threshold・公開出力は変えない。
+3. その後にOCR audit outcome、born-digital/scan-derived/corrupted頁patchの順で、
+   テストが届いた責務だけを`_extract_pdf_chunks`から抽出し、1 seamずつ対象テストと
    function-size ratchetを更新する。低coverage部分を機械的に移動して「検証済み」と扱わない。
 4. `_extract_pdf_chunks`の挙動不変分割が終わってから`_index_library`を同じ方法で分割する。
 5. 抽出・chunk境界を一度固定した時点でV3をバックアップし、`Setup.command`の`REBUILD`から
