@@ -91,6 +91,12 @@
   fixtureで固定し、`_extract_empty_pdf_with_docling`へ切り出した。`_extract_pdf_chunks`は
   379行から371行、同モジュールの未到達文予算は443から435へ下げた。coverage付き既定suiteは
   `1,554 passed / 4 skipped / 5 deselected`、実資料取込baselineは`5 passed`。
+- [x] **post-audit scan replacementを分離。** 劣化・未検証OCR layerの測定後に、
+  Mistral Batchならlocal engineを起動せずdefer、Docling/Graniteならsource provenanceと
+  audit fieldsだけを置換後qualityへ継承する契約、worker失敗時の空抽出をfixtureで固定。
+  `_run_post_audit_scan_replacement`へ切り出し、`_extract_pdf_chunks`は371行から352行、
+  同モジュールの未到達文予算は435から421へ下げた。coverage付き既定suiteは
+  `1,558 passed / 4 skipped / 5 deselected`、実資料取込baselineは`5 passed`。
 
 ## Active
 

@@ -2694,6 +2694,69 @@ def _extract_empty_pdf_with_docling(
     return chunks, quality, attempted_local_ocr
 
 
+def _run_post_audit_scan_replacement(
+    *,
+    attachment_key: str,
+    scope_item_key: str,
+    file_path: Path,
+    meta_base: dict[str, Any],
+    chunks: list,
+    quality: dict[str, Any],
+    source_metadata: dict[str, Any],
+    total_pages: int,
+    replacement_attempted: bool,
+    attempted_local_ocr: bool,
+    batch_defer: bool,
+    docling_worker: Any,
+    granite_worker: Any,
+    show_progress: bool,
+) -> tuple[list, dict[str, Any], bool, bool, bool]:
+    """Replace a rejected OCR text layer while retaining its audit verdict."""
+    if replacement_attempted:
+        return (
+            chunks, quality, attempted_local_ocr,
+            replacement_attempted, batch_defer,
+        )
+    route, route_reason = _scanned_pdf_ocr_route(
+        quality, total_pages=total_pages, item_key=scope_item_key,
+    )
+    if route == "mistral_batch":
+        return [], quality, attempted_local_ocr, True, True
+    if route not in {"docling", "granite"}:
+        return chunks, quality, attempted_local_ocr, False, batch_defer
+    replacement_attempted = True
+    attempted_local_ocr = True
+    pre_replacement_quality = dict(quality)
+    if show_progress:
+        print(
+            "[PROGRESS]   ↳ rejected/unverified scan OCR layer; "
+            f"parsing with {route} ({route_reason})...",
+            file=sys.__stderr__,
+        )
+    try:
+        chunks, quality = _structure_with_engine(
+            route,
+            file_path,
+            attachment_key,
+            meta_base,
+            docling_worker=docling_worker,
+            granite_worker=granite_worker,
+        )
+        quality = _attach_pdf_source_provenance(quality, source_metadata)
+        quality = _carry_ocr_layer_audit(quality, pre_replacement_quality)
+    except RuntimeError as exc:
+        print(
+            f"[WARN] Docling worker extraction failed: "
+            f"attachment={attachment_key} err={exc}",
+            file=sys.__stderr__,
+        )
+        chunks, quality = [], {}
+    return (
+        chunks, quality, attempted_local_ocr,
+        replacement_attempted, batch_defer,
+    )
+
+
 def _extract_pdf_chunks(
     *,
     a: Any,
@@ -2838,47 +2901,28 @@ def _extract_pdf_chunks(
             size=size,
             show_progress=bool(show_progress),
         )
-        # An OCR-layer scan is canonical only after the stage-2 audit
-        # explicitly accepts it.  Failed/unavailable audits follow the
-        # same page-count/cloud policy as a scan with no OCR layer.
-        # This is intentionally after the audit and before the generic
-        # PDF structural gate, so RapidOCR/NDLOCR cannot slip in first.
-        if not scanned_ocr_replacement_attempted:
-            scan_route, scan_route_reason = _scanned_pdf_ocr_route(
-                quality_info, total_pages=total_pages, item_key=scope_item_key,
-            )
-            if scan_route == "mistral_batch":
-                scanned_ocr_batch_defer = True
-                scanned_ocr_replacement_attempted = True
-                chunks = []
-            elif scan_route in {"docling", "granite"}:
-                scanned_ocr_replacement_attempted = True
-                attempted_local_ocr = True
-                pre_replacement_quality = dict(quality_info)
-                if show_progress:
-                    print(
-                        "[PROGRESS]   ↳ rejected/unverified scan OCR layer; "
-                        f"parsing with {scan_route} ({scan_route_reason})...",
-                        file=sys.__stderr__,
-                    )
-                try:
-                    chunks, quality_info = _structure_with_engine(
-                        scan_route, file_path, a.attachmentKey, meta_base,
-                        docling_worker=docling_worker, granite_worker=granite_worker,
-                    )
-                    quality_info = _attach_pdf_source_provenance(
-                        quality_info, source_metadata,
-                    )
-                    quality_info = _carry_ocr_layer_audit(
-                        quality_info, pre_replacement_quality,
-                    )
-                except RuntimeError as exc:
-                    print(
-                        f"[WARN] Docling worker extraction failed: "
-                        f"attachment={a.attachmentKey} err={exc}",
-                        file=sys.__stderr__,
-                    )
-                    chunks, quality_info = [], {}
+        (
+            chunks,
+            quality_info,
+            attempted_local_ocr,
+            scanned_ocr_replacement_attempted,
+            scanned_ocr_batch_defer,
+        ) = _run_post_audit_scan_replacement(
+            attachment_key=a.attachmentKey,
+            scope_item_key=scope_item_key,
+            file_path=file_path,
+            meta_base=meta_base,
+            chunks=chunks,
+            quality=quality_info,
+            source_metadata=source_metadata,
+            total_pages=total_pages,
+            replacement_attempted=scanned_ocr_replacement_attempted,
+            attempted_local_ocr=attempted_local_ocr,
+            batch_defer=scanned_ocr_batch_defer,
+            docling_worker=docling_worker,
+            granite_worker=granite_worker,
+            show_progress=bool(show_progress),
+        )
         # P1 (note 78): a prior run of this identical source file may
         # already have established that the document has no headings
         # (the LLM itself said so). That verdict is final for the file

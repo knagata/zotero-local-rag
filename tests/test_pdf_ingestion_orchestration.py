@@ -692,6 +692,139 @@ def test_too_small_ocr_audit_sample_keeps_searchable_text_with_a_warning_tag():
     status.assert_not_called()
 
 
+def _post_audit_scan_replacement(*, route, worker_error=None):
+    source_chunks = [
+        ("old-p1", "measured OCR text " * 10, {"page": 1, "reading_order": 0}),
+        ("old-p2", "more measured text " * 10, {"page": 2, "reading_order": 0}),
+    ]
+    source_quality = {
+        "parser": "pymupdf",
+        "total_pages": 2,
+        "has_outline": True,
+        "source_class": module.SCANNED_OCR_LAYER,
+    }
+    audited_quality = {
+        **source_quality,
+        "ocr_layer_quality": "degraded",
+        "ocr_layer_error_rate": 0.25,
+        "ocr_layer_verified_count": 3,
+        "ocr_layer_rejected_count": 1,
+        "ocr_layer_audit_reason": "measured",
+        "pre_replacement_only": "do not carry",
+    }
+    replacement = (
+        [("new-p1", "recovered", {"page": 1, "reading_order": 0})],
+        {"parser": route, "total_pages": 2, "has_outline": True},
+    )
+    docling_worker = Mock()
+    granite_worker = Mock()
+    deferred = module.PdfExtraction([], {}, deferred=True)
+    gate = module.PdfGatePlan("defer" if route == "mistral_batch" else (
+        "local_ocr_exhausted" if worker_error else "keep"
+    ), local_ocr_exhausted=bool(worker_error))
+    with (
+        patch.object(
+            module,
+            "extract_chunks_from_pdf",
+            return_value=(source_chunks, source_quality),
+        ),
+        patch.object(
+            module,
+            "_initial_scanned_pdf_ocr_route",
+            return_value=(None, "awaiting_ocr_layer_audit"),
+        ),
+        patch.object(
+            module,
+            "_audit_pdf_ocr_layer",
+            return_value=(source_chunks, audited_quality),
+        ),
+        patch.object(
+            module,
+            "_scanned_pdf_ocr_route",
+            return_value=(route, f"structure_engine_{route}"),
+        ) as choose_route,
+        patch.object(
+            module,
+            "_structure_with_engine",
+            return_value=replacement,
+            side_effect=worker_error,
+        ) as run_engine,
+        patch.object(module, "_pdf_gate_plan_for_extraction", return_value=gate) as plan,
+        patch.object(module, "_defer_pdf_to_mistral", return_value=deferred) as defer,
+    ):
+        result = _extract_pdf(
+            docling_worker=docling_worker,
+            granite_worker=granite_worker,
+            source_metadata={
+                "source_class": module.SCANNED_OCR_LAYER,
+                "pdf_producer": "synthetic scanner",
+            },
+            structure_recovery=True,
+        )
+    return result, choose_route, run_engine, plan, defer, docling_worker, granite_worker
+
+
+@pytest.mark.parametrize("route", ["docling", "granite"])
+def test_post_audit_scan_replacement_carries_the_measured_verdict(route):
+    result, choose_route, run_engine, plan, defer, docling, granite = (
+        _post_audit_scan_replacement(route=route)
+    )
+
+    assert [row[0] for row in result.chunks] == ["new-p1"]
+    assert result.quality["parser"] == route
+    assert result.quality["source_class"] == module.SCANNED_OCR_LAYER
+    assert result.quality["pdf_producer"] == "synthetic scanner"
+    assert result.quality["ocr_layer_quality"] == "degraded"
+    assert result.quality["ocr_layer_error_rate"] == 0.25
+    assert result.quality["ocr_layer_verified_count"] == 3
+    assert result.quality["ocr_layer_rejected_count"] == 1
+    assert result.quality["ocr_layer_audit_reason"] == "measured"
+    assert "pre_replacement_only" not in result.quality
+    choose_route.assert_called_once()
+    run_engine.assert_called_once_with(
+        route,
+        Path("synthetic.pdf"),
+        "ATT",
+        {"itemKey": "ITEM"},
+        docling_worker=docling,
+        granite_worker=granite,
+    )
+    assert plan.call_args.kwargs["attempted_local_ocr"] is True
+    assert plan.call_args.kwargs["scanned_batch_defer"] is False
+    defer.assert_not_called()
+
+
+def test_post_audit_scan_mistral_route_defers_without_running_a_local_engine():
+    result, _choose, run_engine, plan, defer, _docling, _granite = (
+        _post_audit_scan_replacement(route="mistral_batch")
+    )
+
+    assert result.deferred is True
+    run_engine.assert_not_called()
+    assert plan.call_args.kwargs["chunks"] == []
+    assert plan.call_args.kwargs["attempted_local_ocr"] is False
+    assert plan.call_args.kwargs["scanned_batch_defer"] is True
+    assert defer.call_args.kwargs["scanned_batch_defer"] is True
+    assert defer.call_args.kwargs["quality"]["ocr_layer_quality"] == "degraded"
+    assert defer.call_args.kwargs["quality"]["ocr_layer_audit_reason"] == "measured"
+
+
+def test_post_audit_scan_local_replacement_failure_remains_empty(capfd):
+    result, _choose, _run_engine, plan, defer, _docling, _granite = (
+        _post_audit_scan_replacement(
+            route="docling",
+            worker_error=RuntimeError("worker stopped"),
+        )
+    )
+
+    assert result.chunks == []
+    assert result.quality == {}
+    assert plan.call_args.kwargs["attempted_local_ocr"] is True
+    assert plan.call_args.kwargs["scanned_batch_defer"] is False
+    defer.assert_not_called()
+    assert "attachment=ATT" in capfd.readouterr().err
+
+
 def _born_digital_page_patch(*, patch_result=None, patch_error=None):
     source = (
         [
