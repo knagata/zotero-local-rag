@@ -75,10 +75,10 @@ Updated: 2026-08-11
   Chroma 513,683、FTS 513,684、manifest 614、lexical/relations quick check `ok`を確認した。
   既知の孤立FTS 1行は修復していない。backup後も空き70.6GB、indexing lockは残っていない。
   backup destinationはsource Chroma自身・配下を実パス比較でcopy前に拒否する。
-- userの明示変更によりlocal `.env`はPDF構造復元とAI TOCが1。AI TOC採用後の参照節を再解析する
-  local Docling flagも1。OCR layer audit、query expansion、LLM summaries、LLM reference
-  extraction、Mistral queueは0のまま。M5を実行すると適格PDFのAI目次で有料LLMを呼び得るが、
-  M5承認前には実行しない。
+- userの明示変更によりlocal `.env`はPDF構造復元、AI TOC、Mistral queueが1。AI TOC採用後の
+  参照節を再解析するlocal Docling flagも1。OCR layer audit、query expansion、LLM summaries、
+  LLM reference extractionは0のまま。queue生成は外部送信しないが、Mistral Batchの実送信・採用と
+  適格PDFのAI目次は別途有料call承認を要する。
   `docs/embedding-rebuild-readiness.md`がgo/no-go、実行入口、rollbackの記録である。
 - 150行超の関数は22件から16件へ減少。最大は
   `index_from_zotero._index_library`（1,092行）、次が`pdf_extract.extract_chunks_from_pdf`（607行）。
@@ -95,6 +95,11 @@ Updated: 2026-08-11
   `hnsw_validated=false`をMCP read pathが永続的に拒否するようにした。後段の
   `rebuild_document_structure.py`も非dry-run全体で共有indexing lockを持つ。indexer code
   fingerprintは`sha256:f3f1ebbac3e383b0c94d22c696caaad45c62d7eabc8b169d0b96a9ae01f5eec5`。
+- 811頁と正しく計測された長いPDFが、保存後の設定ではなく変更前のGranite routeへ入った。
+  SetupのGranite可用性確認が旧`.env`をprocess環境へ読み込み、設定保存後のrebuild childが
+  `subprocess.run`でその古い環境を継承する経路を確認した。新しいGranite結果はmanifestへ
+  commitされておらず、現在indexer/lockもない。M5はこのhandoffを修正・回帰テスト化するまで
+  Setupから開始しない。現`.env`の811頁判定は`mistral_batch`、feature整合性検査はpass。
 - review残件のP1は`run_db_audit.py`のreport出力先保護。現在の設定は全て`data/quality/`で安全だが、
   任意設定でactive DBを指せるためfollow-upへ記録した。埋め込み開始条件には含めず、今回未修正。
   残るP3はS2 author-less識別とflat PDF 3形状で、どちらも実データを読んでから方針を決める。
@@ -121,7 +126,8 @@ Updated: 2026-08-11
 `TASKS.md`の「2026-08-10 埋め込み開始までのマイルストーン」を進捗の正本とする。
 到達点は全件埋め込みの実行ではなく、`Setup.command`の`REBUILD`確認直前で止める。
 M0〜M4.3は完了し、runtime `781f59b461f75a3f2c9f666dc3edc46a5cbfd750`をreadinessへ
-pinした。現在はReady to Embedで、M5は別の明示承認を待つ。
+pinした。data planeの防壁は維持されているが、Setupの保存設定handoffがNO-GOのため、
+現在はM5を開始しない。
 
 1. **M1（完了）**: 通常attachment dispatchとpending候補の組立を決定的fixtureで固定した。
 2. **M2（完了）**: 最終出力確定だけを純粋関数へ分け、現行抽出・chunk境界を今回の世代として
@@ -139,7 +145,9 @@ pinした。現在はReady to Embedで、M5は別の明示承認を待つ。
    実装runtimeをreadinessへpinしてReady to Embedへ戻した。
 8. **M4.4（完了）**: 不完全clean generationをHNSW readyにせず、MCPもmanifest gateで拒否。
    後段structure writerを共有lockで排他し、埋め込み開始に直接必要なreview指摘を解消した。
-9. **M5（別承認）**: 明示承認後だけclean rebuildを実行する。完了後に
+9. **M4.5（未完了）**: Setupが保存前の`.env`をrebuild childへ継承する経路を修正し、
+   保存済みconfigが親processの古い値より優先される回帰テストを追加する。
+10. **M5（別承認）**: M4.5完了と明示承認後だけclean rebuildを実行する。完了後に
    `uv run python scripts/run_db_audit.py`でZotero・原本・DBの3監査を通す。
 
 ## Decision boundaries

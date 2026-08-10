@@ -318,8 +318,19 @@ Chroma/FTS書込み）の実行は、このマイルストーンとは別の明�
   - reviewで見つかった監査report出力先の一般化された保護は埋め込み処理そのものではないため
     今回は実装せず、follow-up registerへ残した。現在の3出力先は全て`data/quality/`配下である。
 
+- [ ] **M4.5（必須）: Setupからrebuildへ保存済み設定を確実に渡す**（2026-08-11）
+  - 811頁と正しく計測されたPDFが、保存後のlong=Mistralではなく変更前のGraniteで処理された。
+    ウィザードのGranite可用性確認が旧`.env`をprocess環境へ読み込み、その後に保存した新設定を
+    `load_dotenv_native`が上書きできないままrebuild childへ継承する経路を確認した。
+  - userの明示変更でlocal `PDF_MISTRAL_TOC_QUEUE_ENABLE=1`。外部送信・DB書込み無しの診断で
+    811頁は`engine=mistral`、`route=mistral_batch`、feature整合性pass。queue生成だけでは
+    有料OCRを送信せず、Batch実送信・採用は別承認とする。
+  - 保存済みconfigからchild環境を明示構築し、親processの古いPDF engine/feature値が勝たない
+    回帰テストを追加するまで、Setupの`REBUILD`はNO-GO。新しいGranite結果のmanifest commit、
+    active indexer、indexing lockはいずれも確認されていない。
+
 - [ ] **M5（必須・ユーザー承認待ち）: clean rebuildと全件埋め込みを実行する**
-  - M4到達後の別作業。明示承認を得てからのみ実行し、完了後は
+  - M4.5完了後の別作業。明示承認を得てからのみ実行し、完了後は
     `uv run python scripts/run_db_audit.py`でZotero・原本・DBの3監査を通す。
 
 ## Active
