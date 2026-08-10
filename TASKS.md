@@ -122,6 +122,59 @@
   150行超は17件から16件へ減少。未到達文予算385、coverage付き既定suite
   `1,565 passed / 4 skipped / 5 deselected`、実資料取込baseline`5 passed`を維持。
 
+### 2026-08-10 埋め込み開始までのマイルストーン
+
+到達点は、現行V3へ書き込まずに準備を完了し、`Setup.command`の`REBUILD`確認直前で
+停止した **Ready to Embed** 状態とする。全件clean rebuild（抽出・chunk生成・BGE-M3埋め込み・
+Chroma/FTS書込み）の実行は、このマイルストーンとは別の明示承認を要する。
+
+優先度は、**必須**が埋め込み開始を遮るgate、**高**が必須gateと並行できるリスク低減作業を表す。
+
+- [x] **M0（必須）: 埋め込みruntimeと安全機構のpreflightを通す**（2026-08-10）
+  - 現行BGE-M3/MPSを合成3文で2回実行し、`3 x 1024`、vector norm
+    `0.99999994`、最大差`0.0`を確認した。
+  - embedder設定、pipeline互換性拒否、attachment batch補償、Chroma/FTS一致、HNSW実query、
+    DB gate、実データ書込み防壁を含む対象52テストがpassした。
+  - 保存済み16文書の再計算vectorが全件cosine `1.0`だった既存測定と合わせ、モデル空間の
+    互換性には強い証拠がある。ただし保存済みfingerprintは変更せず、現V3も品質正本にしない。
+
+- [ ] **M1（必須・次）: `_index_library`の書込み前責務を決定的fixtureで固定して分離する**
+  - まずattachment種別dispatch、次に抽出結果からpending batch・artifact status・manifest候補を
+    組み立てる境界を棚卸しし、実extractor・実DBを使わないfixtureが届く順に1 seamずつ分離する。
+  - flush、attachment別ID照合、post-index pending、失敗時補償の既存順序を変えず、抽出heuristic、
+    OCR route、chunk境界には触れない。
+  - 完了条件: 対象契約テスト、coverage付き既定suite、`uv run pytest -m slow`、function-size/
+    coverage/lint各品質予算、compileall、fatal Ruff、公開import、差分検査がpassし、縮小値を採択する。
+
+- [ ] **M2（必須）: 抽出・chunk境界を今回のrebuild世代向けに凍結できるか判定する**
+  - `_index_library`分割後、`pdf_extract.extract_chunks_from_pdf`の決定フェーズに既存の合成fixtureと
+    実資料baselineがどこまで届くかを測り直す。届く責務の挙動不変分割だけは完了してよいが、
+    614行全体の分割自体を埋め込み開始条件にはしない。
+  - 実資料を読まずに決められないheuristic、OCR route、chunk境界変更へ到達した場合は実装せず、
+    現行/候補の生成物、影響範囲、選択肢を提示する。
+  - 完了条件: rebuild対象コードを固定し、同じ世代内でchunk本文・chunk IDを変える未解決変更が
+    ないと明記する。抽出コード変更済み資料はclean rebuildで全件再抽出し、旧chunkを流用しない。
+
+- [ ] **M3（高・M1/M2と並行可）: 隔離collectionで埋め込みscale pilotを通す**
+  - active V3とは別の一時data planeに、短文・長文・多言語を含む合成chunkをBGE-M3/MPSで書き、
+    batch throughput、peak RSS、安定する`UPSERT_BATCH_SIZE`とHNSW sync条件を記録する。
+  - 正常完走に加え、中断後の再開、途中upsert失敗の補償、close/reopen後のcount・ID集合一致、
+    HNSW実queryを確認する。現V3、manifest、fingerprint、FTS孤立行には触れない。
+  - 完了条件: clean rebuildに使うbatch設定、停止条件、概算所要時間・空き容量を再現可能な
+    コマンドと測定値で残す。
+
+- [ ] **M4（必須）: clean rebuildの実行前チェックリストを確定する**
+  - M1〜M3の完了、worktree clean、対象commit固定、Zotero inventory dry-run、現在V3のbackupと
+    読取確認、必要空き容量、indexing lock、BGE-M3/1024次元/正規化設定を確認する。
+  - 有料LLM/OCRを無効のままにし、現V3への増分取り込み、fingerprint手修正、孤立FTS行の
+    先行修復、保存済みchunkだけの再埋め込みを行わない。
+  - 完了条件: go/no-go表が全項目goになり、実行コマンドとrollback点を提示して、
+    `Setup.command`の`REBUILD`入力前で停止する。この状態を **Ready to Embed** とする。
+
+- [ ] **M5（必須・ユーザー承認待ち）: clean rebuildと全件埋め込みを実行する**
+  - M4到達後の別作業。明示承認を得てからのみ実行し、完了後は
+    `uv run python scripts/run_db_audit.py`でZotero・原本・DBの3監査を通す。
+
 ## Active
 
 ### 2026-08-09 事故: テスト実行が実 relations.db を消した

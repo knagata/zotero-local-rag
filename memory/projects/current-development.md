@@ -73,18 +73,21 @@ Updated: 2026-08-10
 
 ## Next work, in order
 
-1. PDF取込責務の挙動不変分割は完了。次は`_index_library`の決定的な責務を棚卸し、
-   合成fixtureが届く境界から1 seamずつ分離する。まずattachment種別dispatchと
-   extraction結果のartifact/manifest更新のどちらが独立可能かを調査する。
-2. 並行して`pdf_extract.extract_chunks_from_pdf`（614行）の分割点は、実資料baselineが
-   届く決定フェーズが確認できるまで実装しない。
-   今後もテストが届いた責務だけを1 seamずつ分離し、対象テストと
-   function-size ratchetを同期する。低coverage部分を機械的に移動して「検証済み」と扱わない。
-3. `_index_library`の挙動不変分割が終わったら、抽出・chunk境界を固定できたか再評価する。
-4. 抽出・chunk境界を一度固定した時点でV3をバックアップし、`Setup.command`の`REBUILD`から
-   clean rebuildする。保存済みfingerprintの手修正や孤立FTS 1行だけの先行修復はしない。
-5. rebuild後に`uv run python scripts/run_db_audit.py`を実行し、Zotero・原本・DBの3監査を
-   通す。その世代だけを実データ品質判断に使う。
+`TASKS.md`の「2026-08-10 埋め込み開始までのマイルストーン」を進捗の正本とする。
+到達点は全件埋め込みの実行ではなく、`Setup.command`の`REBUILD`確認直前で止める
+**Ready to Embed**。現在はM0完了、M1が次の作業である。
+
+1. **M1（必須）**: `_index_library`のattachment種別dispatchと、抽出結果からpending batch・
+   artifact/manifest候補を作る責務を、合成fixtureが届く順に挙動不変で分離する。
+2. **M2（必須）**: 分割後に抽出・chunk境界を固定できるか再評価する。
+   `pdf_extract.extract_chunks_from_pdf`（614行）は、実資料baselineが届く決定フェーズの
+   挙動不変分割だけを行い、全体分割は開始条件にしない。実資料判断が必要なら実装前に止める。
+3. **M3（高、並行可）**: active V3と別の一時data planeでBGE-M3/MPSのscale pilotを行い、
+   throughput、peak RSS、batch/HNSW設定、中断再開、ID一致、実queryを測る。
+4. **M4（必須）**: 対象commit、dry-run inventory、現V3 backup、容量、lock、埋め込み設定、
+   有料機能無効、rollback点をgo/no-go表で確定し、`REBUILD`入力前で停止する。
+5. **M5（別承認）**: 明示承認後だけclean rebuildを実行する。完了後に
+   `uv run python scripts/run_db_audit.py`でZotero・原本・DBの3監査を通す。
 
 ## Decision boundaries
 
