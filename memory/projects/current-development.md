@@ -55,9 +55,15 @@ Updated: 2026-08-10
   active V3とのpath重複を拒否する。BGE-M3/MPSの300合成chunkはbatch 128・sync 10000で
   `4.59 chunks/s`、peak RSS `900.53 MB`、close/reopen後300 IDs一致、HNSW query成功。
   batch 8の部分中断再開と、途中upsert失敗後のvector/FTS補償も成功した。
+- M2は完了。`pdf_extract.py`の既定suite到達は73%だが、フェーズ別ではfallback/OCR 6%、
+  finalize/error 28%に留まり、実資料baselineもcorrupted/OCR routeを対象外としている。そこで
+  chunk生成・OCR本体は動かさず、最終chunk ID検査とtext-defect付与だけを純粋な
+  `_finalize_pdf_output`へ分離した。`extract_chunks_from_pdf`は614行から607行になった。
+  今回のrebuild世代では現行heuristic、OCR route、chunk本文・IDを凍結し、P3 flat-PDF候補は
+  実資料評価を要する次世代変更へ送る。clean rebuildは旧chunkを流用せず全件再抽出する。
 - 150行超の関数は22件から16件へ減少。最大は
-  `index_from_zotero._index_library`（1,092行）、次が`pdf_extract.extract_chunks_from_pdf`（614行）。
-- 既定suiteは1,574 passed / 4 skipped / 5 deselected。実資料取込baselineは5 passed。
+  `index_from_zotero._index_library`（1,092行）、次が`pdf_extract.extract_chunks_from_pdf`（607行）。
+- 既定suiteは1,576 passed / 4 skipped / 5 deselected。実資料取込baselineは5 passed。
   抽出・取り込み・構造を変更したら
   `uv run pytest -m slow`も必要。
 - P1/P2の既知製品欠陥はない。残るP3はS2 author-less識別とflat PDF 3形状で、どちらも
@@ -84,16 +90,15 @@ Updated: 2026-08-10
 
 `TASKS.md`の「2026-08-10 埋め込み開始までのマイルストーン」を進捗の正本とする。
 到達点は全件埋め込みの実行ではなく、`Setup.command`の`REBUILD`確認直前で止める
-**Ready to Embed**。現在はM0・M1・M3完了、M2が次の作業である。
+**Ready to Embed**。現在はM0〜M3完了、M4が次の作業である。
 
 1. **M1（完了）**: 通常attachment dispatchとpending候補の組立を決定的fixtureで固定した。
-2. **M2（必須・次）**: 分割後に抽出・chunk境界を固定できるか再評価する。
-   `pdf_extract.extract_chunks_from_pdf`（614行）は、実資料baselineが届く決定フェーズの
-   挙動不変分割だけを行い、全体分割は開始条件にしない。実資料判断が必要なら実装前に止める。
+2. **M2（完了）**: 最終出力確定だけを純粋関数へ分け、現行抽出・chunk境界を今回の世代として
+   凍結した。同じ世代内でchunk本文・IDを変える未解決変更はない。
 3. **M3（完了）**: 暫定bulk設定は`UPSERT_BATCH_SIZE=128`、
    `CHROMA_HNSW_SYNC_THRESHOLD=10000`。300合成chunkで`4.59 chunks/s`・peak RSS
    `900.53 MB`を確認し、中断再開・補償・reopen・実queryも通した。
-4. **M4（必須）**: 対象commit、dry-run inventory、現V3 backup、容量、lock、埋め込み設定、
+4. **M4（必須・次）**: 対象commit、dry-run inventory、現V3 backup、容量、lock、埋め込み設定、
    有料機能無効、rollback点をgo/no-go表で確定し、`REBUILD`入力前で停止する。
 5. **M5（別承認）**: 明示承認後だけclean rebuildを実行する。完了後に
    `uv run python scripts/run_db_audit.py`でZotero・原本・DBの3監査を通す。

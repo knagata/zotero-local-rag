@@ -107,8 +107,10 @@ that the size number does not say.
   cloud. The way past this is to separate the deterministic decisions inside the
   PDF route from the extractor calls they choose between, so the decisions can
   be netted and the calls mocked.
-- `pdf_extract.extract_chunks_from_pdf` (614) divides along its existing decision
-  phases, but changes there still require slow extraction fixtures. The former
+- `pdf_extract.extract_chunks_from_pdf` (607) divides along its existing decision
+  phases, but changes there still require slow extraction fixtures. Its final
+  duplicate-ID/text-defect contract is now a pure helper; the chunk, fallback
+  and OCR phases remain frozen for the next clean-rebuild generation. The former
   graph (463), citation mapper (444), DB initializer (698), note indexer (185),
   and hierarchical retrieval (166) entries are all now at or below 150 lines.
 

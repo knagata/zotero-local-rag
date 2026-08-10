@@ -161,7 +161,7 @@ Chroma/FTS書込み）の実行は、このマイルストーンとは別の明�
   - 完了条件: 対象契約テスト、coverage付き既定suite、`uv run pytest -m slow`、function-size/
     coverage/lint各品質予算、compileall、fatal Ruff、公開import、差分検査がpassし、縮小値を採択する。
 
-- [ ] **M2（必須・次）: 抽出・chunk境界を今回のrebuild世代向けに凍結できるか判定する**
+- [x] **M2（必須）: 抽出・chunk境界を今回のrebuild世代向けに凍結する**（2026-08-10）
   - `_index_library`分割後、`pdf_extract.extract_chunks_from_pdf`の決定フェーズに既存の合成fixtureと
     実資料baselineがどこまで届くかを測り直す。届く責務の挙動不変分割だけは完了してよいが、
     614行全体の分割自体を埋め込み開始条件にはしない。
@@ -169,6 +169,22 @@ Chroma/FTS書込み）の実行は、このマイルストーンとは別の明�
     現行/候補の生成物、影響範囲、選択肢を提示する。
   - 完了条件: rebuild対象コードを固定し、同じ世代内でchunk本文・chunk IDを変える未解決変更が
     ないと明記する。抽出コード変更済み資料はclean rebuildで全件再抽出し、旧chunkを流用しない。
+  - coverage付き既定suiteで`pdf_extract.py`は745 statements中541到達（73%）。本体を
+    `init/TOC`、open/extract、fallback/OCR、page quality、集約/repeat、chunk emit、finalizeへ
+    区切った到達率は順に82%、60%、6%、67%、84%、70%、28%だった。実資料baselineは通常の
+    PDF/HTML/EPUB生成物を固定する一方、corrupted/OCR routeは決定性と費用のため対象外であり、
+    chunk生成・fallback/OCR本体を安全に移動できる網ではないと再確認した。
+  - 唯一十分に局所的な最終確定処理（重複chunk ID拒否、最終chunk本文の抽出欠陥検査）を純粋な
+    `_finalize_pdf_output`へ分離し、入力qualityを変更せず同じchunksを返す契約を合成fixtureで固定した。
+    `extract_chunks_from_pdf`は614行から607行へ縮小し、function-size予算を採択した。
+  - 今回のrebuild世代では現行の抽出heuristic、OCR route、language別閾値、chunk ID形式、short
+    chunk merge/rescueを凍結する。同じ世代内でchunk本文・chunk IDを変える未解決変更はない。
+    P3のflat-PDF候補は実資料評価を要する次世代変更として扱い、今回の開始条件には含めない。
+    clean rebuildでは全資料を現行コードで再抽出し、旧chunkを流用しない。
+  - 最終確認は対象22テスト、coverage付き既定suite
+    `1,576 passed / 4 skipped / 5 deselected`、実資料baseline`5 passed`。compileall、fatal Ruff、
+    公開import、function/lint/doc/coverage各予算、差分検査もpassし、直接改善した
+    `pdf_extract.py`の未到達予算だけを207から202へ採択した。
 
 - [x] **M3（高・M1/M2と並行可）: 隔離collectionで埋め込みscale pilotを通す**（2026-08-10）
   - active V3とは別の一時data planeに、短文・長文・多言語を含む合成chunkをBGE-M3/MPSで書き、

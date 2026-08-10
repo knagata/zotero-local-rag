@@ -888,6 +888,30 @@ def _ocr_page_with_tesseract(page: Any) -> List[str]:
                 pass
 
 
+def _finalize_pdf_output(
+    chunks: List[Tuple[str, str, Dict[str, Any]]],
+    quality_info: Dict[str, Any],
+) -> Tuple[List[Tuple[str, str, Dict[str, Any]]], Dict[str, Any]]:
+    """Validate final chunk identities and add text-defect provenance.
+
+    This is deliberately downstream of every extraction, fallback and chunking
+    decision. Keeping it pure makes the last PDF contract deterministic to test
+    without moving any heuristic or changing chunk text or identities.
+    """
+    ids = [chunk_id for (chunk_id, _text, _metadata) in chunks]
+    if len(ids) != len(set(ids)):
+        duplicate_count = len(ids) - len(set(ids))
+        raise RuntimeError(
+            f"Duplicate chunk ids generated ({duplicate_count}). This should not happen."
+        )
+
+    finalized_quality = dict(quality_info)
+    finalized_quality.update(
+        detect_text_defects("\n".join(text for (_chunk_id, text, _metadata) in chunks))
+    )
+    return chunks, finalized_quality
+
+
 def extract_chunks_from_pdf(
     pdf_path: Path,
     attachment_key: str,
@@ -1489,16 +1513,9 @@ def extract_chunks_from_pdf(
                     file=os.sys.__stderr__,
                 )
 
-    ids = [cid for (cid, _, _) in chunks]
-    if len(ids) != len(set(ids)):
-        dup = len(ids) - len(set(ids))
-        raise RuntimeError(f"Duplicate chunk ids generated ({dup}). This should not happen.")
-
     # Deterministic extraction-defect detection on the text we are actually
     # about to index.  Measured on the real chunk bodies rather than on raw
     # page text, because clean_extracted_text's NFKC pass has already resolved
     # preserved ligature codepoints by this point -- what survives here is what
     # would reach the index.
-    quality_info.update(detect_text_defects("\n".join(text for (_, text, _) in chunks)))
-
-    return chunks, quality_info
+    return _finalize_pdf_output(chunks, quality_info)
