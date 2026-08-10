@@ -240,7 +240,7 @@ Chroma/FTS書込み）の実行は、このマイルストーンとは別の明�
     function/lint/coverage/doc各予算、差分検査がpassした。M2で通した実資料baseline
     `5 passed`もこのrebuild runtimeの検証結果として維持する。
 
-- [~] **M4.1（必須）: AI目次の負キャッシュを対象限定で再評価可能にする**（2026-08-11）
+- [x] **M4.1（必須）: AI目次の負キャッシュを対象限定で再評価可能にする**（2026-08-11）
   - 同一mtime/sizeで保存済みの`insufficient_inferred_headings`／
     `insufficient_body_headings`を通常は従来どおり再利用し、明示
     `--refresh-ai-toc`時だけ迂回するようにした。独立したmanifest手術は行わず、通常の
@@ -263,7 +263,8 @@ Chroma/FTS書込み）の実行は、このマイルストーンとは別の明�
     `1,587 passed / 4 skipped / 5 deselected`、hosted feature強制off後の実資料baseline
     `5 passed`、compileall、fatal Ruff、公開import、function/lint/coverage各予算、差分検査に合格。
     `index_from_zotero.py`の未到達文上限385、150行超16件、lint 309件は悪化せず、品質予算の
-    採択変更は不要だった。実装commitをreadinessへpinするまでM5はHOLD。
+    採択変更は不要だった。検証済みruntime `012ad35a06aadcca28fdc5941ac1cfb446b7a189`を
+    readinessへpinし、Ready to Embedへ戻した。
 
 - [ ] **M5（必須・ユーザー承認待ち）: clean rebuildと全件埋め込みを実行する**
   - M4到達後の別作業。明示承認を得てからのみ実行し、完了後は

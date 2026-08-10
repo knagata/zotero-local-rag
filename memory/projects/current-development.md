@@ -107,8 +107,9 @@ Updated: 2026-08-11
 
 `TASKS.md`の「2026-08-10 埋め込み開始までのマイルストーン」を進捗の正本とする。
 到達点は全件埋め込みの実行ではなく、`Setup.command`の`REBUILD`確認直前で止める
-M0〜M4は完了。M4.1のAI TOC負キャッシュrefresh実装・検証も完了しており、実装commitを
-readinessへpinする短い記録commitだけが残る。pin完了まではM5をHOLDする。
+**Ready to Embed**。M0〜M4.1は完了。AI TOC負キャッシュrefreshを含む検証済みruntime
+`012ad35a06aadcca28fdc5941ac1cfb446b7a189`をreadinessへpin済みで、M5はユーザーの
+明示承認待ちである。AI TOC有効のため、M5承認は適格PDFの有料LLM呼出しも含む。
 
 1. **M1（完了）**: 通常attachment dispatchとpending候補の組立を決定的fixtureで固定した。
 2. **M2（完了）**: 最終出力確定だけを純粋関数へ分け、現行抽出・chunk境界を今回の世代として
@@ -118,8 +119,8 @@ readinessへpinする短い記録commitだけが残る。pin完了まではM5を
    `900.53 MB`を確認し、中断再開・補償・reopen・実queryも通した。
 4. **M4（完了）**: 対象commit、dry-run inventory、現V3 backup、容量、lock、埋め込み設定、
    有料機能無効、rollback点をgo/no-go表で確定し、`REBUILD`入力前で停止した。
-5. **M4.1（pin待ち）**: 対象限定のAI TOC負キャッシュrefreshは実装・検証済み。実装commitを
-   `docs/embedding-rebuild-readiness.md`へpinしてReady to Embedへ戻す。
+5. **M4.1（完了）**: 対象限定のAI TOC負キャッシュrefreshを実装・検証し、runtimeを
+   `docs/embedding-rebuild-readiness.md`へpinしてReady to Embedへ戻した。
 6. **M5（別承認）**: 明示承認後だけclean rebuildを実行する。完了後に
    `uv run python scripts/run_db_audit.py`でZotero・原本・DBの3監査を通す。
 
