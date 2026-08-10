@@ -58,7 +58,7 @@
     "src/ocr_cache.py": 6,
     "src/ocr_layer_audit.py": 8,
     "src/orphan_cleanup.py": 0,
-    "src/pdf_extract.py": 202,
+    "src/pdf_extract.py": 205,
     "src/pdf_provenance.py": 7,
     "src/pdf_toc_recovery.py": 53,
     "src/query_expansion.py": 4,

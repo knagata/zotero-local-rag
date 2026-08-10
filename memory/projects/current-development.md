@@ -88,6 +88,9 @@ Updated: 2026-08-11
   発生していない。active V3への書込みもなく、防壁追加後の再検証は全件hosted-offでpass。
   抽出・取り込み・構造を変更したら
   `uv run pytest -m slow`も必要。
+- coverage予算の`pdf_extract.py`は、M2以前の207からCI Linux実測205へ下げている。macOSでは
+  同じ`not slow and not corpus` selectorが202だが、その値を全環境へ要求するとLinux CIだけが
+  失敗するため、クロスプラットフォーム上限は205とする。製品コードや抽出挙動の差ではない。
 - P1/P2の既知製品欠陥はない。残るP3はS2 author-less識別とflat PDF 3形状で、どちらも
   実データを読んでから方針を決める。
 

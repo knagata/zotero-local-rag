@@ -296,6 +296,10 @@ Chroma/FTS書込み）の実行は、このマイルストーンとは別の明�
     temporary planeを使ったため、既存の`4.59 chunks/s`を無効にしない。品質予算の変更は不要。
     active V3、既存pilot/snapshot、有料機能、rebuildには触れていない。検証済みruntime
     `781f59b461f75a3f2c9f666dc3edc46a5cbfd750`をreadinessへpinし、Ready to Embedへ戻した。
+  - 初回pushのCIは製品テスト`1,593 passed / 6 skipped / 9 deselected`を通したが、Linuxでは
+    `pdf_extract.py`の未到達行が205、同じCI selectorのmacOS実測は202となり、coverage予算だけが
+    失敗した。M2で旧上限207をmacOS値202へ採択した際の環境差なので、CI実測の205へ補正した。
+    M2以前の207より厳しいラチェットは維持し、製品コード・抽出挙動・M4.3 runtimeは変更しない。
 
 - [ ] **M5（必須・ユーザー承認待ち）: clean rebuildと全件埋め込みを実行する**
   - M4到達後の別作業。明示承認を得てからのみ実行し、完了後は
