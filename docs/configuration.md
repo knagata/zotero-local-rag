@@ -149,6 +149,8 @@ AIの印刷ページ番号は採用せず、本文で再発見した見出しの
 対象PDFだけ再評価する場合は、`--refresh-ai-toc --force-reparse --attachment <KEY>`を使います
 （`--source-type pdf`も併用できます）。この明示指定時だけ負のキャッシュを迂回し、通常のmanifest commitが
 新しい判定へ置き換えます。manifestやfingerprintを手修正する必要はありません。
+解決後のscopeが空、またはEPUB/HTMLを含む場合は、AI目次を実行しない再埋め込みを成功扱いせず、
+正本への書込み前に停止します。
 
 ### ローカルOCR・クラウドOCR
 

@@ -28,7 +28,9 @@ from embedder import EmbedderConfig, create_embedding_function, open_chroma_coll
 from env_utils import load_dotenv_native
 from index_batch import AttachmentBatch, replace_attachment_batch
 from lexical_index import delete_by_attachment_keys, list_chunk_ids, upsert_chunks
-from v3_data_plane import chroma_dir, lexical_path, manifest_path
+from v3_data_plane import (
+    chroma_dir, lexical_path, manifest_path, resolve_configured_path,
+)
 
 load_dotenv_native(ROOT)
 
@@ -72,11 +74,14 @@ def _close(collection: Any) -> None:
         close()
 
 
-def _active_paths() -> tuple[Path, Path, Path]:
+def _active_paths() -> tuple[Path, Path, Path, Path]:
     return (
         chroma_dir(ROOT).resolve(),
         lexical_path(ROOT).resolve(),
         manifest_path(ROOT).resolve(),
+        resolve_configured_path(
+            ROOT, os.environ.get("RELATIONS_DB_PATH", ROOT / "data" / "relations.db"),
+        ).resolve(),
     )
 
 
@@ -93,9 +98,19 @@ def _assert_safe_output(path: Path | None) -> None:
     if path is None:
         return
     candidate = path.expanduser().resolve()
-    active_chroma, active_lexical, active_manifest = _active_paths()
+    active_chroma, active_lexical, active_manifest, active_relations = _active_paths()
+    sqlite_artifacts = {
+        artifact
+        for database in (active_lexical, active_relations)
+        for artifact in (
+            database,
+            Path(f"{database}-wal"),
+            Path(f"{database}-shm"),
+            Path(f"{database}-journal"),
+        )
+    }
     if (
-        candidate == active_lexical
+        candidate in sqlite_artifacts
         or candidate == active_manifest
         or candidate == active_chroma
         or active_chroma in candidate.parents

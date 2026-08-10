@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from scripts.embedding_scale_pilot import run_pilot
+from scripts.embedding_scale_pilot import main, run_pilot
 from tests.data_plane_fixture import temporary_data_plane
 from tests.synthetic_library import deterministic_embedding_function
 
@@ -73,3 +73,24 @@ def test_recovery_exercise_requires_a_partial_first_batch(tmp_path: Path):
             tmp_path / "pilot", deterministic_embedding_function(),
             batch_size=8, chunk_count=8,
         )
+
+
+@pytest.mark.parametrize("suffix", ["", "-wal", "-shm", "-journal"])
+def test_pilot_report_refuses_active_relations_database_artifacts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    suffix: str,
+):
+    relations = tmp_path / "active-relations.db"
+    output = Path(f"{relations}{suffix}")
+    original = b"sqlite-data-must-survive"
+    output.write_bytes(original)
+    monkeypatch.setenv("RELATIONS_DB_PATH", str(relations))
+
+    with pytest.raises(ValueError, match="report path overlaps the active V3 plane"):
+        main([
+            "--fake", "--data-plane", str(tmp_path / "pilot"),
+            "--chunks", "3", "--no-recovery", "--output", str(output),
+        ])
+
+    assert output.read_bytes() == original
+    assert not (tmp_path / "pilot").exists()

@@ -154,6 +154,16 @@ def backup_generation(
     sources: GenerationSources | None = None,
 ) -> dict[str, Any]:
     source = sources or resolve_sources(root)
+    destination_resolved = destination.expanduser().resolve()
+    source_chroma_resolved = source.chroma.expanduser().resolve()
+    if (
+        destination_resolved == source_chroma_resolved
+        or source_chroma_resolved in destination_resolved.parents
+    ):
+        raise ValueError(
+            "backup destination must be outside the source Chroma directory: "
+            f"{destination_resolved}"
+        )
     if destination.exists():
         raise FileExistsError(f"backup destination already exists: {destination}")
     required = (source.chroma, source.manifest, source.lexical, source.relations)

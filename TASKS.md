@@ -266,6 +266,23 @@ Chroma/FTS書込み）の実行は、このマイルストーンとは別の明�
     採択変更は不要だった。検証済みruntime `012ad35a06aadcca28fdc5941ac1cfb446b7a189`を
     readinessへpinし、Ready to Embedへ戻した。
 
+- [~] **M4.2（必須）: reviewで見つかった稼働データ防壁とrefresh scopeを修正する**（2026-08-11）
+  - embedding scale pilotの`--output`保護対象へ、設定済み`RELATIONS_DB_PATH`とSQLiteの
+    `-wal`／`-shm`／`-journal`を追加した。report path検査はembedder生成・pilot directory作成より
+    前に行い、拒否時に既存bytesが不変であることを失敗注入テストで固定した。
+  - V3 backupはdestinationとsource Chromaを`expanduser().resolve()`した実パスで比較し、
+    source Chroma自身または配下へのsnapshot作成をlock・directory作成・copytreeより前に拒否する。
+    失敗時に再帰destinationが存在せず、source segmentが不変であることを固定した。
+  - `--refresh-ai-toc`はparse時の明示filterだけでなく、Zotero discoveryと全scope filterの後に
+    解決対象が非空かつ全件PDFであることを検証する。EPUB/HTML、mixed item、存在しないkeyを
+    正本write前に拒否し、通常ingestionには影響しない契約を合成fixtureで固定した。
+  - 対象42テスト、coverage付き既定suite
+    `1,598 passed / 4 skipped / 5 deselected`、hosted-off実資料baseline`5 passed`、
+    compileall、fatal Ruff、公開import、function/lint/coverage各予算、文書・差分検査に合格。
+    refresh scopeの真偽テスト追加で`index_from_zotero.py`の未到達文上限を385から380へ下げた。
+    active V3、rollback snapshot、孤立FTS行、有料LLM/OCR、rebuildには触れていない。
+    実装commitをreadinessへpinするまでM5はHOLD。
+
 - [ ] **M5（必須・ユーザー承認待ち）: clean rebuildと全件埋め込みを実行する**
   - M4到達後の別作業。明示承認を得てからのみ実行し、完了後は
     `uv run python scripts/run_db_audit.py`でZotero・原本・DBの3監査を通す。

@@ -45,6 +45,7 @@ Updated: 2026-08-11
 - 同一sourceの確定済みAI TOC no-structure判定を、対象限定の`--refresh-ai-toc`＋
   `--force-reparse`で安全に再評価できるようにした。item/attachment scopeとfeature enableを
   必須にし、PDF以外・parser/OCR override・quality/retry modeとの曖昧な併用は拒否する。
+  discovery後にもscopeが非空かつPDF-onlyか検証し、EPUB/HTMLやmixed itemを正本write前に拒否する。
   通常の負キャッシュ節約とattachment commitは不変で、manifest/fingerprint手修正は不要。
 - 5種類のPDF gate action実行を`_dispatch_pdf_gate_action`に集約し、
   disabledタグとlocal-exhausted時のDocling非再実行を追加固定した。
@@ -59,6 +60,7 @@ Updated: 2026-08-11
   active V3とのpath重複を拒否する。BGE-M3/MPSの300合成chunkはbatch 128・sync 10000で
   `4.59 chunks/s`、peak RSS `900.53 MB`、close/reopen後300 IDs一致、HNSW query成功。
   batch 8の部分中断再開と、途中upsert失敗後のvector/FTS補償も成功した。
+  `--output`はactive relations DB本体とSQLite sidecarもpilot開始前に拒否する。
 - M2は完了。`pdf_extract.py`の既定suite到達は73%だが、フェーズ別ではfallback/OCR 6%、
   finalize/error 28%に留まり、実資料baselineもcorrupted/OCR routeを対象外としている。そこで
   chunk生成・OCR本体は動かさず、最終chunk ID検査とtext-defect付与だけを純粋な
@@ -70,6 +72,7 @@ Updated: 2026-08-11
   `data/backups/pre-clean-rebuild-20260810-4b58d6b`へ8.67GBのrollback snapshotを作り、別copyから
   Chroma 513,683、FTS 513,684、manifest 614、lexical/relations quick check `ok`を確認した。
   既知の孤立FTS 1行は修復していない。backup後も空き70.6GB、indexing lockは残っていない。
+  backup destinationはsource Chroma自身・配下を実パス比較でcopy前に拒否する。
 - userの明示変更によりlocal `.env`はPDF構造復元とAI TOCが1。AI TOC採用後の参照節を再解析する
   local Docling flagも1。OCR layer audit、query expansion、LLM summaries、LLM reference
   extraction、Mistral queueは0のまま。M5を実行すると適格PDFのAI目次で有料LLMを呼び得るが、
@@ -77,7 +80,7 @@ Updated: 2026-08-11
   `docs/embedding-rebuild-readiness.md`がgo/no-go、実行入口、rollbackの記録である。
 - 150行超の関数は22件から16件へ減少。最大は
   `index_from_zotero._index_library`（1,092行）、次が`pdf_extract.extract_chunks_from_pdf`（607行）。
-- 既定suiteは1,587 passed / 4 skipped / 5 deselected。実資料取込baselineは5 passed。
+- 既定suiteは1,598 passed / 4 skipped / 5 deselected。実資料取込baselineは5 passed。
   baseline子プロセスはlocal `.env`に関係なくhosted ingestion feature 6種を強制offにする。
   初回slow差分のPDFは全3頁でAI目次の最小30頁未満、AI TOC statusも無かったため有料callは
   発生していない。active V3への書込みもなく、防壁追加後の再検証は全件hosted-offでpass。
@@ -107,9 +110,8 @@ Updated: 2026-08-11
 
 `TASKS.md`の「2026-08-10 埋め込み開始までのマイルストーン」を進捗の正本とする。
 到達点は全件埋め込みの実行ではなく、`Setup.command`の`REBUILD`確認直前で止める
-**Ready to Embed**。M0〜M4.1は完了。AI TOC負キャッシュrefreshを含む検証済みruntime
-`012ad35a06aadcca28fdc5941ac1cfb446b7a189`をreadinessへpin済みで、M5はユーザーの
-明示承認待ちである。AI TOC有効のため、M5承認は適格PDFの有料LLM呼出しも含む。
+M0〜M4.1は完了。M4.2のreview修正も実装・検証済みで、実装commitをreadinessへpinする
+記録commitだけが残る。pin完了まではM5をHOLDする。
 
 1. **M1（完了）**: 通常attachment dispatchとpending候補の組立を決定的fixtureで固定した。
 2. **M2（完了）**: 最終出力確定だけを純粋関数へ分け、現行抽出・chunk境界を今回の世代として
@@ -121,7 +123,9 @@ Updated: 2026-08-11
    有料機能無効、rollback点をgo/no-go表で確定し、`REBUILD`入力前で停止した。
 5. **M4.1（完了）**: 対象限定のAI TOC負キャッシュrefreshを実装・検証し、runtimeを
    `docs/embedding-rebuild-readiness.md`へpinしてReady to Embedへ戻した。
-6. **M5（別承認）**: 明示承認後だけclean rebuildを実行する。完了後に
+6. **M4.2（pin待ち）**: pilot/backupの稼働データ防壁とrefresh解決後scopeを修正・検証済み。
+   実装commitをreadinessへpinしてReady to Embedへ戻す。
+7. **M5（別承認）**: 明示承認後だけclean rebuildを実行する。完了後に
    `uv run python scripts/run_db_audit.py`でZotero・原本・DBの3監査を通す。
 
 ## Decision boundaries

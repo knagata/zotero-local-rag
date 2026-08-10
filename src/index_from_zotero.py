@@ -994,6 +994,33 @@ def _select_attachment_scope(
     ]
 
 
+def _validate_ai_toc_refresh_targets(
+    args: argparse.Namespace, attachments: Iterable[ZoteroAttachment],
+) -> None:
+    """Fail before writes unless an AI-TOC refresh resolved only real PDFs."""
+    if not getattr(args, "refresh_ai_toc", False):
+        return
+    resolved = list(attachments)
+    if not resolved:
+        raise SystemExit(
+            "--refresh-ai-toc resolved no PDF attachments; verify the item/attachment key"
+        )
+    non_pdf = [
+        str(getattr(attachment, "attachmentKey", "") or "<unknown>")
+        for attachment in resolved
+        if _resolve_source_type(
+            getattr(attachment, "contentType", None),
+            Path(str(getattr(attachment, "pdf_path", ""))),
+            getattr(attachment, "source_type", None),
+        ) != "pdf"
+    ]
+    if non_pdf:
+        raise SystemExit(
+            "--refresh-ai-toc resolved non-PDF attachments; add --source-type pdf "
+            f"or use an exact PDF --attachment: {', '.join(non_pdf)}"
+        )
+
+
 def _retryable_failed(item_key: str) -> bool:
     return any(
         row.get("status") in {"failed", "degraded"} and bool(row.get("retryable"))
@@ -1879,6 +1906,7 @@ async def _discover_attachments(
                 and previous["quality"].get("parser") != "docling"
             )
         ]
+    _validate_ai_toc_refresh_targets(args, attachments)
     return DiscoveryResult(
         attachments=attachments,
         preflight_notes=preflight_notes,

@@ -175,7 +175,8 @@ uv run src/index_from_zotero.py --refresh-ai-toc --force-reparse \
 
 `--refresh-ai-toc`は独立したキャッシュ削除ではありません。指定したPDFの通常再取込中に限って
 manifest内のno-structure判定を再利用せず、再評価結果をattachmentの原子的commitで置き換えます。
-parser/OCR override経路とは併用できません。
+parser/OCR override経路とは併用できません。Zotero discovery後のscopeも非空かつPDF-onlyであることを
+書込み前に検証します。
 
 ### 主要な chunk ID 命名規則
 

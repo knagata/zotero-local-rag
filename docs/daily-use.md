@@ -163,3 +163,6 @@ uv run src/index_from_zotero.py --force-reparse --source-type epub --limit 20
 巻き込まない`--attachment`を使ってください。AI目次とPDF構造復元が有効である必要があり、
 parser/OCR override、`--check-quality`、`--retry-failed`とは併用できません。
 ページ数、native outline、本文品質など既存のAI目次適格条件は変更しません。
+Zoteroから解決した対象が0件または非PDFを含む場合も、再埋め込み前に停止します。親itemに
+EPUB/HTMLの兄弟添付がある場合は、上例のように`--attachment`または`--source-type pdf`で
+PDFだけへ絞ってください。

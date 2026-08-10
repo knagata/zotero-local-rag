@@ -87,6 +87,19 @@ def test_backup_refuses_to_overwrite_an_existing_destination(tmp_path):
         )
 
 
+def test_backup_refuses_a_destination_inside_source_chroma(tmp_path):
+    sources = _sources(tmp_path)
+    destination = sources.chroma / "backups" / "snapshot"
+
+    with pytest.raises(ValueError, match="outside the source Chroma directory"):
+        backup_v3_generation.backup_generation(
+            destination, root=tmp_path, sources=sources,
+        )
+
+    assert not destination.exists()
+    assert (sources.chroma / "segment.bin").read_bytes() == b"vector-data"
+
+
 def test_verification_refuses_an_incomplete_snapshot(tmp_path):
     snapshot = tmp_path / "snapshot"
     snapshot.mkdir()
