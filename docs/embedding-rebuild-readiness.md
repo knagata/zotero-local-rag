@@ -23,6 +23,13 @@ present; the incomplete active generation was snapshotted for diagnosis before M
 | Paid LLM/OCR | CONDITIONAL | The user explicitly enabled AI TOC and the Mistral queue. Queue generation does not submit paid OCR by itself; submission and adoption remain separate steps requiring explicit approval. OCR-layer audit, query expansion and LLM summaries/reference extraction remain `0`. The slow baseline forces all hosted ingestion features off. `PDF_AI_TOC_DOCLING_REFERENCES_ENABLE=1` is local Docling enrichment, not a hosted call. |
 | Incomplete attempted generation | GO TO RESTART | The pre-fix rebuild stopped at 33/618 and its incremental continuation stopped at 353/619. The active manifest has 352 files, one inflight attachment and durable `hnsw_validated=false`; no indexing lock remains and MCP refuses the generation. Because part of it used the stale OCR route, M5 must restart a clean rebuild rather than resume this generation. No Mistral batch submission/adoption was selected. |
 
+The first approved M5 attempt was stopped at 8/619 when monitoring observed an
+OCR-layer audit despite this record saying it was disabled. The saved `.env`
+had OCR-layer audit, query expansion, LLM summaries and LLM reference extraction
+set to `1`; all four were restored to `0`. That partial generation must also be
+discarded by restarting clean. One Mistral queue deferral was recorded, but no
+Batch submission or adoption was performed.
+
 The Setup handoff is fixed and verified. M5 still requires explicit approval,
 and it must replace the incomplete pre-fix generation from the beginning.
 Mistral queue submission/adoption and paid AI-TOC calls retain their separate

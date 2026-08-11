@@ -343,6 +343,11 @@ Chroma/FTS書込み）の実行は、このマイルストーンとは別の明�
 - [ ] **M5（必須・ユーザー承認待ち）: clean rebuildと全件埋め込みを実行する**
   - M4.5完了後の別作業。明示承認を得てからのみ実行し、完了後は
     `uv run python scripts/run_db_audit.py`でZotero・原本・DBの3監査を通す。
+  - **開始時監視**: user承認後の初回clean rebuildは8/619で停止した。実ログのOCR layer audit
+    `measured`から、保存済み`.env`がreadinessと逆に`OCR_LAYER_AUDIT_ENABLE=1`であることを検出。
+    同時にquery expansion、LLM summaries/reference extractionも1だった。4 featureを0へ戻し、
+    この部分世代は再利用せずclean rebuildを最初からやり直す。Mistral queue deferredは1件発生したが、
+    Batch送信・採用は行っていない。
 
 ## Active
 
