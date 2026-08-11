@@ -345,9 +345,10 @@ Chroma/FTS書込み）の実行は、このマイルストーンとは別の明�
     `uv run python scripts/run_db_audit.py`でZotero・原本・DBの3監査を通す。
   - **開始時監視**: user承認後の初回clean rebuildは8/619で停止した。実ログのOCR layer audit
     `measured`から、保存済み`.env`がreadinessと逆に`OCR_LAYER_AUDIT_ENABLE=1`であることを検出。
-    同時にquery expansion、LLM summaries/reference extractionも1だった。4 featureを0へ戻し、
-    この部分世代は再利用せずclean rebuildを最初からやり直す。Mistral queue deferredは1件発生したが、
-    Batch送信・採用は行っていない。
+    OCR layer auditを0へ戻し、この部分世代は再利用せずclean rebuildを最初からやり直す。
+    query expansion、LLM summaries/reference extraction、Mistral OCRはuser確認により1でよい。
+    再実行childは開始時environment固定のため前3機能は0のまま完走させ、後段で利用できるよう保存設定を
+    1へ戻した。Mistral queue deferredは1件発生したが、Batch送信・採用は行っていない。
 
 ## Active
 

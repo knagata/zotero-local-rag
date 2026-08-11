@@ -20,15 +20,17 @@ present; the incomplete active generation was snapshotted for diagnosis before M
 | Capacity | GO | After keeping the snapshot, 70.6 GB remained free. The isolated 300-chunk pilot projected about 7.49 GB of Chroma growth for 513,683 chunks; one complete active-generation equivalent is 8.67 GB. The measured run used a fresh temporary plane, so the new reuse rejection does not invalidate it. The remaining space covers either estimate with a wide margin. |
 | Indexing lock | GO | No `data/indexing.lock` remains. Snapshot creation held the production indexing lock and released it after verification. The rebuild entry point and its following non-dry-run document-structure rebuild both acquire the same lock used by re-OCR adoption and observed by MCP. |
 | Embedder | GO | Local `bge-m3`, MPS, 1,024 dimensions, normalized output. M0 measured deterministic output; M3 measured batch 128 / HNSW sync 10,000 and successful recovery/reopen/query behavior. The next generation will write the current model-state fingerprint; the old saved fingerprint is not edited or adopted. |
-| Paid LLM/OCR | CONDITIONAL | The user explicitly enabled AI TOC and the Mistral queue. Queue generation does not submit paid OCR by itself; submission and adoption remain separate steps requiring explicit approval. OCR-layer audit, query expansion and LLM summaries/reference extraction remain `0`. The slow baseline forces all hosted ingestion features off. `PDF_AI_TOC_DOCLING_REFERENCES_ENABLE=1` is local Docling enrichment, not a hosted call. |
+| Paid LLM/OCR | CONDITIONAL | The user explicitly enabled AI TOC, the Mistral queue, query expansion and LLM summaries/reference extraction. Queue generation does not submit paid OCR by itself; submission and adoption remain separate steps requiring explicit approval. OCR-layer audit remains `0`. The slow baseline forces all hosted ingestion features off. |
 | Incomplete attempted generation | GO TO RESTART | The pre-fix rebuild stopped at 33/618 and its incremental continuation stopped at 353/619. The active manifest has 352 files, one inflight attachment and durable `hnsw_validated=false`; no indexing lock remains and MCP refuses the generation. Because part of it used the stale OCR route, M5 must restart a clean rebuild rather than resume this generation. No Mistral batch submission/adoption was selected. |
 
 The first approved M5 attempt was stopped at 8/619 when monitoring observed an
-OCR-layer audit despite this record saying it was disabled. The saved `.env`
-had OCR-layer audit, query expansion, LLM summaries and LLM reference extraction
-set to `1`; all four were restored to `0`. That partial generation must also be
-discarded by restarting clean. One Mistral queue deferral was recorded, but no
-Batch submission or adoption was performed.
+OCR-layer audit despite this record saying it was disabled. OCR-layer audit was
+restored to `0`, and that partial generation was discarded by restarting clean.
+The user confirmed that query expansion, LLM summaries, LLM reference extraction
+and Mistral OCR may remain enabled; the running rebuild child still has the first
+three disabled because it received a fixed environment at process start. One
+Mistral queue deferral was recorded, but no Batch submission or adoption was
+performed.
 
 The Setup handoff is fixed and verified. M5 still requires explicit approval,
 and it must replace the incomplete pre-fix generation from the beginning.
@@ -49,9 +51,9 @@ The supported interactive entry point is:
 ./Setup.command
 ```
 
-Keep the current BGE profile and feature settings: AI TOC and Mistral queue
-generation are explicitly enabled, while OCR-layer audit, query expansion and
-LLM summaries/reference extraction remain disabled. Entering the literal
+Keep the current BGE profile and feature settings: AI TOC, Mistral queue
+generation, query expansion and LLM summaries/reference extraction are enabled,
+while OCR-layer audit remains disabled. Entering the literal
 `REBUILD` starts deletion of the incomplete generation, full extraction,
 eligible paid AI-TOC calls, chunk generation and embedding, and therefore still
 requires a new explicit approval. The

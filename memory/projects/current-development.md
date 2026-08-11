@@ -106,9 +106,10 @@ Updated: 2026-08-11
   `data/backups/pre-m5-incomplete-20260811`へ未完成世代を診断用に一式退避した。Chroma/FTS
   272,007行、manifest 352件、SQLite quick checkはいずれも`ok`。正常世代のrollbackではない。
 - user承認後のM5初回実行は8/619で停止した。監視ログのOCR layer audit `measured`を契機に、
-  保存済み`.env`でOCR layer audit、query expansion、LLM summaries/reference extractionが
-  readinessと逆に1だったことを検出し、4 featureを0へ戻した。この部分世代は再利用せず、
-  clean rebuildを再度最初から行う。Mistral queue deferred 1件、Batch送信・採用なし。
+  保存済み`.env`でOCR layer auditがreadinessと逆に1だったことを検出し、auditだけ0へ戻した。
+  この部分世代は再利用せずclean rebuildを再度最初から行う。query expansion、LLM summaries/
+  reference extraction、Mistral OCRはuser確認により1でよく、保存設定は1。再実行childは開始時環境を
+  固定しているため前3機能は0のまま完走させる。Mistral queue deferred 1件、Batch送信・採用なし。
 - review残件のP1は`run_db_audit.py`のreport出力先保護。現在の設定は全て`data/quality/`で安全だが、
   任意設定でactive DBを指せるためfollow-upへ記録した。埋め込み開始条件には含めず、今回未修正。
   残るP3はS2 author-less識別とflat PDF 3形状で、どちらも実データを読んでから方針を決める。
