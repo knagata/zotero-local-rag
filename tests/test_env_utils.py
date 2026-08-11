@@ -6,10 +6,20 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from src.env_utils import load_dotenv_native
+from src.env_utils import environment_with_saved_dotenv, load_dotenv_native
 
 
 class EnvUtilsTests(unittest.TestCase):
+    def test_child_environment_prefers_saved_config_to_stale_parent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / ".env").write_text("ENGINE=mistral\n", encoding="utf-8")
+            environment = environment_with_saved_dotenv(
+                root, {"ENGINE": "granite", "PATH": "/bin"},
+            )
+        self.assertEqual(environment["ENGINE"], "mistral")
+        self.assertEqual(environment["PATH"], "/bin")
+
     def test_policy_file_adds_values_without_overriding_environment(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

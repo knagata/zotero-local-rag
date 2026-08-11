@@ -95,39 +95,37 @@ Updated: 2026-08-11
   `hnsw_validated=false`をMCP read pathが永続的に拒否するようにした。後段の
   `rebuild_document_structure.py`も非dry-run全体で共有indexing lockを持つ。indexer code
   fingerprintは`sha256:f3f1ebbac3e383b0c94d22c696caaad45c62d7eabc8b169d0b96a9ae01f5eec5`。
-- 811頁と正しく計測された長いPDFが、保存後の設定ではなく変更前のGranite routeへ入った。
-  SetupのGranite可用性確認が旧`.env`をprocess環境へ読み込み、設定保存後のrebuild childが
-  `subprocess.run`でその古い環境を継承する経路を確認した。新しいGranite結果はmanifestへ
-  commitされておらず、現在indexer/lockもない。M5はこのhandoffを修正・回帰テスト化するまで
-  Setupから開始しない。現`.env`の811頁判定は`mistral_batch`、feature整合性検査はpass。
+- M4.5は完了。`environment_with_saved_dotenv`が保存済み`.env`/`.env.policy`を親環境へ上書きし、
+  indexer・structure rebuild・audit childへ明示的に渡す。親long=Granite/queue=0より保存済み
+  long=Mistral/queue=1が両rebuild childで勝つ回帰テストを追加し、対象54件、compileall、fatal Ruff、
+  差分検査に合格した。
+- userが修正前のclean rebuildを33/618で停止し、差分継続も353/619で停止した。active V3は
+  manifest 352件、inflight 1件、`hnsw_validated=false`の未完成世代で、indexing lockは無い。
+  MCPは拒否する。古いOCR routeで生成した部分世代は再利用せず、M5は最初からclean rebuildする。
+- M5直前に旧complete-generation snapshotの欠落を検出した。現activeは既に検索不可なので、
+  `data/backups/pre-m5-incomplete-20260811`へ未完成世代を診断用に一式退避した。Chroma/FTS
+  272,007行、manifest 352件、SQLite quick checkはいずれも`ok`。正常世代のrollbackではない。
 - review残件のP1は`run_db_audit.py`のreport出力先保護。現在の設定は全て`data/quality/`で安全だが、
   任意設定でactive DBを指せるためfollow-upへ記録した。埋め込み開始条件には含めず、今回未修正。
   残るP3はS2 author-less識別とflat PDF 3形状で、どちらも実データを読んでから方針を決める。
 
 ## Existing V3 database assessment
 
-現DBを品質評価の正本にしてはいけないが、コード整理や合成テストを続ける妨げにはならない。
+現DBは未完成世代なので品質評価・検索の正本にしてはいけないが、コード整理や合成テストを
+続ける妨げにはならない。
 
 - active planeは`zotero_paragraphs_v3` / `manifest_v3.json` / `lexical_v3.sqlite3`。
-- manifestは614添付。保存済みpipeline fingerprintは全entryで一致し、adopted entryは0。
-  HNSW validated、post-index pendingなし、inflightなし。
-- Chromaは513,683 IDs、FTSは513,684 IDs。FTS側に短い孤立行が1件あり、現状態では
-  cutoverのID一致gateを通らない。
-- 保存時と現在はいずれもBGE-M3・1024次元・正規化あり。保存済みmodel-state/pipeline
-  fingerprintは現在環境と不一致なので、既存collectionへの増分取り込みはfail-closedで拒否される。
-- ただし保存済み16文書を現在のBGE-M3で再計算した対ベクトルcosineは全件1.0。
-  実ベクトル空間は一致している強い証拠だが、fingerprintを現在値で上書きして「検証済み」に
-  してはならない。
-- pipeline fingerprintは抽出コードを含まない。現在のchunkが最新抽出規則で作られた保証はなく、
-  抽出コード変更後の既存資料には`--force-reparse`が必要。
+- manifestは352添付、inflight 1件、`hnsw_validated=false`。MCP read pathはこの世代を拒否する。
+- 修正前のstale OCR routeで一部を生成したため、差分継続やfingerprint手修正で採用しない。
+- 旧complete-generation snapshotは現存しない。診断用snapshot
+  `data/backups/pre-m5-incomplete-20260811`も未完成かつ検索不可なので品質正本ではない。
+  次のclean rebuildでのみ世代全体を置換し、個別storeを混ぜない。
 
 ## Next work, in order
 
 `TASKS.md`の「2026-08-10 埋め込み開始までのマイルストーン」を進捗の正本とする。
-到達点は全件埋め込みの実行ではなく、`Setup.command`の`REBUILD`確認直前で止める。
-M0〜M4.3は完了し、runtime `781f59b461f75a3f2c9f666dc3edc46a5cbfd750`をreadinessへ
-pinした。data planeの防壁は維持されているが、Setupの保存設定handoffがNO-GOのため、
-現在はM5を開始しない。
+M0〜M4.5は完了。修正前に開始・停止されたactive V3は未完成かつ検索不可なので再利用しない。
+次はユーザーの別承認後、`Setup.command`からclean rebuildを最初から行う。
 
 1. **M1（完了）**: 通常attachment dispatchとpending候補の組立を決定的fixtureで固定した。
 2. **M2（完了）**: 最終出力確定だけを純粋関数へ分け、現行抽出・chunk境界を今回の世代として
@@ -145,8 +143,8 @@ pinした。data planeの防壁は維持されているが、Setupの保存設�
    実装runtimeをreadinessへpinしてReady to Embedへ戻した。
 8. **M4.4（完了）**: 不完全clean generationをHNSW readyにせず、MCPもmanifest gateで拒否。
    後段structure writerを共有lockで排他し、埋め込み開始に直接必要なreview指摘を解消した。
-9. **M4.5（未完了）**: Setupが保存前の`.env`をrebuild childへ継承する経路を修正し、
-   保存済みconfigが親processの古い値より優先される回帰テストを追加する。
+9. **M4.5（完了）**: Setupの全DB lifecycle childで保存済みconfigを親processの古い値より優先し、
+   stale Granite/queue設定を使った事故の回帰テストを追加した。
 10. **M5（別承認）**: M4.5完了と明示承認後だけclean rebuildを実行する。完了後に
    `uv run python scripts/run_db_audit.py`でZotero・原本・DBの3監査を通す。
 

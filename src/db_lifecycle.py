@@ -14,6 +14,7 @@ import json
 import subprocess
 from pathlib import Path
 
+from src.env_utils import environment_with_saved_dotenv
 from src.v3_data_plane import chroma_collection_populated
 
 #: A rebuild destroys the Chroma collections, the manifest, the pipeline
@@ -67,11 +68,12 @@ def run_rebuild(root_dir: Path) -> int:
     typed REBUILD to confirm losing it -- that confirmation lives in the
     caller, not here.
     """
+    child_environment = environment_with_saved_dotenv(root_dir)
     for args in (
         ["uv", "run", "src/index_from_zotero.py", "--rebuild", "--progress"],
         ["uv", "run", "python", "scripts/rebuild_document_structure.py", "--all"],
     ):
-        result = subprocess.run(args, cwd=root_dir)
+        result = subprocess.run(args, cwd=root_dir, env=child_environment)
         if result.returncode != 0:
             return result.returncode
     return 0
@@ -80,6 +82,7 @@ def run_rebuild(root_dir: Path) -> int:
 def run_audit(root_dir: Path) -> int:
     result = subprocess.run(
         ["uv", "run", "python", "scripts/run_db_audit.py"], cwd=root_dir,
+        env=environment_with_saved_dotenv(root_dir),
     )
     return result.returncode
 

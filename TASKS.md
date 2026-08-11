@@ -318,16 +318,27 @@ Chroma/FTS書込み）の実行は、このマイルストーンとは別の明�
   - reviewで見つかった監査report出力先の一般化された保護は埋め込み処理そのものではないため
     今回は実装せず、follow-up registerへ残した。現在の3出力先は全て`data/quality/`配下である。
 
-- [ ] **M4.5（必須）: Setupからrebuildへ保存済み設定を確実に渡す**（2026-08-11）
+- [x] **M4.5（必須）: Setupからrebuildへ保存済み設定を確実に渡す**（2026-08-11）
   - 811頁と正しく計測されたPDFが、保存後のlong=Mistralではなく変更前のGraniteで処理された。
     ウィザードのGranite可用性確認が旧`.env`をprocess環境へ読み込み、その後に保存した新設定を
     `load_dotenv_native`が上書きできないままrebuild childへ継承する経路を確認した。
   - userの明示変更でlocal `PDF_MISTRAL_TOC_QUEUE_ENABLE=1`。外部送信・DB書込み無しの診断で
     811頁は`engine=mistral`、`route=mistral_batch`、feature整合性pass。queue生成だけでは
     有料OCRを送信せず、Batch実送信・採用は別承認とする。
-  - 保存済みconfigからchild環境を明示構築し、親processの古いPDF engine/feature値が勝たない
-    回帰テストを追加するまで、Setupの`REBUILD`はNO-GO。新しいGranite結果のmanifest commit、
-    active indexer、indexing lockはいずれも確認されていない。
+  - `env_utils.dotenv_values_native`へruntimeと同じ`.env`→`.env.policy`のprecedenceを集約し、
+    `environment_with_saved_dotenv`が親process環境へ保存済み値を上書きする。DB lifecycleはindexer、
+    structure rebuild、auditの全childへこの環境を明示的に渡す。親のlong=Granite/queue=0に対し、
+    保存済みlong=Mistral/queue=1が両rebuild childで勝つ回帰テストを追加した。
+  - 対象54件、compileall、fatal Ruff、差分検査に合格。既定suiteは`1,598 passed / 7 skipped /
+    5 deselected / 8 failed`で、失敗は停止済み部分generationの`hnsw_validated=false`を読む5件、
+    local Granite設定を隔離しないrouting 1件、既存lockテスト2件。M4.5対象テストは単独再実行も合格。
+  - userが修正前にclean rebuildを33/618で停止し、その後の差分更新を353/619で停止したため、
+    active V3はmanifest 352件・inflight 1件・`hnsw_validated=false`の未完成世代。lockは解放済みで
+    MCPは拒否する。修正前設定で生成した部分世代は再利用せず、M5はclean rebuildを最初から行う。
+  - M5直前の再検証で、以前記録したcomplete generationのrollback snapshotが実在しないことを検出。
+    activeは既に検索不可なので正常世代を失うrebuildではないが、開始前状態を診断用に
+    `data/backups/pre-m5-incomplete-20260811`へ一式退避した。Chroma/FTS 272,007行、manifest 352件、
+    SQLite quick checkはいずれも`ok`。これは未完成世代へのrollbackであり品質正本ではない。
 
 - [ ] **M5（必須・ユーザー承認待ち）: clean rebuildと全件埋め込みを実行する**
   - M4.5完了後の別作業。明示承認を得てからのみ実行し、完了後は

@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
+from typing import Mapping
 
 
 _log = logging.getLogger(__name__)
@@ -27,6 +28,37 @@ def _dotenv_value(raw: str) -> str:
     return value
 
 
+def dotenv_values_native(project_root: Path) -> dict[str, str]:
+    """Read the project's dotenv files using the runtime precedence rules."""
+    values: dict[str, str] = {}
+    for env_file in (project_root / ".env", project_root / ".env.policy"):
+        if not env_file.exists():
+            continue
+        try:
+            with open(env_file, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    k, v = line.split("=", 1)
+                    k = k.strip()
+                    v = _dotenv_value(v)
+                    if k:
+                        values.setdefault(k, v)
+        except (OSError, UnicodeError) as exc:
+            _log.warning("Could not read dotenv file %s: %s", env_file, exc)
+    return values
+
+
+def environment_with_saved_dotenv(
+    project_root: Path, base: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """Return a child environment where saved config beats stale parent values."""
+    environment = dict(os.environ if base is None else base)
+    environment.update(dotenv_values_native(project_root))
+    return environment
+
+
 def load_dotenv_native(project_root: Path | None = None) -> None:
     """Load .env and optional .env.policy without overriding existing vars.
 
@@ -46,19 +78,5 @@ def load_dotenv_native(project_root: Path | None = None) -> None:
         else:
             return
 
-    for env_file in (project_root / ".env", project_root / ".env.policy"):
-        if not env_file.exists():
-            continue
-        try:
-            with open(env_file, "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line or line.startswith("#") or "=" not in line:
-                        continue
-                    k, v = line.split("=", 1)
-                    k = k.strip()
-                    v = _dotenv_value(v)
-                    if k and k not in os.environ:
-                        os.environ[k] = v
-        except (OSError, UnicodeError) as exc:
-            _log.warning("Could not read dotenv file %s: %s", env_file, exc)
+    for key, value in dotenv_values_native(project_root).items():
+        os.environ.setdefault(key, value)

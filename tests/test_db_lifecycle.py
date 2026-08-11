@@ -107,6 +107,31 @@ class RunRebuildTests(unittest.TestCase):
         self.assertIn("--rebuild", first_args)
         self.assertTrue(any("rebuild_document_structure.py" in part for part in second_args))
 
+    def test_saved_config_overrides_stale_parent_environment_for_every_child(self):
+        ok = type("R", (), {"returncode": 0})()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / ".env").write_text(
+                "PDF_STRUCTURE_ENGINE_LONG=mistral\n"
+                "PDF_MISTRAL_TOC_QUEUE_ENABLE=1\n",
+                encoding="utf-8",
+            )
+            with patch.dict(
+                "os.environ",
+                {
+                    "PDF_STRUCTURE_ENGINE_LONG": "granite",
+                    "PDF_MISTRAL_TOC_QUEUE_ENABLE": "0",
+                },
+            ), patch("subprocess.run", return_value=ok) as mock_run:
+                code = db_lifecycle.run_rebuild(root)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(mock_run.call_count, 2)
+        for call in mock_run.call_args_list:
+            child_env = call.kwargs["env"]
+            self.assertEqual(child_env["PDF_STRUCTURE_ENGINE_LONG"], "mistral")
+            self.assertEqual(child_env["PDF_MISTRAL_TOC_QUEUE_ENABLE"], "1")
+
 
 class RunAuditTests(unittest.TestCase):
     def test_returns_the_subprocess_exit_code(self):
