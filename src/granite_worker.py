@@ -98,9 +98,11 @@ class GraniteWorker:
                 f"Granite worker returned unparseable output: {exc}"
             ) from exc
         if response.get("status") != "ok":
+            detail = str(response.get("traceback") or "").strip()
+            suffix = f"\nGranite traceback:\n{detail}" if detail else ""
             raise RuntimeError(
                 f"Granite extraction failed for {pdf_path}: "
-                f"{response.get('message') or 'unknown error'}"
+                f"{response.get('message') or 'unknown error'}{suffix}"
             )
         chunks = [
             (str(row[0]), str(row[1]), dict(row[2]))

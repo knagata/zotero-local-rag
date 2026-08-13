@@ -8,7 +8,7 @@ import unicodedata
 import zipfile
 from html import unescape
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Mapping, Tuple
 from urllib.parse import unquote
 
 from bs4 import BeautifulSoup  # type: ignore
@@ -1043,6 +1043,17 @@ def extract_chunks_from_html_snapshot(
 
 
 
+def _empty_epub_spine_is_blank(
+    page: Mapping[str, Any], spine_unit: int, image_primary: set[int],
+) -> bool:
+    """Classify only short, non-image EPUB wrappers as intentional blanks."""
+    return (
+        spine_unit not in image_primary
+        and int(page.get("visible_text_chars") or 0) <= 100
+        and not bool(page.get("has_nontext_content"))
+    )
+
+
 def extract_chunks_from_epub_snapshot(
     epub_path: Path,
     attachment_key: str,
@@ -1204,11 +1215,7 @@ def extract_chunks_from_epub_snapshot(
                             # intentionally non-searchable and never OCRed.
                             blank_spines.append(spine_unit)
                             ignored_image_spines.append(spine_unit)
-                        elif (
-                            spine_unit not in image_primary
-                            and int(page.get("visible_text_chars") or 0) == 0
-                            and not bool(page.get("has_nontext_content"))
-                        ):
+                        elif _empty_epub_spine_is_blank(page, spine_unit, image_primary):
                             blank_spines.append(spine_unit)
                         else:
                             failed_spines.append(spine_unit)

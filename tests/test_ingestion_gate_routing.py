@@ -350,6 +350,7 @@ class StructureRecoveryDisabledTests(unittest.TestCase):
         with (
             patch.object(module, "pdf_structure_recovery_enabled", return_value=True),
             patch.object(module, "mistral_batch_queue_enabled", return_value=False),
+            patch.object(module, "structure_engine_for", return_value="docling"),
         ):
             self.assertEqual(
                 self._route({"source_class": "scanned_no_text"}, 10),

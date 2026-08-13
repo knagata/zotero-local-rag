@@ -202,9 +202,6 @@ def rebuild_item(
         int(report.get("metadata_changed") or 0) for report in refresh_reports
     )
     if unchanged and not force:
-        if not refreshed_metadata_changed:
-            result["action"] = "skipped_unchanged"
-            return result
         try:
             resynced = _resync_chunk_metadata(item_key, collection_name, chunks)
         except Exception as exc:
@@ -216,7 +213,10 @@ def rebuild_item(
             raise
         result["chunk_metadata_resynced"] = resynced
         result["embeddings_unchanged"] = True
-        result["action"] = "metadata_resynced"
+        result["action"] = (
+            "metadata_resynced" if resynced or refreshed_metadata_changed
+            else "skipped_unchanged"
+        )
         return result
 
     mark_artifact_status(

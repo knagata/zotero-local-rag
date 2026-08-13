@@ -3,6 +3,40 @@
 正本: `SPEC.md`。実装・検証の永続的な履歴はこのファイルに残す。
 `evaluations/`のローカル生成レポートはZotero識別子や絶対パスを含み得るため追跡しない。
 
+### 2026-08-13 clean rebuild完了後の警告検証
+
+- [x] **M5 clean generationを監査可能な状態へ修復。** 619添付のうちEPUB優先PDF 1件を
+  正当に除外し、manifest 618添付とZotero required 618添付を一致させた。過去Batchの
+  content-addressed Mistral cacheから48件を追加課金なしで採用した。構造再構築後に見つかった
+  dangling node参照2,857件は、unchanged treeでもChroma metadataを再同期するよう修正して0件に
+  した。最終3監査は欠落頁・孤立chunk・dangling node・検索不能item・失敗itemがすべて0、
+  HNSW queryも合格した。
+- [x] **Graniteの不透明な失敗を再現・診断可能にした。** 失敗資料をfresh processで再実行し、
+  `Pipeline VlmPipeline failed`の原因がMLXメモリではなく、Granite出力の不正crop座標を
+  `DoclingDocument.load_from_doctags`がPillowへ渡した
+  `ValueError: Coordinate 'lower' is less than 'upper'`であることを確認。runnerが例外chainを
+  8,000文字上限でJSON応答へ保持し、親workerがfallback警告へ含めるようにした。
+- [x] **Docling workerのtimeout後清掃を強化。** 811頁資料で停止しないpreprocess thread、
+  closed output queue 105件、後続監視でdefunct workerを確認した。worker交換時はpipe closeと
+  `terminate → join → kill → join`を必ず行い、既に死んだprocessもreapしてからspawnする。
+- [x] **EPUB補助spineの誤coverage警告を狭く修正。** 実データ69冊・欠落扱い276 spineを原本
+  profileで全件照合し、270 spineが可視文字100字以下、非画像・非nontextのnav/title/wrapper
+  だった。この条件だけblankとして正にaccountし、非書込み再抽出で69冊中67冊がcomplete、
+  残る2冊6 spineは101〜700字のためfail-closedを維持した。本文chunk境界は変更しない。
+- [ ] **画像のみPDF頁を本文coverageと別artifactで表す。** 部分coverage PDF 32件・163頁を
+  原本とMistral応答で照合し、157頁は原本text layerなし、123頁はMistral markdownも空、
+  残りの大半も写真・図版だった。本文欠落として黙って採用せず、画像検索・caption生成の
+  契約を先に設計する。現DBの原本監査は欠落頁0なのでM5 validityは変更しない。
+- [ ] **RapidOCR空検出を文書単位に集約する。** rebuild logでは274回。空頁・図版頁にも出る
+  upstreamのstdout/loggerが混在するため、単純なstderr redirectは行わない。Docling subprocess
+  境界で頁別countをqualityへ返す方式を実装してから抑制する。
+- [ ] **AI TOC失敗12件とflat fallback 200 itemを実物評価する。** 本文は索引済み。件数だけで
+  alignment thresholdや構造heuristicを緩めない。
+- [x] **検証。** coverage付き既定suite `1,612 passed / 7 skipped / 5 deselected`、対象worker・
+  EPUB・監査fixture 60件、compileall、公開CLI import、fatal Ruff、function/lint/coverage予算、
+  `git diff --check`に合格。slow corpus 5件はローカルbaselineが無いため全件skipし、代わりに
+  active原本69 EPUBを非書込みで再抽出して上記67/69 completeを確認した。
+
 ### 2026-08-10 Codex向け入口・検索分解・テスト網の整理
 
 - [x] **`rag_search`を責務別に分解。** 432行のMCP handlerを110行に縮め、request準備、

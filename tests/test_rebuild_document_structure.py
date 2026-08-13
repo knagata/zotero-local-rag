@@ -153,6 +153,30 @@ def test_metadata_refresh_is_persisted_when_tree_is_unchanged():
     assert result["embeddings_unchanged"] is True
 
 
+def test_unchanged_tree_still_repairs_stale_chunk_node_ids():
+    chunks = _chunks()
+    previous = build_document_structure("ITEM", chunks)
+    with patch.object(rebuild_document_structure, "get_item_chunks", return_value=chunks), \
+            patch.object(
+                rebuild_document_structure, "refresh_source_structure_metadata",
+                return_value=(chunks, []),
+            ), patch.object(
+                rebuild_document_structure, "get_document_structure", return_value=previous,
+            ), patch.object(
+                rebuild_document_structure, "replace_document_structure",
+            ) as replace, patch.object(
+                rebuild_document_structure, "_resync_chunk_metadata", return_value=1,
+            ) as resync:
+        result = rebuild_document_structure.rebuild_item(
+            "ITEM", dry_run=False, force=False, run_id="test", collection_name="test",
+        )
+
+    replace.assert_not_called()
+    resync.assert_called_once_with("ITEM", "test", chunks)
+    assert result["action"] == "metadata_resynced"
+    assert result["chunk_metadata_resynced"] == 1
+
+
 def test_a_failed_source_refresh_does_not_abandon_the_rebuild():
     # Re-reading the original file improves heading metadata; it is not a
     # precondition for building the structure. Letting it abort the item also

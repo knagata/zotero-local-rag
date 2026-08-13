@@ -154,6 +154,22 @@ class DoclingWorkerTests(unittest.TestCase):
             _relieve_worker_memory_pressure()
         self.assertEqual(calls, ["cuda"])
 
+    def test_stop_escalates_to_kill_and_reaps_stuck_native_worker(self):
+        worker = DoclingWorker.__new__(DoclingWorker)
+        process = unittest.mock.Mock()
+        process.is_alive.side_effect = [True, True, True, False]
+        conn = unittest.mock.Mock()
+        worker._process = process
+        worker._parent_conn = conn
+
+        worker._stop_process(graceful=False)
+
+        process.terminate.assert_called_once_with()
+        process.kill.assert_called_once_with()
+        self.assertEqual(process.join.call_count, 2)
+        conn.close.assert_called_once_with()
+        self.assertIsNone(worker._process)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -63,11 +63,15 @@ class GraniteWorkerTests(unittest.TestCase):
         self.assertEqual(request["meta_base"]["itemKey"], "ITEM")
 
     def test_reported_error_becomes_a_runtime_error(self):
-        payload = json.dumps({"status": "error", "message": "model failed to load"})
+        payload = json.dumps({
+            "status": "error", "message": "Pipeline VlmPipeline failed",
+            "traceback": "ValueError: Coordinate lower is less than upper",
+        })
         with patch("subprocess.run", return_value=_completed(payload)):
             with self.assertRaises(RuntimeError) as caught:
                 self.worker.extract(Path("x.pdf"), "ATT", {})
-        self.assertIn("model failed to load", str(caught.exception))
+        self.assertIn("Pipeline VlmPipeline failed", str(caught.exception))
+        self.assertIn("Coordinate lower is less than upper", str(caught.exception))
 
     def test_a_crash_with_no_output_reports_stderr(self):
         with patch("subprocess.run", return_value=_completed("", "Killed: 9", 137)):

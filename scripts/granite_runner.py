@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import sys
+import traceback
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -71,7 +72,15 @@ def main() -> int:
             converter=build_converter(),
         )
     except Exception as exc:  # noqa: BLE001 - reported to the parent, not raised
-        json.dump({"status": "error", "message": f"{type(exc).__name__}: {exc}"}, sys.stdout)
+        # Docling wraps the useful cause (for example an invalid Granite bbox)
+        # in the generic ``Pipeline VlmPipeline failed`` exception.  Preserve
+        # the bounded exception chain across the JSON process boundary.
+        detail = "".join(traceback.format_exception(exc)).strip()
+        json.dump({
+            "status": "error",
+            "message": f"{type(exc).__name__}: {exc}",
+            "traceback": detail[-8000:],
+        }, sys.stdout)
         return 1
 
     quality_info = dict(quality_info)

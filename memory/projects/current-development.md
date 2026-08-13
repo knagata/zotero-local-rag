@@ -1,12 +1,28 @@
 # Current development handoff
 
-Updated: 2026-08-11
+Updated: 2026-08-13
 
 ## Objective
 
 運用開始前に、現行の抽出・取り込み経路を挙動不変で整理し、決定的テスト網を広げる。
 その後に現在のBGE-M3と現行コードでV3データプレーンをclean rebuildし、監査済みDBを
 検索品質・クラスタ・引用同定・flat PDF復元の評価基準にする。
+
+## 2026-08-13 M5 completion
+
+- clean rebuildと既存Mistral cache 48件の採用は完了。active V3はmanifest 618添付、
+  `hnsw_validated=true`、inflight/failed/deferred 0。Zotero required 618、原本欠落頁0、
+  orphan/dangling/unretrievable 0、cutover監査593/593合格。
+- rebuild後に検出したunchanged structureのChroma node metadata未同期を修正し、2,857件から0へ
+  戻した。Zotero監査はattachment-local excludeと、committed EPUB siblingを持つ
+  `rag:prefer-epub` PDFを取込と同じ規則で扱う。
+- 警告検証でGranite失敗の内因を不正crop座標と再現。例外chainをrunner境界で保持する。
+  Docling workerはtimeout/crash交換時にkillまでescalateして必ずreapする。
+- EPUB部分coverage 69冊・276 spineのうち270は100字以下の非画像補助wrapperだった。狭いblank
+  判定の非書込み再抽出で67冊がcomplete、残る2冊6 spineはfail-closed。active DBは監査済み旧抽出
+  のままで、本文chunkは同一。次にこのmetadata-only差分を採用する場合もattachment scopeを明示する。
+- PDF部分coverage 32件・163頁は主に画像頁。本文と画像artifactを分ける設計なしに自動採用しない。
+  RapidOCR空結果274回はsubprocessからcountを返す仕組みを作るまでログ抑制しない。
 
 ## Read first
 

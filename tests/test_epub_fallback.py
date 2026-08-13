@@ -216,6 +216,33 @@ def test_epub_records_failed_spine_and_rejects_partial_dom_success(tmp_path: Pat
     assert "source_unit_failures" in verdict["reasons"]
 
 
+def test_short_nontext_free_navigation_spine_is_accounted_as_blank(tmp_path: Path):
+    article = "Readable source chapter with complete scholarly context. " * 20
+    path = _epub(
+        tmp_path / "short-nav.epub",
+        documents=[
+            ("text.xhtml", f"<html><body><p>{article}</p></body></html>"),
+            ("nav.xhtml", "<html><body><nav>Contents</nav></body></html>"),
+        ],
+    )
+    from src import html_extract
+
+    actual = html_extract._extract_epub_document_blocks
+
+    def omit_navigation(raw_html: str, **kwargs):
+        if "Contents" in raw_html:
+            return []
+        return actual(raw_html, **kwargs)
+
+    with patch.object(html_extract, "_extract_epub_document_blocks", side_effect=omit_navigation):
+        chunks, quality = extract_chunks_from_epub_snapshot(path, "ATT", {})
+
+    assert chunks
+    assert quality["blank_spines"] == [2]
+    assert quality["failed_spines"] == []
+    assert validate_source_coverage(quality["source_coverage"])["passed"] is True
+
+
 def test_structured_epub_uses_dom_caption_without_ocring_its_image(tmp_path: Path):
     article = " ".join([
         "Readable scholarly chapter text establishes the argument with citations and context."

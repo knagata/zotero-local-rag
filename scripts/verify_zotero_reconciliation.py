@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -37,6 +38,23 @@ from src.zotero_source_localapi import (  # noqa: E402
 # .env の MANIFEST_PATH は相対パス。素の Path() だとCWD基準になり、
 # プロジェクトルート以外から起動すると別のファイルを見にいく（2026-08-04）。
 MANIFEST_PATH = manifest_path(ROOT)
+RAG_EXCLUDE_TAG = (
+    os.environ.get("ZOTERO_RAG_EXCLUDE_TAG") or "rag:exclude"
+).strip().casefold()
+RAG_PREFER_EPUB_TAG = (
+    os.environ.get("ZOTERO_RAG_PREFER_EPUB_TAG") or "rag:prefer-epub"
+).strip().casefold()
+
+
+def _normalized_tags(value: object) -> set[str]:
+    """Return attachment-local Zotero tags using ingestion's normalization."""
+    if not isinstance(value, list):
+        return set()
+    return {
+        str(row.get("tag") or "").strip().casefold()
+        for row in value
+        if isinstance(row, dict) and str(row.get("tag") or "").strip()
+    }
 
 
 async def eligible_zotero_attachments(api: ZoteroLocalAPI) -> dict[str, dict]:
@@ -65,6 +83,7 @@ async def eligible_zotero_attachments(api: ZoteroLocalAPI) -> dict[str, dict]:
             "contentType": data.get("contentType"),
             "filename": data.get("filename"),
             "parentItem": data.get("parentItem"),
+            "rag_excluded": RAG_EXCLUDE_TAG in _normalized_tags(data.get("tags")),
         }
     return eligible
 
@@ -84,7 +103,41 @@ async def main_async(args: argparse.Namespace, api: ZoteroLocalAPI | None = None
         key: value for key, value in eligible.items()
         if str(value.get("linkMode") or "").casefold() == "linked_url"
     }
-    required = {key: value for key, value in eligible.items() if key not in unindexable}
+    # Zotero's paginated attachment listing can omit or lag attachment-local
+    # tags.  Avoid 1 request per attachment, but resolve every would-be
+    # manifest miss through the same per-item endpoint ingestion uses before
+    # declaring the rebuild incomplete.
+    possible_missing = set(eligible) - manifest_keys - set(unindexable)
+    preferred_pdf_excluded: dict[str, dict] = {}
+    for key in possible_missing:
+        item = await api.get_item(key)
+        _, item_data = ZoteroLocalAPI._unwrap_item(item)
+        eligible[key]["rag_excluded"] = (
+            RAG_EXCLUDE_TAG in _normalized_tags(item_data.get("tags"))
+        )
+        parent_key = eligible[key].get("parentItem")
+        if eligible[key]["rag_excluded"] or eligible[key]["source_type"] != "pdf" or not parent_key:
+            continue
+        usable_epub_sibling = any(
+            sibling_key in manifest_keys
+            and sibling.get("parentItem") == parent_key
+            and sibling.get("source_type") == "epub"
+            for sibling_key, sibling in eligible.items()
+        )
+        if not usable_epub_sibling:
+            continue
+        parent = await api.get_item(str(parent_key))
+        _, parent_data = ZoteroLocalAPI._unwrap_item(parent)
+        has_prefer_epub = RAG_PREFER_EPUB_TAG in _normalized_tags(parent_data.get("tags"))
+        if has_prefer_epub:
+            preferred_pdf_excluded[key] = eligible[key]
+    excluded = {
+        key: value for key, value in eligible.items() if value.get("rag_excluded") is True
+    }
+    required = {
+        key: value for key, value in eligible.items()
+        if key not in unindexable and key not in excluded and key not in preferred_pdf_excluded
+    }
     missing = sorted(set(required) - manifest_keys)
     report = {
         "manifest_path": str(manifest_path.resolve()),
@@ -93,6 +146,14 @@ async def main_async(args: argparse.Namespace, api: ZoteroLocalAPI | None = None
         "unindexable_linked_url_attachments": [
             {"attachment_key": key, "reason_code": "linked_url_no_local_file", **unindexable[key]}
             for key in sorted(unindexable)
+        ],
+        "rag_excluded_attachments": [
+            {"attachment_key": key, "reason_code": "rag_exclude_tag", **excluded[key]}
+            for key in sorted(excluded)
+        ],
+        "preferred_pdf_excluded_attachments": [
+            {"attachment_key": key, "reason_code": "preferred_epub_sibling_committed", **value}
+            for key, value in sorted(preferred_pdf_excluded.items())
         ],
         "manifest_attachments": len(manifest_keys),
         "missing_required_from_manifest": [
@@ -106,7 +167,9 @@ async def main_async(args: argparse.Namespace, api: ZoteroLocalAPI | None = None
     print(json.dumps(
         {"passed": report["passed"], "zotero_eligible_attachments": len(eligible),
          "required_attachments": len(required), "manifest_attachments": len(manifest_keys),
-         "missing_required_count": len(missing), "unindexable_linked_url_count": len(unindexable)},
+         "missing_required_count": len(missing), "unindexable_linked_url_count": len(unindexable),
+         "rag_excluded_count": len(excluded),
+         "preferred_pdf_excluded_count": len(preferred_pdf_excluded)},
         ensure_ascii=False,
     ))
     return 0 if report["passed"] else 2

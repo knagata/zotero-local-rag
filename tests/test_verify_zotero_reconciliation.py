@@ -13,7 +13,7 @@ import importlib.util
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
@@ -27,12 +27,13 @@ from zotero_source_localapi import ZoteroLocalAPI  # noqa: E402
 
 
 def _attachment(key, *, item_type="attachment", content_type="application/pdf",
-                filename="doc.pdf", link_mode="imported_file", parent="ITEM"):
+                filename="doc.pdf", link_mode="imported_file", parent="ITEM", tags=None):
     return {
         "key": key,
         "data": {
             "key": key, "itemType": item_type, "contentType": content_type,
             "filename": filename, "linkMode": link_mode, "parentItem": parent,
+            "tags": tags or [],
         },
     }
 
@@ -79,6 +80,8 @@ class ReconciliationReportTests(unittest.TestCase):
         api = ZoteroLocalAPI()
         raw = [_attachment("MISSING"), _attachment("PRESENT")]
         with patch.object(api, "list_pdf_attachments", return_value=raw), \
+             patch.object(api, "get_item", AsyncMock(side_effect=lambda key: next(
+                 row for row in raw if row["key"] == key))), \
              patch.object(MODULE, "load_manifest", return_value={"files": {"PRESENT": {}}}):
             exit_code = asyncio.run(MODULE.main_async(args, api=api))
         self.assertEqual(exit_code, 2)
@@ -98,6 +101,46 @@ class ReconciliationReportTests(unittest.TestCase):
         raw = [_attachment("LINK", link_mode="linked_url")]
         with patch.object(api, "list_pdf_attachments", return_value=raw), \
              patch.object(MODULE, "load_manifest", return_value={"files": {}}):
+            exit_code = asyncio.run(MODULE.main_async(args, api=api))
+        self.assertEqual(exit_code, 0)
+
+    def test_attachment_local_rag_exclusion_does_not_block_reconciliation(self):
+        args = type("Args", (), {"output": None})()
+        api = ZoteroLocalAPI()
+        raw = [_attachment("EXCLUDED")]
+        precise = _attachment("EXCLUDED", tags=[{"tag": "RAG:Exclude"}])
+        with patch.object(api, "list_pdf_attachments", return_value=raw), \
+             patch.object(api, "get_item", AsyncMock(return_value=precise)) as fetched, \
+             patch.object(MODULE, "load_manifest", return_value={"files": {}}):
+            exit_code = asyncio.run(MODULE.main_async(args, api=api))
+        self.assertEqual(exit_code, 0)
+        fetched.assert_awaited_once_with("EXCLUDED")
+
+    def test_parent_rag_exclusion_does_not_exclude_attachment(self):
+        # Reconciliation reads attachment-local tags only, matching ingestion.
+        args = type("Args", (), {"output": None})()
+        api = ZoteroLocalAPI()
+        raw = [_attachment("REQUIRED")]
+        with patch.object(api, "list_pdf_attachments", return_value=raw), \
+             patch.object(api, "get_item", AsyncMock(return_value=raw[0])), \
+             patch.object(MODULE, "load_manifest", return_value={"files": {}}):
+            exit_code = asyncio.run(MODULE.main_async(args, api=api))
+        self.assertEqual(exit_code, 2)
+
+    def test_preferred_pdf_with_committed_epub_sibling_does_not_block(self):
+        args = type("Args", (), {"output": None})()
+        api = ZoteroLocalAPI()
+        raw = [
+            _attachment("PDF", parent="PARENT"),
+            _attachment("EPUB", content_type="application/epub+zip", filename="doc.epub",
+                        parent="PARENT"),
+        ]
+        parent = {"key": "PARENT", "data": {"key": "PARENT", "tags": [
+            {"tag": "rag:prefer-epub"},
+        ]}}
+        with patch.object(api, "list_pdf_attachments", return_value=raw), \
+             patch.object(api, "get_item", AsyncMock(side_effect=[raw[0], parent])), \
+             patch.object(MODULE, "load_manifest", return_value={"files": {"EPUB": {}}}):
             exit_code = asyncio.run(MODULE.main_async(args, api=api))
         self.assertEqual(exit_code, 0)
 

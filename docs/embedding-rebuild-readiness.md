@@ -1,6 +1,21 @@
 # Clean rebuild readiness — 2026-08-10
 
-Updated: 2026-08-11
+Updated: 2026-08-13
+
+## M5 result
+
+M5 is complete; this file is retained as the pre-run decision record. The active
+generation has 618 manifest attachments, no inflight/failed/deferred attachment,
+and `hnsw_validated=true`. Zotero reconciliation resolved 619 eligible attachments
+to 618 required attachments because one PDF has a committed EPUB sibling under
+`rag:prefer-epub`. Source verification reports zero lost pages, orphan chunks,
+dangling node references, unretrievable items, and unreadable source documents.
+The new-only cutover audit passed all 593 selected items.
+
+The 48 rebuild deferrals were satisfied from the verified 2026-08-02 Mistral
+content-addressed cache; no new Batch was submitted. Post-run warning investigation
+and remaining quality work are recorded in `TASKS.md` under
+“2026-08-13 clean rebuild完了後の警告検証”.
 
 This is the go/no-go record for the next V3 clean rebuild. A rebuild attempted
 before M4.5 was fixed was stopped, and its incomplete active generation is not a

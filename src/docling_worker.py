@@ -154,6 +154,42 @@ class DoclingWorker:
         self._parent_conn = parent_conn
         self._process = process
 
+    def _stop_process(self, *, graceful: bool) -> None:
+        """Close the pipe and reap a worker, escalating to SIGKILL if needed."""
+        process = self._process
+        conn = self._parent_conn
+        if process is None:
+            return
+        alive = process.is_alive()
+        if not alive:
+            process.join(timeout=0)
+        if graceful and alive and conn is not None:
+            try:
+                conn.send(("shutdown",))
+            except Exception:
+                pass
+            process.join(timeout=5)
+        if process.is_alive():
+            process.terminate()
+            process.join(timeout=5)
+        if process.is_alive():
+            # Native OCR threads can ignore graceful shutdown and SIGTERM.
+            # kill()+join() prevents the defunct worker observed after a
+            # document_timeout from surviving into later attachments.
+            process.kill()
+            process.join(timeout=5)
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        self._process = None
+        self._parent_conn = None
+
+    def _replace_process(self) -> None:
+        self._stop_process(graceful=False)
+        self._start()
+
     def extract(
         self, pdf_path: Path, attachment_key: str, meta_base: dict
     ) -> Tuple[List[Any], Dict[str, Any]]:
@@ -169,30 +205,25 @@ class DoclingWorker:
         """
         if self._process is None or not self._process.is_alive():
             # Crashed since the last call; respawn before proceeding.
-            self._start()
+            self._replace_process()
 
         try:
             self._parent_conn.send(("extract", str(pdf_path), attachment_key, meta_base))
         except (BrokenPipeError, EOFError, OSError) as exc:
-            self._start()
+            self._replace_process()
             raise RuntimeError(
                 f"Docling worker crashed while processing: {pdf_path}"
             ) from exc
 
         if not self._parent_conn.poll(self.timeout_sec):
             # Hung. Kill the presumably-stuck worker and respawn for next time.
-            try:
-                self._process.terminate()
-                self._process.join(timeout=5)
-            except Exception:
-                pass
-            self._start()
+            self._replace_process()
             raise RuntimeError(f"Docling worker timed out after {self.timeout_sec}s: {pdf_path}")
 
         try:
             response = self._parent_conn.recv()
         except (EOFError, BrokenPipeError, OSError) as exc:
-            self._start()
+            self._replace_process()
             raise RuntimeError(
                 f"Docling worker crashed while processing: {pdf_path}"
             ) from exc
@@ -200,7 +231,7 @@ class DoclingWorker:
         if self._process.exitcode is not None:
             # The process ended (e.g. crashed right after/while replying).
             # Treat this the same as a mid-extraction crash.
-            self._start()
+            self._replace_process()
             raise RuntimeError(f"Docling worker crashed while processing: {pdf_path}")
 
         kind = response[0]
@@ -218,29 +249,9 @@ class DoclingWorker:
 
     def shutdown(self) -> None:
         """Stop the worker cleanly. Safe to call multiple times or after a crash."""
-        process = self._process
-        if process is None:
-            return
-        conn = self._parent_conn
         try:
-            if process.is_alive():
-                try:
-                    conn.send(("shutdown",))
-                except Exception:
-                    pass
-                process.join(timeout=5)
+            self._stop_process(graceful=True)
         except Exception:
-            pass
-        try:
-            if process.is_alive():
-                process.terminate()
-                process.join(timeout=5)
-        except Exception:
-            pass
-        try:
-            if conn is not None:
-                conn.close()
-        except Exception:
-            pass
-        self._process = None
-        self._parent_conn = None
+            # Shutdown is best-effort during interpreter teardown.
+            self._process = None
+            self._parent_conn = None
