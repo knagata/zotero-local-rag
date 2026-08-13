@@ -139,10 +139,28 @@ class ReconciliationReportTests(unittest.TestCase):
             {"tag": "rag:prefer-epub"},
         ]}}
         with patch.object(api, "list_pdf_attachments", return_value=raw), \
-             patch.object(api, "get_item", AsyncMock(side_effect=[raw[0], parent])), \
+             patch.object(api, "get_item", AsyncMock(side_effect=[raw[0], raw[1], parent])), \
              patch.object(MODULE, "load_manifest", return_value={"files": {"EPUB": {}}}):
             exit_code = asyncio.run(MODULE.main_async(args, api=api))
         self.assertEqual(exit_code, 0)
+
+    def test_excluded_committed_epub_does_not_hide_missing_pdf(self):
+        args = type("Args", (), {"output": None})()
+        api = ZoteroLocalAPI()
+        raw = [
+            _attachment("PDF", parent="PARENT"),
+            _attachment("EPUB", content_type="application/epub+zip", filename="doc.epub",
+                        parent="PARENT"),
+        ]
+        excluded_epub = _attachment(
+            "EPUB", content_type="application/epub+zip", filename="doc.epub",
+            parent="PARENT", tags=[{"tag": "rag:exclude"}],
+        )
+        with patch.object(api, "list_pdf_attachments", return_value=raw), \
+             patch.object(api, "get_item", AsyncMock(side_effect=[raw[0], excluded_epub])), \
+             patch.object(MODULE, "load_manifest", return_value={"files": {"EPUB": {}}}):
+            exit_code = asyncio.run(MODULE.main_async(args, api=api))
+        self.assertEqual(exit_code, 2)
 
 
 if __name__ == "__main__":

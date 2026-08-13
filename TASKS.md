@@ -5,6 +5,9 @@
 
 ### 2026-08-13 clean rebuild完了後の警告検証
 
+- [x] **Zotero reconciliationのEPUB優先判定を取込規則と一致させた。** manifest済みEPUB siblingも
+  attachment-local tagを個別取得し、現在`rag:exclude`ならusableと見なさず、欠落PDFをrequiredへ戻す。
+  除外EPUBがmanifestに残る回帰fixtureは監査失敗を確認し、実Zotero照合はrequired/manifest 618で合格。
 - [x] **M5 clean generationを監査可能な状態へ修復。** 619添付のうちEPUB優先PDF 1件を
   正当に除外し、manifest 618添付とZotero required 618添付を一致させた。過去Batchの
   content-addressed Mistral cacheから48件を追加課金なしで採用した。構造再構築後に見つかった

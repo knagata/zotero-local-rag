@@ -109,21 +109,37 @@ async def main_async(args: argparse.Namespace, api: ZoteroLocalAPI | None = None
     # declaring the rebuild incomplete.
     possible_missing = set(eligible) - manifest_keys - set(unindexable)
     preferred_pdf_excluded: dict[str, dict] = {}
+    resolved_attachment_tags: set[str] = set()
     for key in possible_missing:
         item = await api.get_item(key)
         _, item_data = ZoteroLocalAPI._unwrap_item(item)
         eligible[key]["rag_excluded"] = (
             RAG_EXCLUDE_TAG in _normalized_tags(item_data.get("tags"))
         )
+        resolved_attachment_tags.add(key)
         parent_key = eligible[key].get("parentItem")
         if eligible[key]["rag_excluded"] or eligible[key]["source_type"] != "pdf" or not parent_key:
             continue
-        usable_epub_sibling = any(
-            sibling_key in manifest_keys
-            and sibling.get("parentItem") == parent_key
-            and sibling.get("source_type") == "epub"
-            for sibling_key, sibling in eligible.items()
-        )
+        usable_epub_sibling = False
+        for sibling_key, sibling in eligible.items():
+            if (
+                sibling_key not in manifest_keys
+                or sibling.get("parentItem") != parent_key
+                or sibling.get("source_type") != "epub"
+            ):
+                continue
+            # The inventory listing may omit or lag attachment-local tags, so
+            # resolve the would-be usable sibling exactly as ingestion does.
+            if sibling_key not in resolved_attachment_tags:
+                sibling_item = await api.get_item(sibling_key)
+                _, sibling_data = ZoteroLocalAPI._unwrap_item(sibling_item)
+                sibling["rag_excluded"] = (
+                    RAG_EXCLUDE_TAG in _normalized_tags(sibling_data.get("tags"))
+                )
+                resolved_attachment_tags.add(sibling_key)
+            if not sibling.get("rag_excluded"):
+                usable_epub_sibling = True
+                break
         if not usable_epub_sibling:
             continue
         parent = await api.get_item(str(parent_key))

@@ -13,6 +13,8 @@ Updated: 2026-08-13
 - clean rebuildと既存Mistral cache 48件の採用は完了。active V3はmanifest 618添付、
   `hnsw_validated=true`、inflight/failed/deferred 0。Zotero required 618、原本欠落頁0、
   orphan/dangling/unretrievable 0、cutover監査593/593合格。
+- Zotero reconciliationはmanifest済みEPUB siblingの現在のattachment-local tagも個別照会し、
+  `rag:exclude`ならPDFをrequiredから外さない。取込側のusable sibling規則と一致し、実照合618/618合格。
 - rebuild後に検出したunchanged structureのChroma node metadata未同期を修正し、2,857件から0へ
   戻した。Zotero監査はattachment-local excludeと、committed EPUB siblingを持つ
   `rag:prefer-epub` PDFを取込と同じ規則で扱う。
