@@ -24,6 +24,9 @@
   対象8件の再取込で、初版の一時PDFがcrop不要頁まで再画像化して別の生成崩壊を誘発すると判明。
   `pypdf`で非対象頁の元PDF objectを保持し、matte頁だけ置換するよう修正した。最小資料の保持版は
   Granite 5/5頁・41 chunkで再合格し、先頭4頁のcontent streamとMediaBoxが原本と一致した。
+  修正版で8添付だけを`--force-reparse`し、1件はGraniteで回復、7件は安全検査後Docling fallback、
+  全8件を更新した。failed/deferred/inflight 0、manifest 618、HNSW validated、3監査合格。全件rebuild、
+  Mistral、query expansion、LLM summary/reference extractionは実行していない。
 - [x] **Docling workerのtimeout後清掃を強化。** 811頁資料で停止しないpreprocess thread、
   closed output queue 105件、後続監視でdefunct workerを確認した。worker交換時はpipe closeと
   `terminate → join → kill → join`を必ず行い、既に死んだprocessもreapしてからspawnする。
