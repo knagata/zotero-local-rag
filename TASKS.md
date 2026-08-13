@@ -16,6 +16,11 @@
   `DoclingDocument.load_from_doctags`がPillowへ渡した
   `ValueError: Coordinate 'lower' is less than 'upper'`であることを確認。runnerが例外chainを
   8,000文字上限でJSON応答へ保持し、親workerがfallback警告へ含めるようにした。
+- [x] **Graniteの崩壊doctagをDB書込み前に回復する。** 同一picture/bboxが大量反復する出力は、
+  本文を保持できるsuffixだけ安全に切り、画像タグだけの崩壊は大きな暗色scanner matteを持つ頁だけ
+  cropした一時PDFで1回再試行する。本文を含む正常出力の少数bbox反転だけ正規化し、大量反転は
+  fail-closedで従来のDocling fallbackを維持する。最小失敗資料は隔離再実行でGranite 5/5頁・
+  43 chunkまで回復。active DBは変更せず、全件rebuildも行わない。
 - [x] **Docling workerのtimeout後清掃を強化。** 811頁資料で停止しないpreprocess thread、
   closed output queue 105件、後続監視でdefunct workerを確認した。worker交換時はpipe closeと
   `terminate → join → kill → join`を必ず行い、既に死んだprocessもreapしてからspawnする。
