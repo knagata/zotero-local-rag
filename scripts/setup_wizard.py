@@ -157,7 +157,9 @@ LLM_FLAGS = (
 )
 
 GRANITE_VENV_PYTHON = "tmp/granite_docling_venv/bin/python"
-GRANITE_REQUIREMENTS = ("docling==2.102.1", "mlx-vlm==0.6.6")
+GRANITE_REQUIREMENTS = (
+    "docling==2.102.1", "mlx-vlm==0.6.6", "pypdf>=5,<7",
+)
 NDLOCR_REQUIREMENT = (
     "git+https://github.com/ndl-lab/ndlocr-lite.git@1.0.0"
 )
@@ -204,7 +206,8 @@ def _granite_environment_ready(python_path: Path) -> bool:
         return False
     check = (
         "from importlib.util import find_spec;"
-        "raise SystemExit(0 if find_spec('docling') and find_spec('mlx_vlm') else 1)"
+        "raise SystemExit(0 if find_spec('docling') and find_spec('mlx_vlm') "
+        "and find_spec('pypdf') else 1)"
     )
     try:
         completed = subprocess.run(

@@ -21,6 +21,9 @@
   cropした一時PDFで1回再試行する。本文を含む正常出力の少数bbox反転だけ正規化し、大量反転は
   fail-closedで従来のDocling fallbackを維持する。最小失敗資料は隔離再実行でGranite 5/5頁・
   43 chunkまで回復。active DBは変更せず、全件rebuildも行わない。
+  対象8件の再取込で、初版の一時PDFがcrop不要頁まで再画像化して別の生成崩壊を誘発すると判明。
+  `pypdf`で非対象頁の元PDF objectを保持し、matte頁だけ置換するよう修正した。最小資料の保持版は
+  Granite 5/5頁・41 chunkで再合格し、先頭4頁のcontent streamとMediaBoxが原本と一致した。
 - [x] **Docling workerのtimeout後清掃を強化。** 811頁資料で停止しないpreprocess thread、
   closed output queue 105件、後続監視でdefunct workerを確認した。worker交換時はpipe closeと
   `terminate → join → kill → join`を必ず行い、既に死んだprocessもreapしてからspawnする。

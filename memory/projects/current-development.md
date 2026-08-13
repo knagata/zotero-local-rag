@@ -18,8 +18,10 @@ Updated: 2026-08-13
   `rag:prefer-epub` PDFを取込と同じ規則で扱う。
 - 警告検証でGranite失敗の内因を不正crop座標と再現。例外chainをrunner境界で保持する。
   崩壊doctagはDB書込み前に検査し、本文を保つ反復suffix除去、少数bbox反転の限定正規化、暗色scanner
-  matte頁だけの一時crop再試行を追加した。最小失敗資料はGranite 5/5頁・43 chunkで回復し、active DBは
-  未変更。Docling workerはtimeout/crash交換時にkillまでescalateして必ずreapする。
+  matte頁だけの一時crop再試行を追加した。再試行PDFは非crop頁を元PDF objectのまま保持する。
+  最小失敗資料は保持版でGranite 5/5頁・41 chunkまで回復。対象8件の選択再取込は初版の問題を検出して
+  中断したため、active manifestは618のまま、HNSWは再開完了まで未validated。Docling workerは
+  timeout/crash交換時にkillまでescalateして必ずreapする。
 - EPUB部分coverage 69冊・276 spineのうち270は100字以下の非画像補助wrapperだった。狭いblank
   判定の非書込み再抽出で67冊がcomplete、残る2冊6 spineはfail-closed。active DBは監査済み旧抽出
   のままで、本文chunkは同一。次にこのmetadata-only差分を採用する場合もattachment scopeを明示する。

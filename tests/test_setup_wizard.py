@@ -207,7 +207,7 @@ class SetupWizardTests(unittest.TestCase):
                     config, python_path=interpreter,
                 )
         self.assertTrue(installed)
-        self.assertEqual(run.call_count, 3)
+        self.assertEqual(run.call_count, 4)
         self.assertIn("--clear", run.call_args_list[0].args[0])
         self.assertEqual(config["GRANITE_VENV_PYTHON"], str(interpreter.absolute()))
 

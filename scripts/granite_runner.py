@@ -154,30 +154,41 @@ def dark_margin_crop_box(image):
 
 
 def make_dark_margin_retry_pdf(source: Path, destination: Path) -> int:
-    """Rasterize a bounded retry PDF, cropping only pages with a large matte."""
+    """Replace only matte pages; preserve every unaffected source PDF page."""
     import pypdfium2 as pdfium
+    from pypdf import PdfReader, PdfWriter
 
     document = pdfium.PdfDocument(str(source))
-    pages = []
+    replacements = {}
     changed = 0
     try:
-        for page in document:
+        for page_number, page in enumerate(document):
             image = page.render(scale=2.0).to_pil().convert("RGB")
             crop_box = dark_margin_crop_box(image)
             if crop_box is not None:
                 image = image.crop(crop_box)
+                replacement = destination.with_name(f"cropped-{page_number}.pdf")
+                image.save(replacement, "PDF", resolution=144.0)
+                replacements[page_number] = replacement
                 changed += 1
-            pages.append(image)
-        if not pages or not changed:
+            image.close()
+        if not changed:
             return 0
-        pages[0].save(
-            destination, "PDF", save_all=True, append_images=pages[1:], resolution=144.0,
-        )
+        source_reader = PdfReader(source)
+        writer = PdfWriter()
+        for page_number, source_page in enumerate(source_reader.pages):
+            replacement = replacements.get(page_number)
+            if replacement is None:
+                writer.add_page(source_page)
+            else:
+                writer.add_page(PdfReader(replacement).pages[0])
+        with destination.open("wb") as handle:
+            writer.write(handle)
         return changed
     finally:
         document.close()
-        for image in pages:
-            image.close()
+        for replacement in replacements.values():
+            replacement.unlink(missing_ok=True)
 
 
 def build_converter():
