@@ -8,7 +8,8 @@ from unittest.mock import patch
 
 from src import db_relations
 from src.build_structure_summaries import (
-    MAX_PARENT_INPUT_CHARS, _chunk_groups, _select_searchable_summary_rows,
+    MAX_PARENT_INPUT_CHARS, _chunk_groups, _llm_leaf_summary, _llm_quality,
+    _select_searchable_summary_rows,
     _chapter_summary_targets, adds_nothing_over_its_children, build_structure_summaries,
 )
 from src.document_structure import build_document_structure
@@ -31,6 +32,32 @@ class StructureSummaryV3Tests(unittest.TestCase):
         groups = _chunk_groups(rows)
         self.assertEqual([[row["id"] for row in group] for group in groups], [["c0"], ["c1"], ["c2"]])
         self.assertTrue(all(sum(len(row["text"]) for row in group) <= MAX_PARENT_INPUT_CHARS for group in groups))
+
+    def test_llm_quality_uses_sentence_verification_without_rejecting_legacy_results(self):
+        self.assertEqual(_llm_quality({}), "accepted")
+        self.assertEqual(_llm_quality({"accepted": True, "kept_sentences": 2}), "accepted")
+        self.assertEqual(_llm_quality({"accepted": False, "kept_sentences": 1}), "candidate")
+
+    @patch("src.build_structure_summaries._deepseek_model", return_value="flash")
+    @patch("src.build_structure_summaries._llm_summary_only_section")
+    def test_leaf_summary_retains_partial_sentence_verification(self, summarize, _model):
+        verification = {
+            "accepted": False, "generated_sentences": 3,
+            "kept_sentences": 1, "discarded_sentences": 2,
+        }
+        summarize.return_value = ({"summary": "根拠付きの一文。", "_verification": verification}, "deepseek:test")
+        result = _llm_leaf_summary("leaf", "Chapter", [{"id": "c1", "text": "x" * 500}])
+        self.assertEqual(result[0], "根拠付きの一文。")
+        self.assertEqual(result[3], verification)
+        self.assertEqual(result[4], "candidate")
+
+    @patch("src.build_structure_summaries._deepseek_model", return_value="flash")
+    @patch("src.build_structure_summaries._llm_summary_only_section")
+    def test_leaf_summary_rejects_an_empty_verified_result(self, summarize, _model):
+        from src.build_structure_summaries import LLMError
+        summarize.return_value = ({"summary": "", "_verification": {}}, "deepseek:test")
+        with self.assertRaisesRegex(LLMError, "empty or meta"):
+            _llm_leaf_summary("leaf", "Chapter", [{"id": "c1", "text": "x" * 500}])
 
     def test_japanese_part_distinguishes_direct_sections_from_labelled_chapters(self):
         chunks = [

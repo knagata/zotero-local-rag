@@ -1,6 +1,7 @@
 """Read-only data service for Citation Graph structure and summaries."""
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from src import db_relations
@@ -8,6 +9,28 @@ from src.chunk_store import get_item_chunks, natural_chunk_key
 
 
 MAX_PAGE_SIZE = 100
+
+
+def _summary_trust(summary: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Expose a stable, non-probabilistic trust tag for a stored summary."""
+    if not summary:
+        return None
+    if str(summary.get("summary_kind") or "") != "llm":
+        return {"level": "unavailable", "label": "AI要約なし"}
+    verification = dict((summary.get("input_scope") or {}).get("verification") or {})
+    if not verification:
+        return {"level": "legacy", "label": "既存要約（検証記録なし）"}
+    kept = int(verification.get("kept_sentences") or 0)
+    generated = int(verification.get("generated_sentences") or 0)
+    accepted = bool(verification.get("accepted"))
+    return {
+        "level": "verified" if accepted else "limited",
+        "label": "根拠確認済み" if accepted else "限定的",
+        "kept_sentences": kept,
+        "generated_sentences": generated,
+        "discarded_sentences": int(verification.get("discarded_sentences") or 0),
+        "discard_rate": float(verification.get("discard_rate") or 0.0),
+    }
 
 
 def _item_key(value: str) -> str:
@@ -131,6 +154,7 @@ def get_document_outline(item_key: str) -> dict[str, Any]:
             "summary": summary.get("summary") if summary else None,
             "summary_kind": summary.get("summary_kind") if summary else None,
             "quality_status": summary.get("quality_status") if summary else None,
+            "trust": _summary_trust(summary),
             "summary_parts": summary_parts.get(str(node["node_id"]), []),
         })
     return {"item_key": key, "structure": structure, "nodes": nodes}
@@ -156,6 +180,7 @@ def get_item_insights(item_key: str) -> dict[str, Any]:
         ''', (key,)).fetchone()[0])
         if summary:
             summary["kind"] = summary.get("summary_kind") or "llm"
+            summary["trust"] = _summary_trust(summary)
             summary["report_status"] = _current_summary_report_status(
                 conn, key, "", summary["summary"], summary.get("model"),
             )
@@ -189,6 +214,12 @@ def list_sections(
         rows.sort(key=lambda row: natural_chunk_key(str(row.get("first_chunk_id") or "")))
         result = []
         for row in rows:
+            try:
+                row["input_scope"] = json.loads(
+                    row.pop("input_scope_json") or "{}",
+                )
+            except (TypeError, ValueError):
+                row["input_scope"] = {}
             if needle and needle not in "\n".join((
                 str(row.get("title") or ""), str(row.get("summary") or ""),
             )).casefold():
@@ -202,6 +233,8 @@ def list_sections(
                 "chapter_authors": "",
                 "first_publication_note": "",
                 "updated_at": row.get("updated_at"),
+                "quality_status": row.get("quality_status"),
+                "trust": _summary_trust(row),
                 "report_status": _current_summary_report_status(
                     conn, key, str(row["node_id"]), row["summary"], row.get("model"),
                 ),

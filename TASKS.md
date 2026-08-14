@@ -3,6 +3,19 @@
 正本: `SPEC.md`。実装・検証の永続的な履歴はこのファイルに残す。
 `evaluations/`のローカル生成レポートはZotero識別子や絶対パスを含み得るため追跡しない。
 
+### 2026-08-14 階層要約の信憑性表示
+
+- [x] **文単位の根拠検証を保存品質へ反映。** DeepSeek summary-only応答が既に返していた
+  生成文数・根拠確認済み文数・棄却率・合否を捨てず、node summaryのinput scopeへ保存する。
+  完全合格は`accepted`、根拠確認済み文が残る部分合格は`candidate`とし、どちらも検証後に
+  残った文だけを採用する。既存要約は再生成せず、検証記録なしとして互換維持する。
+- [x] **Citation Graphへ信憑性タグを表示。** item要約、outline、節一覧で「根拠確認済み」
+  「限定的（確認済み/生成文数）」「既存要約（検証記録なし）」「AI要約なし」を区別する。
+  全件再要約や有料API call、active DBの書換えは行っていない。
+- [x] **検証。** coverage付き既定suite `1,636 passed / 7 skipped / 5 deselected`、関連fixture
+  61件、compileall、fatal Ruff、function/coverageラチェット、差分検査に合格。要約生成本体は
+  253行から243行へ縮小して上限を同じ変更で引き下げた。
+
 ### 2026-08-14 EPUB fragment TOC境界の正規化
 
 - [x] **TOC anchorを越えて古いDOM見出しを持ち越す経路を修正。** publisher article EPUBや一部書籍で、

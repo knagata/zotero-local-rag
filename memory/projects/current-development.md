@@ -55,6 +55,16 @@ Updated: 2026-08-14
   対象4,154保存行のID・本文は同一、再埋め込みなし。全canonical treeでAbstract・概要・摘要rootの
   別見出し子孫は0。backupは`data/backups/pre-epub-toc-boundary-repair-20260814/`。
 
+## 2026-08-14 summary trust metadata
+
+- 階層要約監査は索引8,074/8,074件一致だが、6 itemが`degraded/no_llm_summary`で停止した。
+  余剰status 1件は既知のnote-only除外で正常。全件再生成は行わない。
+- summary-onlyの文単位根拠検証統計をinput scopeへ保存し、完全合格を`accepted`、根拠確認済み文が
+  残る部分合格を`candidate`として採用する。Citation Graphはverified/limited/legacy/unavailableを
+  明示する。既存合格要約は検証記録なしのまま保持し、有料API callとactive DB書換えは未実行。
+- coverage付き既定suiteは1,636 passed / 7 skipped / 5 deselected。要約生成本体は243行へ縮小し、
+  function-size上限も同時に下げた。
+
 ## Read first
 
 1. `CLAUDE.md`を最初から最後まで読む。

@@ -63,6 +63,13 @@ their source/prompt state is current.  Only accepted/candidate LLM summaries
 are searchable in `zotero_paragraphs_v3__sum_node`; extractive summaries are
 displayable fallbacks but never summary-index candidates.
 
+Native summary-only calls retain their sentence-level evidence-verification
+counts with the summary.  A result that passes the verifier is `accepted`; a
+non-empty result with only partial verified coverage is `candidate`.  Both use
+only the sentences that survived evidence verification, and Citation Insights
+must distinguish verified, limited, and older summaries without verification
+records.  Zero verified sentences and meta responses are not LLM summaries.
+
 DeepSeek is the standard hosted summarization provider: `LLM_CHEAP` uses
 `deepseek-v4-flash`; `LLM_STANDARD` and `LLM_REVIEW` use `deepseek-v4-pro`
 unless an explicitly configured compatible provider overrides them.  Summary

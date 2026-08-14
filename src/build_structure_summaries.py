@@ -411,7 +411,7 @@ def _deepseek_model(role: str) -> str:
 def _parent_summary(
     title: str, children: List[Dict[str, Any]], *, use_llm: bool,
     reduce_role: str = "standard",
-) -> tuple[str, str, str, List[Dict[str, Any]]]:
+) -> tuple[str, str, str, List[Dict[str, Any]], Dict[str, Any]]:
     """Return summary, kind, model.  Child order is always document order.
 
     ``reduce_role`` picks the DeepSeek role for the reduction that produces the
@@ -422,9 +422,9 @@ def _parent_summary(
     intermediate passes and only the final synthesis uses ``reduce_role``.
     """
     if not children:
-        return "", "extractive", "", []
+        return "", "extractive", "", [], {}
     if not use_llm:
-        return "\n\n".join(str(row["summary"]) for row in children)[:4000], "extractive", "extractive", []
+        return "\n\n".join(str(row["summary"]) for row in children)[:4000], "extractive", "extractive", [], {}
     try:
         groups = _groups(children)
         # A single group is reduced directly, so the node summary itself is
@@ -437,7 +437,7 @@ def _parent_summary(
             if not summary or is_meta_summary(summary):
                 raise LLMError("node summary was empty or meta")
             parts = [{"child_node_ids": [row["node_id"] for row in groups[0]], "summary": summary, "model": model}]
-            return summary, "llm", model, parts
+            return summary, "llm", model, parts, dict(result.get("_verification") or {})
         reduced: List[Dict[str, Any]] = []
         parts: List[Dict[str, Any]] = []
         for index, group in enumerate(groups):
@@ -455,11 +455,67 @@ def _parent_summary(
         summary = str(result.get("summary") or "").strip()
         if not summary or is_meta_summary(summary):
             raise LLMError("node summary was empty or meta")
-        return summary, "llm", model, parts
+        return summary, "llm", model, parts, dict(result.get("_verification") or {})
     except RateLimitReached:
         raise
     except LLMError:
-        return "\n\n".join(str(row["summary"]) for row in children)[:4000], "extractive", "extractive", []
+        return "\n\n".join(str(row["summary"]) for row in children)[:4000], "extractive", "extractive", [], {}
+
+
+def _llm_quality(verification: Dict[str, Any]) -> str:
+    """Map sentence-level evidence verification to the persisted trust tag.
+
+    Older tests and compatible providers may not yet return verification
+    metadata.  Keeping those results accepted preserves the existing contract;
+    all native DeepSeek summary-only calls include the metadata.
+    """
+    if not verification:
+        return "accepted"
+    return "accepted" if bool(verification.get("accepted")) else "candidate"
+
+
+def _summary_row(
+    node_id: str, summary: str, kind: str, model: str, quality: str,
+    source_chunk_count: int, source_chars: int, verification: Dict[str, Any],
+) -> Dict[str, Any]:
+    return {
+        "node_id": node_id, "summary": summary, "kind": kind, "model": model,
+        "quality": quality, "source_chunk_count": source_chunk_count,
+        "source_chars": source_chars, "verification": verification,
+    }
+
+
+def _llm_leaf_summary(
+    node_id: str, title: str, source_chunks: List[Dict[str, Any]],
+) -> tuple[str, str, List[Dict[str, Any]], Dict[str, Any], str]:
+    pieces = []
+    model_name = ""
+    for index, group in enumerate(_chunk_groups(source_chunks)):
+        piece = {"section_id": f"{node_id}:segment:{index}", "chapter": title, "chunks": group}
+        result, model_name = _llm_summary_only_section(
+            piece, model=_deepseek_model("cheap"), reasoning="disabled",
+        )
+        piece_summary = str(result.get("summary") or "").strip()
+        if not piece_summary or is_meta_summary(piece_summary):
+            raise LLMError("leaf summary was empty or meta")
+        verification = dict(result.get("_verification") or {})
+        pieces.append(_summary_row(
+            piece["section_id"], piece_summary, "llm", model_name,
+            _llm_quality(verification), len(group),
+            sum(len(str(row.get("text") or "")) for row in group), verification,
+        ))
+    if len(pieces) == 1:
+        summary, leaf_parts, verification = pieces[0]["summary"], [], pieces[0]["verification"]
+    else:
+        summary, reduced_kind, model_name, leaf_parts, verification = _parent_summary(
+            title, pieces, use_llm=True, reduce_role="cheap",
+        )
+        if reduced_kind != "llm":
+            raise LLMError("leaf segment reduction failed")
+    quality = "accepted" if _llm_quality(verification) == "accepted" and all(
+        piece["quality"] == "accepted" for piece in pieces
+    ) else "candidate"
+    return summary, model_name, leaf_parts, verification, quality
 
 
 def _summaries_are_current(item_key: str, structure: Dict[str, Any], mode: str) -> bool:
@@ -599,45 +655,30 @@ def build_structure_summaries(
                     summary = str(cached["summary"])
                     model_name = str(cached.get("model") or "")
                     kind, quality, leaf_parts = "llm", str(cached.get("quality_status") or "accepted"), []
+                    verification = dict((cached.get("input_scope") or {}).get("verification") or {})
                     reused += 1
                 elif use_llm:
                     try:
-                        pieces = []
-                        for index, group in enumerate(_chunk_groups(source_chunks)):
-                            piece = {"section_id": f"{node_id}:segment:{index}", "chapter": title, "chunks": group}
-                            result, model_name = _llm_summary_only_section(
-                                piece, model=_deepseek_model("cheap"), reasoning="disabled",
-                            )
-                            piece_summary = str(result.get("summary") or "").strip()
-                            if not piece_summary or is_meta_summary(piece_summary):
-                                raise LLMError("leaf summary was empty or meta")
-                            pieces.append({"node_id": piece["section_id"], "summary": piece_summary, "kind": "llm",
-                                           "quality": "accepted", "source_chunk_count": len(group),
-                                           "source_chars": sum(len(str(row.get("text") or "")) for row in group)})
-                        if len(pieces) == 1:
-                            summary, model_name, leaf_parts = pieces[0]["summary"], model_name, []
-                        else:
-                            # Leaf segments combine at the cheap role (spec §5.1: leaf=cheap).
-                            summary, reduced_kind, model_name, leaf_parts = _parent_summary(
-                                title, pieces, use_llm=True, reduce_role="cheap",
-                            )
-                            if reduced_kind != "llm":
-                                raise LLMError("leaf segment reduction failed")
-                        kind, quality = "llm", "accepted"
+                        summary, model_name, leaf_parts, verification, quality = _llm_leaf_summary(
+                            node_id, title, source_chunks,
+                        )
+                        kind = "llm"
                     except RateLimitReached:
                         raise
                     except LLMError:
                         result, model_name = _extractive_section(section), "extractive"
                         summary, kind, quality, leaf_parts = str(result.get("summary") or ""), "extractive", "degraded", []
+                        verification = {}
                 else:
                     result, model_name = _extractive_section(section), "extractive"
                     summary, kind, quality, leaf_parts = str(result.get("summary") or ""), "extractive", "degraded", []
+                    verification = {}
                 if not summary:
                     continue
-                generated[node_id] = {
-                    "node_id": node_id, "summary": summary, "kind": kind, "model": model_name,
-                    "quality": quality, "source_chunk_count": len(source_chunks), "source_chars": source_chars,
-                }
+                generated[node_id] = _summary_row(
+                    node_id, summary, kind, model_name, quality, len(source_chunks),
+                    source_chars, verification,
+                )
                 excluded_by_node[node_id] = list(aggregate_exclusions)
                 save_document_node_summary(
                     node_id, item_key, summary, summary_kind=kind, model=model_name,
@@ -648,6 +689,7 @@ def build_structure_summaries(
                         "included_chunk_ids": [str(row["id"]) for row in source_chunks],
                         "excluded": list(aggregate_exclusions),
                         "input_content_fingerprint": input_fingerprint,
+                        **({"verification": verification} if verification else {}),
                         **({"reused_from_node_id": str(cached.get("node_id"))} if cached else {}),
                     },
                 )
@@ -691,24 +733,27 @@ def build_structure_summaries(
                 summary = str(only_child.get("summary") or "")
                 kind = str(only_child.get("kind") or "llm")
                 model_name, parts = str(only_child.get("model") or ""), []
+                verification = dict(only_child.get("verification") or {})
             elif cached:
                 summary = str(cached["summary"])
                 kind, model_name, parts = "llm", str(cached.get("model") or ""), []
+                verification = dict((cached.get("input_scope") or {}).get("verification") or {})
                 reused += 1
             else:
-                summary, kind, model_name, parts = _parent_summary(title, child_rows, use_llm=use_llm)
+                summary, kind, model_name, parts, verification = _parent_summary(title, child_rows, use_llm=use_llm)
             if not summary:
                 continue
             quality = (
-                "accepted" if kind == "llm" and all(row.get("quality") == "accepted" for row in child_rows)
+                "accepted" if kind == "llm" and _llm_quality(verification) == "accepted"
+                and all(row.get("quality") == "accepted" for row in child_rows)
                 else ("candidate" if kind == "llm" else "degraded")
             )
             source_chunk_count = sum(int(row.get("source_chunk_count") or 0) for row in child_rows)
             source_chars = sum(int(row.get("source_chars") or 0) for row in child_rows)
-            generated[node_id] = {
-                "node_id": node_id, "summary": summary, "kind": kind, "model": model_name,
-                "quality": quality, "source_chunk_count": source_chunk_count, "source_chars": source_chars,
-            }
+            generated[node_id] = _summary_row(
+                node_id, summary, kind, model_name, quality, source_chunk_count,
+                source_chars, verification,
+            )
             save_document_node_summary(
                 node_id, item_key, summary, summary_kind=kind, model=model_name,
                 prompt_version=PROMPT_VERSION, source_fingerprint=structure["source_fingerprint"],
@@ -717,6 +762,7 @@ def build_structure_summaries(
                 input_scope={
                     "included_child_ids": [row["node_id"] for row in child_rows],
                     "excluded": exclusions, "input_content_fingerprint": input_fingerprint,
+                    **({"verification": verification} if verification else {}),
                     **({"reused_from_node_id": str(cached.get("node_id"))} if cached else {}),
                 },
             )

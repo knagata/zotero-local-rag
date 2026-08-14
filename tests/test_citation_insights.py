@@ -36,6 +36,37 @@ class CitationInsightsTests(unittest.TestCase):
         self.assertEqual(result["summary"]["kind"], "llm")
         self.assertEqual(result["sections"], {"status": "available", "count": 2})
 
+    def test_summary_trust_exposes_sentence_verification_and_labels_legacy_rows(self):
+        legacy = citation_insights.get_item_insights("ITEM")["summary"]
+        self.assertEqual(legacy["trust"]["level"], "legacy")
+        db_relations.save_document_node_summary(
+            legacy["node_id"], "ITEM", legacy["summary"], summary_kind="llm",
+            model=legacy["model"], prompt_version=legacy["prompt_version"],
+            source_fingerprint=legacy["source_fingerprint"],
+            source_chunk_count=legacy["source_chunk_count"], source_chars=legacy["source_chars"],
+            quality_status="candidate", input_scope={"verification": {
+                "accepted": False, "generated_sentences": 3,
+                "kept_sentences": 1, "discarded_sentences": 2,
+                "discard_rate": 0.6667,
+            }},
+        )
+        trust = citation_insights.get_item_insights("ITEM")["summary"]["trust"]
+        self.assertEqual(trust["level"], "limited")
+        self.assertEqual((trust["kept_sentences"], trust["generated_sentences"]), (1, 3))
+
+    def test_summary_trust_distinguishes_verified_unavailable_and_absent(self):
+        self.assertIsNone(citation_insights._summary_trust(None))
+        self.assertEqual(
+            citation_insights._summary_trust({"summary_kind": "extractive"})["level"],
+            "unavailable",
+        )
+        trust = citation_insights._summary_trust({
+            "summary_kind": "llm", "input_scope": {"verification": {
+                "accepted": True, "generated_sentences": 2, "kept_sentences": 2,
+            }},
+        })
+        self.assertEqual((trust["level"], trust["label"]), ("verified", "根拠確認済み"))
+
     def test_sections_are_naturally_sorted_filtered_and_paged(self):
         first = citation_insights.list_sections("ITEM", limit=1)
         self.assertEqual(first["items"][0]["section_id"], self.section_ids["w0"])
@@ -47,6 +78,19 @@ class CitationInsightsTests(unittest.TestCase):
             [row["section_id"] for row in filtered["items"]],
             [self.section_ids["w10"]],
         )
+
+    def test_sections_treat_malformed_legacy_input_scope_as_unverified(self):
+        conn = db_relations.get_db_connection()
+        try:
+            conn.execute(
+                "UPDATE document_node_summaries SET input_scope_json='{' WHERE node_id=?",
+                (self.section_ids["w0"],),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        row = citation_insights.list_sections("ITEM")["items"][0]
+        self.assertEqual(row["trust"]["level"], "legacy")
 
     def test_processed_empty_is_distinct_from_not_processed(self):
         db_relations.mark_artifact_status("EMPTY", "summary", "empty")

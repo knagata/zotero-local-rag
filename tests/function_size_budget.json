@@ -11,7 +11,7 @@
     "src/html_extract.py::extract_chunks_from_epub_snapshot": 343,
     "citation_graph/server.py::_build_sigma_html": 307,
     "citation_graph/server.py::compute_layout": 262,
-    "src/build_structure_summaries.py::build_structure_summaries": 253,
+    "src/build_structure_summaries.py::build_structure_summaries": 243,
     "src/update_citations.py::main": 237,
     "scripts/audit_v3_cutover.py::main": 216,
     "scripts/setup_wizard.py::main": 205,

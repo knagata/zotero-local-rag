@@ -2446,6 +2446,14 @@ function _fmtSummaryDate(iso) {
   return isNaN(d) ? '' : d.toLocaleDateString('ja-JP');
 }
 
+function _summaryTrustText(trust) {
+  if (!trust) return '';
+  var counts = trust.generated_sentences
+    ? '（根拠確認済み ' + Number(trust.kept_sentences || 0) + '/' + Number(trust.generated_sentences) + '文）'
+    : '';
+  return '信憑性: ' + String(trust.label || trust.level || '未確認') + counts;
+}
+
 function _renderSummarySection(itemKey, summaryData) {
   var sec = document.getElementById('abs-summary-section');
   if (!sec) return;
@@ -2465,6 +2473,7 @@ function _renderSummarySection(itemKey, summaryData) {
         : (sd.report_status === 'disabled' ? '<span class="reported-badge">品質判定により検索対象外</span>' : '');
       bodyEl.innerHTML =
         '<div class="summary-text" id="sum-text">' + esc(sd.summary) + '</div>' +
+        (sd.trust ? '<div class="insight-meta">' + esc(_summaryTrustText(sd.trust)) + '</div>' : '') +
         '<div style="font-size:10.5px;color:var(--text-dis);margin-top:4px">' +
           esc(dateStr) + modelLabel +
         '</div>' +
@@ -2869,7 +2878,8 @@ var InsightsPane = (function() {
           var indent = Math.max(0, Number(row.depth || 0) - 1) * 12;
           var title = row.title || (row.node_type === 'semantic_segment' ? '本文範囲' : row.node_type);
           var meta = [row.node_type, row.content_chars ? (Number(row.content_chars).toLocaleString() + '字') : '',
-            row.summary_kind === 'extractive' ? '抽出的要約' : (row.summary_kind ? 'AI要約' : '')].filter(Boolean).join(' · ');
+            row.summary_kind === 'extractive' ? '抽出的要約' : (row.summary_kind ? 'AI要約' : ''),
+            _summaryTrustText(row.trust)].filter(Boolean).join(' · ');
           return '<div class="outline-node" style="margin-left:' + indent + 'px"><div class="outline-node-title">' +
             esc(title) + '</div><div class="outline-node-meta">' + esc(meta) + '</div>' +
             (row.summary ? '<div class="outline-node-summary">' + esc(row.summary) + '</div>' : '') + '</div>';
@@ -2958,7 +2968,8 @@ var InsightsPane = (function() {
           '</button>' +
           '<div class="insight-card-body" id="section-body-' + index + '" hidden>' +
             '<div class="insight-card-text">' + esc(row.summary) + '</div>' +
-            '<div class="insight-meta">' + esc([row.model, _fmtSummaryDate(row.updated_at)].filter(Boolean).join(' · ')) + '</div>' +
+            '<div class="insight-meta">' + esc([row.model, _fmtSummaryDate(row.updated_at),
+              _summaryTrustText(row.trust)].filter(Boolean).join(' · ')) + '</div>' +
             reported +
             '<div class="insight-actions">' +
               '<button class="insight-btn section-source-btn" data-section-index="' + index + '">原文を表示</button>' +
