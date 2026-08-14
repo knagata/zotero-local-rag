@@ -39,6 +39,11 @@ Updated: 2026-08-14
 - 影響資料1件は書込み前dry-runと対象backup後、2,904 source chunkだけをitem scopeで修復した。
   `exact` 1,217 nodes / 1,104 leavesとなり、Citation Graphへ112 visible nodesが返る。更新前後の
   Chroma ID・本文は同一。ローカルbackupは`data/backups/pre-structure-repair-*-20260814/`。
+- 続けてflat fallback 199件をread-only inventoryし、Mistral 23件中、cache・ID完全一致・全chunk
+  mapping・exact/recoveredの安全ゲートを通る14件だけをitem scopeで修復した。9件はflatのまま、
+  非Mistral 176件は未変更。対象25,897保存行のID・本文は同一で、visible outline空は0。
+  現分布はexact 174 / recovered 233 / flat fallback 185。対象backupは
+  `data/backups/pre-flat-mistral-structure-repair-20260814/`。
 
 ## Read first
 

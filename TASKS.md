@@ -17,6 +17,12 @@
   fixture 52件、compileall、fatal Ruff、coverage予算、差分検査に合格。slow corpus 5件はローカル
   baseline不在で全件skip。実DBのZotero照合618/618、原本欠落頁・orphan・dangling・検索不能0、
   cutover 593/593に合格し、DB gateを現世代へ再発行した。
+- [x] **flat fallbackを安全ゲート付きで限定修復。** 現行199件をread-only inventoryし、Mistral由来
+  23件だけdry-runした。raw cache、chunk ID完全一致、全chunk mapping、`exact/recovered`を全部満たす
+  14件だけを退避後にitem scopeで更新し、残る9件と非Mistral 176件には触れていない。25,897保存行の
+  ID集合と本文は更新前後で同一（source metadata同期25,895件、注記2件は構造外）、埋め込み再計算なし。
+  14件は全て`exact`となり、Citation Graph visible nodesは最小16・最大383・空0。構造分布は
+  exact 174 / recovered 233 / flat fallback 185。
 
 ### 2026-08-13 clean rebuild完了後の警告検証
 
