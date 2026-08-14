@@ -64,6 +64,9 @@ Updated: 2026-08-14
   明示する。既存合格要約は検証記録なしのまま保持し、有料API callとactive DB書換えは未実行。
 - coverage付き既定suiteは1,636 passed / 7 skipped / 5 deselected。要約生成本体は243行へ縮小し、
   function-size上限も同時に下げた。
+- 2026-08-15にuser承認後、失敗6 itemだけを`--force --embed`で再生成した。5件は初回、
+  約119万字が1章へ集約された1件は2回目で成功。全6件が`accepted`で根拠確認文の棄却0。
+  要約索引は8,080/8,080件、全体の階層要約監査は合格。全件再要約は行っていない。
 
 ## Read first
 

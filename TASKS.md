@@ -15,6 +15,11 @@
 - [x] **検証。** coverage付き既定suite `1,636 passed / 7 skipped / 5 deselected`、関連fixture
   61件、compileall、fatal Ruff、function/coverageラチェット、差分検査に合格。要約生成本体は
   253行から243行へ縮小して上限を同じ変更で引き下げた。
+- [x] **失敗6 itemだけを対象限定再生成。** 2026-08-15にuser承認後、DB gate付きの
+  `--item ... --force --embed`で6 itemだけDeepSeek再試行した。5件は初回、約119万字が1章へ
+  集約された1件は2回目で成功。全6件のLLM nodeは`accepted`で、根拠確認はそれぞれ
+  9/9、8/8、9/9、13/13、7/7、9/9文。全体監査は要約索引8,080/8,080件で合格した。
+  全件再要約、source chunk・文書構造の変更は行っていない。
 
 ### 2026-08-14 EPUB fragment TOC境界の正規化
 
