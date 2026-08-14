@@ -44,6 +44,11 @@ Updated: 2026-08-14
   非Mistral 176件は未変更。対象25,897保存行のID・本文は同一で、visible outline空は0。
   現分布はexact 174 / recovered 233 / flat fallback 185。対象backupは
   `data/backups/pre-flat-mistral-structure-repair-20260814/`。
+- AI TOCが全見出しをlevel 2から返すと先頭見出しが文書全体の偽親になるため、最小levelを1へ
+  正規化した。Abstract後の本文だけがdeeperな誤応答も、連続runを同じ幅だけ上げて機能領域を閉じる。
+  採用済み47件を全件dry-runし、改善が明確な21件だけをbackup後に更新、重複が表面化する1件は保留。
+  対象21,520保存行のID・本文は同一、構造はdry-runと一致、再埋め込みなし。backupは
+  `data/backups/pre-ai-toc-level-repair-20260814/`。
 
 ## Read first
 

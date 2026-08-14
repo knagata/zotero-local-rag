@@ -3,6 +3,21 @@
 正本: `SPEC.md`。実装・検証の永続的な履歴はこのファイルに残す。
 `evaluations/`のローカル生成レポートはZotero識別子や絶対パスを含み得るため追跡しない。
 
+### 2026-08-14 AI TOC階層levelの正規化
+
+- [x] **先頭見出しが文書全体の偽親になる構造を修正。** 文書タイトルはtree外のmetadataなので、
+  AI TOC anchorの最小levelを1へ正規化する。さらに`abstract`は有界な機能領域として、後続本文が
+  deeper levelで始まる誤応答では、その連続runを同じ幅だけ上げてAbstract配下から外す。既存の
+  正しいchapter/section相対階層と、既に同levelのAbstract/Introductionは不変とする真偽テストを追加。
+- [x] **採用済みAI TOCを全件read-only再評価して限定修復。** 47件中22件に階層差があり、20件は
+  visible heading multiset不変で偽親だけを解消、1件は本文を持たない偽親を除去する改善だったため、
+  backup後に21 itemだけ更新した。既存重複見出しが表面化する1件は保留して未変更。対象21,520保存行の
+  ID集合・本文は前後で同一、構造は全件dry-runと一致、metadata同期20,373件、再埋め込みなし。
+- [x] **検証。** coverage付き既定suite `1,628 passed / 7 skipped / 5 deselected`、関連fixture 73件、
+  compileall、fatal Ruff、function/lint/coverage予算、差分検査に合格。slow 5件はローカルbaseline不在で
+  skip。実DBのZotero照合618/618、原本欠落頁・orphan・dangling・検索不能0、cutover 593/593に合格し、
+  DB gateを現世代へ再発行した。
+
 ### 2026-08-14 Mistral構造のMaintenance再投影
 
 - [x] **構造だけのMaintenanceがMistral OCR由来の階層を消す経路を修正。** PDF内蔵outlineが

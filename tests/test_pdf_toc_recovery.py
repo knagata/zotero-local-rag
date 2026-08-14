@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest import mock
 
 from src.pdf_toc_recovery import (
-    HeadingAnchor, _reference_section_pages, _splice_reference_chunks,
+    HeadingAnchor, _effective_anchor_levels, _reference_section_pages, _splice_reference_chunks,
     align_headings, apply_anchors, try_ai_toc_fast_path,
 )
 
@@ -94,6 +94,66 @@ def test_apply_anchors_tags_reference_and_note_zones():
     zones = [row[2].get("zone") for row in result]
     assert zones == [None, "bibliography", "endnote"]
     assert result[1][2]["structure_path"] == ["References"]
+
+
+def test_apply_anchors_normalizes_missing_top_level_without_inventing_parent():
+    anchors = [
+        HeadingAnchor("Preface", 2, "front_matter", 1, 0, 1.0),
+        HeadingAnchor("Chapter One", 2, "chapter", 2, 0, 1.0),
+        HeadingAnchor("Section", 3, "section", 3, 0, 1.0),
+        HeadingAnchor("Chapter Two", 2, "chapter", 4, 0, 1.0),
+    ]
+    chunks = [
+        ("a", "preface", {"page": 1, "reading_order": 1}),
+        ("b", "chapter", {"page": 2, "reading_order": 1}),
+        ("c", "section", {"page": 3, "reading_order": 1}),
+        ("d", "chapter", {"page": 4, "reading_order": 1}),
+    ]
+
+    result = apply_anchors(chunks, anchors)
+
+    assert [row[2]["structure_path"] for row in result] == [
+        ["Preface"], ["Chapter One"], ["Chapter One", "Section"], ["Chapter Two"],
+    ]
+
+
+def test_apply_anchors_closes_abstract_before_deeper_article_body():
+    anchors = [
+        HeadingAnchor("Abstract", 1, "abstract", 1, 0, 1.0),
+        HeadingAnchor("Introduction", 2, "chapter", 1, 2, 1.0),
+        HeadingAnchor("Method", 3, "section", 2, 0, 1.0),
+        HeadingAnchor("Conclusion", 2, "chapter", 3, 0, 1.0),
+        HeadingAnchor("References", 1, "references", 4, 0, 1.0),
+    ]
+    chunks = [
+        ("a", "summary", {"page": 1, "reading_order": 1}),
+        ("b", "intro", {"page": 1, "reading_order": 3}),
+        ("c", "method", {"page": 2, "reading_order": 1}),
+        ("d", "conclusion", {"page": 3, "reading_order": 1}),
+        ("e", "citation", {"page": 4, "reading_order": 1}),
+    ]
+
+    result = apply_anchors(chunks, anchors)
+
+    assert [row[2]["structure_path"] for row in result] == [
+        ["Abstract"], ["Introduction"], ["Introduction", "Method"],
+        ["Conclusion"], ["References"],
+    ]
+
+
+def test_anchor_level_normalization_keeps_existing_abstract_sibling_boundary():
+    assert _effective_anchor_levels([]) == []
+    anchors = [
+        HeadingAnchor("Abstract", 1, "abstract", 1, 0, 1.0),
+        HeadingAnchor("Introduction", 1, "chapter", 1, 2, 1.0),
+    ]
+    result = apply_anchors([
+        ("a", "summary", {"page": 1, "reading_order": 1}),
+        ("b", "intro", {"page": 1, "reading_order": 3}),
+    ], anchors)
+    assert [row[2]["structure_path"] for row in result] == [
+        ["Abstract"], ["Introduction"],
+    ]
 
 
 def test_title_and_contents_do_not_advance_body_alignment_cursor():

@@ -443,16 +443,17 @@ def apply_anchors(
     chunks: Sequence[tuple[str, str, Mapping[str, Any]]], anchors: Sequence[HeadingAnchor],
 ) -> list[tuple[str, str, dict[str, Any]]]:
     ordered = sorted(anchors, key=lambda row: (row.page, row.reading_order, row.level))
+    levels = _effective_anchor_levels(ordered)
     output: list[tuple[str, str, dict[str, Any]]] = []
     for chunk_id, text, metadata in chunks:
         md = dict(metadata)
         key = (int(md.get("page") or 0), int(md.get("reading_order") or 0))
         stack: list[str] = []
         active: list[HeadingAnchor] = []
-        for anchor in ordered:
+        for anchor, level in zip(ordered, levels, strict=True):
             if (anchor.page, anchor.reading_order) > key:
                 break
-            active = active[: anchor.level - 1]
+            active = active[: level - 1]
             active.append(anchor)
         for anchor in active:
             stack.append(anchor.title)
@@ -469,6 +470,36 @@ def apply_anchors(
                 break
         output.append((chunk_id, text, md))
     return output
+
+
+def _effective_anchor_levels(anchors: Sequence[HeadingAnchor]) -> list[int]:
+    """Make LLM levels relative to the document and close an abstract region.
+
+    The document title is metadata outside this tree.  An LLM that numbers all
+    major headings from level 2 has therefore supplied an offset, not a real
+    invisible parent.  Keeping that offset made the first heading the parent
+    of the whole document.  Abstract is also a bounded functional region: when
+    the next body heading is deeper only because of that same mistake, shift
+    its run up so the article body cannot remain inside the abstract.
+    """
+    if not anchors:
+        return []
+    offset = min(max(1, int(anchor.level)) for anchor in anchors) - 1
+    relative = [max(1, int(anchor.level) - offset) for anchor in anchors]
+    effective = list(relative)
+    for index, anchor in enumerate(anchors[:-1]):
+        if str(anchor.kind or "").casefold() != "abstract":
+            continue
+        abstract_level = effective[index]
+        first = index + 1
+        if relative[first] <= abstract_level:
+            continue
+        shift = relative[first] - abstract_level
+        for position in range(first, len(anchors)):
+            if position > first and relative[position] <= abstract_level:
+                break
+            effective[position] = max(1, relative[position] - shift)
+    return effective
 
 
 def _sample_first_pages(pdf_path: Path, pages: int, max_chars_per_page: int = 6000) -> str:
