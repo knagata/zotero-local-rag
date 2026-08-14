@@ -2,6 +2,12 @@
 
 Updated: 2026-08-15
 
+## 2026-08-15 visible Herdr command panes
+
+- `CLAUDE.md`に、CodexがHerdr管理下にいるときは長時間のtest/coverage/build/server/monitorを
+  現タブの新規ペーンで実行する規則を追加した。`--no-focus`、同一cwd、タスク内のペーン再利用、
+  終了時のペーンID/結果報告を必須とし、Herdr外では通常実行へfallbackする。
+
 ## 2026-08-15 Citation Graph title repair
 
 - Citation GraphのChroma metadata取得は、同一itemの章名も混在する`title`を文字列`MAX`で
