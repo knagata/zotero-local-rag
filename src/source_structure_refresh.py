@@ -24,6 +24,8 @@ try:
     from .heading_zone import TOC_RE, classify_heading_path
     from .html_extract import extract_chunks_from_epub_snapshot
     from .manifest import load_manifest
+    from .mistral_ocr_extract import extract_chunks_from_mistral_ocr_result
+    from .ocr_cache import MISTRAL_REQUEST_CONTRACT, load_result_any_model, source_digest
     from .pdf_extract import _outline_events_by_page, _resolve_record_structure_paths
     from .pdf_toc_recovery import HeadingAnchor, apply_anchors
     from .v3_data_plane import manifest_path
@@ -42,6 +44,8 @@ except ImportError:  # pragma: no cover
     from heading_zone import TOC_RE, classify_heading_path
     from html_extract import extract_chunks_from_epub_snapshot
     from manifest import load_manifest
+    from mistral_ocr_extract import extract_chunks_from_mistral_ocr_result
+    from ocr_cache import MISTRAL_REQUEST_CONTRACT, load_result_any_model, source_digest
     from pdf_extract import _outline_events_by_page, _resolve_record_structure_paths
     from pdf_toc_recovery import HeadingAnchor, apply_anchors
     from v3_data_plane import manifest_path
@@ -175,6 +179,76 @@ def _refresh_pdf_rows_from_persisted_anchors(
         "source_path": str(source_path), "chunks": len(output),
         "metadata_changed": changed, "outline_entries": len(anchors),
         "mapping_mode": "persisted_ai_toc_anchors", "mapped_chunks": mapped,
+    }
+
+
+def _refresh_pdf_rows_from_mistral_cache(
+    rows: Sequence[Dict[str, Any]], attachment_key: str, source_path: Path,
+) -> tuple[list[Dict[str, Any]], Dict[str, Any]] | None:
+    """Replay paid OCR structure only when it maps exactly onto stored chunks.
+
+    A structure-only maintenance run must not call a hosted service.  The raw
+    Mistral response is content-addressed, so it can be parsed again locally;
+    requiring identical chunk ids keeps this a metadata repair rather than a
+    hidden rechunk or re-embedding operation.
+    """
+    engines = {
+        str((row.get("metadata") or {}).get("extraction_engine") or "").casefold()
+        for row in rows
+    }
+    if not any("mistral" in engine for engine in engines):
+        return None
+
+    try:
+        digest = source_digest(source_path)
+    except OSError:
+        return None
+    found = load_result_any_model(
+        _PROJECT_ROOT / "data", engine="mistral_ocr",
+        contract_version=MISTRAL_REQUEST_CONTRACT, digest=digest,
+    )
+    if found is None:
+        return None
+    model, result = found
+    first = dict(rows[0].get("metadata") or {})
+    meta_base = {
+        key: first[key]
+        for key in ("itemKey", "attachmentKey", "source_type", "title", "filename")
+        if key in first
+    }
+    fresh, _quality = extract_chunks_from_mistral_ocr_result(
+        source_path, attachment_key, meta_base, result, model=model,
+    )
+    fresh_by_id = {chunk_id: metadata for chunk_id, _text, metadata in fresh}
+    stored_ids = {str(row.get("id") or "") for row in rows}
+    if not stored_ids or set(fresh_by_id) != stored_ids:
+        return None
+
+    output: list[Dict[str, Any]] = []
+    changed = mapped = 0
+    paths: set[tuple[str, ...]] = set()
+    for row in rows:
+        metadata = dict(row.get("metadata") or {})
+        before = {key: metadata.get(key) for key in STRUCTURE_METADATA_KEYS}
+        source_metadata = fresh_by_id[str(row.get("id") or "")]
+        for key in STRUCTURE_METADATA_KEYS:
+            if key in source_metadata:
+                metadata[key] = source_metadata[key]
+            else:
+                metadata.pop(key, None)
+        if metadata.get("structure_path"):
+            mapped += 1
+            paths.add(tuple(str(value) for value in metadata["structure_path"]))
+        after = {key: metadata.get(key) for key in STRUCTURE_METADATA_KEYS}
+        changed += before != after
+        output.append({**row, "metadata": metadata})
+    if mapped != len(output):
+        return None
+    return output, {
+        "attachment_key": attachment_key, "source_type": "pdf",
+        "source_path": str(source_path), "chunks": len(output),
+        "metadata_changed": changed, "outline_entries": len(paths),
+        "mapping_mode": "mistral_ocr_cache_exact_ids", "mapped_chunks": mapped,
     }
 
 
@@ -800,6 +874,9 @@ def _refresh_pdf_rows(
     source_path = _pdf_source_path(rows, attachment_key)
     toc = get_pdf_toc(str(source_path))
     if not toc:
+        cached = _refresh_pdf_rows_from_mistral_cache(rows, attachment_key, source_path)
+        if cached is not None:
+            return cached
         persisted = _refresh_pdf_rows_from_persisted_anchors(
             rows, attachment_key, source_path,
         )

@@ -1,6 +1,6 @@
 # Current development handoff
 
-Updated: 2026-08-13
+Updated: 2026-08-14
 
 ## Objective
 
@@ -29,6 +29,16 @@ Updated: 2026-08-13
   のままで、本文chunkは同一。次にこのmetadata-only差分を採用する場合もattachment scopeを明示する。
 - PDF部分coverage 32件・163頁は主に画像頁。本文と画像artifactを分ける設計なしに自動採用しない。
   RapidOCR空結果274回はsubprocessからcountを返す仕組みを作るまでログ抑制しない。
+
+## 2026-08-14 structure repair
+
+- PDF内蔵outlineがないMistral資料をstructure-only Maintenanceが再読すると、OCR由来の
+  `structure_path`を消してflat fallbackへ落とす経路を修正した。content-addressed raw OCR cacheを
+  ローカル再解析し、保存済みchunk ID集合との完全一致かつ全chunk mapping時だけmetadataを再投影する。
+  mismatchは採用せず、API call・rechunk・re-embeddingは行わない。
+- 影響資料1件は書込み前dry-runと対象backup後、2,904 source chunkだけをitem scopeで修復した。
+  `exact` 1,217 nodes / 1,104 leavesとなり、Citation Graphへ112 visible nodesが返る。更新前後の
+  Chroma ID・本文は同一。ローカルbackupは`data/backups/pre-structure-repair-*-20260814/`。
 
 ## Read first
 

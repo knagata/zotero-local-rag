@@ -3,6 +3,21 @@
 正本: `SPEC.md`。実装・検証の永続的な履歴はこのファイルに残す。
 `evaluations/`のローカル生成レポートはZotero識別子や絶対パスを含み得るため追跡しない。
 
+### 2026-08-14 Mistral構造のMaintenance再投影
+
+- [x] **構造だけのMaintenanceがMistral OCR由来の階層を消す経路を修正。** PDF内蔵outlineが
+  ないMistral資料では、content-addressed raw OCR cacheを追加API callなしで再解析する。再生成した
+  chunk ID集合が保存済み集合と完全一致し、全chunkに構造pathがある場合だけsource metadataを
+  再投影する。ID差分や部分mappingは採用せず、従来の保守的な復元へ送る真偽テストを追加した。
+- [x] **影響資料1件だけを構造修復。** 書込み前dry-runで2,904 source chunkの完全割当と
+  `flat_fallback`から`exact`への復元を確認し、対象metadataとrelations DBをローカル退避してから
+  item scopeで更新した。chunk ID・本文は更新前後で同一、埋め込み再計算なし、Citation Graphへ
+  112 visible nodesが返る。全件rebuildと有料OCRは行っていない。
+- [x] **検証。** coverage付き既定suite `1,625 passed / 7 skipped / 5 deselected`、source refresh
+  fixture 52件、compileall、fatal Ruff、coverage予算、差分検査に合格。slow corpus 5件はローカル
+  baseline不在で全件skip。実DBのZotero照合618/618、原本欠落頁・orphan・dangling・検索不能0、
+  cutover 593/593に合格し、DB gateを現世代へ再発行した。
+
 ### 2026-08-13 clean rebuild完了後の警告検証
 
 - [x] **Zotero reconciliationのEPUB優先判定を取込規則と一致させた。** manifest済みEPUB siblingも

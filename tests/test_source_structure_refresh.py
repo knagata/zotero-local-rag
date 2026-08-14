@@ -8,6 +8,7 @@ import pytest
 
 from src.source_structure_refresh import (
     _numbering_is_contiguous,
+    _refresh_pdf_rows_from_mistral_cache,
     refresh_source_structure_metadata,
 )
 
@@ -225,6 +226,101 @@ def test_pdf_refresh_reapplies_accepted_persisted_ai_toc_anchors():
     assert refreshed[2]["metadata"]["section"] == "Section A"
     assert reports[0]["mapping_mode"] == "persisted_ai_toc_anchors"
     assert reports[0]["outline_entries"] == 2
+
+
+def test_pdf_refresh_replays_mistral_cache_only_for_exact_chunk_ids():
+    rows = [
+        {"id": "PDF:p1:0", "text": "chapter", "metadata": {
+            "attachmentKey": "PDF", "source_type": "pdf", "page": 1,
+            "extraction_engine": "mistral_ocr",
+        }},
+        {"id": "PDF:p1:1", "text": "body", "metadata": {
+            "attachmentKey": "PDF", "source_type": "pdf", "page": 1,
+            "extraction_engine": "mistral_ocr",
+        }},
+    ]
+    fresh = [
+        ("PDF:p1:0", "different derived text", {"structure_path": ["Chapter"]}),
+        ("PDF:p1:1", "different derived text", {"structure_path": ["Chapter"]}),
+    ]
+    with patch("src.source_structure_refresh._pdf_source_path", return_value=Path("paper.pdf")), \
+            patch("src.source_structure_refresh.get_pdf_toc", return_value=[]), \
+            patch("src.source_structure_refresh.source_digest", return_value="digest"), \
+            patch("src.source_structure_refresh.load_result_any_model",
+                  return_value=("model", {"pages": []})), \
+            patch("src.source_structure_refresh.extract_chunks_from_mistral_ocr_result",
+                  return_value=(fresh, {})):
+        refreshed, reports = refresh_source_structure_metadata(rows)
+
+    assert [row["text"] for row in refreshed] == ["chapter", "body"]
+    assert all(row["metadata"]["structure_path"] == ["Chapter"] for row in refreshed)
+    assert reports[0]["mapping_mode"] == "mistral_ocr_cache_exact_ids"
+    assert reports[0]["mapped_chunks"] == 2
+
+
+def test_pdf_refresh_rejects_mistral_cache_when_chunk_ids_differ():
+    rows = [{"id": "PDF:p1:0", "text": "body", "metadata": {
+        "attachmentKey": "PDF", "source_type": "pdf", "page": 1,
+        "extraction_engine": "mistral_ocr",
+    }}]
+    fresh = [("PDF:p1:DIFFERENT", "body", {"structure_path": ["Chapter"]})]
+    with patch("src.source_structure_refresh._pdf_source_path", return_value=Path("paper.pdf")), \
+            patch("src.source_structure_refresh.get_pdf_toc", return_value=[]), \
+            patch("src.source_structure_refresh.source_digest", return_value="digest"), \
+            patch("src.source_structure_refresh.load_result_any_model",
+                  return_value=("model", {"pages": []})), \
+            patch("src.source_structure_refresh.extract_chunks_from_mistral_ocr_result",
+                  return_value=(fresh, {})), \
+            patch("src.source_structure_refresh._refresh_pdf_rows_from_numbered_body_headings",
+                  return_value=None):
+        refreshed, reports = refresh_source_structure_metadata(rows)
+
+    assert "structure_path" not in refreshed[0]["metadata"]
+    assert reports[0]["outline_entries"] == 0
+
+
+def test_mistral_structure_replay_treats_unreadable_source_as_cache_miss():
+    rows = [{"id": "PDF:p1:0", "text": "body", "metadata": {
+        "extraction_engine": "mistral_ocr",
+    }}]
+    with patch("src.source_structure_refresh.source_digest", side_effect=OSError("gone")):
+        assert _refresh_pdf_rows_from_mistral_cache(
+            rows, "PDF", Path("paper.pdf"),
+        ) is None
+
+
+def test_mistral_structure_replay_treats_absent_cache_as_miss():
+    rows = [{"id": "PDF:p1:0", "text": "body", "metadata": {
+        "extraction_engine": "mistral_ocr",
+    }}]
+    with patch("src.source_structure_refresh.source_digest", return_value="digest"), \
+            patch("src.source_structure_refresh.load_result_any_model", return_value=None):
+        assert _refresh_pdf_rows_from_mistral_cache(
+            rows, "PDF", Path("paper.pdf"),
+        ) is None
+
+
+def test_mistral_structure_replay_rejects_partial_structure_mapping():
+    rows = [
+        {"id": "PDF:p1:0", "text": "heading", "metadata": {
+            "extraction_engine": "mistral_ocr",
+        }},
+        {"id": "PDF:p1:1", "text": "body", "metadata": {
+            "extraction_engine": "mistral_ocr",
+        }},
+    ]
+    fresh = [
+        ("PDF:p1:0", "heading", {"structure_path": ["Chapter"]}),
+        ("PDF:p1:1", "body", {}),
+    ]
+    with patch("src.source_structure_refresh.source_digest", return_value="digest"), \
+            patch("src.source_structure_refresh.load_result_any_model",
+                  return_value=("model", {"pages": []})), \
+            patch("src.source_structure_refresh.extract_chunks_from_mistral_ocr_result",
+                  return_value=(fresh, {})):
+        assert _refresh_pdf_rows_from_mistral_cache(
+            rows, "PDF", Path("paper.pdf"),
+        ) is None
 
 
 @pytest.mark.parametrize(
