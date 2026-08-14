@@ -10,7 +10,9 @@ from src.epub_fallback import (
     build_epub_image_pdf, build_fixed_layout_pdf, profile_epub,
     remap_mistral_chunks_to_epub,
 )
-from src.html_extract import extract_chunks_from_epub_snapshot, extract_leaf_container_blocks
+from src.html_extract import (
+    extract_chunks_from_epub_snapshot, extract_dom_blocks, extract_leaf_container_blocks,
+)
 from src.source_coverage import validate_source_coverage
 
 
@@ -72,6 +74,40 @@ def test_leaf_div_fallback_owns_only_leaf_text_and_excludes_navigation():
     ]
     assert blocks[0]["structure_path"] == ["Chapter"]
     assert blocks[0]["extraction_engine"] == "epub_dom_leaf_fallback"
+
+
+def test_fragment_toc_boundary_closes_stale_document_title_in_leaf_fallback():
+    entries = [
+        {"path": ["Abstract"], "fragment": "abstract"},
+        {"path": ["Introduction"], "fragment": "introduction"},
+    ]
+    blocks = extract_leaf_container_blocks(
+        """<html><body><h1>Article title</h1>
+        <h2 id="abstract">Abstract</h2><div>Summary evidence.</div>
+        <h2 id="introduction">Introduction</h2><div>Body evidence.</div>
+        </body></html>""",
+        toc_entries=entries,
+    )
+    assert [row["structure_path"] for row in blocks] == [
+        ["Abstract"], ["Introduction"],
+    ]
+
+
+def test_fragment_toc_boundary_closes_stale_document_title_in_semantic_extraction():
+    entries = [
+        {"path": ["Abstract"], "fragment": "abstract"},
+        {"path": ["Introduction"], "fragment": "introduction"},
+    ]
+    blocks = extract_dom_blocks(
+        """<html><body><article><h1>Article title</h1>
+        <section><h2 id="abstract">Abstract</h2><p>Summary evidence.</p></section>
+        <section><h2 id="introduction">Introduction</h2><p>Body evidence.</p></section>
+        </article></body></html>""",
+        toc_entries=entries,
+    )
+    assert [row["structure_path"] for row in blocks] == [
+        ["Abstract"], ["Introduction"],
+    ]
 
 
 def test_epub_fragment_toc_paths_survive_full_extraction(tmp_path: Path):

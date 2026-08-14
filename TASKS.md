@@ -3,6 +3,21 @@
 正本: `SPEC.md`。実装・検証の永続的な履歴はこのファイルに残す。
 `evaluations/`のローカル生成レポートはZotero識別子や絶対パスを含み得るため追跡しない。
 
+### 2026-08-14 EPUB fragment TOC境界の正規化
+
+- [x] **TOC anchorを越えて古いDOM見出しを持ち越す経路を修正。** publisher article EPUBや一部書籍で、
+  fragment TOCが次の正規pathを確定した後もspine内の文書タイトル・章見出しstackが残り、
+  `Abstract > 文書タイトル > Abstract`のような偽階層を作っていた。semantic extractorとleaf fallbackの
+  両方でanchor境界が以前のDOM stackを閉じるようにし、同一境界を二重に主張しない真偽テストを追加。
+- [x] **全EPUBをread-only再評価して8 itemだけ限定修復。** 209 itemを再解析し、意味のあるpath差分は
+  8 item・1,893 chunkだった。3 itemは現行chunk完全一致またはusable TOC条件を満たさずfail-closedで
+  未変更。対象backup後に8 itemだけ更新し、4,154保存行のID・本文は更新前後で同一、再埋め込みなし。
+  全canonical structureを再走査し、Abstract・概要・摘要をrootとする別見出しの子孫は0件。
+- [x] **検証。** coverage付き既定suite `1,630 passed / 7 skipped / 5 deselected`、関連fixture 103件、
+  compileall、fatal Ruff、coverage予算に合格。slow 5件はローカルbaseline不在でskip。実DBの
+  Zotero照合618/618、原本欠落頁・orphan・dangling・検索不能0、cutover 593/593に合格し、
+  DB gateを現世代へ再発行した。
+
 ### 2026-08-14 AI TOC階層levelの正規化
 
 - [x] **先頭見出しが文書全体の偽親になる構造を修正。** 文書タイトルはtree外のmetadataなので、

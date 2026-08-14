@@ -623,6 +623,13 @@ def extract_dom_blocks(
         while anchor_index < len(toc_anchors) and toc_anchors[anchor_index][0] <= position:
             active_seed = list(toc_anchors[anchor_index][1])
             anchor_index += 1
+            # A fragment TOC boundary is canonical and closes DOM headings
+            # that began before it.  Publisher article EPUBs commonly keep an
+            # h1 document title open around every h2 section; retaining that
+            # stale h1 produced Abstract > Document title > Abstract and the
+            # same false container beneath every later section.
+            heading_stack.clear()
+            heading_levels.clear()
         if element.find_parent(["script", "style", "nav"]):
             continue
         if element.name in _HEADING_TAGS:
@@ -701,6 +708,8 @@ def extract_leaf_container_blocks(
         while anchor_index < len(toc_anchors) and toc_anchors[anchor_index][0] <= position:
             active_seed = list(toc_anchors[anchor_index][1])
             anchor_index += 1
+            heading_stack.clear()
+            heading_levels.clear()
         if element.find_parent(["script", "style", "nav"]):
             continue
         if element.name in _HEADING_TAGS:

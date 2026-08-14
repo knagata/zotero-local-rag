@@ -49,6 +49,11 @@ Updated: 2026-08-14
   採用済み47件を全件dry-runし、改善が明確な21件だけをbackup後に更新、重複が表面化する1件は保留。
   対象21,520保存行のID・本文は同一、構造はdry-runと一致、再埋め込みなし。backupは
   `data/backups/pre-ai-toc-level-repair-20260814/`。
+- EPUB fragment TOCが正規pathを切り替えた後もspine内の古いDOM見出しstackを持ち越し、文書タイトルや
+  章見出しを各sectionへ重複挿入する経路を修正した。209 itemのread-only再解析でpath差分のある8 item
+  だけをbackup後に更新し、3 itemはsource/chunk完全一致またはusable TOC gate不合格で未変更。
+  対象4,154保存行のID・本文は同一、再埋め込みなし。全canonical treeでAbstract・概要・摘要rootの
+  別見出し子孫は0。backupは`data/backups/pre-epub-toc-boundary-repair-20260814/`。
 
 ## Read first
 
