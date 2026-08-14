@@ -1,6 +1,14 @@
 # Current development handoff
 
-Updated: 2026-08-14
+Updated: 2026-08-15
+
+## 2026-08-15 Citation Graph title repair
+
+- Citation GraphのChroma metadata取得は、同一itemの章名も混在する`title`を文字列`MAX`で
+  選ばず、反復数最大の書誌値を使う。Citation対象576 itemのread-only監査で旧規則の
+  誤選択399 itemを確認し、報告2 itemはどちらも正しい書名になることを実DBで照合した。
+  active DB、構造、要約の更新は不要。文書構造のattachment rootは複数添付識別用の
+  ファイル名なので、書名と混同して構造fingerprintを書き換えない。
 
 ## Objective
 

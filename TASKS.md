@@ -3,6 +3,20 @@
 正本: `SPEC.md`。実装・検証の永続的な履歴はこのファイルに残す。
 `evaluations/`のローカル生成レポートはZotero識別子や絶対パスを含み得るため追跡しない。
 
+### 2026-08-15 Citation Graph書名選択の修正
+
+- [x] **章名・ファイル名を資料名にしない。** Chromaの同一item内で、書誌タイトルと
+  一部の構造境界chunkの章名が同じ`title`に入る。Citation Graphが文字列`MAX`を選んでいたため、
+  `Preface`等が書名になっていた。反復数最大の書誌値を選び、同数時のみ決定的な長さ・文字列順を
+  使う。現行のCitation対象576 itemのread-only監査で、旧規則と書誌最頻値が異なる399 itemを確認。
+  ソースchunk、文書構造、要約、active DBは更新しない。
+- [x] **添付ルートと書名を分ける。** 文書構造の618 attachment rootが全てファイル名なのは、
+  複数添付の識別用ラベルであり、Citation Graphノードの資料名とは別の値。表示修正のために
+  構造fingerprintや階層要約をstale化させない。
+- [x] **検証。** coverage付き既定suite `1,642 passed / 7 skipped / 5 deselected`、compileall、
+  fatal Ruff、coverage予算、差分検査に合格。追加した実DB非依存fixtureにより
+  `citation_graph/server.py`の未到達文上限を740から732へ下げた。
+
 ### 2026-08-15 Maintenance Widget要約操作性
 
 - [x] **全件要約の費用確認を開始前へ移動。** 項目4で`y`を入力した直後に`SUMMARIZE`を確認し、

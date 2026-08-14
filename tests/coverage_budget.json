@@ -4,7 +4,7 @@
     "citation_graph/graph_service.py": 0,
     "citation_graph/insights.py": 11,
     "citation_graph/lifecycle.py": 6,
-    "citation_graph/server.py": 740,
+    "citation_graph/server.py": 732,
     "src/__init__.py": 0,
     "src/artifact_repository.py": 16,
     "src/backfill_languages.py": 31,

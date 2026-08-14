@@ -100,24 +100,35 @@ def get_item_meta(item_keys: list[str]) -> dict[str, dict]:
         rows = conn.execute(f"""
             SELECT
                 ikey.string_value AS item_key,
-                MAX(CASE WHEN em.key = 'title'    THEN em.string_value END) AS title,
-                MAX(CASE WHEN em.key = 'creators' THEN em.string_value END) AS creators,
-                MAX(CASE WHEN em.key = 'year'     THEN em.string_value END) AS year
+                em.key AS metadata_key,
+                em.string_value AS metadata_value,
+                COUNT(*) AS occurrence_count
             FROM embedding_metadata ikey
             JOIN embedding_metadata em ON em.id = ikey.id
             WHERE ikey.key = 'itemKey'
               AND ikey.string_value IN ({placeholders})
-            GROUP BY ikey.string_value
+              AND em.key IN ('title', 'creators', 'year')
+              AND COALESCE(em.string_value, '') != ''
+            GROUP BY ikey.string_value, em.key, em.string_value
         """, item_keys).fetchall()
         conn.close()
-        return {
-            r["item_key"]: {
-                "title":    r["title"]    or "",
-                "creators": r["creators"] or "",
-                "year":     r["year"]     or "",
-            }
-            for r in rows
+        result = {
+            item_key: {"title": "", "creators": "", "year": ""}
+            for item_key in item_keys
         }
+        ranked: dict[tuple[str, str], tuple[int, int, str]] = {}
+        for row in rows:
+            item_key = str(row["item_key"])
+            metadata_key = str(row["metadata_key"])
+            value = str(row["metadata_value"])
+            # Structural boundary chunks can use their heading as ``title``.
+            # The bibliographic value is repeated on ordinary chunks, so its
+            # frequency identifies the item title; lexical MAX does not.
+            rank = (int(row["occurrence_count"]), len(value), value)
+            if rank > ranked.get((item_key, metadata_key), (-1, -1, "")):
+                ranked[(item_key, metadata_key)] = rank
+                result[item_key][metadata_key] = value
+        return result
     except Exception as e:
         # Returning {} draws the whole graph with Zotero keys where titles
         # should be, which reads as "this library has no metadata" rather than
