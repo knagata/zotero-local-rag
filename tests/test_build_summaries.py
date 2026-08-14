@@ -133,6 +133,69 @@ class SummaryPipelineTests(unittest.TestCase):
         self.assertEqual(result["sentences"][0]["evidence_unit_ids"], ["s0001"])
         self.assertEqual(model, "deepseek:deepseek-v4-pro:summary-only:disabled")
 
+    def test_summary_only_reports_each_paid_request_and_verified_response(self):
+        generated = {"sentences": [
+            {"text": "第一の根拠文。", "evidence_unit_ids": ["s0001"]},
+            {"text": "第二の根拠文。", "evidence_unit_ids": ["s0001"]},
+        ]}
+        client = Mock(provider="deepseek", model="deepseek-v4-pro")
+        client.generate_json.return_value = generated
+        events = []
+        summary_core.set_summary_progress_callback(
+            lambda event, details: events.append((event, details)),
+        )
+        try:
+            with patch.object(summary_core, "DeepSeekClient", return_value=client):
+                build_summaries._llm_summary_only_item(
+                    "Title", [{"section_id": "w0", "summary": "根拠となる節要約。"}],
+                )
+        finally:
+            summary_core.set_summary_progress_callback(None)
+        self.assertEqual([event for event, _details in events], ["request", "response"])
+        self.assertEqual(events[0][1]["kind"], "reduction")
+        self.assertEqual(events[1][1]["verification"]["kept_sentences"], 2)
+
+    def test_summary_only_reports_a_terminal_api_error(self):
+        from src.llm_client import LLMError
+        client = Mock(provider="deepseek", model="deepseek-v4-pro")
+        client.generate_json.side_effect = LLMError("provider failed")
+        events = []
+        summary_core.set_summary_progress_callback(
+            lambda event, details: events.append((event, details)),
+        )
+        try:
+            with patch.object(summary_core, "DeepSeekClient", return_value=client):
+                with self.assertRaises(LLMError):
+                    build_summaries._llm_summary_only_item(
+                        "Title", [{"section_id": "w0", "summary": "根拠となる節要約。"}],
+                    )
+        finally:
+            summary_core.set_summary_progress_callback(None)
+        self.assertEqual([event for event, _details in events], ["request", "error"])
+        self.assertEqual(events[1][1]["error"], "LLMError")
+
+    def test_section_summary_reports_its_verified_response(self):
+        generated = {"sentences": [
+            {"text": "第一の根拠文。", "evidence_unit_ids": ["u0001"]},
+            {"text": "第二の根拠文。", "evidence_unit_ids": ["u0001"]},
+        ]}
+        client = Mock(provider="deepseek", model="deepseek-v4-flash")
+        client.generate_json.return_value = generated
+        events = []
+        summary_core.set_summary_progress_callback(
+            lambda event, details: events.append((event, details)),
+        )
+        try:
+            with patch.object(summary_core, "DeepSeekClient", return_value=client):
+                build_summaries._llm_summary_only_section({
+                    "section_id": "w0", "chapter": "Chapter",
+                    "chunks": [{"id": "c0", "text": "根拠となる本文。"}],
+                })
+        finally:
+            summary_core.set_summary_progress_callback(None)
+        self.assertEqual([event for event, _details in events], ["request", "response"])
+        self.assertEqual(events[1][1]["kind"], "section")
+
     def test_front_matter_and_toc_are_non_content(self):
         fixtures = [
             {"chapter": "目次", "text": "章題 " * 100},

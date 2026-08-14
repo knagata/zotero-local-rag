@@ -273,7 +273,12 @@ fi
 if [[ "$maintenance_auto_approve" == "1" ]]; then
     echo "4. 全件要約を一括生成する（DeepSeek API課金・重い処理） [自動実行の対象外]"
 elif ask_disabled "4. 全件要約を一括生成する（DeepSeek API課金・DB監査合格後のみ・SUMMARIZE確認・重い処理）"; then
-    run_bulk_summary=1
+    read -r -p "続行するには SUMMARIZE と入力してください（スキップする場合はEnter）: " bulk_confirmation
+    if [[ "$bulk_confirmation" == "SUMMARIZE" ]]; then
+        run_bulk_summary=1
+    else
+        echo "全件要約の一括生成をキャンセルしました。"
+    fi
 fi
 if ask_enabled "5. 引用ネットワークの未処理・エラー分を更新する"; then
     run_citations=1
@@ -517,21 +522,13 @@ if [[ "$run_bulk_summary" == "1" ]]; then
     echo ">> 全件要約の一括生成（DeepSeek API課金・重い処理）"
     echo "========================================================================"
     if require_gate "全件要約の一括生成"; then
-        echo "[課金確認] DeepSeek APIで全件の階層要約を生成します。DB変更後の古い合格証明は"
-        echo "           自動拒否されます。"
-        read -r -p "続行するには SUMMARIZE と入力してください（スキップする場合はEnter）: " bulk_confirmation
-        if [[ "$bulk_confirmation" != "SUMMARIZE" ]]; then
-            echo "全件要約の一括生成をキャンセルしました。"
-            record_summary "－" "全件要約の一括生成" "キャンセル（未確認）"
-        else
-            bulk_summary_workers="${SUMMARY_BULK_WORKERS:-20}"
-            run_step "DeepSeek 階層AI要約生成・要約索引構築（全件・${bulk_summary_workers}並列）" \
-                uv run python scripts/build_structure_summaries.py --all --mode llm \
-                --workers "$bulk_summary_workers" --embed --database-gate "$gate_path"
-            run_step "階層要約・要約索引監査" \
-                uv run python scripts/audit_structure_summaries.py \
-                --output "${SERVER_SUMMARY_AUDIT_PATH:-data/quality/server_summary_audit.json}"
-        fi
+        bulk_summary_workers="${SUMMARY_BULK_WORKERS:-20}"
+        run_step "DeepSeek 階層AI要約生成・要約索引構築（全件・${bulk_summary_workers}並列）" \
+            uv run python scripts/build_structure_summaries.py --all --mode llm \
+            --workers "$bulk_summary_workers" --embed --database-gate "$gate_path"
+        run_step "階層要約・要約索引監査" \
+            uv run python scripts/audit_structure_summaries.py \
+            --output "${SERVER_SUMMARY_AUDIT_PATH:-data/quality/server_summary_audit.json}"
     fi
 fi
 

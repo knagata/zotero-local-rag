@@ -3,6 +3,18 @@
 正本: `SPEC.md`。実装・検証の永続的な履歴はこのファイルに残す。
 `evaluations/`のローカル生成レポートはZotero識別子や絶対パスを含み得るため追跡しない。
 
+### 2026-08-15 Maintenance Widget要約操作性
+
+- [x] **全件要約の費用確認を開始前へ移動。** 項目4で`y`を入力した直後に`SUMMARIZE`を確認し、
+  以後の項目選択・実行予定・最終開始確認より前に許可を確定する。ライブラリ更新や埋め込み後に
+  入力待ちを発生させず、auto-approveでは従来どおり有料処理を選ばない。
+- [x] **階層要約の逐次進捗を表示。** item完了数/総数とstatus内訳、DeepSeek APIの送信・正常応答・
+  失敗・処理中件数をthread-safeに逐次出力し、正常応答では根拠確認済み文数/生成文数も表示する。
+  TerminalとWidgetの保存ログの双方へ同じ行を残す。
+- [x] **検証。** coverage付き既定suite `1,640 passed / 7 skipped / 5 deselected`、関連fixture
+  68件、compileall、fatal Ruff、function/coverageラチェット、README入口上限、差分検査に合格。
+  `summary_core.py`の未到達文は追加したrequest/response/error契約テストにより28から18へ下げた。
+
 ### 2026-08-14 階層要約の信憑性表示
 
 - [x] **文単位の根拠検証を保存品質へ反映。** DeepSeek summary-only応答が既に返していた

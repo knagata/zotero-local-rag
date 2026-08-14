@@ -9,14 +9,14 @@ from __future__ import annotations
 import os
 import re
 from collections import Counter
-from typing import Any
+from typing import Any, Callable
 
 
 try:
-    from .llm_client import DeepSeekClient, InvalidLLMResponse
+    from .llm_client import DeepSeekClient, InvalidLLMResponse, LLMError
     from .summary_prompts import cited_item_summary_prompt, cited_section_summary_prompt
 except ImportError:  # pragma: no cover
-    from llm_client import DeepSeekClient, InvalidLLMResponse
+    from llm_client import DeepSeekClient, InvalidLLMResponse, LLMError
     from summary_prompts import cited_item_summary_prompt, cited_section_summary_prompt
 
 
@@ -79,6 +79,33 @@ SUMMARY_ONLY_SCHEMA: dict[str, Any] = {
     "required": ["sentences"],
     "additionalProperties": False,
 }
+
+SummaryProgressCallback = Callable[[str, dict[str, Any]], None]
+_summary_progress_callback: SummaryProgressCallback | None = None
+
+
+def set_summary_progress_callback(callback: SummaryProgressCallback | None) -> None:
+    """Install process-local progress reporting for paid summary requests."""
+    global _summary_progress_callback
+    _summary_progress_callback = callback
+
+
+def _emit_summary_progress(event: str, **details: Any) -> None:
+    if _summary_progress_callback is not None:
+        _summary_progress_callback(event, details)
+
+
+def _generate_summary_json(
+    client: DeepSeekClient, prompt: str, *, kind: str, model: str,
+) -> dict[str, Any]:
+    _emit_summary_progress("request", kind=kind, model=model)
+    try:
+        return client.generate_json(
+            prompt, schema=SUMMARY_ONLY_SCHEMA, timeout=_summary_llm_timeout_seconds(),
+        )
+    except LLMError as exc:
+        _emit_summary_progress("error", kind=kind, model=model, error=type(exc).__name__)
+        raise
 
 
 def _summary_llm_timeout_seconds() -> float:
@@ -264,10 +291,9 @@ def _llm_summary_only_section(
     client = DeepSeekClient(model, thinking=reasoning)
     source = "\n\n".join(f"[{unit['unit_id']}]\n{unit['text']}" for unit in units)
     prompt = cited_section_summary_prompt(source)
-    generated = client.generate_json(
-        prompt, schema=SUMMARY_ONLY_SCHEMA, timeout=_summary_llm_timeout_seconds(),
-    )
+    generated = _generate_summary_json(client, prompt, kind="section", model=model)
     verified, stats = _verify_summary_only_result(generated, units)
+    _emit_summary_progress("response", kind="section", model=model, verification=stats)
     verified["_verification"] = stats
     verified["_usage"] = client.last_usage
     return verified, f"deepseek:{model}:summary-only:{reasoning}"
@@ -292,10 +318,9 @@ def _llm_summary_only_item(
     client = DeepSeekClient(model, thinking=reasoning)
     source = "\n\n".join(f"[{unit['unit_id']}]\n{unit['text']}" for unit in units)
     prompt = cited_item_summary_prompt(title, source)
-    generated = client.generate_json(
-        prompt, schema=SUMMARY_ONLY_SCHEMA, timeout=_summary_llm_timeout_seconds(),
-    )
+    generated = _generate_summary_json(client, prompt, kind="reduction", model=model)
     verified, stats = _verify_summary_only_result(generated, units)
+    _emit_summary_progress("response", kind="reduction", model=model, verification=stats)
     verified["_verification"] = stats
     verified["_usage"] = client.last_usage
     return verified, f"deepseek:{model}:summary-only:{reasoning}"
@@ -317,5 +342,6 @@ __all__ = [
     "_section_source_text", "classify_section_content", "is_meta_summary",
     "_normalize_evidence", "_note_values_supported", "_split_exact_units",
     "_section_evidence_units", "_verify_summary_only_result",
+    "set_summary_progress_callback",
     "_llm_summary_only_section", "_llm_summary_only_item", "_extractive_section",
 ]

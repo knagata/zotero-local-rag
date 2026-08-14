@@ -83,8 +83,8 @@ class MaintenanceCommandTests(unittest.TestCase):
     # Reads consumed, in order, when every item is answered interactively:
     # 1 library, 2 audit, 3 differential summary, 4 bulk summary,
     # 5 citations, (6 is a static notice, no read), 7 Mistral batch, final
-    # confirmation. Bulk summary additionally reads a typed SUMMARIZE
-    # confirmation during execution, not during this up-front sequence.
+    # confirmation. When item 4 is answered yes, its typed SUMMARIZE
+    # confirmation is read immediately, before items 5 and 7.
 
     def test_log_prompt_defaults_off_and_writes_no_file_on_bare_enter(self):
         result, _calls, _gate, _summary_audit = self.run_command("\n" * 7, log_answer="")
@@ -191,7 +191,7 @@ class MaintenanceCommandTests(unittest.TestCase):
         self.assertIn("DB監査の合格証明がありません", result.stdout)
 
     def test_bulk_summary_requires_database_gate(self):
-        result, calls, _gate, _summary_audit = self.run_command("n\nn\nn\ny\nn\nn\n\n")
+        result, calls, _gate, _summary_audit = self.run_command("n\nn\nn\ny\nSUMMARIZE\nn\nn\n\n")
         self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
         self.assertFalse(any("build_structure_summaries.py" in call for call in calls))
         self.assertIn("DB監査の合格証明がありません", result.stdout)
@@ -224,7 +224,7 @@ class MaintenanceCommandTests(unittest.TestCase):
         self.assertIn("要約の生成はこの実行では行われません", result.stdout)
 
     def test_a_failed_audit_also_blocks_the_bulk_summary(self):
-        answers = "n\ny\nn\ny\nn\nn\n\n"
+        answers = "n\ny\nn\ny\nSUMMARIZE\nn\nn\n\n"
         result, calls, _gate, _summary_audit = self.run_command(
             answers, gate_exists=True, audit_fails=True,
         )
@@ -251,14 +251,14 @@ class MaintenanceCommandTests(unittest.TestCase):
         self.assertIn("他の更新は最後まで実行済みです", result.stdout)
 
     def test_bulk_summary_requires_a_typed_summarize_confirmation(self):
-        answers = "n\nn\nn\ny\nn\nn\ny\n\n"  # trailing blank cancels the typed prompt
+        answers = "n\nn\nn\ny\n\nn\nn\n"  # blank immediately after item 4 cancels it
         result, calls, _gate, _summary_audit = self.run_command(answers, gate_exists=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertFalse(any("build_structure_summaries.py" in call for call in calls))
         self.assertIn("全件要約の一括生成をキャンセルしました", result.stdout)
 
     def test_bulk_summary_runs_once_typed_confirmation_matches(self):
-        answers = "n\nn\nn\ny\nn\nn\ny\nSUMMARIZE\n"
+        answers = "n\nn\nn\ny\nSUMMARIZE\nn\nn\ny\n"
         result, calls, gate, summary_audit = self.run_command(answers, gate_exists=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(calls, [

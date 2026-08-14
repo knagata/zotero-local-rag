@@ -64,7 +64,7 @@ macOSでは [Maintenance-Widget.command](Maintenance-Widget.command) をダブ�
 1. Zoteroライブラリの差分更新（＋文書構造の更新）
 2. DBの監査（Zotero本体・原本との突き合わせ。非破壊。要約の実行に必要で、gateが最新なら既定でskip）
 3. 要約の差分更新（DeepSeekによるAI要約。DB監査合格後のみ、既定off）
-4. 全件要約の一括生成（DeepSeek課金・`SUMMARIZE`入力確認・DB監査合格後のみ、既定off）
+4. 全件要約の一括生成（DeepSeek課金・選択時の`SUMMARIZE`入力確認・DB監査合格後のみ、既定off）
 5. Citation Networkの更新
 6. 報告された品質・引用関係の確認
 7. Mistral OCR Batchの送信、または完了済み結果の回収・品質確認・採用（任意）
@@ -74,7 +74,7 @@ macOSでは [Maintenance-Widget.command](Maintenance-Widget.command) をダブ�
 DBのゼロ再構築（`--rebuild`）は [Setup.command](Setup.command) から行います。初回構築は確認なし、既存DBがある場合は
 常に再構築の案内（`REBUILD`入力確認。プロファイル変更時は必須、他は任意）が出て、続けてDB監査まで実行できます。
 
-AI要約の全件backfillは費用確認（`SUMMARIZE`入力）とDB監査合格後に行います。既に最新の要約は追加API呼び出しなしでskipします。Mistral Batchも、
+AI要約の全件backfillは項目4選択直後の`SUMMARIZE`確認とDB監査合格後に行い、実行中はitem・API進捗を表示します。既に最新の要約は追加API呼び出しなしでskipします。Mistral Batchも、
 初回は送信だけを行い、完了後にWidgetを再起動して同項目を許可したときに回収・品質確認・採用します。
 
 詳しくは [日常の使い方](docs/daily-use.md) を参照してください。

@@ -20,7 +20,65 @@ from src.build_structure_summaries import build_structure_summaries, embed_struc
 from src.chunk_store import list_item_keys
 from src.db_relations import get_item_processing_status, mark_artifact_status
 from src.database_gate import validate_database_gate
+from src.summary_core import set_summary_progress_callback
 from src.v3_data_plane import V3_COLLECTION
+
+
+class SummaryProgressReporter:
+    """Thread-safe, line-oriented progress for long paid summary runs."""
+
+    def __init__(self, total_items: int) -> None:
+        self.total_items = total_items
+        self.sent = 0
+        self.responses = 0
+        self.errors = 0
+        self.completed = 0
+        self.status_counts: dict[str, int] = {}
+        self.lock = threading.Lock()
+
+    def api_event(self, event: str, details: dict) -> None:
+        with self.lock:
+            if event == "request":
+                self.sent += 1
+                print(
+                    f"[SUMMARY PROGRESS] API送信 {self.sent} / 応答 {self.responses} / "
+                    f"失敗 {self.errors} / 処理中 {self.sent - self.responses - self.errors} / "
+                    f"種別 {details.get('kind', '')}",
+                    flush=True,
+                )
+            elif event == "response":
+                self.responses += 1
+                verification = details.get("verification") or {}
+                print(
+                    f"[SUMMARY PROGRESS] API応答 {self.responses}/{self.sent} / "
+                    f"失敗 {self.errors} / 処理中 {self.sent - self.responses - self.errors} / 根拠確認 "
+                    f"{verification.get('kept_sentences', 0)}/"
+                    f"{verification.get('generated_sentences', 0)}文",
+                    flush=True,
+                )
+            elif event == "error":
+                self.errors += 1
+                print(
+                    f"[SUMMARY PROGRESS] API失敗 {self.errors} / 送信 {self.sent} / "
+                    f"応答 {self.responses} / 処理中 {self.sent - self.responses - self.errors} / "
+                    f"種別 {details.get('error', '')}",
+                    flush=True,
+                )
+
+    def item_completed(self, result: dict) -> None:
+        with self.lock:
+            self.completed += 1
+            status = str(result.get("status") or "unknown")
+            self.status_counts[status] = self.status_counts.get(status, 0) + 1
+            statuses = ", ".join(
+                f"{key}={value}" for key, value in sorted(self.status_counts.items())
+            )
+            print(
+                f"[SUMMARY PROGRESS] itemバッチ {self.completed}/{self.total_items} 完了 "
+                f"({statuses}) / API送信 {self.sent} / 応答 {self.responses} / "
+                f"失敗 {self.errors} / 処理中 {self.sent - self.responses - self.errors}",
+                flush=True,
+            )
 
 
 def main() -> None:
@@ -86,6 +144,12 @@ def main() -> None:
             "canonical_data_modified": False,
         }, ensure_ascii=False, indent=2))
         return
+    progress = SummaryProgressReporter(len(keys))
+    set_summary_progress_callback(progress.api_event if args.mode == "llm" else None)
+    print(
+        f"[SUMMARY PROGRESS] 開始: item 0/{len(keys)} / workers={args.workers} / mode={args.mode}",
+        flush=True,
+    )
     def _process(key: str) -> dict:
         try:
             result = build_structure_summaries(
@@ -102,6 +166,7 @@ def main() -> None:
         for key in keys:
             result = _process(key)
             output.append(result)
+            progress.item_completed(result)
             if result.get("status") == "failed":
                 failures += 1
             else:
@@ -118,6 +183,7 @@ def main() -> None:
                 result = future.result()
                 with lock:
                     output.append(result)
+                    progress.item_completed(result)
                     if result.get("status") == "failed":
                         failures += 1
                     else:

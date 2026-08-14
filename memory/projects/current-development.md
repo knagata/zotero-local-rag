@@ -68,6 +68,15 @@ Updated: 2026-08-14
   約119万字が1章へ集約された1件は2回目で成功。全6件が`accepted`で根拠確認文の棄却0。
   要約索引は8,080/8,080件、全体の階層要約監査は合格。全件再要約は行っていない。
 
+## 2026-08-15 summary maintenance progress
+
+- Maintenance Widgetの全件要約`SUMMARIZE`確認を、処理開始時ではなく項目4の選択直後へ移した。
+  後段処理後の入力待ちは発生しない。
+- 要約CLIはitem完了数/総数・status内訳と、API送信/応答/失敗/処理中件数を逐次表示する。
+  正常応答では根拠確認済み文数/生成文数も出し、並列worker間の出力はlockで整列する。
+- coverage付き既定suiteは1,640 passed / 7 skipped / 5 deselected。`summary_core.py`の未到達文
+  上限は28から18へ下げた。
+
 ## Read first
 
 1. `CLAUDE.md`を最初から最後まで読む。
