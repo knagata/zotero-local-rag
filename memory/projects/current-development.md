@@ -5,8 +5,8 @@ Updated: 2026-08-15
 ## 2026-08-15 visible Herdr command panes
 
 - `CLAUDE.md`に、CodexがHerdr管理下にいるときは長時間のtest/coverage/build/server/monitorを
-  現タブの新規ペーンで実行する規則を追加した。`--no-focus`、同一cwd、タスク内のペーン再利用、
-  終了時のペーンID/結果報告を必須とし、Herdr外では通常実行へfallbackする。
+  同一workspaceの専用タブで実行する規則を追加した。ユーザのフォーカスを移さず、同一cwd、
+  タスク内のタブ再利用、終了時のタブID/ペーンID/結果報告を必須とし、Herdr外では通常実行へfallbackする。
 
 ## 2026-08-15 Citation Graph title repair
 
