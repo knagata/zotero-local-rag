@@ -8,8 +8,11 @@ Updated: 2026-08-15
   156偽章要約を生んでいた。PDF outlineの過半数がこの形またはファイル名なら、
   chapter/path/treeの全経路で使用不能とする共通ゲートを追加。outlineあり原本131 PDFの
   read-only走査で影響は該当1件だけ。対象dry-runは584 chunk完全割当の`flat_fallback`
-  23 node / 21 leaf、偽見出し0。active DBは未更新。正しい9章へのAI TOCと要約再生成は
-  有料callの別承認待ち。
+  23 node / 21 leaf、偽見出し0。
+- 明示承認後、15,035,319,759 byteの検証済みbackupを作り、対象1添付だけAI TOCを再実行。
+  9 anchor（coverage 1.0）、584 chunk、`recovered` 22 node / 11 leafへactive DBを更新した。
+  正本9章を確認し、要約対象8章は全て`llm/accepted/searchable`。511字の`About this Title`は
+  最小長規則でskip。DB監査593 item失敗0、原本欠落0、要約索引7,932 ID完全一致で合格。
 
 ## 2026-08-15 visible Herdr command panes
 

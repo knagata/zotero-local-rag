@@ -12,8 +12,13 @@
   `structure_path`とoutline treeも同じ判定を使う。
 - [x] **実コーパスと生成物を照合。** 原本PDFのうちoutlineあり131件をread-only走査し、
   この形は1件だけと確認。対象のdry-runは584 chunkを全割当したまま、`exact` 336 node /
-  167 leafから`flat_fallback` 23 node / 21 leafへ改善し、偽見出し0になる。active DBはまだ
-  更新していない。正しい9章への対象限定AI TOCと要約再生成は有料callの別承認後に行う。
+  167 leafから`flat_fallback` 23 node / 21 leafへ改善し、偽見出し0になることを確認した。
+- [x] **対象1件を修復。** 明示承認後、検証済み15,035,319,759 byte backup
+  `data/backups/pre-h2s-ai-toc-20260815-83ef402`を作成し、`H2SDTWFQ/KH6Y4Q7E`だけに
+  AI TOCを再実行。9 anchorをcoverage 1.0で採用し、584 chunk（579明示mapping）を
+  `recovered` 22 node / 11 leafへ更新した。正本9章を確認し、要約対象8章は全件
+  `llm/accepted/searchable`、短い`About this Title`（511字）は最小長規則でskip。
+  DB監査は593 item・失敗0、原本欠落0、要約索引監査は期待/実在7,932件一致で合格した。
 - [x] **回帰検査。** 連番＋hashの全lookup拒否、通常章に混ざる単一内部IDの保持、
   ファイル名目次拒否、PDF reader境界の真偽テストを追加。関連fixture 93件は合格。
   全体1646件合格（7 skip、5 deselect）。slow baseline 5件はローカルbaseline不在でskipした。
