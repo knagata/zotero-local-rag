@@ -14,6 +14,12 @@
 - [x] **検証。** 関連39件とcoverage付き既定suite 1,647件が合格（7 skip、5 deselect）。
   coverage予算、compileall、fatal Ruff、差分検査も合格した。
 
+### 2026-08-15 GitHub SSH remoteの優先
+
+- [x] **GitHubのGit操作はSSHを優先する。** HTTPSで権限エラーになった場合はSSH認証を確認し、
+  remoteを`git@github.com:<owner>/<repo>.git`へ切り替える規則を、Claudeのリポジトリ指示と
+  Codexのglobal custom instructionsへ追加した。
+
 ### 2026-08-15 PDF生成ページブックマークの拒否
 
 - [x] **ページ内部IDを章見出しにしない。** 174頁すべてに`00000___<32 hex>`形式の

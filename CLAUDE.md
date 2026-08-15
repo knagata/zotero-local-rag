@@ -122,6 +122,9 @@ uv run python scripts/build_structure_recovery_baseline.py --write  # 採択す�
 CIはこのリポジトリで唯一「必ず実行される」検査層で、そこが赤いなら守られていない。
 プッシュ後に必ず確認する。
 
+GitHubへのfetch/pushはSSHを優先する。HTTPS remoteが認証・権限エラーになる場合は、
+SSH認証を確認して`git@github.com:<owner>/<repo>.git`へ切り替える。
+
 ```bash
 gh run list --limit 1
 gh run view <id> --log-failed

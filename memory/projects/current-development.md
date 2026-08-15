@@ -20,6 +20,11 @@ Updated: 2026-08-15
   同一workspaceの専用タブで実行する規則を追加した。ユーザのフォーカスを移さず、同一cwd、
   タスク内のタブ再利用、終了時のタブID/ペーンID/結果報告を必須とし、Herdr外では通常実行へfallbackする。
 
+## 2026-08-15 GitHub SSH preference
+
+- GitHubのfetch/pushはSSH remoteを優先する。HTTPSで認証・権限エラーの場合はSSH認証を確認し、
+  `git@github.com:<owner>/<repo>.git`へ切り替える。Claudeのrepo指示とCodex global指示へ反映済み。
+
 ## 2026-08-15 Citation Graph title repair
 
 - Citation GraphのChroma metadata取得は、同一itemの章名も混在する`title`を文字列`MAX`で
