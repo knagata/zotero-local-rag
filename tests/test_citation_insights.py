@@ -67,6 +67,16 @@ class CitationInsightsTests(unittest.TestCase):
         })
         self.assertEqual((trust["level"], trust["label"]), ("verified", "根拠確認済み"))
 
+    def test_summary_trust_does_not_overstate_candidate_with_accepted_final_reduction(self):
+        trust = citation_insights._summary_trust({
+            "summary_kind": "llm", "quality_status": "candidate",
+            "input_scope": {"verification": {
+                "accepted": True, "generated_sentences": 3, "kept_sentences": 3,
+            }},
+        })
+
+        self.assertEqual((trust["level"], trust["label"]), ("limited", "限定的"))
+
     def test_sections_are_naturally_sorted_filtered_and_paged(self):
         first = citation_insights.list_sections("ITEM", limit=1)
         self.assertEqual(first["items"][0]["section_id"], self.section_ids["w0"])

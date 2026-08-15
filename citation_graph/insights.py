@@ -22,7 +22,10 @@ def _summary_trust(summary: dict[str, Any] | None) -> dict[str, Any] | None:
         return {"level": "legacy", "label": "既存要約（検証記録なし）"}
     kept = int(verification.get("kept_sentences") or 0)
     generated = int(verification.get("generated_sentences") or 0)
-    accepted = bool(verification.get("accepted"))
+    accepted = (
+        bool(verification.get("accepted"))
+        and str(summary.get("quality_status") or "accepted") == "accepted"
+    )
     return {
         "level": "verified" if accepted else "limited",
         "label": "根拠確認済み" if accepted else "限定的",

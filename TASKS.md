@@ -3,6 +3,17 @@
 正本: `SPEC.md`。実装・検証の永続的な履歴はこのファイルに残す。
 `evaluations/`のローカル生成レポートはZotero識別子や絶対パスを含み得るため追跡しない。
 
+### 2026-08-15 直近変更レビューの修正
+
+- [x] **candidate要約をverifiedと表示しない。** 複数segmentまたは親要約では、最終reductionが
+  根拠確認に合格しても子にcandidateがあれば全体の`quality_status`はcandidateになる。
+  Citation Graphのtrust判定も最終verificationだけでなく保存済み全体品質を要求し、
+  `candidate + accepted final reduction`を`limited`とする真偽テストを追加した。
+- [x] **引継ぎの古いDB開始点を更新。** M5前のmanifest 352・検索不可・rebuild待ちという記述を、
+  manifest 618・監査済みactive V3・M5完了へ置換し、DB書込みと有料callの承認境界を現運用に揃えた。
+- [x] **検証。** 関連39件とcoverage付き既定suite 1,647件が合格（7 skip、5 deselect）。
+  coverage予算、compileall、fatal Ruff、差分検査も合格した。
+
 ### 2026-08-15 PDF生成ページブックマークの拒否
 
 - [x] **ページ内部IDを章見出しにしない。** 174頁すべてに`00000___<32 hex>`形式の

@@ -211,21 +211,19 @@ Updated: 2026-08-15
 
 ## Existing V3 database assessment
 
-現DBは未完成世代なので品質評価・検索の正本にしてはいけないが、コード整理や合成テストを
-続ける妨げにはならない。
+active V3はM5 clean rebuildと後続の対象修復を完了した監査済み世代であり、検索・品質評価の
+正本として使用できる。
 
 - active planeは`zotero_paragraphs_v3` / `manifest_v3.json` / `lexical_v3.sqlite3`。
-- manifestは352添付、inflight 1件、`hnsw_validated=false`。MCP read pathはこの世代を拒否する。
-- 修正前のstale OCR routeで一部を生成したため、差分継続やfingerprint手修正で採用しない。
-- 旧complete-generation snapshotは現存しない。診断用snapshot
-  `data/backups/pre-m5-incomplete-20260811`も未完成かつ検索不可なので品質正本ではない。
-  次のclean rebuildでのみ世代全体を置換し、個別storeを混ぜない。
+- manifest 618添付、failed/deferred/inflight 0、`hnsw_validated=true`。
+- 直近の全DB監査は593 item中失敗0、原本欠落頁・orphan・dangling・unretrievableはいずれも0。
+- H2SDTWFQ修復後の要約索引監査は期待/実在7,932 ID一致。rollback点は
+  `data/backups/pre-h2s-ai-toc-20260815-83ef402`。
 
 ## Next work, in order
 
-`TASKS.md`の「2026-08-10 埋め込み開始までのマイルストーン」を進捗の正本とする。
-M0〜M4.5は完了。修正前に開始・停止されたactive V3は未完成かつ検索不可なので再利用しない。
-次はユーザーの別承認後、`Setup.command`からclean rebuildを最初から行う。
+`TASKS.md`を進捗の正本とする。M0〜M5、監査、対象構造修復は完了している。次の作業は
+監査済みactive V3を維持しながら、個別に報告された表示・構造品質の問題を対象限定で診断する。
 
 1. **M1（完了）**: 通常attachment dispatchとpending候補の組立を決定的fixtureで固定した。
 2. **M2（完了）**: 最終出力確定だけを純粋関数へ分け、現行抽出・chunk境界を今回の世代として
@@ -245,17 +243,16 @@ M0〜M4.5は完了。修正前に開始・停止されたactive V3は未完成�
    後段structure writerを共有lockで排他し、埋め込み開始に直接必要なreview指摘を解消した。
 9. **M4.5（完了）**: Setupの全DB lifecycle childで保存済みconfigを親processの古い値より優先し、
    stale Granite/queue設定を使った事故の回帰テストを追加した。
-10. **M5（別承認）**: M4.5完了と明示承認後だけclean rebuildを実行する。完了後に
-   `uv run python scripts/run_db_audit.py`でZotero・原本・DBの3監査を通す。
+10. **M5（完了）**: clean rebuild、Zotero・原本・DBの3監査、HNSW公開を完了した。
 
 ## Decision boundaries
 
 - 合成fixture、純粋関数化、挙動不変の責務分離は自律的に進めてよい。
 - 抽出heuristic、OCR route、chunk境界、S2 author-less条件、flat PDF昇格条件、固定8クラスタの
   変更は生成物・実資料を読み、精度trade-offが見えた時点でユーザーへ判断材料を示す。
-- 現DBへの増分取り込み、fingerprintの手修正、全件rebuild、有料LLM/OCRは実行しない。
-  実資料baselineはhosted featureを強制offにして検証する。
-  rebuildは上記の挙動不変リファクタ完了後に行う。
+- 現DBへの書込みは対象を明示し、dry-runとbackupを先行する。fingerprintは手修正しない。
+  全件rebuildと有料LLM/OCRは、その都度ユーザーの明示承認後だけ実行する。実資料baselineは
+  hosted featureを強制offにして検証する。
 - 実データを書き換えない診断では、`.env`を`load_dotenv_native(ROOT)`で読んでからactive planeを
   解決する。識別子、書名、絶対パスを追跡ファイルへ保存しない。
 
