@@ -11,7 +11,7 @@
     "src/build_structure_summaries.py": 113,
     "src/build_summaries.py": 4,
     "src/cache_repository.py": 9,
-    "src/chapter_detect.py": 57,
+    "src/chapter_detect.py": 38,
     "src/chunk_reference_extractor.py": 3,
     "src/chunk_store.py": 40,
     "src/cinii_client.py": 24,

@@ -4,11 +4,15 @@ import unittest
 from unittest.mock import patch
 
 from src.chapter_detect import (
+    _is_usable_pdf_toc,
     _recover_flat_pdf_toc,
     _recover_flat_toc_paths,
     _toc_entries_by_href,
     build_epub_toc_tree,
+    build_pdf_page_chapter_lookup,
+    build_pdf_page_structure_path_lookup,
     build_pdf_outline_tree,
+    get_pdf_toc,
     get_epub_chapter_index_to_toc_entries,
     infer_structure_roles,
 )
@@ -29,6 +33,41 @@ class _EpubItem:
 
 
 class ChapterDetectTests(unittest.TestCase):
+    def test_generated_page_bookmarks_are_not_a_document_outline(self):
+        toc = [
+            (1, f"{page:05d}___{'a' * 32}", page + 1)
+            for page in range(174)
+        ]
+
+        self.assertFalse(_is_usable_pdf_toc(toc))
+        self.assertIsNone(build_pdf_page_chapter_lookup(toc))
+        self.assertIsNone(build_pdf_page_structure_path_lookup(toc))
+
+    def test_generated_page_bookmarks_are_rejected_at_the_pdf_reader_boundary(self):
+        class Document:
+            def get_toc(self):
+                return [[1, f"{page:05d}___{'a' * 32}", page + 1] for page in range(4)]
+
+            def close(self):
+                pass
+
+        with patch("src.chapter_detect.fitz.open", return_value=Document()):
+            self.assertEqual(get_pdf_toc("generated.pdf"), [])
+
+    def test_one_machine_bookmark_does_not_discard_real_chapters(self):
+        toc = [
+            (1, f"00000___{'a' * 32}", 1),
+            (1, "In Plato's Cave", 10),
+            (1, "Melancholy Objects", 48),
+        ]
+
+        self.assertTrue(_is_usable_pdf_toc(toc))
+
+    def test_filename_navigation_is_not_a_document_outline(self):
+        toc = [(1, "scan-001.jpg", 1), (1, "scan-002.jpg", 2)]
+
+        self.assertFalse(_is_usable_pdf_toc(toc))
+
     def test_epub_toc_mapping_uses_opf_spine_indices_not_all_documents(self):
         class Book:
             toc = [_Link("Chapter", "Text/chapter.xhtml")]

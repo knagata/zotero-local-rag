@@ -2,6 +2,15 @@
 
 Updated: 2026-08-15
 
+## 2026-08-15 generated PDF bookmark rejection
+
+- 全頁に`00000___<32 hex>`形式の内部ID bookmarkを持つPDF 1件が、167偽chapter・
+  156偽章要約を生んでいた。PDF outlineの過半数がこの形またはファイル名なら、
+  chapter/path/treeの全経路で使用不能とする共通ゲートを追加。outlineあり原本131 PDFの
+  read-only走査で影響は該当1件だけ。対象dry-runは584 chunk完全割当の`flat_fallback`
+  23 node / 21 leaf、偽見出し0。active DBは未更新。正しい9章へのAI TOCと要約再生成は
+  有料callの別承認待ち。
+
 ## 2026-08-15 visible Herdr command panes
 
 - `CLAUDE.md`に、CodexがHerdr管理下にいるときは長時間のtest/coverage/build/server/monitorを

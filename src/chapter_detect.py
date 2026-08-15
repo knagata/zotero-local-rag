@@ -36,6 +36,26 @@ except ImportError:  # pragma: no cover
 
 # ─── PDF ────────────────────────────────────────────────────────────────────
 
+_PDF_FILENAME_BOOKMARK = re.compile(
+    r"\.(?:pdf|jpg|jpeg|png|tif|tiff)$", re.IGNORECASE,
+)
+_PDF_GENERATED_PAGE_BOOKMARK = re.compile(
+    r"^\d{5}___[0-9a-f]{32,64}$", re.IGNORECASE,
+)
+
+
+def _is_usable_pdf_toc(toc: List[Tuple[int, str, int]]) -> bool:
+    """Reject machine navigation indexes that contain no semantic headings."""
+    if not toc:
+        return False
+    suspicious = sum(
+        bool(_PDF_FILENAME_BOOKMARK.search(title))
+        or bool(_PDF_GENERATED_PAGE_BOOKMARK.fullmatch(title))
+        for _level, title, _page in toc
+    )
+    return suspicious <= len(toc) * 0.5
+
+
 def get_pdf_toc(pdf_path: str) -> List[Tuple[int, str, int]]:
     """
     PDFのアウトライン（目次）を返す。
@@ -68,7 +88,8 @@ def get_pdf_toc(pdf_path: str) -> List[Tuple[int, str, int]]:
             result.append((level, title, page))
 
     result.sort(key=lambda x: x[2])
-    return _recover_flat_pdf_toc(result)
+    recovered = _recover_flat_pdf_toc(result)
+    return recovered if _is_usable_pdf_toc(recovered) else []
 
 
 def build_pdf_outline_tree(toc: List[Tuple[int, str, int]]) -> List[Dict[str, Any]]:
@@ -106,25 +127,7 @@ def build_pdf_outline_tree(toc: List[Tuple[int, str, int]]) -> List[Dict[str, An
 
 def get_pdf_outline_tree(pdf_path: str) -> List[Dict[str, Any]]:
     """Read a PDF outline without flattening its hierarchy."""
-    if not _HAS_FITZ:
-        return []
-    try:
-        doc = fitz.open(str(pdf_path))
-        raw = doc.get_toc()
-        doc.close()
-    except Exception:
-        return []
-    entries: List[Tuple[int, str, int]] = []
-    for entry in raw:
-        if len(entry) < 3:
-            continue
-        try:
-            level, title, page = int(entry[0]), str(entry[1]).strip(), max(1, int(entry[2]))
-        except (TypeError, ValueError):
-            continue
-        if title:
-            entries.append((level, title, page))
-    return build_pdf_outline_tree(entries)
+    return build_pdf_outline_tree(get_pdf_toc(pdf_path))
 
 
 def build_pdf_page_chapter_lookup(
@@ -140,15 +143,7 @@ def build_pdf_page_chapter_lookup(
         lookup(page: int) -> (chapter: str, section: str)
         TOCが空なら None
     """
-    if not toc:
-        return None
-
-    # 意味のある章構造かどうかをざっくり確認
-    # ほぼすべてがファイル名パターンなら None を返す
-    import re
-    _RE_FILENAME = re.compile(r"\.(pdf|jpg|jpeg|png|tif|tiff)$", re.IGNORECASE)
-    filename_count = sum(1 for _, t, _ in toc if _RE_FILENAME.search(t))
-    if filename_count > len(toc) * 0.5:
+    if not _is_usable_pdf_toc(toc):
         return None
 
     def lookup(page: int) -> Tuple[str, str]:
@@ -171,7 +166,7 @@ def build_pdf_page_structure_path_lookup(
     toc: List[Tuple[int, str, int]],
 ) -> Optional[Callable[[int], List[str]]]:
     """Map a page to the active full PDF outline path."""
-    if not toc:
+    if not _is_usable_pdf_toc(toc):
         return None
     usable = [
         (max(1, int(level)), str(title).strip(), max(1, int(page)))
