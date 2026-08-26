@@ -185,6 +185,7 @@ uv run python scripts/build_coverage_budget.py --write   # 採択する
 
 ## 検証環境
 
-蔵書は約589アイテム・513,683チャンク。埋め込みは BGE-M3 / MPS（`EMB_PROFILE=bge`）。
+直近の監査済み世代は593アイテム・618添付・516,077チャンク。埋め込みは
+BGE-M3 / MPS（`EMB_PROFILE=bge`）。変動する現況はmanifestとDB監査で再確認する。
 実データを見るスクリプトは `load_dotenv_native(ROOT)` を先に呼ぶこと。呼ばないと
 プロファイルが既定値になり、測定結果を取り違える。

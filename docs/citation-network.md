@@ -4,7 +4,9 @@ Citation Network更新は、Zotero資料の被引用情報と、資料本文か�
 
 ## 通常の更新
 
-macOSでは `Maintenance-Widget.command` をダブルクリックし、不要な処理を `n` で外して実行します。Citation Network更新だけを実行する場合は、一・二・四項目を `n`、三項目をEnterで選択します。
+macOSでは `Maintenance-Widget.command` をダブルクリックし、不要な処理を `n` で外して実行します。
+Citation Network更新だけを実行する場合は、項目5だけをEnterで選び、ほかの選択可能な項目には
+`n`を入力します（項目6は退役済みで選択肢がありません）。
 
 CLIから直接実行する場合:
 
@@ -51,7 +53,9 @@ OpenAlexの一致はタイトル類似度に加えて著者照合で検証され
 
 Semantic Scholarの引用・参照関係は原則としてそのまま利用します。全件をLLMや原文照合で再検証することはしません。
 
-誤った関係を見つけた場合は、Citation GraphのエッジまたはClaudeのMCPツールから報告できます。報告時点では関係は消えません。`Maintenance-Widget.command` の確認工程で人間が判断します。
+誤った関係を見つけた場合は、Citation GraphのエッジまたはClaudeのMCPツールから報告できます。
+報告時点では関係は消えません。現在はMaintenance項目6が退役しているため、管理者が
+`uv run python scripts/review_relation_reports.py`を明示実行して判断します。
 
 - Disable: 誤関係としてグラフ・MCP検索・推薦から除外
 - Keep: 正しい関係として維持

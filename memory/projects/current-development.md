@@ -1,6 +1,6 @@
 # Current development handoff
 
-Updated: 2026-08-15
+Updated: 2026-08-27
 
 ## 2026-08-15 generated PDF bookmark rejection
 
@@ -25,6 +25,12 @@ Updated: 2026-08-15
 - GitHubのfetch/pushはSSH remoteを優先する。HTTPSで認証・権限エラーの場合はSSH認証を確認し、
   `git@github.com:<owner>/<repo>.git`へ切り替える。Claudeのrepo指示とCodex global指示へ反映済み。
 
+## 2026-08-27 documentation refresh
+
+- README・日常運用・Citation NetworkのSetup/Maintenance説明を現行実装へ同期。項目6は退役済みで、
+  relation reportは`review_relation_reports.py`の明示実行が必要。M5 readinessは完了前の判断記録で
+  再実行手順ではないと明記し、CLAUDEの監査済み現況値も更新した。
+
 ## 2026-08-15 Citation Graph title repair
 
 - Citation GraphのChroma metadata取得は、同一itemの章名も混在する`title`を文字列`MAX`で
@@ -35,9 +41,8 @@ Updated: 2026-08-15
 
 ## Objective
 
-運用開始前に、現行の抽出・取り込み経路を挙動不変で整理し、決定的テスト網を広げる。
-その後に現在のBGE-M3と現行コードでV3データプレーンをclean rebuildし、監査済みDBを
-検索品質・クラスタ・引用同定・flat PDF復元の評価基準にする。
+監査済みactive V3を検索品質・クラスタ・引用同定・構造復元の正本として維持し、個別に
+報告された表示・抽出・構造品質の問題を対象限定で診断・修復する。
 
 ## 2026-08-13 M5 completion
 
@@ -199,15 +204,15 @@ Updated: 2026-08-15
   indexer・structure rebuild・audit childへ明示的に渡す。親long=Granite/queue=0より保存済み
   long=Mistral/queue=1が両rebuild childで勝つ回帰テストを追加し、対象54件、compileall、fatal Ruff、
   差分検査に合格した。
-- userが修正前のclean rebuildを33/618で停止し、差分継続も353/619で停止した。active V3は
-  manifest 352件、inflight 1件、`hnsw_validated=false`の未完成世代で、indexing lockは無い。
-  MCPは拒否する。古いOCR routeで生成した部分世代は再利用せず、M5は最初からclean rebuildする。
-- M5直前に旧complete-generation snapshotの欠落を検出した。現activeは既に検索不可なので、
+- **M5前の履歴:** 修正前のclean rebuildを33/618で停止し、差分継続も353/619で停止した。当時の
+  active V3はmanifest 352件、inflight 1件、`hnsw_validated=false`でMCP拒否だった。この世代は
+  再利用せず、その後のM5 clean rebuildで置換済み。
+- M5直前に旧complete-generation snapshotの欠落を検出した。当時のactiveは検索不可だったため、
   `data/backups/pre-m5-incomplete-20260811`へ未完成世代を診断用に一式退避した。Chroma/FTS
   272,007行、manifest 352件、SQLite quick checkはいずれも`ok`。正常世代のrollbackではない。
 - user承認後のM5初回実行は8/619で停止した。監視ログのOCR layer audit `measured`を契機に、
   保存済み`.env`でOCR layer auditがreadinessと逆に1だったことを検出し、auditだけ0へ戻した。
-  この部分世代は再利用せずclean rebuildを再度最初から行う。query expansion、LLM summaries/
+  この部分世代は再利用せずclean rebuildを再度最初から行い、完了した。query expansion、LLM summaries/
   reference extraction、Mistral OCRはuser確認により1でよく、保存設定は1。再実行childは開始時環境を
   固定しているため前3機能は0のまま完走させる。Mistral queue deferred 1件、Batch送信・採用なし。
 - review残件のP1は`run_db_audit.py`のreport出力先保護。現在の設定は全て`data/quality/`で安全だが、

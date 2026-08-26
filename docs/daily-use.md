@@ -17,7 +17,7 @@ bash Maintenance-Widget.command
 3. 要約の差分更新（DeepSeek AI要約。DB監査合格後のみ、既定off・少量バッチ）
 4. 全件要約の一括生成（DeepSeek課金・選択時の`SUMMARIZE`入力確認・DB監査合格後のみ、既定off・重い処理）
 5. Citation Network更新
-6. 報告された品質・引用関係の確認
+6. 品質報告のAI判定（退役済み。現在は実行されません）
 7. Mistral OCR Batchの送信、または完了済み結果の回収・品質確認・採用（任意）
 
 項目2（監査）は無料・非破壊なので、直近の合格gateが無いか失効している場合は既定でyesに
@@ -72,7 +72,7 @@ uv run python scripts/build_structure_summaries.py --all --mode llm --limit 10 -
 # Citation Network
 uv run src/update_citations.py --all
 
-# 報告された品質・引用関係を確認
+# 報告内容をCLIから個別に確認（Maintenance項目6からは実行されません）
 uv run python scripts/triage_quality_reports.py
 uv run python scripts/review_relation_reports.py
 uv run python scripts/review_summary_quality_reports.py

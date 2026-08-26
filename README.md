@@ -30,9 +30,9 @@ uv run scripts/setup_wizard.py
 3. 使いたい機能の段階
 4. Claude Desktopへの接続
 
-Setupは設定、埋め込みモデルの初回ダウンロード、接続登録を行います。DB構築、埋め込み処理、
-AI目次・OCR・階層要約などのAPI実行は開始しません。サーバーへ配置した後の構築手順は下記の
-Server workflowで明示的に行います。
+Setupは設定、埋め込みモデルの初回ダウンロード、接続登録を行います。設定保存後、DBが未構築なら
+構築を案内し、既存DBがあれば`REBUILD`確認付きで再構築を案内します。DB構築中は、有効化した
+AI目次などのAPIが実行され得ます。階層要約とMistral OCR Batchは別途明示許可が必要です。
 
 完了後、Claude Desktopを再起動し、次のように依頼できます。
 
@@ -66,7 +66,7 @@ macOSでは [Maintenance-Widget.command](Maintenance-Widget.command) をダブ�
 3. 要約の差分更新（DeepSeekによるAI要約。DB監査合格後のみ、既定off）
 4. 全件要約の一括生成（DeepSeek課金・選択時の`SUMMARIZE`入力確認・DB監査合格後のみ、既定off）
 5. Citation Networkの更新
-6. 報告された品質・引用関係の確認
+6. 品質報告のAI判定（退役済み。現在は実行されません）
 7. Mistral OCR Batchの送信、または完了済み結果の回収・品質確認・採用（任意）
 
 不要な項目だけ `n` を入力して除外できます。実行後に未解決の処理状態サマリも表示されます。ログはTerminalへ表示されます。

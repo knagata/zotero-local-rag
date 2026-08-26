@@ -3,6 +3,16 @@
 正本: `SPEC.md`。実装・検証の永続的な履歴はこのファイルに残す。
 `evaluations/`のローカル生成レポートはZotero識別子や絶対パスを含み得るため追跡しない。
 
+### 2026-08-27 利用資料・引継ぎの現行化
+
+- [x] **利用手順を現行実装へ合わせる。** READMEのSetup挙動、Maintenance項目6の退役表示、
+  Citation Networkの選択番号を実装に同期した。readinessはM5前の判断記録であり再実行手順では
+  ないことを明記した。relation reportはMaintenanceではなく明示CLIで確認する現行手順へ揃え、
+  CLAUDEの現況値を監査済み593 item / 618添付 / 516,077 chunkへ更新した。
+- [x] **引継ぎの時制を修正。** Objectiveを監査済みV3の維持へ更新し、manifest 352・MCP拒否は
+  M5前の履歴、clean rebuildは完了済みであることを明示した。
+- [x] **検証。** 文書参照・Maintenance契約・既定test選択の28件と差分検査が合格した。
+
 ### 2026-08-15 直近変更レビューの修正
 
 - [x] **candidate要約をverifiedと表示しない。** 複数segmentまたは親要約では、最終reductionが

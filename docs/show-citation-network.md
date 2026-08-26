@@ -42,7 +42,9 @@ uv run citation_graph/server.py
 
 エッジを開き、「誤りを報告」を押して具体的な根拠を入力します。例えば「元PDFの参考文献一覧に存在しない」「DOIが別の著作を示す」などです。分野が違うように見えるという理由だけでは報告しません。
 
-報告しただけではエッジは非表示になりません。次回の `Maintenance-Widget.command` で人間が確認し、Disableを選んだ場合だけ除外されます。Disableされた関係は、Citation Networkの再取得後も復活しません。
+報告しただけではエッジは非表示になりません。現在はMaintenanceの確認項目が退役しているため、
+管理者が`uv run python scripts/review_relation_reports.py`を明示実行し、Disableを選んだ場合だけ
+除外されます。Disableされた関係は、Citation Networkの再取得後も復活しません。
 
 ## 主な操作
 

@@ -17,10 +17,10 @@ content-addressed cache; no new Batch was submitted. Post-run warning investigat
 and remaining quality work are recorded in `TASKS.md` under
 “2026-08-13 clean rebuild完了後の警告検証”.
 
-This is the go/no-go record for the next V3 clean rebuild. A rebuild attempted
-before M4.5 was fixed was stopped, and its incomplete active generation is not a
-quality baseline. The previously verified pre-rebuild snapshot is no longer
-present; the incomplete active generation was snapshotted for diagnosis before M5.
+The sections below are the historical go/no-go record used before the completed
+M5 rebuild. Statements about an incomplete "active" generation describe that
+pre-M5 point in time; they are not instructions or a description of the current
+active V3 generation.
 
 ## Go/no-go
 
@@ -47,10 +47,9 @@ three disabled because it received a fixed environment at process start. One
 Mistral queue deferral was recorded, but no Batch submission or adoption was
 performed.
 
-The Setup handoff is fixed and verified. M5 still requires explicit approval,
-and it must replace the incomplete pre-fix generation from the beginning.
-Mistral queue submission/adoption and paid AI-TOC calls retain their separate
-approval boundaries.
+The Setup handoff was fixed and verified, and M5 subsequently completed as
+recorded at the top of this file. Mistral queue submission/adoption and paid
+AI-TOC calls retain their separate approval boundaries for future runs.
 
 One review item is deliberately outside this embedding gate: custom audit-report
 paths are not yet protected from pointing at active data-plane files. The current
@@ -58,44 +57,42 @@ resolved gate, Zotero report and source report all live under `data/quality/`, s
 the recorded post-rebuild audit command is safe with the present configuration.
 Do not redirect those three paths until the follow-up guard is implemented.
 
-## Start point (do not run without M5 approval)
+## Historical M5 start point (completed; do not rerun as an instruction)
 
-The supported interactive entry point is:
+The interactive entry point recorded for that run was:
 
 ```bash
 ./Setup.command
 ```
 
-Keep the current BGE profile and feature settings: AI TOC, Mistral queue
-generation, query expansion and LLM summaries/reference extraction are enabled,
-while OCR-layer audit remains disabled. Entering the literal
-`REBUILD` starts deletion of the incomplete generation, full extraction,
-eligible paid AI-TOC calls, chunk generation and embedding, and therefore still
-requires a new explicit approval. The
-non-interactive equivalent shown by Setup is:
+At the recorded pre-M5 point, entering `REBUILD` started deletion of the
+incomplete generation, full extraction, eligible paid AI-TOC calls, chunk
+generation and embedding. That operation is complete. For any future rebuild,
+use the current Setup guidance and obtain fresh approval instead of replaying
+this historical command block. The non-interactive equivalent recorded then was:
 
 ```bash
 uv run src/index_from_zotero.py --rebuild --progress
 ```
 
-After a successful rebuild, run the full source/database reconciliation:
+The completed rebuild was followed by this full source/database reconciliation:
 
 ```bash
 uv run python scripts/run_db_audit.py
 ```
 
-## Diagnostic rollback point
+## Historical diagnostic rollback point
 
-The old complete-generation rollback recorded on 2026-08-10 is no longer
-present. If M5 fails, stop the indexer and preserve the failed generation for
-diagnosis. The pre-M5 incomplete generation can be restored only as one unit;
-it remains MCP-ineligible and is not a working fallback. Do not mix individual
-stores from different generations. Re-verify it before any restore with:
+The old complete-generation rollback recorded on 2026-08-10 was no longer
+present. The pre-M5 incomplete generation was retained only for diagnosis; it
+is MCP-ineligible and is not a working fallback. Do not restore it over the
+current audited generation or mix individual stores from different generations.
+Its historical verification command was:
 
 ```bash
 uv run python scripts/backup_v3_generation.py --verify-only \
   data/backups/pre-m5-incomplete-20260811
 ```
 
-Restoration is destructive and is intentionally not automated or executed by
+Restoration is destructive and was intentionally not automated or executed by
 this readiness milestone.
