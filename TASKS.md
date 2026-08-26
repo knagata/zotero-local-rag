@@ -13,6 +13,21 @@
   M5前の履歴、clean rebuildは完了済みであることを明示した。
 - [x] **検証。** 文書参照・Maintenance契約・既定test選択の28件と差分検査が合格した。
 
+### 2026-08-27 差分要約の不要な全件再埋め込みを停止
+
+- [x] **limited batchを全件索引更新へ昇格させない。** Maintenanceの`--all --limit 10 --embed`で
+  10件全てが`skipped_current`でも、`args.all`だけを見て約7,932要約を再埋め込みしていた。
+  limited runは実際に要約が変化したitemだけを更新し、全件currentなら埋め込み0件とする。
+  `--all`かつlimitなしの明示的な全件実行だけは、全索引reconciliationを維持する。
+- [x] **limitをcurrent除外後に適用。** 従来はライブラリ先頭10件へlimitしてからcurrent判定したため、
+  先頭10件がcurrentだと後方のstale itemへ永久に到達しなかった。全itemのcurrent判定後に未更新の
+  先頭10件を選び、候補確認中と選択件数を表示する。実DB dry-runはstale 4件だけを選択した。
+- [x] **埋め込み進捗を表示。** 要約索引の埋め込み済み件数/総件数をbatchごとに表示する。
+- [x] **安全確認と回帰検査。** 不要な実行は中断し、要約索引が期待/実在7,779 IDで一致することを
+  確認した。監査不合格は前段更新でstaleになった4 itemだけで、索引欠損は0。実DB dry-runは
+  その4件だけを選択し、canonical write・API callは0。関連66件、coverage付き既定suite
+  1,657件（7 skip、5 deselect）、compileall、fatal Ruff、品質予算、差分検査が合格した。
+
 ### 2026-08-15 直近変更レビューの修正
 
 - [x] **candidate要約をverifiedと表示しない。** 複数segmentまたは親要約では、最終reductionが

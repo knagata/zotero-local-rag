@@ -8,7 +8,7 @@
     "src/__init__.py": 0,
     "src/artifact_repository.py": 16,
     "src/backfill_languages.py": 31,
-    "src/build_structure_summaries.py": 113,
+    "src/build_structure_summaries.py": 84,
     "src/build_summaries.py": 4,
     "src/cache_repository.py": 9,
     "src/chapter_detect.py": 38,

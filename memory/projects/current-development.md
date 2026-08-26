@@ -31,6 +31,13 @@ Updated: 2026-08-27
   relation reportは`review_relation_reports.py`の明示実行が必要。M5 readinessは完了前の判断記録で
   再実行手順ではないと明記し、CLAUDEの監査済み現況値も更新した。
 
+## 2026-08-27 limited summary embedding scope
+
+- Maintenanceの10件差分要約が全件`skipped_current`でも、`--all`扱いで約7,932要約を再埋め込みする
+  不具合を修正。limited runは変更itemだけ、全件currentなら埋め込み0件。limitなしの明示的な
+  `--all`だけ全索引reconciliationを行う。limitはcurrent除外後に適用し、後方のstale itemへ到達する。
+  要約候補の走査・選択件数と、要約索引の埋め込み件数進捗も追加した。
+
 ## 2026-08-15 Citation Graph title repair
 
 - Citation GraphのChroma metadata取得は、同一itemの章名も混在する`title`を文字列`MAX`で

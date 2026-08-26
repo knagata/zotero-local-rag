@@ -11,6 +11,8 @@ from src.build_structure_summaries import (
     MAX_PARENT_INPUT_CHARS, _chunk_groups, _llm_leaf_summary, _llm_quality,
     _select_searchable_summary_rows,
     _chapter_summary_targets, adds_nothing_over_its_children, build_structure_summaries,
+    embed_structure_summaries,
+    structure_summaries_are_current,
 )
 from src.document_structure import build_document_structure
 
@@ -26,6 +28,73 @@ class StructureSummaryV3Tests(unittest.TestCase):
         self.db_patch.stop()
         db_relations._db_initialized = False
         self.tempdir.cleanup()
+
+    @patch("src.build_structure_summaries.get_item_processing_status")
+    @patch("src.build_structure_summaries.get_document_structure", return_value=None)
+    def test_terminal_structureless_summary_does_not_clog_limited_batches(
+        self, _structure, statuses,
+    ):
+        statuses.return_value = [{
+            "artifact_type": "summary", "attachment_key": None, "status": "excluded",
+        }]
+
+        self.assertTrue(structure_summaries_are_current("ITEM", mode="llm"))
+
+        statuses.return_value = []
+        self.assertFalse(structure_summaries_are_current("ITEM", mode="llm"))
+
+    @patch("src.build_structure_summaries.get_item_processing_status")
+    @patch("src.build_structure_summaries.get_document_structure")
+    def test_current_empty_summary_requires_matching_source_and_processor(
+        self, structure, statuses,
+    ):
+        from src.build_structure_summaries import PROMPT_VERSION
+        structure.return_value = {"source_fingerprint": "source"}
+        statuses.return_value = [{
+            "artifact_type": "summary", "attachment_key": None, "status": "empty",
+            "source_fingerprint": "source", "processor_version": PROMPT_VERSION,
+        }]
+        self.assertTrue(structure_summaries_are_current("ITEM", mode="llm"))
+
+        statuses.return_value[0]["source_fingerprint"] = "old"
+        self.assertFalse(structure_summaries_are_current("ITEM", mode="llm"))
+
+    @patch("src.build_structure_summaries._summaries_are_current", return_value=True)
+    @patch("src.build_structure_summaries.get_item_processing_status", return_value=[])
+    @patch("src.build_structure_summaries.get_document_structure", return_value={
+        "source_fingerprint": "source",
+    })
+    def test_nonempty_summary_delegates_to_full_current_contract(
+        self, _structure, _statuses, current,
+    ):
+        self.assertTrue(structure_summaries_are_current("ITEM", mode="llm"))
+        current.assert_called_once_with("ITEM", {"source_fingerprint": "source"}, "llm")
+
+    @patch("src.build_structure_summaries.resolve_embedder_settings", return_value={})
+    @patch("src.build_structure_summaries.create_embedding_function")
+    @patch("src.build_structure_summaries.open_chroma_collection")
+    @patch("src.build_structure_summaries.get_all_document_node_summaries")
+    def test_summary_embedding_reports_completed_rows(
+        self, rows, open_collection, create_embedding, _settings,
+    ):
+        collection = unittest.mock.Mock()
+        collection._chroma_client = None
+        open_collection.return_value = collection
+        create_embedding.return_value = lambda documents: [[0.0] for _ in documents]
+        rows.return_value = [{
+            "item_key": "ITEM", "attachment_key": "A", "node_id": "node",
+            "parent_node_id": "", "node_type": "chapter", "depth": 1,
+            "title": "Chapter", "summary": "Summary", "source_fingerprint": "source",
+        }]
+        progress = []
+
+        result = embed_structure_summaries(
+            item_keys={"ITEM"}, base_collection_name="base",
+            progress_callback=lambda completed, total: progress.append((completed, total)),
+        )
+
+        self.assertEqual(result, {"nodes": 1})
+        self.assertEqual(progress, [(1, 1)])
 
     def test_leaf_input_groups_are_ordered_and_bounded_at_chunk_boundaries(self):
         rows = [{"id": f"c{index}", "text": letter * 16_000} for index, letter in enumerate("abc")]

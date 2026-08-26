@@ -16,7 +16,10 @@ if str(ROOT) not in sys.path:
 from src.env_utils import load_dotenv_native
 load_dotenv_native(ROOT)
 
-from src.build_structure_summaries import build_structure_summaries, embed_structure_summaries
+from src.build_structure_summaries import (
+    build_structure_summaries, embed_structure_summaries,
+    structure_summaries_are_current,
+)
 from src.chunk_store import list_item_keys
 from src.db_relations import get_item_processing_status, mark_artifact_status
 from src.database_gate import validate_database_gate
@@ -80,6 +83,69 @@ class SummaryProgressReporter:
                 flush=True,
             )
 
+    def embedding_progress(self, completed: int, total: int) -> None:
+        with self.lock:
+            print(
+                f"[SUMMARY PROGRESS] 要約索引 {completed}/{total} 件を埋め込み済み",
+                flush=True,
+            )
+
+
+def _embedding_item_keys(
+    *, all_items: bool, limit: int, results: list[dict],
+) -> set[str] | None:
+    """Return the smallest safe summary-index scope for this run.
+
+    ``None`` means a deliberate unlimited ``--all`` reconciliation.  A
+    limited maintenance batch must never turn into a full-library re-embed,
+    and current items need no index write at all.
+    """
+    successful = [row for row in results if row.get("status") != "failed"]
+    if all_items and limit == 0 and successful:
+        return None
+    return {
+        str(row.get("item_key") or "")
+        for row in successful
+        if row.get("status") != "skipped_current" and row.get("item_key")
+    }
+
+
+def _select_batch_keys(
+    keys: list[str], *, all_items: bool, limit: int, force: bool,
+    retry_failed: bool, mode: str,
+) -> list[str]:
+    """Apply a maintenance limit after removing already-current items."""
+    selected = list(keys)
+    if all_items and limit > 0 and not force and not retry_failed:
+        selected = [
+            key for key in selected
+            if not structure_summaries_are_current(key, mode=mode)
+        ]
+    return selected[:limit] if limit > 0 else selected
+
+
+def _embed_completed_summaries(
+    args: argparse.Namespace, output: list[dict], succeeded: list[str],
+    progress: SummaryProgressReporter,
+) -> dict | None:
+    scope = _embedding_item_keys(
+        all_items=bool(args.all), limit=int(args.limit), results=output,
+    )
+    if not args.embed or scope == set():
+        return None
+    embedding = embed_structure_summaries(
+        item_keys=scope,
+        base_collection_name=args.collection,
+        progress_callback=progress.embedding_progress,
+    )
+    marked_keys = succeeded if scope is None else sorted(scope)
+    for key in marked_keys:
+        mark_artifact_status(
+            key, "summary_index", "success", processor_version="structure-v3-1",
+            counts=embedding, fallback_kind="llm_node_summary_index",
+        )
+    return embedding
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -135,8 +201,20 @@ def main() -> None:
                 for row in get_item_processing_status(key)
             )
         ]
-    if args.limit > 0:
-        keys = keys[:args.limit]
+    if args.all and args.limit > 0 and not args.force and not args.retry_failed:
+        print(
+            f"[SUMMARY PROGRESS] {len(keys)} itemから要約更新が必要な資料を確認中...",
+            flush=True,
+        )
+    keys = _select_batch_keys(
+        keys, all_items=bool(args.all), limit=int(args.limit), force=bool(args.force),
+        retry_failed=bool(args.retry_failed), mode=args.mode,
+    )
+    if args.all and args.limit > 0 and not args.force and not args.retry_failed:
+        print(
+            f"[SUMMARY PROGRESS] 更新対象 {len(keys)} item（上限 {args.limit}）",
+            flush=True,
+        )
     if args.dry_run:
         print(json.dumps({
             "dry_run": True, "items": keys, "count": len(keys), "mode": args.mode,
@@ -188,21 +266,7 @@ def main() -> None:
                         failures += 1
                     else:
                         succeeded.append(result.get("item_key") or futures[future])
-    embedding = None
-    if args.embed and succeeded:
-        # 索引更新は失敗itemがあっても成功item分だけ実行する（1件失敗で全skipしない）。
-        # --all のときは item_keys=None でstale差分削除経路を生かす。
-        embedding = embed_structure_summaries(
-            item_keys=None if args.all else set(succeeded),
-            base_collection_name=args.collection,
-        )
-        # node要約索引の状態はチャンク埋め込み('embeddings')と分離した専用
-        # artifact_type='summary_index' へ記録する。
-        for key in succeeded:
-            mark_artifact_status(
-                key, "summary_index", "success", processor_version="structure-v3-1",
-                counts=embedding, fallback_kind="llm_node_summary_index",
-            )
+    embedding = _embed_completed_summaries(args, output, succeeded, progress)
     print(json.dumps({
         "items": output, "embedding": embedding, "failed": failures,
         "succeeded": len(succeeded),

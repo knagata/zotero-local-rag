@@ -6,7 +6,7 @@ be backfilled and evaluated behind a feature flag before changing retrieval.
 from __future__ import annotations
 
 from collections import defaultdict
-from typing import Any, Dict, List
+from typing import Any, Callable, Dict, List
 from pathlib import Path
 import hashlib
 import json
@@ -545,6 +545,25 @@ def _summaries_are_current(item_key: str, structure: Dict[str, Any], mode: str) 
     return True
 
 
+def structure_summaries_are_current(item_key: str, *, mode: str) -> bool:
+    """Return whether a maintenance batch can skip this item entirely."""
+    structure = get_document_structure(item_key)
+    status = next(
+        (row for row in get_item_processing_status(item_key)
+         if row.get("artifact_type") == "summary" and not row.get("attachment_key")),
+        None,
+    )
+    if structure is None:
+        return bool(status and status.get("status") in {"empty", "excluded"})
+    if status and status.get("status") == "empty":
+        return (
+            str(status.get("source_fingerprint") or "")
+            == str(structure.get("source_fingerprint") or "")
+            and str(status.get("processor_version") or "") == PROMPT_VERSION
+        )
+    return _summaries_are_current(item_key, structure, mode)
+
+
 def build_structure_summaries(
     item_key: str, *, mode: str = "extractive", force: bool = False,
     collection_name: str | None = None,
@@ -792,6 +811,7 @@ def build_structure_summaries(
 
 def embed_structure_summaries(
     *, item_keys: set[str] | None = None, base_collection_name: str | None = None,
+    progress_callback: Callable[[int, int], None] | None = None,
 ) -> Dict[str, int]:
     """Build the searchable LLM-only node-summary collection."""
     base = base_collection_name or active_collection_name(chroma_dir=CHROMA_DIR)
@@ -843,10 +863,15 @@ def embed_structure_summaries(
             ids=batch_ids, documents=batch_docs, metadatas=metadatas[start:start + batch_size],
             embeddings=embedding_function(batch_docs),
         )
+        if progress_callback is not None:
+            progress_callback(min(start + len(batch_ids), len(ids)), len(ids))
     client = getattr(collection, "_chroma_client", None)
     if client:
         client.close()
     return {"nodes": len(ids)}
 
 
-__all__ = ["PROMPT_VERSION", "build_structure_summaries", "embed_structure_summaries"]
+__all__ = [
+    "PROMPT_VERSION", "build_structure_summaries", "embed_structure_summaries",
+    "structure_summaries_are_current",
+]
