@@ -63,7 +63,6 @@ macOSでは [Maintenance-Widget.command](Maintenance-Widget.command) をダブ�
 3. 要約の差分更新（DeepSeekによるAI要約。DB監査合格後のみ、既定off）
 4. 全件要約の一括生成（DeepSeek課金・選択時の`SUMMARIZE`入力確認・DB監査合格後のみ、既定off）
 5. Citation Networkの更新
-6. 品質報告のAI判定（退役済み。現在は実行されません）
 7. Mistral OCR Batchの送信、または完了済み結果の回収・品質確認・採用（任意）
 
 不要項目は`n`で除外でき、終了時に未解決状態を表示します。DBのゼロ再構築は[Setup.command](Setup.command)から行います。
@@ -82,8 +81,8 @@ macOSでは [Maintenance-Widget.command](Maintenance-Widget.command) をダブ�
 
 ## プライバシー
 
-Core機能はローカルで処理できます。LLMへ本文を送る機能は、必要な機能フラグと認証情報が
-明示されていない場合は停止します。資料単位のクラウド除外タグは廃止済みです。詳しくは
+Core機能はローカルで処理できます。LLMへ本文を送る機能は、必要な機能フラグ、認証情報、
+実行時の明示承認で制御され、設定が不足している場合は停止します。詳しくは
 [LLMとプライバシー](docs/llm-and-privacy.md) を参照してください。
 
 ## ドキュメント
@@ -99,15 +98,6 @@ Core機能はローカルで処理できます。LLMへ本文を送る機能は�
 | `.env`を手動設定する | [環境設定](docs/configuration.md) |
 | エラーを解決する | [トラブルシューティング](docs/troubleshooting.md) |
 | Claudeでの検索方法を詳しく見る | [Claude利用ガイド](docs/claude-guide.md) |
-| 内部構造を確認する | [アーキテクチャ](docs/architecture.md) |
-
-## 開発者向け
-
-```bash
-uv run pytest -q
-```
-
-詳細は [開発・保守](docs/development.md) を参照してください。
 
 ## ライセンス
 

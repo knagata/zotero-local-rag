@@ -202,6 +202,32 @@ uv run python scripts/review_relation_reports.py --list
 
 Disableは元のS2データを削除せず、`relation_reports` の安定キーで検索・グラフから除外します。
 
+## 抽出・構造ロジック変更後の再処理
+
+抽出コードは通常の入力fingerprintに含まれないため、既存資料への反映範囲を明示して再処理します。
+全件処理を避け、原則として親itemより添付itemを指定してください。
+
+```bash
+# 特定itemを再抽出
+uv run src/index_from_zotero.py --force-reparse --item ABCDEFGH
+
+# 特定PDF添付だけを再抽出
+uv run src/index_from_zotero.py --force-reparse --item ABCDEFGH \
+  --attachment IJKLMNOP --source-type pdf
+
+# 保存済みの「見出しなし」判定も再評価する
+uv run src/index_from_zotero.py --refresh-ai-toc --force-reparse \
+  --item ABCDEFGH --attachment IJKLMNOP --source-type pdf
+
+# ZONE_POLICIES変更後に構造とチャンクメタデータを再同期する
+uv run python scripts/rebuild_document_structure.py --all --force
+```
+
+`--refresh-ai-toc`は負の判定キャッシュを迂回するため、有料呼出しと再埋め込みの対象を狭める
+`--force-reparse`および`--item`または`--attachment`が必須です。parser/OCR override、
+`--check-quality`、`--retry-failed`とは併用できません。対象が空、非PDFを含む、またはAI目次の
+適格条件を満たさない場合は正本へ書き込む前に停止します。
+
 ## 主なディレクトリ
 
 | 場所 | 内容 |
@@ -209,7 +235,8 @@ Disableは元のS2データを削除せず、`relation_reports` の安定キー�
 | `src/` | MCPサーバー、索引、検索、引用、要約 |
 | `scripts/` | 管理・評価・修復CLI |
 | `tests/` | 回帰テスト |
-| `docs/` | 利用者・開発者向け文書 |
+| `docs/` | 人間の利用者向け文書 |
+| `developer/` | 開発者・コーディングエージェント向け文書 |
 | `data/` | DB、索引、モデル、ログ、評価結果。Git管理外 |
 
 内部構造は [アーキテクチャ](architecture.md) を参照してください。

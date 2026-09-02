@@ -2,6 +2,14 @@
 
 Updated: 2026-09-02
 
+## 2026-09-02 documentation audience split
+
+- `README.md`と`docs/`を人間の利用者向けに限定し、実装構造、変更理由、回帰防止、コード変更後の
+  再処理注意を`developer/`へ移した。開発者・コーディングエージェントの入口は
+  `developer/README.md`、正本規則は引き続き`CLAUDE.md`とする。
+- 旧`citation_graph/README.md`と開発文書5件を`developer/`へ移動し、利用者向け文書に残っていた
+  退役機能の経緯、内部データプレーン契約、将来の移行計画を除いた。
+
 ## 2026-09-02 authenticated remote Citation Graph
 
 - 従来の`citation_graph/server.py`と`http://localhost:7234`を変更せず、Google OAuth付きの独立proxy
@@ -176,7 +184,7 @@ Updated: 2026-09-02
 
 1. `CLAUDE.md`を最初から最後まで読む。
 2. `SPEC.md`のactive V3 data planeと、`TASKS.md`の2026-08-10節を読む。
-3. `docs/post-refactor-followups.md`で、実データ判断が必要な残件を確認する。
+3. `developer/post-refactor-followups.md`で、実データ判断が必要な残件を確認する。
 4. `git status --short`と`git log -3 --oneline`で、ユーザー変更と現在のコミットを確認する。
 
 ## Current repository state
@@ -243,7 +251,7 @@ Updated: 2026-09-02
   参照節を再解析するlocal Docling flagも1。OCR layer audit、query expansion、LLM summaries、
   LLM reference extractionは0のまま。queue生成は外部送信しないが、Mistral Batchの実送信・採用と
   適格PDFのAI目次は別途有料call承認を要する。
-  `docs/embedding-rebuild-readiness.md`がgo/no-go、実行入口、rollbackの記録である。
+  `developer/embedding-rebuild-readiness.md`がgo/no-go、実行入口、rollbackの記録である。
 - 150行超の関数は22件から16件へ減少。最大は
   `index_from_zotero._index_library`（1,092行）、次が`pdf_extract.extract_chunks_from_pdf`（607行）。
 - 既定suiteは1,599 passed / 4 skipped / 5 deselected。実資料取込baselineは5 passed。
@@ -303,7 +311,7 @@ active V3はM5 clean rebuildと後続の対象修復を完了した監査済み�
 4. **M4（完了）**: 対象commit、dry-run inventory、現V3 backup、容量、lock、埋め込み設定、
    有料機能無効、rollback点をgo/no-go表で確定し、`REBUILD`入力前で停止した。
 5. **M4.1（完了）**: 対象限定のAI TOC負キャッシュrefreshを実装・検証し、runtimeを
-   `docs/embedding-rebuild-readiness.md`へpinしてReady to Embedへ戻した。
+   `developer/embedding-rebuild-readiness.md`へpinしてReady to Embedへ戻した。
 6. **M4.2（完了）**: pilot/backupの稼働データ防壁とrefresh解決後scopeを修正・検証し、
    runtimeをreadinessへpinしてReady to Embedへ戻した。
 7. **M4.3（完了）**: pilotの開始data planeを新規/空に限定し、既存planeの測定誤報を拒否。

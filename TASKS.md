@@ -3,6 +3,13 @@
 正本: `SPEC.md`。実装・検証の永続的な履歴はこのファイルに残す。
 `evaluations/`のローカル生成レポートはZotero識別子や絶対パスを含み得るため追跡しない。
 
+### 2026-09-02 利用者向け・開発者向け文書の分離
+
+- [x] **文書の対象読者を分離。** `README.md`と`docs/`は利用者の設定・操作・トラブル対応に限定し、
+  実装構造、変更理由、回帰防止、コード変更後の再処理注意は`developer/`へ集約した。
+- [x] **コーディングエージェントの参照先を固定。** `developer/README.md`を入口として追加し、
+  `CLAUDE.md`に文書境界と更新規則を追加した。
+
 ### 2026-09-02 ブラウザ管理機能の再レビュー修正
 
 - [x] **DB監査の状態変更を明示。** 監査開始時に旧gateをfail-closedで無効化するため、ブラウザ実行に
@@ -256,7 +263,7 @@
 - [x] **Codexの追跡対象入口を追加。** 短い`AGENTS.md`から毎回`CLAUDE.md`全体を読むよう
   必須化し、規則本文は複製しない。文書参照テストにも入口を加えた。廃止済みServer workflowと
   「要約索引が承認待ちで空」という古い利用者向け記述を現行V3契約へ更新し、残る構造負債を
-  `docs/post-refactor-followups.md`へ優先度・工数・着手フェーズ付きで記録した。
+  `developer/post-refactor-followups.md`へ優先度・工数・着手フェーズ付きで記録した。
 - [x] **検証。** coverage付き全体テスト`1484 passed, 4 skipped, 5 deselected`、公開CLI import、
   compileall、致命的Ruff、function/lint/coverage各ラチェット、文書参照、`git diff --check`に合格。
   ローカル計測は88モジュール・5,482未到達文。環境差が既知のモジュールはローカル値へ下げず、
@@ -455,7 +462,7 @@ Chroma/FTS書込み）の実行は、このマイルストーンとは別の明�
     先行修復、保存済みchunkだけの再埋め込みを行わない。
   - 完了条件: go/no-go表が全項目goになり、実行コマンドとrollback点を提示して、
     `Setup.command`の`REBUILD`入力前で停止する。この状態を **Ready to Embed** とする。
-  - `docs/embedding-rebuild-readiness.md`にgo/no-go表、実行入口、rollback点を固定した。
+  - `developer/embedding-rebuild-readiness.md`にgo/no-go表、実行入口、rollback点を固定した。
     rebuild runtimeは`4b58d6b18a07e4e10373ad17fb3dc7f698290923`。dry-run inventoryは
     590 items / 616 attachments（PDF 364、EPUB 208、HTML 44）で、canonical writeなし、
     legacy OCR reuse候補0だった。
@@ -1415,7 +1422,7 @@ A（PDF構造化）・B（課金LLM）は独立、C（構造抽出エンジン�
   - `db_relations.py`（3,191行）/`rag_mcp_server.py`（2,222行）のドメイン分割、
     `RoutingConfig`一元化。
 - [x] ~~**R16（P3）: ドキュメント鮮度バナー**~~ (2026-07-23)
-  - `docs/architecture.md` / `docs/claude-guide.md`の冒頭に「現行正本はdev-notes/current
+  - `developer/architecture.md` / `docs/claude-guide.md`の冒頭に「現行正本はdev-notes/current
     64・75」の注意バナーを追加。本文更新はPhase 6の`SPEC.md`改訂時。
 
 ### Phase 4: 階層要約をbackfillする
@@ -1697,7 +1704,7 @@ A（PDF構造化）・B（課金LLM）は独立、C（構造抽出エンジン�
   31.97/31.59/27.82/25.32/23.40秒）。比率は書かれていた通りで、絶対値だけ増えていた。
   - `pyproject.toml` に `slow` マーカーを宣言し、`addopts = "-m 'not slow'"` で既定から
     外した。実測: 既定 **55.5秒**（5件をdeselect）、`uv run pytest -m slow` で139.9秒。
-  - `CLAUDE.md` のコマンド節と `docs/development.md` に運用を書いた。CIで強制される層は
+  - `CLAUDE.md` のコマンド節と `developer/development.md` に運用を書いた。CIで強制される層は
     変わらない（`uv run pytest -q` のまま、元々スキップされていた5件が除外されるだけ）。
   - 真偽テスト `tests/test_default_test_selection.py` を追加。この仕組みは
     `pyproject.toml` の文字列とデコレータで持っており、**どちらも黙って壊れる**
@@ -1726,7 +1733,7 @@ A（PDF構造化）・B（課金LLM）は独立、C（構造抽出エンジン�
     抜けており、代わりに `extract_chunks_from_epub_snapshot` (347) が入っていた。
   - 6種類の故障（記録の増加・新規の巨大関数・縮小の未採択・消えた記録・限界以下の記録・
     実ソースへの200行関数追加）を注入して全て捕捉することを確認済み。
-- [x] **`docs/post-refactor-followups.md` を棚卸しする**（2026-08-09） — 実際に数えると
+- [x] **`developer/post-refactor-followups.md` を棚卸しする**（2026-08-09） — 実際に数えると
   47件ではなく19件（番号付き7＋長期12）＋再評価トリガ5だった。**全19件を実コードに
   当てて確認した**（集計ではなく1件ずつ現物を読む）。
   - 生存: 1〜6（ロック共有・re-OCR補償・`search_items`の上限・manifest直列化・翻訳

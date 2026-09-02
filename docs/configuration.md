@@ -98,19 +98,6 @@ Google Client ID、Client secret、許可メールは`REMOTE_MCP_GOOGLE_CLIENT_I
 `REMOTE_MCP_GOOGLE_CLIENT_SECRET`、`REMOTE_MCP_ALLOWED_GOOGLE_EMAILS`を共用します。Google側には
 `CITATION_GRAPH_PUBLIC_URL/auth/callback`を承認済みリダイレクトURIとして追加します。
 
-## V3データプレーン（現行本番）
-
-本番の検索・取り込みはV3のみです。次の5値は一組の不変条件であり、旧collection、
-`manifest.json`、`lexical.sqlite3`を指定するrollbackはサポートしません。
-
-| 変数 | 用途 | 現行の値 |
-|---|---|---|
-| `INGEST_STRUCTURED_V3_ENABLE` | 構造化取り込み（zone付与・文書構造）を有効化 | `1` |
-| `HIERARCHICAL_SEARCH_V2_ENABLE` | 要約ノードから子孫leafへ検索をルーティング | `1` |
-| `CHROMA_COLLECTION` | active Chroma collection | `zotero_paragraphs_v3` |
-| `MANIFEST_PATH` | active manifest | `data/manifest_v3.json` |
-| `LEXICAL_DB_PATH` | active FTS（語彙索引） | `data/lexical_v3.sqlite3` |
-
 ## Citation Network
 
 | 変数 | 用途 |
@@ -142,8 +129,7 @@ LLMロールはプロバイダ接頭辞つきで指定します（例: `deepseek
 `PDF_AI_TOC_FAST_PATH_ENABLE`、`PDF_MISTRAL_TOC_QUEUE_ENABLE`）。既定はすべて`0`で、
 有効なのに必要な鍵が無ければ起動時に停止します。
 
-資料単位の除外タグ・`*_ALLOW_CLOUD_ALL`・`MISTRAL_OCR_FALLBACK_ENABLE`は2026-07-27に
-撤去しました。クラウド利用の有無は、資料タグではなく機能フラグと実行時の明示承認で管理します。
+クラウド利用の有無は、機能フラグと実行時の明示承認で管理します。
 
 詳細は
 [LLMとプライバシー](llm-and-privacy.md) を参照してください。
@@ -179,14 +165,6 @@ LLMへ送り、フェーズ1のDB構築中にも課金が発生し得ます。�
 明示的に再処理してください。AI目次fast pathは`PDF_AI_TOC_FAST_PATH_ENABLE`が唯一のゲートです。
 AIの印刷ページ番号は採用せず、本文で再発見した見出しのページとreading orderだけを構造境界に
 使います。
-
-同じPDFで過去に`insufficient_inferred_headings`または`insufficient_body_headings`が確定した
-場合は、有料呼出しを繰り返さないため、そのno-structure判定を再利用します。AI目次の実装改善後に
-対象PDFだけ再評価する場合は、`--refresh-ai-toc --force-reparse --attachment <KEY>`を使います
-（`--source-type pdf`も併用できます）。この明示指定時だけ負のキャッシュを迂回し、通常のmanifest commitが
-新しい判定へ置き換えます。manifestやfingerprintを手修正する必要はありません。
-解決後のscopeが空、またはEPUB/HTMLを含む場合は、AI目次を実行しない再埋め込みを成功扱いせず、
-正本への書込み前に停止します。
 
 ### ローカルOCR・クラウドOCR
 
@@ -253,5 +231,4 @@ LLM要約は `__sum_node` 検索索引へ反映します。有料要約は
 `audit_v3_cutover.py --new-only`の合格レポートが現在のDB世代と一致するときだけ実行できます。
 現行fingerprint一致分はLLM呼び出しゼロでskipします。
 
-構造化事例DBは廃止済みのため、事例生成・品質確認は実行しません。事例を探す用途は原文を
-直接検索する `rag_search(search_mode="case")` が担います。
+事例を探す場合は、原文を直接検索する `rag_search(search_mode="case")` を使います。

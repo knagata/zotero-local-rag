@@ -2,7 +2,7 @@
 
 Documentation rots quietly. `.claude/STATE.md` spent two months telling readers
 that the citation graph lived in ``scripts/show_citation_graph.py`` after it had
-moved, and `docs/architecture.md` listed ``citation_insights.py`` under ``src/``
+moved, and `developer/architecture.md` listed ``citation_insights.py`` under ``src/``
 for as long as it had been ``citation_graph/insights.py`` -- found by the first
 run of this test, not by anyone reading the file. Nothing contradicts a stale
 sentence, so it survives every review that does not happen to look at it.
@@ -10,7 +10,7 @@ sentence, so it survives every review that does not happen to look at it.
 A file path is the part of a document that can be checked mechanically, so it is
 checked here. This does not make a document true: it cannot tell that a
 described behaviour has changed, and it deliberately does not require the module
-tables to be exhaustive (``docs/architecture.md`` §7 lists 23 of 81 modules on
+tables to be exhaustive (``developer/architecture.md`` §7 lists 23 of 81 modules on
 purpose). It catches the specific failure of naming something that is not there,
 which is the one that has actually happened twice.
 

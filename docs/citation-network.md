@@ -6,7 +6,7 @@ Citation Network更新は、Zotero資料の被引用情報と、資料本文か�
 
 macOSでは `Maintenance-Widget.command` をダブルクリックし、不要な処理を `n` で外して実行します。
 Citation Network更新だけを実行する場合は、項目5だけをEnterで選び、ほかの選択可能な項目には
-`n`を入力します（項目6は退役済みで選択肢がありません）。
+`n`を入力します。
 
 CLIから直接実行する場合:
 
@@ -54,8 +54,8 @@ OpenAlexの一致はタイトル類似度に加えて著者照合で検証され
 Semantic Scholarの引用・参照関係は原則としてそのまま利用します。全件をLLMや原文照合で再検証することはしません。
 
 誤った関係を見つけた場合は、Citation GraphのエッジまたはClaudeのMCPツールから報告できます。
-報告時点では関係は消えません。現在はMaintenance項目6が退役しているため、管理者が
-`uv run python scripts/review_relation_reports.py`を明示実行して判断します。
+報告時点では関係は消えません。管理者が
+`uv run python scripts/review_relation_reports.py`を実行して判断します。
 
 - Disable: 誤関係としてグラフ・MCP検索・推薦から除外
 - Keep: 正しい関係として維持
@@ -78,7 +78,7 @@ DisableはDB行の削除ではなく、所蔵アイテムキーとS2 paper IDの
 
 `mapped` / `not_found` / `limited` はいずれも「これ以上の再試行では結果が変わらない」状態で、通常更新ではスキップされます。同定ロジックを改善したときや上限を引き上げたときは `--force` で再走査してください。
 
-`limited` は同定自体には成功しており、被引用が `max_citations`（既定5,000）を超えた資料に付きます。かつてはこれを `error` として記録していたため、通常更新のたびに再取得しては同じ上限に当たる、という繰り返しになっていました。
+`limited` は同定自体には成功しており、被引用が `max_citations`（既定5,000）を超えた資料に付きます。
 
 ### 参照単位
 
@@ -124,7 +124,7 @@ S2_API_KEY=...
 - S2に該当論文が無い（`not_found`）
 - S2に該当論文はあるが、被引用も参照も0件（S2の収録が薄い書籍などで起こります）
 
-なお引用文脈（contexts）を伴わない被引用も、2026-08-08以降は `no_context` として保存されます（以前は破棄していました）。
+引用文脈（contexts）を伴わない被引用は `no_context` として保存されます。
 
 個別に確認するには `uv run src/update_citations.py --item ITEMKEY --force` を実行し、`s2_status` と保存件数を見てください。
 

@@ -93,4 +93,5 @@ uv run python scripts/review_references.py list --status pending --limit 20
 
 モデル出力だけでWorkを統合せず、原文、著者、書名、刊年、DOI/ISBN等を決定的に再検証します。不確実な候補は別著作として保留します。
 
-英語学術論文向けのGROBID enrichmentは埋め込みとは独立して実行します。詳細は [開発・保守](development.md) を参照してください。
+英語学術論文向けのGROBID enrichmentは、本文埋め込みとは独立した任意機能です。設定項目は
+[環境設定](configuration.md#grobid-enrichment任意英語学術論文)を参照してください。

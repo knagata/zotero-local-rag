@@ -13,7 +13,8 @@ Zotero蔵書に対するローカルRAG。人文・社会科学系、和書と�
 |---|---|
 | `SPEC.md` | 実装契約。矛盾したらこちらが優先 |
 | `TASKS.md` | 実装・検証の永続的な履歴。1件直すごとに反映してコミット |
-| `docs/` | 利用者向け・開発手順 |
+| `docs/` | 人間の利用者向け。導入・設定・日常操作・障害対応だけを置く |
+| `developer/` | 開発者・コーディングエージェント向け。実装、設計、変更時の注意、検証手順 |
 | `dev-notes/`, `evaluations/` | **gitignore済み**。Zotero識別子や絶対パスを含むため追跡しない。テストが読むデータをここに置かない |
 
 ## セッション引継ぎ
@@ -146,7 +147,7 @@ test_structure_recovery_corpus.py` のskipifが例）。要否の判定は、静
 150行超の関数は `tests/function_size_budget.json` に記録済みで、伸ばすと落ちる。
 新しく150行超を作っても落ちる。縮めたら `--write` で採択して上限を下げる
 （採択しないと落ちる）。都度の判断で分解し続けるのではなく、機械に押し戻させる。
-手順は `docs/development.md`。
+手順は `developer/development.md`。
 
 ### テストが届かない行を増やさない
 
@@ -164,7 +165,14 @@ uv run python scripts/build_coverage_budget.py --write   # 採択する
 
 広いexcept・`except: pass`・`check`無しsubprocess の件数は
 `tests/lint_budget.json` に凍結済み。増やすと落ちる。**既存の309件は残っている**が、
-新規は通らない。直したら `--write` で採択して上限を下げる。手順は `docs/development.md`。
+新規は通らない。直したら `--write` で採択して上限を下げる。手順は `developer/development.md`。
+
+### 利用者向け文書へ実装情報を混ぜない
+
+実装方法、変更経緯、内部関数・モジュール、コード変更後の再処理、回帰防止、品質予算は
+`developer/`、`TASKS.md`、`memory/`へ記録する。ルート`README.md`と`docs/`には、人間の利用者が
+導入・設定・検索・更新・障害対応で必要とする現在の挙動だけを書く。境界と参照先は
+`developer/README.md`を正本とする。
 
 ### 語彙は単一定義
 

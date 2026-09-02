@@ -433,7 +433,7 @@ flowchart TD
 
 | ファイル | 内容 |
 |---|---|
-| `.env` | 環境変数設定（V3データプレーン・埋め込み・LLMロール・PDFルーティング flag 等）。詳細は [環境設定](configuration.md) |
+| `.env` | 環境変数設定（V3データプレーン・埋め込み・LLMロール・PDFルーティング flag 等）。詳細は [環境設定](../docs/configuration.md) |
 | `.env.example` | 実在キーの正本ひな形 |
 | `.env.policy` | 撤去済み（2026-07-27。内容は無効化して残置） |
 | `pyproject.toml` / `requirements.txt` | Python依存定義 |

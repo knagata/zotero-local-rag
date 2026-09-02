@@ -49,7 +49,7 @@ _BUILTIN_MARKS = frozenset({
 _MARK = re.compile(r"pytest\.mark\.([A-Za-z_][A-Za-z0-9_]*)")
 
 #: Documents that tell a reader how to run the tests.
-_DOCUMENTS = ("CLAUDE.md", "docs/development.md")
+_DOCUMENTS = ("CLAUDE.md", "developer/development.md")
 
 
 def _configuration() -> dict:

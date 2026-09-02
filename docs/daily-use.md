@@ -17,7 +17,6 @@ bash Maintenance-Widget.command
 3. 要約の差分更新（DeepSeek AI要約。DB監査合格後のみ、既定off・少量バッチ）
 4. 全件要約の一括生成（DeepSeek課金・選択時の`SUMMARIZE`入力確認・DB監査合格後のみ、既定off・重い処理）
 5. Citation Network更新
-6. 品質報告のAI判定（退役済み。現在は実行されません）
 7. Mistral OCR Batchの送信、または完了済み結果の回収・品質確認・採用（任意）
 
 項目2（監査）は無料・非破壊なので、直近の合格gateが無いか失効している場合は既定でyesに
@@ -61,11 +60,6 @@ uv run python scripts/rebuild_document_structure.py --all --dry-run
 # 文書構造だけを差分更新（EPUB原本の目次を再読込し、再埋め込みしない）
 uv run python scripts/rebuild_document_structure.py --all
 
-# ゾーン方針（ZONE_POLICIES）を変更したあとの反映。retrieval_policy は
-# ノードとチャンクメタデータに焼き込まれているため、コード変更だけでは
-# 既存資料に反映されない。--force で全件の構造とメタデータを再同期する
-uv run python scripts/rebuild_document_structure.py --all --force
-
 # 要約（LLM）。全件backfillは承認後、通常は --limit で限定実行
 uv run python scripts/build_structure_summaries.py --all --mode llm --limit 10 --embed \
   --database-gate data/quality/server_database_gate.json
@@ -73,7 +67,7 @@ uv run python scripts/build_structure_summaries.py --all --mode llm --limit 10 -
 # Citation Network
 uv run src/update_citations.py --all
 
-# 報告内容をCLIから個別に確認（Maintenance項目6からは実行されません）
+# 報告内容をCLIから個別に確認
 uv run python scripts/triage_quality_reports.py
 uv run python scripts/review_relation_reports.py
 uv run python scripts/review_summary_quality_reports.py
@@ -160,35 +154,8 @@ uv run python scripts/manage_citation_graph_service.py restart
 
 `Software-Update.command`をダブルクリックします。`.env`、`data/`、`.venv/`、`.claude/`は保持されます。更新後はClaude Desktopを再起動してください。
 
-## 高度な抽出・再処理
+## 高度な処理
 
 - Citationの再開や参照回収: [Citation Network](citation-network.md)
 - LLM要約・参考文献抽出: [LLMとプライバシー](llm-and-privacy.md)
 - OCRやエラー対応: [トラブルシューティング](troubleshooting.md)
-
-抽出コードを変更した後に既存資料をやり直す場合は、scopeを指定して再取り込みします（`pipeline_fingerprint` は抽出コードを含まないため自動では再取り込みされません）。
-
-```bash
-# 特定itemだけ再抽出
-uv run src/index_from_zotero.py --force-reparse --item ABCDEFGH
-
-# 親item内の特定添付だけを再抽出（queue worker向け。兄弟PDFは処理しない）
-uv run src/index_from_zotero.py --force-reparse --item ABCDEFGH --attachment IJKLMNOP --source-type pdf
-
-# 同一PDFの「見出しなし」判定も再評価してAI目次をやり直す
-uv run src/index_from_zotero.py --refresh-ai-toc --force-reparse \
-  --item ABCDEFGH --attachment IJKLMNOP --source-type pdf
-
-# 種別を絞って再抽出（--item / --limit / --source-type のいずれか必須）
-uv run src/index_from_zotero.py --force-reparse --source-type epub --limit 20
-```
-
-`--refresh-ai-toc`は、同一mtime/sizeのPDFに保存された確定済みno-structure判定だけを
-再利用せず、通常の再抽出・再埋め込み経路でAI目次を再実行します。対象外への課金と再処理を
-避けるため、`--force-reparse`と`--item`または`--attachment`が必須です。通常は兄弟添付を
-巻き込まない`--attachment`を使ってください。AI目次とPDF構造復元が有効である必要があり、
-parser/OCR override、`--check-quality`、`--retry-failed`とは併用できません。
-ページ数、native outline、本文品質など既存のAI目次適格条件は変更しません。
-Zoteroから解決した対象が0件または非PDFを含む場合も、再埋め込み前に停止します。親itemに
-EPUB/HTMLの兄弟添付がある場合は、上例のように`--attachment`または`--source-type pdf`で
-PDFだけへ絞ってください。
