@@ -1,9 +1,12 @@
 {
   "unreached_statements": {
     "citation_graph/__init__.py": 0,
+    "citation_graph/admin_jobs.py": 52,
+    "citation_graph/admin_routes.py": 30,
     "citation_graph/graph_service.py": 0,
     "citation_graph/insights.py": 11,
     "citation_graph/lifecycle.py": 6,
+    "citation_graph/remote_proxy.py": 42,
     "citation_graph/server.py": 732,
     "src/__init__.py": 0,
     "src/artifact_repository.py": 16,
@@ -62,6 +65,7 @@
     "src/pdf_provenance.py": 7,
     "src/pdf_toc_recovery.py": 53,
     "src/query_expansion.py": 4,
+    "src/rag_mcp_http_server.py": 0,
     "src/rag_mcp_server.py": 607,
     "src/rapidocr_extract.py": 100,
     "src/recommendations.py": 3,

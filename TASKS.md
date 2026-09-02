@@ -11,6 +11,9 @@
   台帳の旧値を明示的に削除する。実変更があった場合だけメタ同期件数へ数える。
 - [x] **自動再確認の失敗を隠さない。** 単一job競合を専用例外に分け、その競合だけを次回へ延期する。
   Python不在など他の起動障害はrunner失敗として表面化する。
+- [x] **GitHub Actionsのcoverage／Node警告を修正。** 新規adminモジュール3件をcoverage予算へ登録し、
+  `Check nothing lost its tests`をCI条件で通過させた。`actions/checkout@v5`と`astral-sh/setup-uv@v9`へ更新し、
+  Node.js 20の強制実行警告を解消する。
 
 ### 2026-09-02 ブラウザDB監査のlaunchd互換修正
 
