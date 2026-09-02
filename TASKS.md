@@ -12,8 +12,8 @@
 - [x] **自動再確認の失敗を隠さない。** 単一job競合を専用例外に分け、その競合だけを次回へ延期する。
   Python不在など他の起動障害はrunner失敗として表面化する。
 - [x] **GitHub Actionsのcoverage／Node警告を修正。** 新規adminモジュール3件をcoverage予算へ登録し、
-  `Check nothing lost its tests`をCI条件で通過させた。`actions/checkout@v5`と`astral-sh/setup-uv@v9`へ更新し、
-  Node.js 20の強制実行警告を解消する。
+  `Check nothing lost its tests`をCI条件で通過させた。`actions/checkout@v5`と利用可能な
+  `astral-sh/setup-uv@v8.3.2`へ更新し、Node.js 20の強制実行警告を解消する。v9はタグ解決に失敗したため不採用。
 
 ### 2026-09-02 ブラウザDB監査のlaunchd互換修正
 

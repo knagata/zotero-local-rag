@@ -34,8 +34,8 @@ Updated: 2026-09-02
   DOI/ISBNを差分・台帳同期が扱わなかった点、自動再確認が全`RuntimeError`を競合扱いした点を修正。
   DB監査は`AUDIT`必須、識別子は空値も正確に同期し、再確認は専用競合例外だけを延期する。
 - GitHub Actionsのcoverage予算に新規adminモジュール3件を登録し、`Check nothing lost its tests`
-  の新規未到達文エラーを解消。`checkout@v5` / `setup-uv@v9`へ更新し、強制Node.js 24実行時の
-  Node.js 20警告も解消する。
+  の新規未到達文エラーを解消。`checkout@v5` / `setup-uv@v8.3.2`へ更新し、強制Node.js 24実行時の
+  Node.js 20警告も解消する。v9はGitHub側のタグ解決に失敗したため採用しない。
 
 ## 2026-08-31 authenticated remote MCP
 
