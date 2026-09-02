@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -46,6 +47,7 @@ class RunDbAuditTests(unittest.TestCase):
             "scripts/verify_against_source.py",
             "scripts/audit_v3_cutover.py",
         ])
+        self.assertTrue(all(call[0] == sys.executable for call in calls))
         self.assertIn("--new-only", calls[2])
 
     def test_a_failing_step_stops_before_the_next_one(self):

@@ -26,6 +26,95 @@ uv run citation_graph/server.py
 
 終了するときは、起動したターミナルで `Control+C` を押します。ブラウザのタブを閉じるだけではサーバーは終了しません。
 
+## 外部コンピュータからGoogleログインで開く
+
+通常のローカルサーバーを起動したまま、別ターミナルで公開専用proxyを起動します。
+
+```bash
+uv run python -u citation_graph/remote_proxy.py
+tailscale funnel --bg --https=8443 http://127.0.0.1:7244
+```
+
+`.env`の`CITATION_GRAPH_PUBLIC_URL`は
+`https://<Macの名前>.<tailnet>.ts.net:8443`とし、32文字以上のランダムな
+`CITATION_GRAPH_SESSION_SECRET`を設定します。生成例:
+
+```bash
+uv run python -c 'import secrets; print(secrets.token_urlsafe(48))'
+```
+
+Google Cloud Consoleの同じウェブアプリケーションOAuthクライアントへ、
+`https://<Macの名前>.<tailnet>.ts.net:8443/auth/callback`を承認済みリダイレクトURIとして追加します。
+許可ユーザーはRemote MCPと同じ`REMOTE_MCP_ALLOWED_GOOGLE_EMAILS`です。公開URLからの画面・API操作は
+すべて認証対象ですが、従来の`http://localhost:7234`には影響しません。
+
+### 自動起動と状態確認
+
+動作確認後はCitation Graph本体、OAuth proxy、更新状況の定期確認をmacOS LaunchAgentとして登録します。
+
+```bash
+uv run python scripts/manage_citation_graph_service.py install
+uv run python scripts/manage_citation_graph_service.py status
+```
+
+Graphとproxyはログイン時に起動し、異常終了時は10秒以上空けて再起動します。更新状況はログイン時と
+30分ごとに読み取り専用で確認し、別の管理jobが実行中なら次回へ延期します。秘密値はplistへ複製せず
+`.env`から読みます。運用コマンド:
+
+```bash
+uv run python scripts/manage_citation_graph_service.py restart
+uv run python scripts/manage_citation_graph_service.py uninstall
+```
+
+ログは`data/citation-graph*.log`です。`status`では`update_check_launch_agent=loaded`も確認します。
+`uninstall`はLaunchAgentだけを削除し、Tailscale Funnelの
+8443設定は変更しません。
+
+### ブラウザで処理状況を確認・更新する
+
+Google OAuth公開URLへ`/admin/`を加えると管理画面を開けます。
+
+```text
+https://<Macの名前>.<tailnet>.ts.net:8443/admin/
+```
+
+表示内容:
+
+- manifestの添付・ノート件数、HNSW検証、inflight、最終更新
+- DB監査gate、indexing lock、failed／blocked artifact数
+- 読み取り専用照合で確認した添付・ノート索引、文書構造・目次、全Zotero書誌itemの
+  Citation Network未更新件数と対象キー。原本欠落・構造失敗・Citationエラーは赤い要確認表示
+- 実行中jobのstep、進捗ログ、停止操作
+- proxy再起動後も残る直近20件の実行履歴
+
+実行できる処理:
+
+| 処理 | 内容 | 確認語 |
+|---|---|---|
+| 更新状況を確認 | Zotero・索引・構造・Citation台帳を変更せず照合し、未更新件数を表示 | なし |
+| クイック実行 | 索引・文書構造・目次の差分更新、DB監査、Citation Network更新を順番に実行 | `QUICK` |
+| ライブラリ差分更新 | Zotero差分取込後に文書構造・目次を差分更新 | `UPDATE` |
+| DB監査 | Zotero・原本・索引を照合。開始時に前回gateを無効化し、合格時に再作成 | `AUDIT` |
+| 文書構造・目次の差分更新 | 原本を再確認し、変更資料だけ更新。再埋め込みなし | `STRUCTURE` |
+| 階層要約の差分更新 | 構造更新・監査後、DeepSeekで最大10件・10並列・要約索引反映 | `SUMMARIZE` |
+| Citation Network更新 | 未処理・エラー分の引用・参照関係を更新 | `CITATIONS` |
+
+クイック実行は各工程が成功した場合だけ次へ進み、途中で失敗するとそこで停止します。階層要約は含みません。
+「更新状況を確認」は原本とノートの追加・変更・削除、保存チャンクに対する構造fingerprint、
+全Zotero書誌itemとCitation台帳・DOI・ISBN（削除を含む）を照合し、外部APIへの更新送信や正本DBへの書き込みは
+行いません。結果には確認日時が付き、
+次回確認まで保存されます。LaunchAgent設定後は30分ごとに自動更新され、必要なら画面から即時確認もできます。
+確認から45分を超えると期限切れを表示します。索引・構造・要約・Citationの書込みjobを開始すると
+「再確認待ち」になり、正常終了後は読み取り専用確認を自動実行して表示を更新します。
+確認語が「なし」の読み取り専用処理はクリックすると直接開始し、確認ダイアログを表示しません。
+同時に実行できるjobは1件です。階層要約は有料APIを使うため、毎回確認語が必要です。停止も`STOP`の
+入力が必要で、保存したPID・job ID・tokenと実際のprocess commandが一致するときだけprocess groupへ
+通知します。任意command、DB全削除・`--rebuild`、構造`--force`、全件有料要約は管理画面から実行できません。
+
+状態は`data/admin_jobs/<job-id>.json`、出力は同名`.log`へ600権限で保存されます。開始者と停止者の
+Googleメールも監査用に記録します。OAuth proxyが再起動してもjob processは継続し、OS再起動等で
+processが失われた記録は次回表示時に`interrupted`へ変更されます。
+
 ## グラフの見方
 
 - Zoteroアイテム: 自分のライブラリにある資料

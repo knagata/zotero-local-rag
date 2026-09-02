@@ -35,7 +35,13 @@ from src.v3_data_plane import (  # noqa: E402
 
 def _run(*args: str) -> None:
     print(f"\n>> {' '.join(args)}")
-    result = subprocess.run(["uv", "run", *args], cwd=ROOT)
+    command = list(args)
+    if command and command[0] == "python":
+        # Browser-admin jobs run under the project's virtualenv, while
+        # launchd's deliberately small PATH may not include the user's uv.
+        # Reuse the interpreter which is already running this audit.
+        command[0] = sys.executable
+    result = subprocess.run(command, cwd=ROOT)
     if result.returncode != 0:
         raise SystemExit(result.returncode)
 

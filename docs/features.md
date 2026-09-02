@@ -41,6 +41,7 @@ Semantic Scholar、OpenAlex等へのインターネット接続と `S2_API_KEY` 
 - 外部論文からの被引用取得
 - 参考文献・脚注・巻末注の抽出と照合（取り込み時に境界保持したV3チャンクから復元）
 - 参照・被引用グラフ
+- Citation Graphのローカル表示と、Google OAuth・許可メールによる任意の外部HTTPS表示
 - 複数資料から参照される未所蔵文献の提案
 - 英語学術論文のGROBID enrichment（任意・review-only）
 

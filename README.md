@@ -30,9 +30,7 @@ uv run scripts/setup_wizard.py
 3. 使いたい機能の段階
 4. Claude Desktopへの接続
 
-Setupは設定、埋め込みモデルの初回ダウンロード、接続登録を行います。設定保存後、DBが未構築なら
-構築を案内し、既存DBがあれば`REBUILD`確認付きで再構築を案内します。DB構築中は、有効化した
-AI目次などのAPIが実行され得ます。階層要約とMistral OCR Batchは別途明示許可が必要です。
+Setupは設定、モデル取得、接続登録、DB構築／確認付き再構築を案内します。有料API処理は別途明示許可が必要です。
 
 完了後、Claude Desktopを再起動し、次のように依頼できます。
 
@@ -58,8 +56,7 @@ Citation NetworkにはSemantic ScholarのAPIキーが必要です。
 
 macOSでは [Maintenance-Widget.command](Maintenance-Widget.command) をダブルクリックします。
 
-`MAINTENANCE_AUTO_APPROVE=1`でも、DeepSeek階層要約とMistral OCR Batchのような有料API処理は
-自動実行しません。これらは毎回明示的な許可が必要です。
+`MAINTENANCE_AUTO_APPROVE=1`でも、有料API処理は自動実行せず毎回明示許可を求めます。
 
 1. Zoteroライブラリの差分更新（＋文書構造の更新）
 2. DBの監査（Zotero本体・原本との突き合わせ。非破壊。要約の実行に必要で、gateが最新なら既定でskip）
@@ -69,13 +66,7 @@ macOSでは [Maintenance-Widget.command](Maintenance-Widget.command) をダブ�
 6. 品質報告のAI判定（退役済み。現在は実行されません）
 7. Mistral OCR Batchの送信、または完了済み結果の回収・品質確認・採用（任意）
 
-不要な項目だけ `n` を入力して除外できます。実行後に未解決の処理状態サマリも表示されます。ログはTerminalへ表示されます。
-
-DBのゼロ再構築（`--rebuild`）は [Setup.command](Setup.command) から行います。初回構築は確認なし、既存DBがある場合は
-常に再構築の案内（`REBUILD`入力確認。プロファイル変更時は必須、他は任意）が出て、続けてDB監査まで実行できます。
-
-AI要約の全件backfillは項目4選択直後の`SUMMARIZE`確認とDB監査合格後に行い、実行中はitem・API進捗を表示します。既に最新の要約は追加API呼び出しなしでskipします。Mistral Batchも、
-初回は送信だけを行い、完了後にWidgetを再起動して同項目を許可したときに回収・品質確認・採用します。
+不要項目は`n`で除外でき、終了時に未解決状態を表示します。DBのゼロ再構築は[Setup.command](Setup.command)から行います。
 
 詳しくは [日常の使い方](docs/daily-use.md) を参照してください。
 
@@ -84,6 +75,10 @@ AI要約の全件backfillは項目4選択直後の`SUMMARIZE`確認とDB監査�
 [Show-Citation-Graph.command](Show-Citation-Graph.command) をダブルクリックすると、Zoteroの所蔵資料と引用元・参照先の関係をブラウザで確認できます。
 
 この画面は保存済みデータを表示するものです。先に `Maintenance-Widget.command` でCitation Networkを更新してください。詳しい見方は [Show Citation Networkガイド](docs/show-citation-network.md) にまとめています。
+
+ローカルは`http://localhost:7234`、外部はTailscale Funnel＋Google OAuthで利用できます。公開URLの
+`/admin/`ではDB・目次・階層要約の状態確認と限定更新ができます。設定・安全制限・自動起動は
+[Show Citation Networkガイド](docs/show-citation-network.md#外部コンピュータからgoogleログインで開く)を参照してください。
 
 ## プライバシー
 
@@ -99,7 +94,7 @@ Core機能はローカルで処理できます。LLMへ本文を送る機能は�
 | 普段の更新・検索 | [日常の使い方](docs/daily-use.md) |
 | 何ができるか確認する | [機能と必要な設定](docs/features.md) |
 | Citation Networkを使う | [Citation Network](docs/citation-network.md) |
-| 引用グラフを見る | [Show Citation Network](docs/show-citation-network.md) |
+| 引用グラフをローカル・外部から見る | [Show Citation Network](docs/show-citation-network.md) |
 | LLMと送信制御を設定する | [LLMとプライバシー](docs/llm-and-privacy.md) |
 | `.env`を手動設定する | [環境設定](docs/configuration.md) |
 | エラーを解決する | [トラブルシューティング](docs/troubleshooting.md) |

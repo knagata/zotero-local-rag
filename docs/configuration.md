@@ -62,6 +62,42 @@ APIキー入力には非表示入力を使い、入力直前にもその旨を�
 
 `FEATURE_LEVEL`は管理用で、セキュリティ境界ではありません。
 
+## Remote MCP（任意）
+
+Remote MCPは`src/rag_mcp_http_server.py`だけが読みます。従来のstdio版
+`src/rag_mcp_server.py`には影響しません。
+
+| 変数 | 用途 | 既定 |
+|---|---|---|
+| `REMOTE_MCP_PUBLIC_URL` | OAuth discoveryとcallbackに使う公開HTTPS origin。`/mcp`は付けない | 必須 |
+| `REMOTE_MCP_GOOGLE_CLIENT_ID` | Google OAuthクライアントのClient ID | 必須 |
+| `REMOTE_MCP_GOOGLE_CLIENT_SECRET` | Google OAuthクライアントのClient secret | 必須 |
+| `REMOTE_MCP_ALLOWED_GOOGLE_EMAILS` | 接続を許可する確認済みGoogleメールアドレス。カンマ区切り | 必須 |
+| `REMOTE_MCP_HOST` | HTTP待受。Funnel経由を強制するためloopback以外は拒否 | `127.0.0.1` |
+| `REMOTE_MCP_PORT` | Funnelが転送するローカルHTTPポート | `8000` |
+
+公開MCP endpointは`REMOTE_MCP_PUBLIC_URL`に`/mcp`を加えたURL、Google OAuthクライアントの
+callbackは`/auth/callback`を加えたURLです。設定不足、HTTPの公開URL、loopback以外の待受、
+許可ユーザーなしはいずれも起動前に拒否します。
+
+## Citation GraphのGoogle OAuth公開（任意）
+
+従来の`citation_graph/server.py`は引き続き`127.0.0.1`だけで待ち受け、ローカルでは
+`http://localhost:7234`を認証なしで利用できます。`citation_graph/remote_proxy.py`は別プロセスの
+公開専用入口で、Google OAuthを通過した許可メールのブラウザだけをローカルサーバーへ転送します。
+
+| 変数 | 用途 | 既定 |
+|---|---|---|
+| `CITATION_GRAPH_PUBLIC_URL` | Funnelで公開するHTTPS origin。pathは付けない | 必須 |
+| `CITATION_GRAPH_SESSION_SECRET` | ブラウザセッション署名鍵。32文字以上のランダム値 | 必須 |
+| `CITATION_GRAPH_LOCAL_URL` | 従来のローカルCitation Graph | `http://127.0.0.1:7234` |
+| `CITATION_GRAPH_REMOTE_HOST` | OAuth proxyの待受。loopback以外は拒否 | `127.0.0.1` |
+| `CITATION_GRAPH_REMOTE_PORT` | Funnelが転送するOAuth proxyのポート | `7244` |
+
+Google Client ID、Client secret、許可メールは`REMOTE_MCP_GOOGLE_CLIENT_ID`、
+`REMOTE_MCP_GOOGLE_CLIENT_SECRET`、`REMOTE_MCP_ALLOWED_GOOGLE_EMAILS`を共用します。Google側には
+`CITATION_GRAPH_PUBLIC_URL/auth/callback`を承認済みリダイレクトURIとして追加します。
+
 ## V3データプレーン（現行本番）
 
 本番の検索・取り込みはV3のみです。次の5値は一組の不変条件であり、旧collection、

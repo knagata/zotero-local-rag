@@ -400,6 +400,12 @@ flowchart TD
 | `db_relations.py` | `relations.db` のCRUD。著作・引用・構造・要約・審査キュー・artifact状態 |
 | `recommendations.py` | 関連資料（coupling/cocitation/semantic/hybrid） |
 | `citation_graph/insights.py` | 引用グラフ・階層要約ビュー用データAPI（`src/`外） |
+| `citation_graph/server.py` | loopback限定のCitation Graph画面・API。従来のローカル入口 |
+| `citation_graph/remote_proxy.py` | Google OAuth・許可メール・署名sessionを検証する公開専用proxy |
+| `citation_graph/admin_jobs.py` | OAuth管理画面用の固定job catalog・単一実行・永続状態・停止検証 |
+| `citation_graph/admin_routes.py` | OAuth管理画面と状態・開始・停止APIのroute登録 |
+| `scripts/manage_citation_graph_service.py` | ローカルGraphとOAuth proxyのLaunchAgent・health・ログ管理 |
+| `scripts/run_admin_job.py` | proxyから分離して長時間jobを実行し、`data/admin_jobs/`へ状態・ログを記録 |
 | `zotero_source_localapi.py` | Zoteroローカル HTTP API (:23119) クライアント |
 
 ---

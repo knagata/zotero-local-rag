@@ -523,9 +523,8 @@ def main():
                 # 既存ステータスは保持する（not_found を mapped に昇格させない）。
                 new_doi  = item_data.get("DOI",  "") or None
                 new_isbn = item_data.get("ISBN", "") or None
-                from db_relations import update_item_citation_status as _uics
-                _uics(key, status, doi=new_doi, isbn=new_isbn)
-                if new_doi or new_isbn:
+                from db_relations import sync_item_citation_identifiers
+                if sync_item_citation_identifiers(key, doi=new_doi, isbn=new_isbn):
                     stats["meta_updated"] += 1
                 stats["skipped"] += 1
                 if stats["skipped"] <= 3 or stats["skipped"] % 20 == 0:

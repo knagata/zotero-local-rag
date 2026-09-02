@@ -136,6 +136,26 @@ Zoteroから「贈与と互酬性」に関係する資料を探して
 
 `Show-Citation-Graph.command`をダブルクリックします。先にCitation Network更新を済ませてください。画面の見方は [Show Citation Networkガイド](show-citation-network.md) を参照してください。
 
+サーバーMacでは`http://localhost:7234`、Google OAuth公開を設定済みなら
+`CITATION_GRAPH_PUBLIC_URL`のHTTPS URLから開けます。常駐状態を確認するには:
+
+```bash
+uv run python scripts/manage_citation_graph_service.py status
+```
+
+`local_graph`、`local_oauth_proxy`、`public_oauth_proxy`がすべて`ok`なら正常です。公開側だけでなく
+ローカル側も同じ保存済みDBを表示します。Citation Network更新後は起動中Graphの再読み込みが必要なので、
+管理サービスを使っている場合は`restart`を実行します。
+
+```bash
+uv run python scripts/manage_citation_graph_service.py restart
+```
+
+外部公開URLの`/admin/`では、DB・文書構造／目次・階層要約の状態、実行中step、ログ、履歴を確認し、
+日常更新を開始できます。有料要約は`SUMMARIZE`、その他の書き込み処理も画面に表示される確認語が
+必要です。詳細は[Show Citation Networkガイド](show-citation-network.md#ブラウザで処理状況を確認更新する)を
+参照してください。
+
 ## アプリケーションを更新する
 
 `Software-Update.command`をダブルクリックします。`.env`、`data/`、`.venv/`、`.claude/`は保持されます。更新後はClaude Desktopを再起動してください。

@@ -1,6 +1,55 @@
 # Current development handoff
 
-Updated: 2026-08-27
+Updated: 2026-09-02
+
+## 2026-09-02 authenticated remote Citation Graph
+
+- 従来の`citation_graph/server.py`と`http://localhost:7234`を変更せず、Google OAuth付きの独立proxy
+  `citation_graph/remote_proxy.py`を追加。既存Remote MCPのGoogle資格情報・許可メールを共用し、OAuth
+  state、PKCE、Google ID token検証、HTTPS限定署名sessionを通過したブラウザだけをloopbackのGraphへ
+  転送する。FunnelはRemote MCPと分離したHTTPS 8443を想定する。
+- Citation Graph本体とOAuth proxyを独立LaunchAgentとして管理する
+  `scripts/manage_citation_graph_service.py`を追加。ログイン時起動、異常終了時10秒throttle付き再起動、
+  install/status/restart/uninstall、local/public health確認を行い、秘密値はplistへ複製しない。
+- OAuth公開URLの`/admin/`にメンテナンス画面を追加。manifest/gate/indexing lock/artifact、固定job、
+  step/log/履歴を表示し、差分取込＋構造、DB監査、構造、10件要約、Citation更新だけを独立runnerで
+  実行する。単一job、same-origin POST、確認語、actor記録、PID/job/token検証停止、再起動耐性を持ち、
+  任意command、破壊的rebuild、force、全件有料要約は対象外。管理画面はCitation Graph本体と同じ
+  パレット、タイポグラフィ、カード密度、状態色を使い、CSS assetは即時反映のため保存しない。
+  日常運用向けのクイック実行は、索引差分、構造・目次差分、監査、Citation差分を順に実行し、
+  失敗時は後続工程へ進まない。階層要約は含めない。読み取り専用の更新状況確認jobは、Zoteroと
+  manifest、構造dry-run、Citation台帳を照合し、未更新件数・対象キー・確認日時を画面へ保存表示する。
+  専用LaunchAgentがログイン時と30分ごとにこの確認jobを開始し、他job実行中は次回へ延期するため、
+  画面アクセスは重い照合を待たず保存済み結果を即時表示する。確認語のないread-only jobは
+  確認ダイアログを経ず直接開始し、確認語の必要な書込みjobだけ入力フォームを出す。launchdが
+  bootout直後のbootstrapへ一時EIOを返す場合は短時間リトライする。再登録失敗時は旧plistとloaded状態を
+  Citation Graph 3 Agent・Remote MCPとも復元する。
+- 更新状況の索引判定は添付に加えてZotero note versionもmanifestと照合し、Citation判定は`--all`と
+  同じ全書誌itemを対象にDOI・ISBN差分も数える。原本欠落・構造失敗・Citation errorは緑の0件に
+  埋めず赤い要確認とする。45分超は期限切れ、書込みjob中は再確認待ちとし、正常終了後に確認jobを自動起動。
+- browser adminのDB監査はlaunchdの限定PATHで`uv`を再探索せず、runnerを起動済みの
+  `sys.executable`で3監査を実行する。実DB再監査はZotero 622/622、原本欠落・orphan・dangling・
+  unretrievable 0、cutover 597/597で合格し、`server_database_gate.json`を再作成した。
+- 直近reviewで、DB監査が開始時に旧gateを無効化するのに確認なしだった点、Zoteroで削除した
+  DOI/ISBNを差分・台帳同期が扱わなかった点、自動再確認が全`RuntimeError`を競合扱いした点を修正。
+  DB監査は`AUDIT`必須、識別子は空値も正確に同期し、再確認は専用競合例外だけを延期する。
+
+## 2026-08-31 authenticated remote MCP
+
+- 既存のstdio MCPを変更せず、同じtool registryをFastMCP Streamable HTTPで公開する独立入口
+  `src/rag_mcp_http_server.py`を追加。Google OAuth資格情報・公開HTTPS origin・確認済みGoogle
+  email allowlistを必須とし、HTTP待受はloopback限定。Tailscale Funnelから`/mcp`を公開する。
+- 2026-09-01にmacOS LaunchAgent管理を追加。ログイン時起動、異常終了時の再起動、10秒throttle、
+  `data/`ログ、install/status/restart/uninstallとlocal/public OAuth health確認を提供する。
+
+## 2026-09-01 storage cleanup
+
+- 検索不能な`pre-m5-incomplete`診断世代と、後発rollbackに包含済みの2026-08-14対象backup
+  4件を削除。次に現行active V3を`data/backups/current-v3-full-20260901`へ一式backupし、作成時と
+  独立verifyの両方でChroma/lexical 522,761件、manifest 622添付、SQLite quick check `ok`を確認。
+  置換された旧`pre-h2s-ai-toc-20260815-83ef402`も削除した。OCR cache、BGE-M3、Granite環境は
+  再生成・再取得コストがあるため保持した。`uv cache prune`は稼働中MCPがcacheを使用中だったため、
+  安全ロックを尊重して見送った。
 
 ## 2026-08-15 generated PDF bookmark rejection
 
@@ -215,8 +264,8 @@ Updated: 2026-08-27
   active V3はmanifest 352件、inflight 1件、`hnsw_validated=false`でMCP拒否だった。この世代は
   再利用せず、その後のM5 clean rebuildで置換済み。
 - M5直前に旧complete-generation snapshotの欠落を検出した。当時のactiveは検索不可だったため、
-  `data/backups/pre-m5-incomplete-20260811`へ未完成世代を診断用に一式退避した。Chroma/FTS
-  272,007行、manifest 352件、SQLite quick checkはいずれも`ok`。正常世代のrollbackではない。
+  未完成世代を診断用に一式退避した。Chroma/FTS 272,007行、manifest 352件、SQLite quick checkは
+  いずれも`ok`だったが正常世代のrollbackではなく、2026-09-01の容量整理で削除した。
 - user承認後のM5初回実行は8/619で停止した。監視ログのOCR layer audit `measured`を契機に、
   保存済み`.env`でOCR layer auditがreadinessと逆に1だったことを検出し、auditだけ0へ戻した。
   この部分世代は再利用せずclean rebuildを再度最初から行い、完了した。query expansion、LLM summaries/
@@ -232,10 +281,10 @@ active V3はM5 clean rebuildと後続の対象修復を完了した監査済み�
 正本として使用できる。
 
 - active planeは`zotero_paragraphs_v3` / `manifest_v3.json` / `lexical_v3.sqlite3`。
-- manifest 618添付、failed/deferred/inflight 0、`hnsw_validated=true`。
+- 2026-09-01 backup時点でChroma/lexical 522,761件、manifest 622添付。
 - 直近の全DB監査は593 item中失敗0、原本欠落頁・orphan・dangling・unretrievableはいずれも0。
-- H2SDTWFQ修復後の要約索引監査は期待/実在7,932 ID一致。rollback点は
-  `data/backups/pre-h2s-ai-toc-20260815-83ef402`。
+- H2SDTWFQ修復後の要約索引監査は期待/実在7,932 ID一致。現在の復旧点は検証済みの
+  `data/backups/current-v3-full-20260901`。
 
 ## Next work, in order
 

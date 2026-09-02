@@ -30,7 +30,7 @@ active V3 generation.
 | Setup configuration handoff | GO | `environment_with_saved_dotenv` overlays saved `.env`/`.env.policy` values on the inherited process environment, and DB lifecycle passes that explicit environment to the indexer, structure rebuild and audit children. A regression starts with stale parent long=Granite/queue=0 and proves saved long=Mistral/queue=1 reaches both rebuild children. |
 | PDF extraction/chunk scheme | GO | Current heuristic, OCR fallback, language thresholds, chunk ID format and merge/rescue behavior are frozen. A rebuild must re-extract every attachment and must not reuse old chunks. |
 | Zotero inventory | GO | `--rebuild --dry-run` resolved 590 items / 616 attachments: PDF 364, EPUB 208, HTML 44. It reported `canonical_data_modified=false` and zero legacy OCR reuse candidates. |
-| Pre-M5 snapshot | GO WITH LOSS OF OLD ROLLBACK | The formerly recorded `data/backups/pre-clean-rebuild-20260810-4b58d6b` is absent and could not be found under the home directory, Trash or mounted volumes. The current generation was already incomplete and MCP-ineligible, so M5 does not destroy a working search generation. Before M5, `data/backups/pre-m5-incomplete-20260811` captured the incomplete generation as one verified unit: Chroma/FTS 272,007 rows, manifest 352 attachments, both SQLite quick checks `ok`, 10,832,960,633 bytes. It is a diagnostic rollback to the unusable pre-M5 state, not a quality baseline. |
+| Pre-M5 snapshot | GO WITH LOSS OF OLD ROLLBACK | The formerly recorded `data/backups/pre-clean-rebuild-20260810-4b58d6b` was absent. Before M5, a diagnostic snapshot captured the incomplete, MCP-ineligible generation, but it was not a quality baseline and was removed during the 2026-09-01 storage cleanup after the audited active generation and its later rollback had remained healthy. |
 | Active Chroma read health | GO | Read-only `check_chroma_health.py --no-repair-fts` found no integrity issue and no orphaned segment directory; no repair was attempted. |
 | Capacity | GO | After keeping the snapshot, 70.6 GB remained free. The isolated 300-chunk pilot projected about 7.49 GB of Chroma growth for 513,683 chunks; one complete active-generation equivalent is 8.67 GB. The measured run used a fresh temporary plane, so the new reuse rejection does not invalidate it. The remaining space covers either estimate with a wide margin. |
 | Indexing lock | GO | No `data/indexing.lock` remains. Snapshot creation held the production indexing lock and released it after verification. The rebuild entry point and its following non-dry-run document-structure rebuild both acquire the same lock used by re-OCR adoption and observed by MCP. |
@@ -87,7 +87,8 @@ The old complete-generation rollback recorded on 2026-08-10 was no longer
 present. The pre-M5 incomplete generation was retained only for diagnosis; it
 is MCP-ineligible and is not a working fallback. Do not restore it over the
 current audited generation or mix individual stores from different generations.
-Its historical verification command was:
+Its historical verification command was the following. The snapshot no longer
+exists, so this command is retained only as an audit record:
 
 ```bash
 uv run python scripts/backup_v3_generation.py --verify-only \

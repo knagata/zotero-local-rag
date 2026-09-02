@@ -76,6 +76,26 @@ class StaticAssetTests(unittest.TestCase):
         self.assertIn("window.__RAG_THEME__", html)
         self.assertIn(server._PALETTE["nodeZotero"], html)
 
+    def test_admin_visual_tokens_match_the_graph_palette(self):
+        css = (self.static_dir / "admin.css").read_text(encoding="utf-8")
+        for key in (
+            "nodeZotero", "nodeCiter", "nodeRef", "surface",
+            "surfaceContainerLow", "surfaceContainerHigh", "outlineVariant",
+            "onSurface", "onSurfaceVariant", "textDis",
+        ):
+            declaration = f"{server._palette_css_var(key)}: {server._PALETTE[key]};"
+            self.assertIn(declaration, css, key)
+        self.assertNotIn("Georgia", css)
+
+    def test_admin_skips_the_confirmation_dialog_for_jobs_without_a_phrase(self):
+        script = (self.static_dir / "admin.js").read_text(encoding="utf-8")
+        self.assertIn("if(!def.confirmation) { void startDefinition(def); return; }", script)
+
+    def test_admin_shell_versions_both_browser_assets(self):
+        html = (self.static_dir / "admin.html").read_text(encoding="utf-8")
+        self.assertIn('/admin/assets/admin.css?v=', html)
+        self.assertIn('/admin/assets/admin.js?v=', html)
+
     def test_app_js_stays_a_classic_synchronous_script(self):
         # The JS has no DOMContentLoaded guard and touches
         # getElementById('loading') on its first statement, and it depends on

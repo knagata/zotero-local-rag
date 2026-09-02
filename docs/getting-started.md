@@ -91,6 +91,77 @@ Claude Desktopの設定例:
 
 このプロジェクトはPyPI未公開なので、`uvx zotero-local-rag`ではなくローカルディレクトリから実行します。
 
+### 外部のClaudeから接続する（任意）
+
+`rag_mcp_server.py`のstdio接続は変更せず、認証付きHTTP専用の
+`src/rag_mcp_http_server.py`を併設できます。検索実装とデータベースは両者で共通です。
+Remote MCPは認証なしでは起動せず、HTTP待受も`127.0.0.1`に限定されます。
+
+1. Tailscale Funnelで使うMacの固定`https://...ts.net`名を確認します。
+2. Google Cloud ConsoleでOAuth同意画面と「ウェブアプリケーション」のOAuthクライアントを作り、
+   承認済みのリダイレクトURIを
+   `https://<Macの名前>.<tailnet>.ts.net/auth/callback`にします。
+3. `.env`へ次を保存します。秘密値をGitへ追加しないでください。
+
+```dotenv
+REMOTE_MCP_PUBLIC_URL=https://<Macの名前>.<tailnet>.ts.net
+REMOTE_MCP_GOOGLE_CLIENT_ID=<Google OAuthクライアントのClient ID>
+REMOTE_MCP_GOOGLE_CLIENT_SECRET=<Google OAuthクライアントのClient secret>
+REMOTE_MCP_ALLOWED_GOOGLE_EMAILS=<許可する自分のGoogleメールアドレス>
+REMOTE_MCP_HOST=127.0.0.1
+REMOTE_MCP_PORT=8000
+```
+
+4. HTTP MCPを起動します。
+
+```bash
+uv run python -u src/rag_mcp_http_server.py
+```
+
+5. 別のターミナルでFunnelを常駐設定します。
+
+```bash
+tailscale funnel --bg 8000
+```
+
+ClaudeのRemote Connectorには
+`https://<Macの名前>.<tailnet>.ts.net/mcp`を登録します。Funnel URLは公開URLなので、
+Google OAuthと`REMOTE_MCP_ALLOWED_GOOGLE_EMAILS`の両方を外さないでください。OAuth同意画面が
+テスト運用中なら、このメールアドレスをGoogle側のテストユーザーにも追加します。MacのTailscale
+クライアントがFunnelに対応する導入形態であることも事前に確認してください。
+
+#### Remote MCPを自動起動する
+
+接続確認後はmacOS LaunchAgentへ登録します。Googleの秘密値はplistへ複製せず、起動時に
+Git追跡外の`.env`から読みます。
+
+```bash
+uv run python scripts/manage_remote_mcp_service.py install
+uv run python scripts/manage_remote_mcp_service.py status
+```
+
+LaunchAgentはログイン時に起動し、異常終了時は10秒以上空けて再起動します。運用コマンド:
+
+```bash
+uv run python scripts/manage_remote_mcp_service.py restart
+uv run python scripts/manage_remote_mcp_service.py uninstall
+```
+
+ログは`data/remote-mcp.stdout.log`と`data/remote-mcp.stderr.log`です。Tailscale Funnelの
+`--bg`設定はTailscaleが保持するため、MCPプロセスとは別にHerdrで常駐させる必要はありません。
+リポジトリがmacOSの`Documents`配下にありLaunchAgentのPythonがファイルアクセスを許可されて
+いない場合、installはhealth確認に失敗してAgentを自動で外します。システム設定の
+「プライバシーとセキュリティ」→「フルディスクアクセス」で表示されたPython実行ファイルを
+許可するか、リポジトリを`Documents`外へ移してからinstallを再実行してください。
+
+### Citation Graphを外部ブラウザへ公開する（任意）
+
+Citation Graphも、従来のlocalhost表示を残したまま、別ポートのTailscale FunnelとGoogle OAuthで
+限定公開できます。Remote MCPのGoogle Client ID／Secretと許可メールを共用しますが、公開originと
+callbackは8443番を含む別URIです。設定、自動起動、動作確認は
+[Show Citation Networkガイド](show-citation-network.md#外部コンピュータからgoogleログインで開く)を
+参照してください。
+
 ## 4. サーバー用の設定だけを行う
 
 サーバーへ配置する場合は、Claude Desktop登録を行わない `--server` を使います。

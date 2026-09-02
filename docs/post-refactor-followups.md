@@ -2,7 +2,7 @@
 
 Opened: 2026-08-04, from the review after the indexing, repository, MCP and
 FastAPI refactoring.
-Last triaged: 2026-08-11. No production incident is known for anything here.
+Last triaged: 2026-09-02. No production incident is known for anything here.
 
 Every item below was re-read against the code on the triage date and names the
 file and symbol it lives in, so a fix that lands without updating this file
@@ -251,10 +251,24 @@ that the size number does not say.
 
 ## Reassessment triggers
 
+The former local-only Citation Graph trigger occurred on 2026-09-02. The public
+entry point is a separate loopback-only proxy behind HTTPS Funnel and requires
+Google OAuth, verified-email allowlisting, OAuth state, PKCE and a signed,
+HTTPS-only session before forwarding any page or API request. Existing request
+bounds and generic upstream-error handling remain in force. Local port 7234 is
+not exposed directly, secrets stay out of LaunchAgent plists, and local/public
+health plus crash restart were verified. The 2026-09-02 browser admin extension
+keeps write APIs on that authenticated proxy only, checks same-origin POSTs,
+uses a fixed argv catalog with one job at a time, requires operation-specific
+confirmation, records the actor, and verifies PID/job/token before stopping a
+process group. It deliberately excludes arbitrary commands, destructive DB
+rebuilds, force structure rebuilds and unbounded paid summaries. Reassess this
+boundary again if the proxy, authentication, routing, catalog or write APIs change.
+
 Revisit the P1 items immediately if any of the following occurs:
 
 - re-OCR adoption and normal indexing may run concurrently;
 - partial or mismatched Chroma/lexical/manifest generations are observed;
 - MCP search returns data while a maintenance command is writing;
 - `search_items` causes high memory use or long server stalls;
-- the citation graph API is exposed beyond its current local-only workflow.
+- the Citation Graph proxy, authentication boundary, public routing or write APIs change.

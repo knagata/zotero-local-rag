@@ -3,6 +3,23 @@
 正本: `SPEC.md`。実装・検証の永続的な履歴はこのファイルに残す。
 `evaluations/`のローカル生成レポートはZotero識別子や絶対パスを含み得るため追跡しない。
 
+### 2026-09-02 ブラウザ管理機能の再レビュー修正
+
+- [x] **DB監査の状態変更を明示。** 監査開始時に旧gateをfail-closedで無効化するため、ブラウザ実行に
+  `AUDIT`確認語を追加し、説明にも影響を表示した。
+- [x] **DOI・ISBN削除を差分同期。** Zoteroで識別子を空にした変更も未更新へ数え、Citation更新時に
+  台帳の旧値を明示的に削除する。実変更があった場合だけメタ同期件数へ数える。
+- [x] **自動再確認の失敗を隠さない。** 単一job競合を専用例外に分け、その競合だけを次回へ延期する。
+  Python不在など他の起動障害はrunner失敗として表面化する。
+
+### 2026-09-02 ブラウザDB監査のlaunchd互換修正
+
+- [x] **LaunchAgent環境のDB監査を修正。** admin runnerはproject venvで起動済みなのに、
+  `run_db_audit.py`が子監査を`uv run`で再起動し、launchdの限定PATHでは`uv`不在で失敗していた。
+  同じ`sys.executable`を再利用してCLI利用との実行環境を統一した。
+- [x] **実DBで復旧を確認。** Zotero照合622/622、原本欠落頁・orphan chunk・dangling node・
+  検索不能itemはいずれも0、cutover監査597/597合格でDB gateを再作成した。対象テストとlint品質予算も合格。
+
 ### 2026-08-27 利用資料・引継ぎの現行化
 
 - [x] **利用手順を現行実装へ合わせる。** READMEのSetup挙動、Maintenance項目6の退役表示、
@@ -1812,6 +1829,41 @@ A（PDF構造化）・B（課金LLM）は独立、C（構造抽出エンジン�
     何もしない）を生むだけだった。
 
 ## Done
+
+- [x] ~~OAuth管理画面からDB・目次・階層要約の状態確認と限定更新を行う~~ (2026-09-02)
+  - 公開Citation Graphの`/admin/`へmanifest、監査gate、indexing lock、artifact、job履歴、進捗logを
+    表示。固定catalogの差分取込＋構造更新、DB監査、構造更新、10件有料要約、Citation更新だけを
+    独立processで実行する。単一job、同一origin、操作別確認語、actor記録、PID/job/token照合停止、
+    proxy再起動後の継続、OS再起動後のinterrupted回収を実装。破壊的rebuildと任意commandは非公開。
+    画面のパレット、文字組み、カード、ボタン、状態色はCitation Graph本体のトンマナに統一。
+    索引・構造・目次の差分更新、監査、Citation Network差分更新をfail-fastで連結するクイック実行も追加。
+    読み取り専用の更新状況確認で、各系統の未更新件数、対象キー、確認日時を永続表示する。
+    確認は専用LaunchAgentでログイン時・30分ごとに起動し、単一job制御で更新処理との競合を避ける。
+    review後、note差分と全Citation item・DOI/ISBN差分を判定範囲へ追加し、原本欠落・構造失敗・
+    Citation error、45分超の期限切れ、書込み後の再確認待ちを区別。書込み正常終了後は確認jobを自動起動。
+    Citation GraphとRemote MCPのLaunchAgent再登録は旧plist・loaded状態をsnapshotし、失敗時に復元する。
+
+- [x] ~~Citation GraphのGoogle OAuth公開入口をローカル利用と分離~~ (2026-09-02)
+  - localhost限定の現行Citation Graphを変更せず、別loopback portの認証proxyを追加。既存Remote MCPの
+    Google OAuth資格情報と許可メールを共用し、state、PKCE、ID token、署名sessionを検証してから
+    全画面・APIを転送する。Remote MCPと競合しないFunnel HTTPS 8443を使用する。
+  - Citation Graph本体とOAuth proxyを別LaunchAgentとして管理し、ログイン時起動、異常終了時再起動、
+    10秒throttle、install/status/restart/uninstall、local/public health確認、秘密値非複製を追加。
+
+- [x] ~~旧backupと再生成可能cacheの容量整理~~ (2026-09-01)
+  - 検索不能だったpre-M5未完成世代と、後発の検証済みrollbackに包含された2026-08-14の対象backup
+    4件を削除。続けて現行active V3を`current-v3-full-20260901`へ検証付きで一式backupし、
+    置換された旧`pre-h2s` rollbackも削除した。OCR cache、モデル、Granite環境は保持した。
+    稼働中MCPがuv cacheを使用中だったため、`uv cache prune`は安全ロックを尊重して見送った。
+
+- [x] ~~認証付きRemote MCPの独立HTTP起動口を追加~~ (2026-08-31)
+  - stdio版`rag_mcp_server.py`と同じtool registryを再利用する薄い
+    `rag_mcp_http_server.py`を追加。FastMCP Streamable HTTP、Google OAuth、確認済みメールアドレス
+    allowlistを必須とし、待受はloopback限定。Tailscale Funnelの固定HTTPS URLからClaudeの
+    Remote Connectorへ接続でき、従来のstdio起動は不変。
+  - 2026-09-01にmacOS LaunchAgent管理を追加。ログイン時起動、異常終了時の10秒throttle付き再起動、
+    秘密値をplistへ複製しない構成、install/status/restart/uninstall、ローカル・Funnel両OAuth
+    endpointのhealth確認を提供する。
 
 - [x] ~~V3 zone/policy/provenance/input scopeの基礎スキーマを追加~~ (2026-07-21)
 - [x] ~~EPUB/HTMLのDOMブロック抽出、構造境界付きチャンク結合、表・zone保持を実装~~ (2026-07-21)

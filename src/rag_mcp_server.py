@@ -2591,9 +2591,14 @@ async def build_citation_network(item_key: str) -> Dict[str, Any]:
 _tool_registry = mcp
 
 
-def create_mcp() -> FastMCP:
+def create_mcp(*, auth=None, middleware=None) -> FastMCP:
     """Create an MCP server from the compatibility tool registry."""
-    server = FastMCP("zotero-paragraph-rag", instructions=MCP_INSTRUCTIONS)
+    server = FastMCP(
+        "zotero-paragraph-rag",
+        instructions=MCP_INSTRUCTIONS,
+        auth=auth,
+        middleware=middleware,
+    )
     server.mount(_tool_registry)
     return server
 

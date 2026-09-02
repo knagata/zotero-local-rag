@@ -15,6 +15,8 @@ uv run scripts/setup_wizard.py --status
 - MCPツール: `get_debug_logs`
 - ファイル: `data/zotero-rag.log`
 - 要約バッチ報告: `data/quality/maintenance-summary-report.json`
+- Citation Graph: `data/citation-graph.stdout.log`、`data/citation-graph.stderr.log`
+- Citation Graph OAuth: `data/citation-graph-remote.stdout.log`、`data/citation-graph-remote.stderr.log`
 
 ## よくある問題
 
@@ -26,6 +28,28 @@ uv run scripts/setup_wizard.py --status
 | 更新後の検索結果が古い | MCPの `force_reload_index` を実行 |
 | S2の429 | 時間を置いてCitation更新を再実行。必要ならAPIキーを設定 |
 | LLM処理が停止する | APIキー/CLIログインと送信ポリシーを確認 |
+| ローカルCitation Graphを開けない | `manage_citation_graph_service.py status`で`local_launch_agent`と`local_graph`を確認 |
+| 外部Citation Graphを開けない | `local_oauth_proxy`、`public_oauth_proxy`、`tailscale funnel status`を確認 |
+| Googleログイン後に403 | ログインした確認済みメールが`REMOTE_MCP_ALLOWED_GOOGLE_EMAILS`に含まれるか確認 |
+| Googleからredirect URIエラー | `CITATION_GRAPH_PUBLIC_URL/auth/callback`をGoogle Cloud Consoleへ完全一致で登録 |
+| 管理画面が「別のjobを実行中」と表示 | `/admin/`の実行中stepを確認し、完了を待つ。必要時だけ`STOP`で停止 |
+| 更新状況が「再確認待ち」 | 書込みjob後の読み取り専用確認が待機または実行中。実行履歴を確認し、他jobがなければ完了を待つ |
+| 更新状況が「期限切れ」 | 定期確認Agentと直近jobを確認する。`manage_citation_graph_service.py status`で`update_check_launch_agent=loaded`を確認し、必要なら画面から即時確認 |
+| 管理jobが`interrupted` | OS再起動等でrunnerが失われた。ログ末尾とDB状態を確認してから同じ処理を再実行 |
+
+Citation Graphの常駐状態と再起動:
+
+```bash
+uv run python scripts/manage_citation_graph_service.py status
+uv run python scripts/manage_citation_graph_service.py restart
+tailscale funnel status
+```
+
+LaunchAgentが未登録なら、7234・7244番を使う手動プロセスを終了してから`install`します。plistへ秘密値は
+保存されないため、OAuth設定はGit管理外の`.env`を確認します。
+
+ブラウザ管理jobの記録とログは`data/admin_jobs/`です。画面に出ない詳細を確認するときも、実行中PIDを
+手作業でkillする前に管理画面の停止を使ってください。停止APIはrunner本人と確認できないPIDを拒否します。
 
 ## 日本語PDFの文字が崩れる
 

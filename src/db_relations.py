@@ -1732,6 +1732,28 @@ def update_item_citation_status(
         conn.close()
 
 
+def sync_item_citation_identifiers(
+    item_key: str, *, doi: Optional[str], isbn: Optional[str],
+) -> bool:
+    """Mirror Zotero DOI/ISBN exactly, including deliberate removals."""
+    normalized_doi = doi or None
+    normalized_isbn = isbn or None
+    conn = get_db_connection()
+    try:
+        cursor = conn.execute(
+            """
+            UPDATE item_citation_status
+            SET doi = ?, isbn = ?, last_checked_at = CURRENT_TIMESTAMP
+            WHERE item_key = ? AND (doi IS NOT ? OR isbn IS NOT ?)
+            """,
+            (normalized_doi, normalized_isbn, item_key, normalized_doi, normalized_isbn),
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+    finally:
+        conn.close()
+
+
 def get_item_abstract(item_key: str) -> Optional[str]:
     return _summary_repository().get_item_abstract(item_key)
 
