@@ -1,6 +1,11 @@
 # Current development handoff
 
-Updated: 2026-09-26
+Updated: 2026-09-27
+
+## 2026-09-27 coverage budget platform correction
+
+- macOSにだけある任意依存で到達した既存分岐までcoverage予算を縮め、Linux CIで5モジュールが
+  悪化判定された。該当5件だけをCI実測上限へ戻し、今回の新規・変更コードの改善値は維持した。
 
 ## 2026-09-26 read-only external text discovery
 
