@@ -98,6 +98,11 @@ than negative evidence, and degree, venue, affiliation, and citation count are
 not standalone quality gates. Any future import requires a separate explicit
 user-approved operation.
 
+Paragraph evidence results expose a path-free `evidence_reference` contract for
+handoff to independent research-workspace systems. The contract identifies the
+provider, schema version, Zotero item/attachment or note, chunk, human locator,
+and quoted text; local filesystem paths are never part of the handoff.
+
 ## State, references, and retired features
 
 `artifact_processing_status` and its event ledger are the authoritative process

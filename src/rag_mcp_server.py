@@ -53,6 +53,7 @@ from db_relations import (
 from open_text_discovery import (
     SUPPORTED_SOURCES, screening_observations, search_external_texts,
 )
+from evidence_reference import build_evidence_reference
 
 
 ROOT = str(PROJECT_ROOT)
@@ -1257,7 +1258,7 @@ def _format_rag_hits(
             _neighbor_context(col, chunk_id, context_window)
             if context_window and context_window > 0 else []
         )
-        out.append({
+        record = {
             "id": chunk_id,
             "distance": hit.get("distance"),
             "rrf_score": hit.get("rrf_score"),
@@ -1286,7 +1287,11 @@ def _format_rag_hits(
                 # needs to see when a passage is one.
                 "zone": metadata.get("zone"),
             },
-        })
+        }
+        reference = build_evidence_reference(chunk_id, text, metadata)
+        if reference:
+            record["evidence_reference"] = reference
+        out.append(record)
         if len(out) >= k:
             break
     return out

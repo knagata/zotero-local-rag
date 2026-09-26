@@ -7,6 +7,11 @@ Updated: 2026-09-27
 - macOSにだけある任意依存で到達した既存分岐までcoverage予算を縮め、Linux CIで5モジュールが
   悪化判定された。該当5件だけをCI実測上限へ戻し、今回の新規・変更コードの改善値は維持した。
 
+## 2026-09-27 evidence handoff boundary
+
+- `rag_search`の各段落結果へpath-freeなversion付き`evidence_reference`を追加。別リポジトリの
+  Research Workspace MCPがZotero本文を複製せず、根拠位置と引用文を案件へ保存できる境界とする。
+
 ## 2026-09-26 read-only external text discovery
 
 - stdio/Remote共通MCPへ`search_open_texts`と`inspect_open_text_candidate`を追加。NDL、J-STAGE、

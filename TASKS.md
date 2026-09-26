@@ -3,6 +3,11 @@
 正本: `SPEC.md`。実装・検証の永続的な履歴はこのファイルに残す。
 `evaluations/`のローカル生成レポートはZotero識別子や絶対パスを含み得るため追跡しない。
 
+### 2026-09-27 Research Workspace向け根拠契約
+
+- [x] **検索結果へEvidence Referenceを追加。** 独立したResearch MCPへ安全に渡せるよう、
+  item・attachment/note・chunk・ページ等・引用文をversion付き共通形式で返す。ローカル絶対パスは含めない。
+
 ### 2026-09-27 coverage予算のOS差修正
 
 - [x] **macOSで縮めた予算をLinux CI実測へ合わせる。** 任意依存が手元だけにあるモジュールで、
