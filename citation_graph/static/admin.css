@@ -40,7 +40,7 @@ section { margin:0 0 14px; padding:16px; border:1px solid var(--outline-variant)
 .section-title h2 { margin:0; font-size:13px; font-weight:600; }
 .section-title span { color:var(--on-surface-variant); font-size:10.5px; }
 .metrics { display:grid; grid-template-columns:repeat(auto-fit,minmax(165px,1fr)); gap:8px; }
-.freshness { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; }
+.freshness { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px; }
 .freshness-card { display:grid; gap:4px; min-height:92px; padding:11px 12px; border:1px solid var(--outline-variant); border-radius:var(--radius-md); background:var(--surface); }
 .freshness-card > span,.freshness-card small { color:var(--on-surface-variant); font-size:10.5px; }
 .freshness-card b { color:var(--status-confirmed); font-size:18px; font-weight:600; }

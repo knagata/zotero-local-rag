@@ -6,7 +6,8 @@ from pathlib import Path
 import fitz
 
 from src.mistral_ocr_batch import (
-    build_batch_request, evaluate_ocr_result, parse_batch_output, source_matches,
+    build_batch_request, evaluate_ocr_result, parse_batch_output,
+    retryable_batch_status, source_matches,
 )
 from scripts.run_mistral_ocr_batch import select_input_batch, split_input_batches
 
@@ -38,6 +39,12 @@ def test_parse_batch_output_accepts_success_and_preserves_failure() -> None:
     assert parsed["A"]["ok"] is True
     assert parsed["B"]["ok"] is False
     assert parsed["B"]["status_code"] == 422
+
+
+def test_only_transient_batch_statuses_are_retryable() -> None:
+    assert retryable_batch_status(504) is True
+    assert retryable_batch_status(429) is True
+    assert retryable_batch_status(422) is False
 
 
 def test_quality_gate_requires_exact_page_coverage(tmp_path: Path) -> None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
+from urllib.parse import unquote, urlparse
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple, AsyncIterator
 
@@ -267,6 +268,13 @@ class ZoteroLocalAPI:
         url = self._url(f"items/{attachment_key}/file")
         async with httpx.AsyncClient(timeout=120.0) as client:
             r = await client.get(url, headers=self.headers)
+            if r.is_redirect:
+                location = r.headers.get("location", "")
+                parsed = urlparse(location)
+                if parsed.scheme == "file" and parsed.netloc in {"", "localhost"}:
+                    local_path = unquote(parsed.path)
+                    if os.path.isfile(local_path):
+                        return local_path
             r.raise_for_status()
             os.makedirs(os.path.dirname(cache_path), exist_ok=True)
             with open(cache_path, "wb") as f:
@@ -341,6 +349,7 @@ class ZoteroLocalAPI:
         pdf_cache_dir: str,
         collection_key: Optional[str] = None,
         require_complete: bool = False,
+        allow_missing_files: bool = False,
     ) -> AsyncIterator[ZoteroAttachment]:
         """Yield normalized PDF/HTML snapshot attachments with resolved local path.
 
@@ -423,9 +432,12 @@ class ZoteroLocalAPI:
                         f"attachment={att_key} parent={parent_key} err={e}",
                         file=sys.stderr,
                     )
-                    raise RuntimeError(
-                        f"Eligible attachment {att_key} has no readable local file"
-                    ) from e
+                    if allow_missing_files:
+                        resolved = ""
+                    else:
+                        raise RuntimeError(
+                            f"Eligible attachment {att_key} has no readable local file"
+                        ) from e
 
             yield ZoteroAttachment(
                 attachmentKey=att_key,
@@ -449,6 +461,7 @@ class ZoteroLocalAPI:
         pdf_cache_dir: str,
         collection_key: Optional[str] = None,
         require_complete: bool = False,
+        allow_missing_files: bool = False,
     ) -> List[ZoteroAttachment]:
         out: List[ZoteroAttachment] = []
         async for a in self.iter_normalized_attachments(
@@ -456,6 +469,7 @@ class ZoteroLocalAPI:
             pdf_cache_dir=pdf_cache_dir,
             collection_key=collection_key,
             require_complete=require_complete,
+            allow_missing_files=allow_missing_files,
         ):
             out.append(a)
         return out

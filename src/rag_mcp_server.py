@@ -50,6 +50,9 @@ from db_relations import (
     get_item_root_summary, get_item_root_summaries, get_node_descendant_chunks,
     get_node_descendant_leaf_ids, get_searchable_document_node_ids,
 )
+from open_text_discovery import (
+    SUPPORTED_SOURCES, screening_observations, search_external_texts,
+)
 
 
 ROOT = str(PROJECT_ROOT)
@@ -246,6 +249,13 @@ pages, or interleaved columns. Such text is invisible to lexical search, so a
 reader encountering it is often the only signal there is: when damage would stop
 a passage being quoted accurately or found at all, call report_chunk_quality for
 that chunk. A few characters you can read through do not need a report.
+
+External open-text discovery is proposal-only. search_open_texts and
+inspect_open_text_candidate never add anything to Zotero or the search index.
+Do not treat a degree, journal, institution, citation count, or polished prose as
+proof of quality. Explain a proposal using observable metadata and available text;
+state the inspected text range and concrete cautions. Missing citation data is
+unknown, not negative evidence. Ask the user before any future import operation.
 """.strip()
 
 
@@ -1681,6 +1691,89 @@ async def search_zotero_items(
             except Exception:
                 continue
     return out
+
+
+@mcp.tool()
+async def search_open_texts(
+    query: str,
+    sources: Optional[List[str]] = None,
+    limit_per_source: int = 5,
+    search_mode: str = "auto",
+) -> Dict[str, Any]:
+    """Search external catalogs for textual-resource proposals without writing anything.
+
+    Supported sources are ``ndl``, ``cinii``, ``jstage``, and ``openlibrary``.
+    CiNii requires ``CINII_APP_ID``; an unconfigured source is reported without
+    preventing the other catalogs from returning results. Results are discovery
+    candidates, not quality endorsements. Citation-data absence is not a penalty.
+
+    Args:
+        query: Terms describing the work or research topic.
+        sources: Catalogs to search. Defaults to all supported catalogs.
+        limit_per_source: Results from each catalog, between 1 and 20.
+        search_mode: ``auto`` first tries all terms and relaxes only a zero-result
+            source; ``all`` keeps strict source matching; ``any`` merges term
+            searches; ``phrase`` filters the source response to the full phrase.
+    """
+    query = query.strip()
+    if not query:
+        raise ValueError("query must not be empty")
+    limit_per_source = max(1, min(int(limit_per_source), 20))
+    selected = sources or list(SUPPORTED_SOURCES)
+    return await search_external_texts(query, selected, limit_per_source, search_mode)
+
+
+def _normalized_candidate_title(value: Any) -> str:
+    return "".join(character.casefold() for character in str(value or "") if character.isalnum())
+
+
+def _candidate_identifier_values(candidate: Dict[str, Any]) -> List[str]:
+    values: List[str] = []
+    for value in (candidate.get("identifiers") or {}).values():
+        for entry in value if isinstance(value, list) else [value]:
+            text = str(entry or "").strip()
+            if text and text not in values and not text.startswith(("http://", "https://")):
+                values.append(text)
+    return values[:5]
+
+
+@mcp.tool()
+async def inspect_open_text_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
+    """Screen one external textual-resource candidate before proposing it to the user.
+
+    This checks bibliographic completeness and searches the local Zotero library
+    for likely title duplicates. It does not score scholarly quality, download a
+    file, add an item, or update the RAG index. The calling model should present
+    observable recommendation reasons, cautions, and how much text it inspected.
+    """
+    title = str(candidate.get("title") or "").strip()
+    duplicates: List[Dict[str, Any]] = []
+    searches = [(title, "titleCreatorYear", "title")] if title else []
+    searches.extend((value, "everything", "identifier") for value in _candidate_identifier_values(candidate))
+    api = _z_api()
+    seen_keys: set[str] = set()
+    for query, qmode, reason in searches:
+        raw = await api._get_json("items", params={"q": query, "qmode": qmode, "limit": 10})
+        expected = _normalized_candidate_title(title)
+        for item in raw if isinstance(raw, list) else []:
+            _, data = api._unwrap_item(item)
+            if data.get("itemType") == "attachment":
+                continue
+            actual = _normalized_candidate_title(data.get("title"))
+            serialized = json.dumps(data, ensure_ascii=False).casefold()
+            matched = reason == "identifier" and query.casefold() in serialized
+            matched = matched or actual == expected or (
+                reason == "title" and actual and expected and (actual in expected or expected in actual)
+            )
+            key = str(data.get("key") or "")
+            if matched and key not in seen_keys:
+                seen_keys.add(key)
+                duplicates.append({
+                    "key": data.get("key"), "title": data.get("title"),
+                    "date": data.get("date"), "creators": data.get("creators"),
+                    "match_reason": reason,
+                })
+    return screening_observations(candidate, duplicates)
 
 
 

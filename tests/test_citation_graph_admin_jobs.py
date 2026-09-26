@@ -25,7 +25,7 @@ def test_job_catalog_contains_only_fixed_argv_and_no_destructive_rebuild(tmp_pat
     definitions = admin_jobs.job_definitions(project(tmp_path))
     assert set(definitions) == {
         "update_check", "quick_update", "library_update", "database_audit", "structure_update",
-        "summary_batch", "citation_update",
+        "summary_batch", "citation_update", "mistral_ocr",
     }
     for definition in definitions.values():
         for _label, command in definition.steps:
@@ -35,12 +35,18 @@ def test_job_catalog_contains_only_fixed_argv_and_no_destructive_rebuild(tmp_pat
             assert "--force" not in command
     assert definitions["summary_batch"].confirmation == "SUMMARIZE"
     assert definitions["summary_batch"].paid is True
-    assert definitions["database_audit"].confirmation == "AUDIT"
+    assert definitions["mistral_ocr"].confirmation == "MISTRAL"
+    assert definitions["mistral_ocr"].paid is True
+    assert all(
+        definition.confirmation is None
+        for key, definition in definitions.items()
+        if key not in {"summary_batch", "mistral_ocr"}
+    )
 
 
 def test_quick_update_runs_the_bounded_daily_sequence(tmp_path):
     definition = admin_jobs.job_definitions(project(tmp_path))["quick_update"]
-    assert definition.confirmation == "QUICK"
+    assert definition.confirmation is None
     assert [label for label, _command in definition.steps] == [
         "ライブラリ差分更新",
         "文書構造・目次の差分更新",
@@ -59,10 +65,10 @@ def test_start_requires_exact_confirmation_and_redacts_runner_token(tmp_path, mo
     root = project(tmp_path)
     monkeypatch.setattr(admin_jobs, "active_job", lambda root: None)
     fake = SimpleNamespace(pid=4321)
-    with pytest.raises(ValueError, match="UPDATE"):
-        admin_jobs.start_job("library_update", "yes", "user@example.com", root)
+    with pytest.raises(ValueError, match="SUMMARIZE"):
+        admin_jobs.start_job("summary_batch", "yes", "user@example.com", root)
     with patch.object(admin_jobs.subprocess, "Popen", return_value=fake):
-        record = admin_jobs.start_job("library_update", "UPDATE", "user@example.com", root)
+        record = admin_jobs.start_job("summary_batch", "SUMMARIZE", "user@example.com", root)
     assert record["pid"] == 4321
     assert record["actor"] == "user@example.com"
     assert "token" not in admin_jobs.public_record(record)
@@ -160,6 +166,12 @@ def test_system_status_reports_manifest_gate_and_artifacts(tmp_path):
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "index": {"pending": 2},
     }))
+    (data / "mistral_ocr_batch_state.json").write_text(json.dumps({
+        "phase": "running", "candidate_count": 2,
+        "last_checked_at": "2026-09-25T18:53:27+00:00",
+        "job": {"total_requests": 2, "completed_requests": 1,
+                "succeeded_requests": 1, "failed_requests": 0},
+    }))
     import sqlite3
     with sqlite3.connect(data / "relations.db") as connection:
         connection.execute("CREATE TABLE artifact_processing_status (status TEXT)")
@@ -170,8 +182,27 @@ def test_system_status_reports_manifest_gate_and_artifacts(tmp_path):
     assert result["manifest"]["attachments"] == 1
     assert result["database_gate"]["passed"] is True
     assert result["artifacts"]["unresolved"] == 2
+    assert result["mistral_batch"] == {
+        "phase": "running", "candidate_count": 2, "total_requests": 2,
+        "completed_requests": 1, "succeeded_requests": 1, "failed_requests": 0,
+        "last_checked_at": "2026-09-25T18:53:27+00:00",
+    }
     assert result["update_status"]["index"]["pending"] == 2
     assert result["update_status"]["stale"] is False
+
+
+def test_system_status_excludes_update_checks_from_visible_history(tmp_path, monkeypatch):
+    root = project(tmp_path)
+    records = [
+        {"id": "check", "type": "update_check", "status": "completed"},
+        {"id": "summary", "type": "summary_batch", "status": "completed"},
+    ]
+    monkeypatch.setattr(admin_jobs, "list_records", lambda _root, limit=30: records[:limit])
+    monkeypatch.setattr(admin_jobs, "active_job", lambda _root: None)
+
+    result = admin_jobs.system_status(root)
+
+    assert [record["id"] for record in result["jobs"]] == ["summary"]
 
 
 def test_system_status_marks_old_or_invalidated_freshness_report(tmp_path):
@@ -189,6 +220,45 @@ def test_system_status_marks_old_or_invalidated_freshness_report(tmp_path):
     admin_jobs.mark_update_status_recheck_pending("library_update", root)
     result = admin_jobs.system_status(root)
     assert result["update_status"]["recheck_pending"] is True
+
+
+def test_system_status_surfaces_a_failed_latest_update_check(tmp_path, monkeypatch):
+    root = project(tmp_path)
+    data = root / "data"
+    data.mkdir(exist_ok=True)
+    (data / "admin_update_status.json").write_text(json.dumps({
+        "generated_at": "2026-09-02T23:00:00+00:00",
+    }))
+    failed = {
+        "id": "failed", "type": "update_check", "status": "failed",
+        "finished_at": "2026-09-03T00:00:00+00:00",
+    }
+    monkeypatch.setattr(admin_jobs, "list_records", lambda _root, limit=30: [failed])
+    monkeypatch.setattr(admin_jobs, "active_job", lambda _root: None)
+
+    result = admin_jobs.system_status(root)
+
+    assert result["update_status"]["check_failed"] is True
+    assert result["update_status"]["check_failed_at"] == failed["finished_at"]
+
+
+def test_system_status_ignores_a_failure_older_than_the_saved_report(tmp_path, monkeypatch):
+    root = project(tmp_path)
+    data = root / "data"
+    data.mkdir(exist_ok=True)
+    (data / "admin_update_status.json").write_text(json.dumps({
+        "generated_at": "2026-09-03T01:00:00+00:00",
+    }))
+    failed = {
+        "id": "failed", "type": "update_check", "status": "failed",
+        "finished_at": "2026-09-03T00:00:00+00:00",
+    }
+    monkeypatch.setattr(admin_jobs, "list_records", lambda _root, limit=30: [failed])
+    monkeypatch.setattr(admin_jobs, "active_job", lambda _root: None)
+
+    result = admin_jobs.system_status(root)
+
+    assert result["update_status"].get("check_failed") is not True
 
 
 def test_completed_write_job_schedules_a_read_only_followup(tmp_path, monkeypatch):

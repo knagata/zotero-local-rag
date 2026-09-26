@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import contextlib
 import sys
 from unittest.mock import patch
@@ -296,3 +297,23 @@ def test_non_dry_run_cli_holds_the_shared_indexing_lock():
         rebuild_document_structure.main()
 
     assert events == ["entered", "released"]
+
+
+def test_run_reports_bounded_progress_without_item_identifiers(capsys):
+    args = argparse.Namespace(
+        item=None, all=True, retry_failed=False, limit=0, dry_run=True,
+        force=False, collection="test", no_source_refresh=False,
+    )
+    keys = [f"ITEM{number}" for number in range(12)]
+    with patch.object(rebuild_document_structure, "list_item_keys", return_value=keys), \
+            patch.object(
+                rebuild_document_structure, "rebuild_item",
+                return_value={"status": "exact", "changed": False},
+            ):
+        rebuild_document_structure._run(args)
+
+    progress = capsys.readouterr().err
+    assert "[STRUCTURE PROGRESS] 1/12件確認" in progress
+    assert "[STRUCTURE PROGRESS] 10/12件確認" in progress
+    assert "[STRUCTURE PROGRESS] 12/12件確認" in progress
+    assert "ITEM" not in progress

@@ -93,6 +93,11 @@ def parse_batch_output(text: str) -> dict[str, dict[str, Any]]:
     return results
 
 
+def retryable_batch_status(status_code: int) -> bool:
+    """Return whether a per-request Batch failure is plausibly transient."""
+    return status_code in {408, 409, 425, 429} or status_code >= 500
+
+
 def evaluate_ocr_result(result: dict[str, Any], pdf_path: Path) -> dict[str, Any]:
     pages = [page for page in (result.get("pages") or []) if isinstance(page, dict)]
     with fitz.open(str(pdf_path)) as doc:

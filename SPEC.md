@@ -90,6 +90,14 @@ for verification.
 `search_mode="case"` remains a direct full-text/chunk retrieval strategy with
 context; it does not depend on a generated case database.
 
+External textual-resource discovery is a read-only proposal path, not an
+ingestion path. It may query supported public catalogs and compare a candidate
+with Zotero metadata, but it must not download source files, create Zotero
+items, persist candidates, or update V3. Missing citation data is unknown rather
+than negative evidence, and degree, venue, affiliation, and citation count are
+not standalone quality gates. Any future import requires a separate explicit
+user-approved operation.
+
 ## State, references, and retired features
 
 `artifact_processing_status` and its event ledger are the authoritative process

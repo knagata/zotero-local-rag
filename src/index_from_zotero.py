@@ -80,7 +80,8 @@ from index_run import (
 
 from manifest import content_signature, load_manifest, save_manifest
 from db_relations import (
-    drop_stale_identity_rows, get_item_processing_status, mark_artifact_status,
+    drop_stale_identity_rows, get_artifact_processing_statuses, get_item_processing_status,
+    mark_artifact_status,
     purge_artifact_status_for_attachments, purge_removed_items, replace_document_structure,
     reset_ingestion_derived_state,
 )
@@ -204,6 +205,19 @@ def use_paths(replacement: IngestPaths):
 #: than this is reporting on a failed enumeration, not on the library.
 STALE_DELETE_MAX_RATIO = 0.05
 STALE_DELETE_MIN_KEYS = 10
+
+
+def _stale_attachment_keys(
+    files_manifest: dict[str, Any], inventory_keys: set[str],
+    artifact_statuses: Iterable[dict[str, Any]],
+) -> set[str]:
+    """Find removed attachments even when failed extraction never reached manifest."""
+    ledger_keys = {
+        str(row.get("attachment_key") or "").strip()
+        for row in artifact_statuses
+        if str(row.get("attachment_key") or "").strip()
+    }
+    return (set(files_manifest) | ledger_keys) - inventory_keys
 
 RAG_EXCLUDE_TAG = (os.environ.get("ZOTERO_RAG_EXCLUDE_TAG") or "rag:exclude").strip().casefold()
 RAG_PREFER_EPUB_TAG = (
@@ -3820,7 +3834,7 @@ async def _index_library(
         inventory_keys = {a.attachmentKey for a in inventory_attachments}
         excluded_by_key = {a.attachmentKey: a for a in excluded_attachments}
         excluded_keys = set(files_manifest).intersection(excluded_by_key)
-        stale_keys = set(files_manifest.keys()) - inventory_keys
+        stale_keys = _stale_attachment_keys(files_manifest, inventory_keys, get_artifact_processing_statuses())
 
         # A routine sync retires the few attachments actually removed from
         # Zotero. A wholesale disappearance means the *enumeration* came back

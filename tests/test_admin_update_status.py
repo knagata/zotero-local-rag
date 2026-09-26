@@ -8,6 +8,7 @@ from scripts.check_admin_update_status import (
     _citation_freshness,
     _index_freshness,
     _note_freshness,
+    _summary_freshness,
 )
 from src import db_relations
 
@@ -42,6 +43,15 @@ def test_index_freshness_reports_new_changed_retired_and_excluded(tmp_path):
     assert result["new_or_changed"] == 2
     assert result["retired"] == 1
     assert result["excluded_tracked"] == 1
+
+
+def test_index_freshness_reports_an_unresolved_attachment_as_missing_source():
+    row = SimpleNamespace(attachmentKey="MISSING", parentItemKey="ITEM", pdf_path="")
+    result = _index_freshness(
+        [row], {"pipeline_fingerprint": "pipeline", "files": {}}, excluded_keys=set(),
+    )
+    assert result["missing_source"] == 1
+    assert result["sample_keys"] == ["MISSING"]
 
 
 def test_citation_freshness_treats_only_terminal_statuses_as_current(tmp_path):
@@ -85,6 +95,35 @@ def test_note_freshness_reports_new_changed_and_retired_notes():
         "pending": 3, "new_or_changed": 2, "retired": 1,
         "sample_keys": ["CHANGED", "NEW", "RETIRED"],
     }
+
+
+def test_summary_freshness_reports_pending_items_and_index_integrity(monkeypatch):
+    monkeypatch.setattr(
+        "scripts.check_admin_update_status.build_summary_audit",
+        lambda **_kwargs: {
+            "passed": False,
+            "failures": ["nonterminal_or_degraded_summary_status", "summary_index_id_mismatch"],
+            "counts": {"expected_index_rows": 12, "actual_index_rows": 11},
+            "details": {
+                "missing_status_items": ["MISSING"],
+                "failed_status_items": ["FAILED"],
+                "stale_source_items": ["STALE", "FAILED"],
+                "missing_index_ids": ["sum:node:1"],
+                "unexpected_index_ids": [],
+                "content_mismatch_index_ids": [],
+            },
+        },
+    )
+
+    result = _summary_freshness()
+
+    assert result["pending"] == 3
+    assert result["failed"] == 1
+    assert result["index_issues"] == 1
+    assert result["expected_index_rows"] == 12
+    assert result["actual_index_rows"] == 11
+    assert result["attention"] == 2
+    assert result["sample_keys"] == ["FAILED", "MISSING", "STALE"]
 
 
 def test_citation_identifier_sync_can_clear_removed_zotero_values(tmp_path, monkeypatch):

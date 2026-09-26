@@ -245,7 +245,8 @@ flowchart TD
   行いません。
 - **WidgetでのBatch運用**: `Maintenance-Widget.command` の第5項目は明示許可制です。
   初回は送信だけを行い、完了後の次回起動で状態確認→回収→品質gate→V3採用→文書構造更新を
-  実行します。採用済みBatchは状態ファイルで記録し、二重採用しません。
+  実行します。採用済みBatchは状態ファイルで記録し、二重採用しません。採用後に新しい待機artifactが
+  発生した場合は、現在の台帳を再確認して新しいBatch stateへ切り替えます。
 
 ### EPUB / HTML（`src/html_extract.py`）
 
@@ -379,6 +380,7 @@ flowchart TD
 | ファイル | 役割 |
 |---|---|
 | `rag_mcp_server.py` | MCPサーバー本体。ツール定義・検索・階層検索・Chroma接続管理 |
+| `open_text_discovery.py` | NDL・CiNii・J-STAGE・Open Libraryの読取専用文字資料検索と候補screening |
 | `index_from_zotero.py` | 構造化インデックス構築CLI（V3）。PDFルーティング・zone付与・`--force-reparse` |
 | `html_extract.py` | EPUB/HTMLのDOM構造化抽出。zone付与・参照/注境界保持・`citing_chunk_id` |
 | `pdf_extract.py` | PyMuPDFベースのPDF段落抽出 |

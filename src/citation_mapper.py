@@ -775,6 +775,25 @@ def _select_s2_title_match(
     if not similar:
         return None
 
+    # Missing S2 authors are common enough that they cannot be rejected
+    # outright, but then a loose title overlap is the only identity evidence.
+    # That is unsafe for generic section titles: Zotero's "Introduction" by
+    # Oliver Grau matched the authorless S2 record "An Introduction to the
+    # Bootstrap" and began importing thousands of unrelated citations.  With
+    # no candidate authors to corroborate identity, require the candidate to
+    # equal either the full title or the legitimate subtitle-free main title.
+    exact_title_forms = {
+        _clean_query_text(full_title).casefold(),
+        _clean_query_text(main_title).casefold(),
+    }
+    similar = [
+        paper for paper in similar
+        if _s2_name_tokens(paper)
+        or _clean_query_text(paper.get("title") or "").casefold() in exact_title_forms
+    ]
+    if not similar:
+        return None
+
     # That guard passes a record listing no author at all, because missing
     # evidence cannot convict -- which is right on the DOI/ISBN path, where the
     # identifier already establishes identity, and leaves this path with nothing

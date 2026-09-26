@@ -16,7 +16,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))  # index_from_zotero imports its siblings flat
 
-from src.index_from_zotero import STALE_DELETE_MAX_RATIO, STALE_DELETE_MIN_KEYS
+from src.index_from_zotero import (
+    STALE_DELETE_MAX_RATIO, STALE_DELETE_MIN_KEYS, _stale_attachment_keys,
+)
 
 
 def _would_delete(manifest_size: int, stale_count: int) -> bool:
@@ -26,6 +28,24 @@ def _would_delete(manifest_size: int, stale_count: int) -> bool:
 
 
 class StaleDeletionGuardTests(unittest.TestCase):
+    def test_failed_attachment_absent_from_manifest_is_still_retired(self):
+        statuses = [{
+            "attachment_key": "OLD_EPUB", "artifact_type": "extraction",
+            "status": "failed",
+        }]
+        self.assertEqual(
+            _stale_attachment_keys(
+                {"CURRENT_PDF": {}}, {"CURRENT_PDF"}, statuses,
+            ),
+            {"OLD_EPUB"},
+        )
+
+    def test_live_failed_attachment_is_not_retired(self):
+        statuses = [{"attachment_key": "LIVE_EPUB", "status": "failed"}]
+        self.assertEqual(
+            _stale_attachment_keys({}, {"LIVE_EPUB"}, statuses), set(),
+        )
+
     def test_an_ordinary_removal_still_proceeds(self):
         # Deleting a few items from a 586-attachment library is the normal case
         # and must not need an override.

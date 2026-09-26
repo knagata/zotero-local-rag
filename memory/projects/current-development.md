@@ -1,6 +1,61 @@
 # Current development handoff
 
-Updated: 2026-09-02
+Updated: 2026-09-26
+
+## 2026-09-26 read-only external text discovery
+
+- stdio/Remote共通MCPへ`search_open_texts`と`inspect_open_text_candidate`を追加。NDL、J-STAGE、
+  Open Library、`CINII_APP_ID`設定時のCiNiiを対象に文字資料だけを候補提示し、後者はローカルZoteroの
+  title重複と書誌不足を確認する。外部ファイル取得、Zotero登録、候補永続化、索引更新はしない。
+- 学位、掲載先、所属、引用数から品質スコアを作らず、観察可能な注意点だけを返す。引用データ欠落は
+  `unknown_not_penalized`として減点しない。
+- 実利用でCiNii/J-STAGEの年フィールド欠落、複数語の0件、NDL 429を確認。CiNii
+  `prism:publicationDate`、J-STAGE `pubyear`を正規化し、`auto/all/any/phrase`検索、source別の
+  戦略表示、NDL直列化・5分cache・429限定再試行を追加した。DOI/NAID/NDL IDを保持し、重複確認にも使う。
+
+## 2026-09-26 admin confirmation keyboard submit
+
+- 階層要約・Mistral OCRの確認ダイアログはformの`submit`を単一経路とし、入力欄のEnterと実行ボタンを
+  同じ`dialog.close("confirm")`へ接続した。キャンセルは`type=button`で分離し、asset versionを更新した。
+- Mistral Batchのstatus照会は終端状態だけでなく`queued`/`running`/`in_progress`もstateのphaseへ保存する。
+  管理画面の現在状態にremote phase、完了数/総数、最終照会時刻を表示する。admin jobの完了は照会処理の
+  完了であり、OCR batch完了ではないため、両者を画面上で区別する。
+- 抽出失敗でmanifest未到達の添付は、Zoteroから削除されても旧Artifact行が残った。全件同期のstale候補を
+  manifestだけでなくattachment-scoped台帳との和から作り、inventoryにないキーを既存の大量削除guard下で
+  清掃する。PDF置換済み資料の旧EPUB failed行は対象限定で削除済み。
+- Mistral Batch全体が`SUCCESS`でも、資料単位の504は通常の`output_file`ではなく`error_file`へ置かれる。
+  collectorは両方を結合して解析し、408/409/425/429/5xxだけをretryableとして記録する。maintenanceは
+  retryable reportのitemだけで新しいBatchを作る。Laokoon 1件の504結果を回収し、対象限定で再送済み。
+
+## 2026-09-25 generic-title S2 identity repair
+
+- 一般的な章タイトル`Introduction`が、著者なしのS2候補`An Introduction to the Bootstrap`へ
+  タイトル類似度だけで誤採択され、被引用9,000件の照合を開始した。S2候補に著者がないtitle-search経路は、
+  完全タイトルまたは副題を除いた主タイトルとの正規化一致を必須とする。著者欠落の正しい完全一致は維持する。
+- 実行中のCitation jobを停止し、当該資料へ部分保存された誤引用7,144件を対象限定で削除して台帳を戻した。
+  修正版のitem限定再実行は`not_found`で正常完了し、誤引用は0件となった。
+
+## 2026-09-25 Mistral maintenance queue rollover
+
+- ブラウザのMistral OCR jobは、2026-08の旧stateが`collected`かつ採用済みだと、新たな
+  `awaiting_mistral_ocr_batch`を確認せず即時成功していた。採用済みstateではArtifact台帳をread-onlyで
+  再確認し、待機候補があればbatch CLIの`--submit`へ渡して新しいstateを準備・送信する。待機0件なら
+  外部APIを呼ばない。実データではPDF 2件（314頁・194頁）が候補・sourceとも解決可能。
+
+## 2026-09-03 admin maintenance progress
+
+- 階層要約の前段にある全資料の構造差分確認は、実測済みの直前回で約4分35秒かかったが、完了まで
+  進捗を出さなかった。10件ごとの確認済み件数・変更数・失敗数をstderrへ逐次表示する。
+- 30分ごとの読み取り専用`update_check`は実行記録を保持しつつ、ブラウザの実行履歴から除外する。
+  更新状況欄の結果・確認日時・期限切れ判定は従来どおり表示する。
+- Zotero追加直後のEPUB 1件が、実在しない`file://`先をLocal APIから返して確認全体を失敗させた。
+  実在するfile redirectは復号して利用し、欠落はfail-openで原本欠落件数へ残す。通常の索引処理は
+  引き続きfail-closed。更新状況には最新確認失敗の警告と、階層要約・要約索引監査を追加した。
+  4種類の更新状況はデスクトップで4列1行、640px以下では1列表示とする。クイック実行が即失敗した
+  場合も同じ原本欠落が第1stepをfail-closedで止めたもので、原本の再配置・再添付が必要。
+- ブラウザの固定job catalogへ有料`mistral_ocr`を追加。`MISTRAL`確認後、保存済みphaseに応じて
+  submit/status/collectを1段階進め、回収済みなら品質gate合格分だけをV3へ採用して構造を更新する。
+  開始確認語は有料の`summary_batch`と`mistral_ocr`だけに限定し、その他は直接開始する。
 
 ## 2026-09-02 documentation audience split
 

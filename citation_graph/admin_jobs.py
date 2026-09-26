@@ -26,6 +26,7 @@ UPDATE_STATUS_REPORT = ROOT / "data" / "admin_update_status.json"
 UPDATE_STATUS_MAX_AGE_SECONDS = 45 * 60
 FRESHNESS_AFFECTING_JOBS = frozenset({
     "quick_update", "library_update", "structure_update", "summary_batch", "citation_update",
+    "mistral_ocr",
 })
 
 
@@ -81,25 +82,21 @@ def job_definitions(root: Path = ROOT) -> dict[str, JobDefinition]:
             "quick_update", "クイック実行",
             "索引・文書構造・目次の差分更新、DB監査、Citation Network更新を順番に実行します。",
             (library_step, structure_step, audit_step, citation_step),
-            confirmation="QUICK",
         ),
         "library_update": JobDefinition(
             "library_update", "ライブラリ差分更新",
             "Zotero差分を索引へ反映し、文書構造・目次も差分更新します。",
             (library_step, structure_step),
-            confirmation="UPDATE",
         ),
         "database_audit": JobDefinition(
             "database_audit", "DB監査",
             "Zotero・原本・索引を監査します。開始時に前回の合格証明を無効化します。",
             (audit_step,),
-            confirmation="AUDIT",
         ),
         "structure_update": JobDefinition(
             "structure_update", "文書構造・目次の差分更新",
             "原本の目次と見出しを再確認し、変更資料だけを更新します。再埋め込みはしません。",
             (structure_step,),
-            confirmation="STRUCTURE",
         ),
         "summary_batch": JobDefinition(
             "summary_batch", "階層要約の差分更新（10件）",
@@ -120,7 +117,15 @@ def job_definitions(root: Path = ROOT) -> dict[str, JobDefinition]:
             "citation_update", "Citation Network更新",
             "未処理・エラー分の引用・参照関係を更新します。外部APIを利用します。",
             (citation_step,),
-            confirmation="CITATIONS",
+        ),
+        "mistral_ocr": JobDefinition(
+            "mistral_ocr", "Mistral OCR Batch",
+            "Batchの送信、状態確認、完了結果の回収・品質確認・V3への採用を現在の状態から進めます。",
+            (("Mistral OCR Batch処理", (
+                python, str(root / "scripts" / "run_mistral_ocr_maintenance.py"),
+            )),),
+            confirmation="MISTRAL",
+            paid=True,
         ),
     }
 
@@ -223,6 +228,14 @@ def list_records(root: Path = ROOT, limit: int = 30) -> list[dict[str, Any]]:
         if len(records) >= limit:
             break
     return records
+
+
+def visible_history_records(root: Path = ROOT, limit: int = 20) -> list[dict[str, Any]]:
+    """Return user-initiated maintenance history, excluding freshness polling."""
+    return [
+        record for record in list_records(root, limit=limit + 100)
+        if record.get("type") != "update_check"
+    ][:limit]
 
 
 def public_record(record: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -380,6 +393,24 @@ def _artifact_counts(root: Path) -> dict[str, int | str]:
         return {"error": str(exc)[:200]}
 
 
+def _mistral_batch_status(root: Path) -> dict[str, Any] | None:
+    path = root / "data" / "mistral_ocr_batch_state.json"
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    job = state.get("job") if isinstance(state.get("job"), dict) else {}
+    return {
+        "phase": str(state.get("phase") or "unknown"),
+        "candidate_count": int(state.get("candidate_count") or 0),
+        "total_requests": int(job.get("total_requests") or 0),
+        "completed_requests": int(job.get("completed_requests") or 0),
+        "succeeded_requests": int(job.get("succeeded_requests") or 0),
+        "failed_requests": int(job.get("failed_requests") or 0),
+        "last_checked_at": state.get("last_checked_at"),
+    }
+
+
 def system_status(root: Path = ROOT) -> dict[str, Any]:
     reconcile_stale_jobs(root)
     manifest_path = root / "data" / "manifest_v3.json"
@@ -422,6 +453,29 @@ def system_status(root: Path = ROOT) -> dict[str, Any]:
             "stale": age_seconds is None or age_seconds > UPDATE_STATUS_MAX_AGE_SECONDS,
             "recheck_pending": bool(update_status.get("recheck_required_at")),
         }
+    latest_check = next(
+        (record for record in list_records(root, limit=100)
+         if record.get("type") == "update_check"),
+        None,
+    )
+    failed_after_report = False
+    if latest_check and latest_check.get("status") == "failed":
+        try:
+            failed_after_report = (
+                update_status is None
+                or datetime.fromisoformat(str(latest_check.get("finished_at")))
+                > datetime.fromisoformat(str(update_status.get("generated_at")))
+            )
+        except (TypeError, ValueError):
+            failed_after_report = True
+    if failed_after_report:
+        if update_status is None:
+            update_status = {
+                "generated_at": None, "age_seconds": None, "stale": True,
+                "recheck_pending": False,
+            }
+        update_status["check_failed"] = True
+        update_status["check_failed_at"] = latest_check.get("finished_at")
     return {
         "generated_at": _now(),
         "manifest": {
@@ -442,9 +496,10 @@ def system_status(root: Path = ROOT) -> dict[str, Any]:
         },
         "indexing_lock": lock,
         "artifacts": _artifact_counts(root),
+        "mistral_batch": _mistral_batch_status(root),
         "update_status": update_status,
         "active_job": public_record(active_job(root)),
-        "jobs": [public_record(record) for record in list_records(root, limit=20)],
+        "jobs": [public_record(record) for record in visible_history_records(root, limit=20)],
         "definitions": public_job_definitions(root),
     }
 

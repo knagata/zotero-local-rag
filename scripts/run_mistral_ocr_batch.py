@@ -20,7 +20,7 @@ if str(ROOT) not in sys.path:
 from src.env_utils import load_dotenv_native
 from src.mistral_ocr_batch import (
     MistralBatchClient, evaluate_ocr_result, parse_batch_output, save_json_atomic,
-    source_fingerprint, source_matches, write_batch_jsonl,
+    retryable_batch_status, source_fingerprint, source_matches, write_batch_jsonl,
 )
 from src.mistral_ocr_extract import DEFAULT_BASE_URL, DEFAULT_MODEL, mistral_ocr_available
 from src.ocr_cache import MISTRAL_REQUEST_CONTRACT, source_digest, store_result
@@ -263,10 +263,25 @@ def status(args: argparse.Namespace, state: dict[str, Any]) -> dict[str, Any]:
     job = client_from_env().get_job(str(state["job_id"]))
     job_status = str(job.get("status") or "").upper()
     state.update({"job": job, "last_checked_at": utc_now()})
-    if job_status in TERMINAL:
+    if job_status in TERMINAL or job_status in {"QUEUED", "RUNNING", "IN_PROGRESS"}:
         state["phase"] = job_status.casefold()
     save_json_atomic(args.state, state)
     return state
+
+
+def result_file_ids(job: dict[str, Any]) -> list[str]:
+    """Return successful and per-request-error output files, if present."""
+    values = [
+        job.get("output_file") or job.get("output_file_id"),
+        job.get("error_file") or job.get("error_file_id"),
+    ]
+    identifiers: list[str] = []
+    for value in values:
+        if isinstance(value, dict):
+            value = value.get("id")
+        if value and str(value) not in identifiers:
+            identifiers.append(str(value))
+    return identifiers
 
 
 def collect(args: argparse.Namespace, state: dict[str, Any]) -> dict[str, Any]:
@@ -276,12 +291,11 @@ def collect(args: argparse.Namespace, state: dict[str, Any]) -> dict[str, Any]:
         job = state.get("job") if isinstance(state.get("job"), dict) else {}
     if str(job.get("status") or "").upper() != "SUCCESS":
         raise RuntimeError(f"batch is not successful (status={job.get('status')})")
-    output_file_id = job.get("output_file") or job.get("output_file_id")
-    if isinstance(output_file_id, dict):
-        output_file_id = output_file_id.get("id")
-    if not output_file_id:
-        raise RuntimeError("successful batch has no output file")
-    output_text = client_from_env().download_file(str(output_file_id))
+    file_ids = result_file_ids(job)
+    if not file_ids:
+        raise RuntimeError("successful batch has neither output nor error file")
+    result_client = client_from_env()
+    output_text = "\n".join(result_client.download_file(file_id).rstrip("\n") for file_id in file_ids)
     work_dir = Path(str(state["work_dir"]))
     output_path = work_dir / "output.jsonl"
     output_path.write_text(output_text, encoding="utf-8")
@@ -293,7 +307,11 @@ def collect(args: argparse.Namespace, state: dict[str, Any]) -> dict[str, Any]:
     for row in state.get("candidates") or []:
         attachment_key = str(row["attachment_key"])
         entry = results.get(attachment_key) or {"ok": False, "error": "missing batch output"}
-        report: dict[str, Any] = {"attachment_key": attachment_key, "ok": bool(entry.get("ok"))}
+        report: dict[str, Any] = {
+            "attachment_key": attachment_key,
+            "item_key": str(row.get("item_key") or ""),
+            "ok": bool(entry.get("ok")),
+        }
         if entry.get("ok"):
             source_path = Path(str(row.get("source_path") or row["pdf_path"]))
             batch_path = Path(str(row.get("batch_document_path") or row["pdf_path"]))
@@ -345,6 +363,9 @@ def collect(args: argparse.Namespace, state: dict[str, Any]) -> dict[str, Any]:
                 })
         else:
             report["error"] = entry.get("error")
+            status_code = int(entry.get("status_code") or 0)
+            report["status_code"] = status_code
+            report["retryable"] = retryable_batch_status(status_code)
         reports.append(report)
     adoption_queue = work_dir / "adoption_queue.json"
     save_json_atomic(adoption_queue, {
@@ -373,6 +394,7 @@ def collect(args: argparse.Namespace, state: dict[str, Any]) -> dict[str, Any]:
         "phase": "collected", "collected_at": utc_now(),
         "output_path": str(output_path), "adoption_queue": str(adoption_queue),
         "reports": reports, "adoptable_count": len(adoption_rows),
+        "retryable_count": sum(bool(report.get("retryable")) for report in reports),
         "batch_input_removed_bytes": freed,
     })
     save_json_atomic(args.state, state)

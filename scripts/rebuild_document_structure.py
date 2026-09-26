@@ -286,8 +286,9 @@ def _run(args: argparse.Namespace) -> tuple[str, list[dict], int]:
     run_id = f"structure-v3-{uuid.uuid4().hex[:12]}"
     results = []
     failed = 0
+    total = len(keys)
     with _report_only_stdout():
-        for item_key in keys:
+        for position, item_key in enumerate(keys, start=1):
             try:
                 results.append(rebuild_item(
                     item_key, dry_run=args.dry_run, force=args.force, run_id=run_id,
@@ -296,6 +297,14 @@ def _run(args: argparse.Namespace) -> tuple[str, list[dict], int]:
             except Exception as exc:  # continue so one bad document does not stop maintenance
                 failed += 1
                 results.append({"item_key": item_key, "status": "failed", "error": str(exc)})
+            if position == 1 or position == total or position % 10 == 0:
+                changed = sum(bool(row.get("changed")) for row in results)
+                print(
+                    f"[STRUCTURE PROGRESS] {position}/{total}件確認 / "
+                    f"変更 {changed} / 失敗 {failed}",
+                    file=sys.stderr,
+                    flush=True,
+                )
     return run_id, results, failed
 
 

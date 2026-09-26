@@ -79,5 +79,41 @@ class SubmitIdempotencyTests(unittest.TestCase):
             fake_client.create_job.assert_not_called()
 
 
+class StatusPersistenceTests(unittest.TestCase):
+    def test_running_remote_status_is_saved_as_the_local_phase(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state_path = Path(directory) / "state.json"
+            state = {"phase": "submitted", "job_id": "job-1"}
+            fake_client = Mock()
+            fake_client.get_job.return_value = {
+                "id": "job-1", "status": "RUNNING", "total_requests": 2,
+                "completed_requests": 0,
+            }
+            args = argparse.Namespace(state=state_path)
+
+            with patch.object(MODULE, "client_from_env", return_value=fake_client):
+                result = MODULE.status(args, state)
+
+            self.assertEqual(result["phase"], "running")
+            self.assertEqual(json.loads(state_path.read_text())["phase"], "running")
+
+
+class ResultFileTests(unittest.TestCase):
+    def test_error_only_success_exposes_its_error_file_for_collection(self):
+        self.assertEqual(
+            MODULE.result_file_ids({"output_file": None, "error_file": "errors-1"}),
+            ["errors-1"],
+        )
+
+    def test_mixed_batch_collects_output_and_error_files(self):
+        self.assertEqual(
+            MODULE.result_file_ids({
+                "output_file": {"id": "output-1"},
+                "error_file": {"id": "errors-1"},
+            }),
+            ["output-1", "errors-1"],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

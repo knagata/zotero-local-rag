@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Zotero RAG 管理</title>
-  <link rel="stylesheet" href="/admin/assets/admin.css?v=20260902-3">
+  <link rel="stylesheet" href="/admin/assets/admin.css?v=20260926-2">
 </head>
 <body>
   <header class="topbar">
@@ -42,18 +42,18 @@
     </section>
   </main>
   <dialog id="confirm-dialog">
-    <form method="dialog">
+    <form method="dialog" id="confirm-form">
       <h2 id="confirm-title">実行確認</h2>
       <p id="confirm-description"></p>
       <label id="confirm-label">確認語を入力
         <input id="confirm-input" autocomplete="off" spellcheck="false">
       </label>
       <div class="dialog-actions">
-        <button value="cancel" class="secondary">キャンセル</button>
-        <button value="confirm" id="confirm-button">実行</button>
+        <button type="button" id="confirm-cancel" class="secondary">キャンセル</button>
+        <button type="submit" id="confirm-button">実行</button>
       </div>
     </form>
   </dialog>
-  <script src="/admin/assets/admin.js?v=20260902-3" defer></script>
+  <script src="/admin/assets/admin.js?v=20260926-2" defer></script>
 </body>
 </html>

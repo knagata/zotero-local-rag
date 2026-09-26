@@ -70,6 +70,24 @@ class SelectS2TitleMatchTests(unittest.TestCase):
             main="Video theories", creators="Daniels Dieter",
         ))
 
+    def test_authorless_loose_match_for_generic_section_title_is_rejected(self):
+        # Observed live: a book section named "Introduction" was assigned an
+        # authorless S2 record for an unrelated statistics book and began
+        # importing its 9,000 citing papers.
+        unrelated = _paper("An Introduction to the Bootstrap", [], cc=27331)
+        self.assertIsNone(self._select(
+            [unrelated], "Introduction", creators="Oliver Grau",
+        ))
+
+    def test_authorless_exact_main_title_remains_eligible(self):
+        # S2 often omits authors and subtitles from valid book records.  Exact
+        # agreement with the subtitle-free main title remains strong enough.
+        record = _paper("After the End of Art", [], cc=77)
+        self.assertIsNotNone(self._select(
+            [record], "After the end of art contemporary art and the pale of history",
+            main="After the end of art", creators="Danto Arthur Coleman",
+        ))
+
     def test_subtitleless_s2_record_still_matches_via_the_main_title(self):
         results = [_paper("After the End of Art", ["Arthur Danto"], cc=77)]
         self.assertIsNotNone(self._select(

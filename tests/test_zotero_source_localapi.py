@@ -15,6 +15,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import httpx
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
@@ -98,6 +100,41 @@ class LinkedUrlSkipTests(unittest.TestCase):
         asyncio.run(go())
         self.assertEqual(yielded[0].tags, ("rag:exclude",))
         self.assertEqual(yielded[0].parentTags, ("rag:prefer-epub",))
+
+    def test_file_redirect_from_local_api_uses_decoded_local_path(self):
+        api = ZoteroLocalAPI()
+        with patch.object(httpx.AsyncClient, "get") as get, \
+                patch("os.path.isfile", return_value=True):
+            get.return_value = httpx.Response(
+                302,
+                headers={"location": "file:///tmp/library/Deleuze%3B%20Book.epub"},
+                request=httpx.Request("GET", "http://127.0.0.1/file"),
+            )
+            resolved = asyncio.run(api.fetch_attachment_file_to_cache("A2", "/tmp/A2.epub"))
+        self.assertEqual(resolved, "/tmp/library/Deleuze; Book.epub")
+
+    def test_status_inventory_can_keep_an_attachment_with_a_missing_file(self):
+        raw = [_attachment("MISSING", content_type="application/epub+zip", filename="book.epub")]
+        api = ZoteroLocalAPI()
+
+        async def go():
+            with patch.object(api, "list_pdf_attachments", return_value=raw), \
+                    patch.object(api, "get_item", return_value={
+                        "key": "ITEM", "data": {"key": "ITEM", "title": "Parent"},
+                    }), patch.object(
+                        api, "resolve_pdf_path_from_attachment", return_value=None,
+                    ), patch.object(
+                        api, "fetch_attachment_file_to_cache", side_effect=FileNotFoundError(),
+                    ):
+                return await api.list_normalized_attachments(
+                    zotero_data_dir="/tmp/zotero", pdf_cache_dir="/tmp/cache",
+                    allow_missing_files=True,
+                )
+
+        rows = asyncio.run(go())
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].attachmentKey, "MISSING")
+        self.assertEqual(rows[0].pdf_path, "")
 
     def test_a_genuine_resolution_failure_stops_incomplete_enumeration(self):
         # The other half of the same defect: a failed download for a non-

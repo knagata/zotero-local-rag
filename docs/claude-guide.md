@@ -18,6 +18,29 @@
 - **`limit`**: 最大取得件数 (デフォルト `20`)。
 - **`qmode`**: 検索モード。`"titleCreatorYear"`（タイトル・著者・出版年のみを検索 - 推奨・超高速）または `"everything"`（添付ファイル本文を含むすべてを検索）。
 
+### `search_open_texts` / `inspect_open_text_candidate`（外部収書候補）
+
+NDLサーチ、J-STAGE、Open Library、CiNii Researchから文字資料を検索し、Zoteroへ収録する前の
+候補として提示します。どちらも読取専用で、Zotero登録、ファイル取得、索引更新は行いません。
+
+- `search_open_texts(query, sources, limit_per_source, search_mode)`: 外部書誌を横断検索します。
+  `sources`は`ndl`、`jstage`、`openlibrary`、`cinii`です。CiNiiだけは`CINII_APP_ID`が必要です。
+  `search_mode="auto"`（既定）は各サービスの通常検索を試し、0件のサービスだけ語ごとの検索へ
+  緩和します。`all`は通常検索のまま、`any`は語ごとの結果を統合、`phrase`は返却候補を
+  タイトル・掲載誌の完全な語句で絞ります。結果の`search_strategy`と`matched_query`で緩和の有無を
+  確認できます。
+- `inspect_open_text_candidate(candidate)`: 検索結果1件について書誌情報の不足、本文公開状態、
+  Zotero内の同名候補を確認します。
+
+Claudeは学位、掲載誌、所属、引用数、文章の流暢さだけで品質を断定しません。確認できた本文範囲、
+具体的な推薦理由、留意点を示し、引用情報の欠落は「不明」として扱います。収録する場合も、候補を
+ユーザーへ提示して明示的な判断を求めます。
+
+NDL検索は短時間キャッシュされ、同時呼出しを直列化します。HTTP 429では`Retry-After`を尊重して
+限定回数だけ再試行し、それでも失敗した場合はほかのサービスの結果を保持したままエラーを表示します。
+J-STAGEはAPIの書誌から推定できるPDF URLを候補として返しますが、公開可否は`unverified`なので、
+収録前に実際の応答と利用条件を確認してください。
+
 ### `search_items`（資料レベル）
 
 本文を返さず、ベクトル検索に合致した資料のメタデータのみを返します。特定のテーマについて、広い範囲から関連文献の当たりをつけるのに最適です。

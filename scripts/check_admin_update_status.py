@@ -29,6 +29,8 @@ from index_from_zotero import (  # noqa: E402
 )
 from zotero_source_localapi import ZoteroLocalAPI  # noqa: E402
 from update_citations import _unwrap_item, get_all_items  # noqa: E402
+from scripts.audit_structure_summaries import build_report as build_summary_audit  # noqa: E402
+from src.v3_data_plane import V3_COLLECTION  # noqa: E402
 
 REPORT_PATH = ROOT / "data" / "admin_update_status.json"
 TERMINAL_CITATION_STATUSES = frozenset({"mapped", "not_found", "limited"})
@@ -49,6 +51,9 @@ def _index_freshness(
     for row in attachments:
         key = str(row.attachmentKey)
         previous = files.get(key)
+        if not str(getattr(row, "pdf_path", "") or ""):
+            missing_source.append(key)
+            continue
         try:
             stat = Path(str(row.pdf_path)).stat()
         except OSError:
@@ -159,6 +164,30 @@ def _structure_freshness() -> dict[str, Any]:
     }
 
 
+def _summary_freshness() -> dict[str, Any]:
+    audit = build_summary_audit(collection_name=V3_COLLECTION)
+    details = audit.get("details") or {}
+    pending_keys = sorted(set(
+        list(details.get("missing_status_items") or [])
+        + list(details.get("failed_status_items") or [])
+        + list(details.get("stale_source_items") or [])
+    ))
+    index_issues = sum(len(details.get(name) or []) for name in (
+        "missing_index_ids", "unexpected_index_ids", "content_mismatch_index_ids",
+    ))
+    counts = audit.get("counts") or {}
+    return {
+        "pending": len(pending_keys),
+        "failed": len(details.get("failed_status_items") or []),
+        "index_issues": index_issues,
+        "expected_index_rows": int(counts.get("expected_index_rows") or 0),
+        "actual_index_rows": int(counts.get("actual_index_rows") or 0),
+        "sample_keys": _brief(pending_keys),
+        "attention": len(audit.get("failures") or []),
+        "audit_passed": bool(audit.get("passed")),
+    }
+
+
 async def inspect() -> dict[str, Any]:
     ingest_paths = paths()
     manifest = json.loads(ingest_paths.manifest_path.read_text(encoding="utf-8"))
@@ -171,11 +200,12 @@ async def inspect() -> dict[str, Any]:
             pdf_cache_dir=str(ingest_paths.pdf_cache_dir),
             collection_key=None,
             require_complete=False,
+            allow_missing_files=True,
         ),
         note_api.list_notes(collection_key=None),
         asyncio.to_thread(get_all_items),
     )
-    inventory = [row for row in rows if getattr(row, "pdf_path", None)]
+    inventory = list(rows)
     included, excluded, preferred = _apply_rag_tag_policy(inventory)
     ready = _ready_preferred_pdfs(preferred, inventory, manifest.get("files") or {})
     ready_keys = {str(row.attachmentKey) for row in ready}
@@ -198,10 +228,12 @@ async def inspect() -> dict[str, Any]:
     )
     citation_status = _citation_freshness(citation_items, ROOT / "data" / "relations.db")
     citation_status["attention"] = int(citation_status["errors"])
+    summary_status = _summary_freshness()
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "index": index_status,
         "structure": structure_status,
+        "summaries": summary_status,
         "citations": citation_status,
     }
 
