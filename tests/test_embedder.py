@@ -56,6 +56,17 @@ class EmbedderSettingsTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "no longer supported"):
                 resolve_embedder_settings(Path("."))
 
+    def test_explicit_bge_model_uses_mps_by_default_on_macos(self):
+        with tempfile.TemporaryDirectory() as directory:
+            model = Path(directory) / "bge-m3"
+            model.mkdir()
+            environment = {"EMB_PROFILE": "bge", "EMB_MODEL": str(model)}
+            with patch.dict(os.environ, environment, clear=True), patch(
+                "src.embedder.sys.platform", "darwin"
+            ):
+                cfg = resolve_embedder_settings(Path(directory))
+        self.assertEqual(cfg.device, "mps")
+
     def test_probe_accepts_numpy_like_embedding_rows(self):
         class Vector:
             def __len__(self):

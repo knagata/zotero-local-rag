@@ -165,10 +165,11 @@ def resolve_embedder_settings(project_root: Path) -> EmbedderConfig:
     if "EMB_MODEL" in os.environ and (os.environ.get("EMB_MODEL") or "").strip():
         model = os.environ["EMB_MODEL"].strip()
         model = _offline_resolve_or_exit(model)
+        device_default = "mps" if profile == "bge" and sys.platform == "darwin" else "cpu"
         return EmbedderConfig(
             provider="sentence_transformers",
             model_name=model,
-            device=_pick_device("cpu"),
+            device=_pick_device(device_default),
         )
 
     # --- bge profile ---

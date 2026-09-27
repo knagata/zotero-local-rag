@@ -3,6 +3,13 @@
 正本: `SPEC.md`。実装・検証の永続的な履歴はこのファイルに残す。
 `evaluations/`のローカル生成レポートはZotero識別子や絶対パスを含み得るため追跡しない。
 
+### 2026-09-28 Apple Silicon検索モデルのMPS利用
+
+- [x] **BGE-M3の明示モデルパスでもMPSを既定にする。** `EMB_PROFILE=bge`と`EMB_MODEL`を併用すると、
+  モデル明示指定の分岐がmacOS用既定値を迂回してCPUへ落ちていた。macOSのBGEでは明示パスでも
+  `mps`を選び、明示的な`EMB_DEVICE`は従来どおり優先する。ローカル設定を`EMB_DEVICE=mps`へ変更し、
+  Remote MCPを再起動した。関連59テスト、MPS availability、公開OAuth healthを確認した。
+
 ### 2026-09-27 Research Workspace向け根拠契約
 
 - [x] **検索結果へEvidence Referenceを追加。** 独立したResearch MCPへ安全に渡せるよう、

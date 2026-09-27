@@ -1,6 +1,13 @@
 # Current development handoff
 
-Updated: 2026-09-27
+Updated: 2026-09-28
+
+## 2026-09-28 Remote MCP embedding device correction
+
+- local `.env`はBGE-M3の絶対パスを明示していたため、`EMB_PROFILE=bge`でも明示モデル分岐の
+  CPU既定値を選んでいた。macOSのBGEはモデルパス明示時もMPSを既定にし、local設定にも
+  `EMB_DEVICE=mps`を明記した。MPS availabilityはtrue、関連59テスト合格、Remote MCP再起動後の
+  local/public OAuth healthはいずれも正常。埋め込みモデル・次元・fingerprintは変更していない。
 
 ## 2026-09-27 coverage budget platform correction
 
