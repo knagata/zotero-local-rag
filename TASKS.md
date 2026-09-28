@@ -1,5 +1,11 @@
 # Tasks
 
+## 2026-09-28 Laokoon RAG exclusion
+
+- [x] **LaokoonのPDF添付をRAGから除外。** Zotero添付へ`rag:exclude`を付与後、除外同期を実行した。
+  manifest、本文Chroma、要約Chroma、FTS、構造node、要約、添付artifactはいずれも0件。構造ヘッダは
+  `unavailable`・空source fingerprintで検索対象を持たない。未解決artifact全体は0件。
+
 ## 2026-09-28 readable sparse OCR pages
 
 - [x] **章扉・短い章末を未解決スキャン頁に数えない。** ページ文字数だけでscan判定していたため、

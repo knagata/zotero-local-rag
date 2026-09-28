@@ -2,6 +2,12 @@
 
 Updated: 2026-09-28
 
+## 2026-09-28 Laokoon RAG exclusion
+
+- ZoteroのLaokoon PDF添付へ`rag:exclude`を付与し、除外同期済み。manifest、本文・要約Chroma、FTS、
+  構造node、要約、添付artifactはいずれも0件。構造ヘッダは`unavailable`・空source fingerprintで
+  検索対象を持たない。未解決artifact全体は0件。送信済みMistral Batchの結果はRAGへ採用しない。
+
 ## 2026-09-28 Remote MCP embedding device correction
 
 - local `.env`はBGE-M3の絶対パスを明示していたため、`EMB_PROFILE=bge`でも明示モデル分岐の
