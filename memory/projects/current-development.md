@@ -2,6 +2,15 @@
 
 Updated: 2026-09-28
 
+## 2026-09-28 vertical Japanese PDF reading order
+
+- 縦組みPDFは座標の横組みsortを使わず、line directionで判定したページのcontent stream順を保持する。
+  縦列本文を見出し境界まで結合し、block numberで詳細geometryと対応づける。実資料は203/203頁・
+  503 chunkとなり、報告箇所を263字の連続段落で確認した。
+- 差し替え後の新添付を対象限定で再取込し、通常同期で削除済み旧添付を退役した。新添付はChroma・FTS
+  とも503件、旧添付はともに0件。報告3 queryは段落・資料検索の双方で対象を返す。構造は更新済み、
+  階層要約はsource変更により`stale`であり、有料再生成は別途行う。
+
 ## 2026-09-28 compact CJK retrieval and targeted re-OCR
 
 - `MIN_RETURN_CHARS=200`が、縦組みPDFの正常な30〜40字日本語source regionをsemantic検索と

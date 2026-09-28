@@ -142,7 +142,7 @@ def _resolve_ocr_lang() -> str:
             line.strip() for line in result.stdout.splitlines()
             if line.strip() and not line.startswith("List")
         )
-    except Exception:
+    except Exception:  # noqa: BLE001 -- optional PyMuPDF detail extraction must fall back to blocks
         return "eng"
 
     if "jpn" in installed:
@@ -374,6 +374,17 @@ def _order_layout_blocks(
     blocks: List[Dict[str, Any]], page_width: float,
 ) -> List[Dict[str, Any]]:
     """Order text blocks top-to-bottom, or column-by-column within vertical bands."""
+    vertical = [block for block in blocks if block.get("writing_mode") == "vertical"]
+    if vertical and len(vertical) >= max(2, round(len(blocks) * 0.6)):
+        # PyMuPDF's unsorted block order follows the PDF content stream.  For
+        # vertical Japanese that stream is already right-to-left reading order;
+        # sorting by y/x as for horizontal prose reverses the columns.
+        ordered = sorted(blocks, key=lambda block: block["source_block_index"])
+        for reading_order, block in enumerate(ordered):
+            block["reading_order"] = reading_order
+            block["column"] = "vertical" if block in vertical else "full"
+        return ordered
+
     boundary = _column_boundary(blocks, page_width)
     if boundary is None:
         ordered = sorted(blocks, key=lambda block: (
@@ -436,10 +447,21 @@ def _merge_layout_blocks(blocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         if merged:
             previous = merged[-1]
             gap = block["bbox"][1] - previous["bbox"][3]
+            vertical_continuation = (
+                block.get("writing_mode") == "vertical"
+                and previous.get("writing_mode") == "vertical"
+                and block.get("block_type") == "text"
+                and previous.get("block_type") == "text"
+            )
             if (
-                block.get("column") == previous.get("column")
-                and block.get("column") != "full"
-                and 0 <= gap <= 12.0
+                vertical_continuation
+                or (
+                    block.get("writing_mode") != "vertical"
+                    and previous.get("writing_mode") != "vertical"
+                    and block.get("column") == previous.get("column")
+                    and block.get("column") != "full"
+                    and 0 <= gap <= 12.0
+                )
             ):
                 joiner = joiner_for_text(previous["text"] + block["text"])
                 previous["text"] = previous["text"] + joiner + block["text"]
@@ -519,6 +541,15 @@ def _resolve_record_structure_paths(
 def extract_layout_blocks_from_pdf_page(page: Any) -> List[Dict[str, Any]]:
     """Extract text blocks with real PyMuPDF geometry and deterministic reading order."""
     raw_blocks = page.get_text("blocks", sort=False) or []
+    try:
+        detailed_blocks = (page.get_text("dict", sort=False) or {}).get("blocks") or []
+    except Exception:
+        detailed_blocks = []
+    detailed_text_blocks = {
+        int(block.get("number", index)): block
+        for index, block in enumerate(detailed_blocks)
+        if int(block.get("type") or 0) == 0
+    }
     # Keep the page extent with each record.  Header/footer filtering must not
     # infer position from reading order: a repeated phrase in the middle of a
     # page is body text, even when it happens to be a short paragraph.
@@ -546,10 +577,31 @@ def extract_layout_blocks_from_pdf_page(page: Any) -> List[Dict[str, Any]]:
             "block_type": "text", "source_block_index": source_index,
             "source_block_indices": [source_index],
         }
+        source_block_number = int(raw[5]) if len(raw) >= 6 else source_index
+        detailed_block = detailed_text_blocks.get(source_block_number)
+        if detailed_block is not None:
+            lines = detailed_block.get("lines") or []
+            directions = [line.get("dir") for line in lines if line.get("dir")]
+            if directions:
+                vertical_count = sum(
+                    abs(float(direction[1])) > abs(float(direction[0]))
+                    for direction in directions
+                )
+                record["writing_mode"] = (
+                    "vertical" if vertical_count > len(directions) / 2 else "horizontal"
+                )
         if page_y1 > page_y0:
             record["page_y0"] = round(page_y0, 3)
             record["page_y1"] = round(page_y1, 3)
         blocks.append(record)
+    vertical_blocks = [block for block in blocks if block.get("writing_mode") == "vertical"]
+    if len(vertical_blocks) >= 2:
+        widths = sorted(block["bbox"][2] - block["bbox"][0] for block in vertical_blocks)
+        median_width = widths[len(widths) // 2]
+        for block in vertical_blocks:
+            width = block["bbox"][2] - block["bbox"][0]
+            if median_width > 0 and width >= median_width * 1.7 and len(block["text"]) <= 40:
+                block["block_type"] = "heading"
     return _merge_layout_blocks(_order_layout_blocks(blocks, float(page.rect.width)))
 
 
@@ -1434,7 +1486,7 @@ def extract_chunks_from_pdf(
                                     **({"zone": record["zone"]} if record.get("zone")
                                        else ({"zone": heading_zone} if heading_zone != "body" else {})),
                                     "reading_order": int(record.get("reading_order", para_index)),
-                                    "column": record.get("column") or "unknown",
+                                    "column": record.get("column") or "unknown", "writing_mode": record.get("writing_mode") or "horizontal",
                                     "source_block_indices": list(record.get("source_block_indices") or []),
                                     **chapter_info,
                                 }

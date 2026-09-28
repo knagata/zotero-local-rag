@@ -23,6 +23,8 @@ class _Page:
     def get_text(self, kind, sort=False):
         if kind == "blocks":
             return self.blocks
+        if kind == "dict":
+            return {"blocks": []}
         return ""
 
 
@@ -30,7 +32,64 @@ def _block(x0, y0, x1, y1, text, number):
     return (x0, y0, x1, y1, text, number, 0)
 
 
+class _VerticalPage(_Page):
+    def get_text(self, kind, sort=False):
+        if kind == "dict":
+            return {"blocks": [
+                {"number": block[5], "lines": [{"dir": (0.0, 1.0)}]}
+                for block in self.blocks
+            ]}
+        return super().get_text(kind, sort=sort)
+
+
 class PdfLayoutTests(unittest.TestCase):
+    def test_vertical_japanese_preserves_pdf_order_and_merges_columns(self):
+        page = _VerticalPage([
+            _block(288, 74, 299, 471, "ある。それゆえ、", 0),
+            _block(271, 74, 281, 440, "本文が続く。", 1),
+            _block(229, 85, 253, 138, "「韓国併合」の正当化", 2),
+            _block(253, 144, 264, 472, "日本民族の発展する処、", 3),
+            _block(236, 143, 245, 322, "日韓は併合すべきであつた。", 4),
+        ])
+
+        rows = pdf_extract.extract_layout_blocks_from_pdf_page(page)
+
+        self.assertEqual([row["text"] for row in rows], [
+            "ある。それゆえ、本文が続く。",
+            "「韓国併合」の正当化",
+            "日本民族の発展する処、日韓は併合すべきであつた。",
+        ])
+        self.assertEqual([row["block_type"] for row in rows], ["text", "heading", "text"])
+        self.assertEqual([row["writing_mode"] for row in rows], [
+            "vertical", "vertical", "vertical",
+        ])
+        self.assertEqual([row["source_block_indices"] for row in rows], [[0, 1], [2], [3, 4]])
+
+    def test_vertical_direction_matches_block_number_across_non_text_blocks(self):
+        page = _Page([
+            _block(288, 74, 299, 471, "第一列。", 0),
+            (0, 0, 10, 10, b"image", 1, 1),
+            _block(271, 74, 281, 440, "第二列。", 2),
+        ])
+
+        def get_text(kind, sort=False):
+            if kind == "blocks":
+                return page.blocks
+            if kind == "dict":
+                return {"blocks": [
+                    {"number": 0, "type": 0, "lines": [{"dir": (0.0, 1.0)}]},
+                    {"number": 1, "type": 1},
+                    {"number": 2, "type": 0, "lines": [{"dir": (0.0, 1.0)}]},
+                ]}
+            return ""
+        page.get_text = get_text
+
+        rows = pdf_extract.extract_layout_blocks_from_pdf_page(page)
+
+        self.assertEqual([row["text"] for row in rows], ["第一列。第二列。"])
+        self.assertEqual(rows[0]["writing_mode"], "vertical")
+        self.assertEqual(rows[0]["source_block_indices"], [0, 2])
+
     def test_two_columns_are_read_left_then_right_between_full_width_blocks(self):
         page = _Page([
             _block(40, 30, 560, 65, "Full width title", 0),
