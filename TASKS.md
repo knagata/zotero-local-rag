@@ -2045,4 +2045,15 @@ A（PDF構造化）・B（課金LLM）は独立、C（構造抽出エンジン�
 - [x] **新規防御分岐を直接テストする。** PDF詳細レイアウト取得失敗時のblock fallbackと、
   re-OCR構造fingerprintが安定しない場合の拒否を回帰テストで固定した。
 - [x] **プラットフォーム差の上限を補正する。** Linux CIでのみ未到達になる既存の
-  `pdf_extract.py` 3文と `text_utils.py` 1文をcoverage予算へ反映した。
+  `pdf_extract.py` 4文と `text_utils.py` 1文をcoverage予算へ反映した。
+
+# 2026-09-29 明示承認付きZotero収録
+
+- [x] **検索と書込みを二段階に分離する。** 24時間有効・単回実行のimmutable proposalと、
+  完全一致する承認句を要求する実行ツールを追加した。
+- [x] **Zotero自身の許可を必須にする。** Local API runtime authorizationのネイティブ
+  Allow / Always Allow / Denyを通し、永続API keyをMCPへ渡さずに書き込む。
+- [x] **収録境界を固定する。** 重複再検査、PDF download host allowlist、250MB上限、PDF magic、
+  3段階file upload、収録PDFの対象限定再索引を実装した。
+- [x] **回帰テストと利用ガイドを追加する。** proposalの無書込み・失効・再利用拒否、承認、
+  upload、redirect拒否、MCP tool公開を自動テストで固定した。

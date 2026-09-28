@@ -95,6 +95,7 @@
     "src/v3_runtime.py": 3,
     "src/work_identity.py": 7,
     "src/yomitoku_extract.py": 157,
+    "src/zotero_import.py": 64,
     "src/zotero_source_localapi.py": 136
   }
 }

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import asyncio
 import sqlite3
 import threading
 os.environ["HF_HUB_OFFLINE"] = "1"
@@ -54,6 +55,12 @@ from open_text_discovery import (
     SUPPORTED_SOURCES, screening_observations, search_external_texts,
 )
 from evidence_reference import build_evidence_reference
+from zotero_import import (
+    claim_import_proposal,
+    create_import_proposal,
+    execute_import,
+    finish_import_proposal,
+)
 
 
 ROOT = str(PROJECT_ROOT)
@@ -251,8 +258,11 @@ reader encountering it is often the only signal there is: when damage would stop
 a passage being quoted accurately or found at all, call report_chunk_quality for
 that chunk. A few characters you can read through do not need a report.
 
-External open-text discovery is proposal-only. search_open_texts and
-inspect_open_text_candidate never add anything to Zotero or the search index.
+External open-text discovery is read-only until a user approves an immutable
+import proposal. search_open_texts and inspect_open_text_candidate never write.
+propose_zotero_import also performs no write and returns an exact approval phrase.
+Call approve_zotero_import only after the user explicitly supplies that phrase;
+Zotero then presents its own native Allow / Always Allow / Deny dialog.
 Do not treat a degree, journal, institution, citation count, or polished prose as
 proof of quality. Explain a proposal using observable metadata and available text;
 state the inspected text range and concrete cautions. Missing citation data is
@@ -1799,6 +1809,77 @@ async def inspect_open_text_candidate(candidate: Dict[str, Any]) -> Dict[str, An
                     "match_reason": reason,
                 })
     return screening_observations(candidate, duplicates)
+
+
+@mcp.tool()
+async def propose_zotero_import(
+    candidate: Dict[str, Any],
+    import_mode: str = "metadata",
+    collection_key: str = "",
+    allow_duplicate: bool = False,
+) -> Dict[str, Any]:
+    """Create an expiring, read-only Zotero import proposal.
+
+    ``import_mode`` is ``metadata`` or ``pdf``. The PDF mode is accepted only
+    for a direct HTTPS URL on the selected catalog's allowlist. Duplicate
+    candidates block the proposal unless the user has reviewed them and
+    ``allow_duplicate`` is explicitly true. This tool never writes to Zotero.
+    """
+    inspection = await inspect_open_text_candidate(candidate)
+    duplicates = list(inspection.get("zotero_duplicates") or [])
+    return create_import_proposal(
+        candidate,
+        duplicates,
+        import_mode=import_mode,
+        collection_key=collection_key,
+        allow_duplicate=allow_duplicate,
+    )
+
+
+async def _index_imported_item(item_key: str) -> Dict[str, Any]:
+    process = await asyncio.create_subprocess_exec(
+        sys.executable,
+        str(PROJECT_ROOT / "src" / "index_from_zotero.py"),
+        "--item", item_key,
+        "--force-reparse",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+        cwd=str(PROJECT_ROOT),
+    )
+    stdout, _ = await process.communicate()
+    output = stdout.decode("utf-8", errors="replace")[-4000:]
+    return {"status": "indexed" if process.returncode == 0 else "failed",
+            "exit_code": process.returncode, "output": output}
+
+
+@mcp.tool()
+async def approve_zotero_import(proposal_id: str, approval_phrase: str) -> Dict[str, Any]:
+    """Execute one pending proposal after explicit user and native Zotero approval.
+
+    The approval phrase must exactly match the phrase returned by
+    ``propose_zotero_import``. A proposal expires after 24 hours and can be
+    claimed only once. Zotero itself shows an Allow / Always Allow / Deny dialog
+    before the Local API accepts any write. Imported PDFs are indexed afterward.
+    """
+    row = claim_import_proposal(proposal_id, approval_phrase)
+    try:
+        latest = await inspect_open_text_candidate(dict(row["candidate"]))
+        new_duplicates = list(latest.get("zotero_duplicates") or [])
+        if new_duplicates and not row.get("allow_duplicate"):
+            raise ValueError("Zotero duplicate candidates appeared after proposal creation")
+        result = await execute_import(row)
+        if result["import_mode"] == "pdf":
+            result["indexing"] = await _index_imported_item(result["item_key"])
+        else:
+            result["indexing"] = {
+                "status": "not_applicable",
+                "reason": "metadata-only imports have no local full-text file",
+            }
+        finish_import_proposal(proposal_id, "completed", result)
+        return result
+    except Exception as exc:
+        finish_import_proposal(proposal_id, "failed", {"error": str(exc)})
+        raise
 
 
 

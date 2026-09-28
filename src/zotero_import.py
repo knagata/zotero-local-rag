@@ -1,0 +1,396 @@
+"""Explicitly approved imports from screened open-text candidates into Zotero."""
+from __future__ import annotations
+
+import hashlib
+import json
+import mimetypes
+import os
+import secrets
+import tempfile
+import threading
+import time
+from pathlib import Path
+from collections.abc import Mapping
+from typing import Any
+from urllib.parse import urljoin, urlparse
+
+import httpx
+
+try:
+    from .zotero_source_localapi import local_api_base, local_api_prefix, zotero_api_headers
+except ImportError:
+    from zotero_source_localapi import local_api_base, local_api_prefix, zotero_api_headers
+
+
+PROPOSAL_TTL_SECONDS = 24 * 60 * 60
+MAX_PDF_BYTES = 250 * 1024 * 1024
+SUPPORTED_IMPORT_MODES = frozenset({"metadata", "pdf"})
+SOURCE_DOWNLOAD_HOSTS = {
+    "jstage": frozenset({"www.jstage.jst.go.jp", "jstage.jst.go.jp"}),
+    "ndl": frozenset({"dl.ndl.go.jp", "ndlsearch.ndl.go.jp"}),
+    "cinii": frozenset({"cir.nii.ac.jp"}),
+    "openlibrary": frozenset({"archive.org", "openlibrary.org"}),
+}
+_PROPOSAL_LOCK = threading.Lock()
+_KEY_ALPHABET = "23456789ABCDEFGHIJKLMNPQRSTUVWXYZ"
+
+
+def _proposal_path() -> Path:
+    configured = os.environ.get("ZOTERO_IMPORT_PROPOSALS_PATH")
+    return Path(configured).expanduser() if configured else (
+        Path(__file__).resolve().parents[1] / "data" / "zotero_import_proposals.json"
+    )
+
+
+def _load_proposals(path: Path) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"version": 1, "proposals": {}}
+    return payload if isinstance(payload, dict) and isinstance(payload.get("proposals"), dict) else {
+        "version": 1, "proposals": {},
+    }
+
+
+def _save_proposals(path: Path, payload: Mapping[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    os.replace(temporary, path)
+
+
+def _candidate_payload(candidate: Mapping[str, Any]) -> dict[str, Any]:
+    source = str(candidate.get("source") or "").strip().casefold()
+    title = str(candidate.get("title") or "").strip()
+    landing_url = str(candidate.get("landing_url") or "").strip()
+    if source not in SOURCE_DOWNLOAD_HOSTS:
+        raise ValueError("candidate source is not supported for Zotero import")
+    if not title or not landing_url:
+        raise ValueError("candidate title and landing_url are required")
+    parsed = urlparse(landing_url)
+    if parsed.scheme != "https" or not parsed.hostname:
+        raise ValueError("candidate landing_url must be HTTPS")
+    return {
+        "source": source,
+        "record_id": str(candidate.get("record_id") or "").strip(),
+        "title": title,
+        "creators": [str(value).strip() for value in candidate.get("creators") or [] if str(value).strip()],
+        "date": str(candidate.get("date") or "").strip(),
+        "resource_type": str(candidate.get("resource_type") or "text").strip(),
+        "container_title": str(candidate.get("container_title") or "").strip(),
+        "publisher": str(candidate.get("publisher") or "").strip(),
+        "identifiers": dict(candidate.get("identifiers") or {}),
+        "landing_url": landing_url,
+        "fulltext_status": str(candidate.get("fulltext_status") or "unknown"),
+        "download_urls": [str(value).strip() for value in candidate.get("download_urls") or [] if str(value).strip()],
+    }
+
+
+def _direct_pdf_url(candidate: Mapping[str, Any]) -> str:
+    source = str(candidate.get("source") or "")
+    allowed = SOURCE_DOWNLOAD_HOSTS.get(source, frozenset())
+    for value in candidate.get("download_urls") or []:
+        parsed = urlparse(str(value))
+        if parsed.scheme == "https" and (parsed.hostname or "").casefold() in allowed:
+            return str(value)
+    return ""
+
+
+def create_import_proposal(
+    candidate: Mapping[str, Any], duplicates: list[dict[str, Any]], *,
+    import_mode: str = "metadata", collection_key: str = "", allow_duplicate: bool = False,
+    path: Path | None = None,
+) -> dict[str, Any]:
+    """Persist an immutable, expiring proposal. This performs no external write."""
+    normalized = _candidate_payload(candidate)
+    mode = str(import_mode or "metadata").casefold()
+    if mode not in SUPPORTED_IMPORT_MODES:
+        raise ValueError(f"unsupported import_mode: {mode}")
+    pdf_url = _direct_pdf_url(normalized)
+    if mode == "pdf" and not pdf_url:
+        raise ValueError("candidate has no allowlisted direct PDF URL; use metadata mode")
+    if duplicates and not allow_duplicate:
+        raise ValueError("Zotero duplicate candidates exist; set allow_duplicate only after user review")
+    proposal_id = secrets.token_hex(8)
+    approval_phrase = f"IMPORT {proposal_id}"
+    now = int(time.time())
+    row = {
+        "proposal_id": proposal_id,
+        "approval_phrase_sha256": hashlib.sha256(approval_phrase.encode()).hexdigest(),
+        "created_at": now,
+        "expires_at": now + PROPOSAL_TTL_SECONDS,
+        "status": "pending",
+        "candidate": normalized,
+        "duplicates": duplicates,
+        "allow_duplicate": bool(allow_duplicate),
+        "import_mode": mode,
+        "pdf_url": pdf_url,
+        "collection_key": str(collection_key or "").strip(),
+    }
+    target = path or _proposal_path()
+    with _PROPOSAL_LOCK:
+        payload = _load_proposals(target)
+        payload["proposals"][proposal_id] = row
+        _save_proposals(target, payload)
+    return {
+        "proposal_id": proposal_id,
+        "approval_phrase": approval_phrase,
+        "expires_at": row["expires_at"],
+        "candidate": normalized,
+        "duplicates": duplicates,
+        "import_mode": mode,
+        "pdf_url": pdf_url or None,
+        "writes_performed": False,
+        "next_step": "Show this proposal to the user. Call approve_zotero_import only after explicit approval.",
+    }
+
+
+def claim_import_proposal(
+    proposal_id: str, approval_phrase: str, *, path: Path | None = None,
+) -> dict[str, Any]:
+    """Atomically claim one approved proposal so retries cannot duplicate it."""
+    target = path or _proposal_path()
+    with _PROPOSAL_LOCK:
+        payload = _load_proposals(target)
+        row = payload["proposals"].get(str(proposal_id))
+        if not isinstance(row, dict):
+            raise KeyError("import proposal not found")
+        if row.get("status") != "pending":
+            raise ValueError(f"import proposal is already {row.get('status')}")
+        if int(row.get("expires_at") or 0) < int(time.time()):
+            row["status"] = "expired"
+            _save_proposals(target, payload)
+            raise ValueError("import proposal has expired")
+        actual = hashlib.sha256(str(approval_phrase).encode()).hexdigest()
+        if not secrets.compare_digest(actual, str(row.get("approval_phrase_sha256") or "")):
+            raise ValueError("approval phrase does not match the proposal")
+        row["status"] = "executing"
+        row["execution_started_at"] = int(time.time())
+        _save_proposals(target, payload)
+        return dict(row)
+
+
+def finish_import_proposal(
+    proposal_id: str, status: str, result: Mapping[str, Any], *, path: Path | None = None,
+) -> None:
+    target = path or _proposal_path()
+    with _PROPOSAL_LOCK:
+        payload = _load_proposals(target)
+        row = payload["proposals"].get(str(proposal_id))
+        if isinstance(row, dict):
+            row["status"] = status
+            row["finished_at"] = int(time.time())
+            row["result"] = dict(result)
+            _save_proposals(target, payload)
+
+
+def _item_type(candidate: Mapping[str, Any]) -> str:
+    value = str(candidate.get("resource_type") or "").casefold()
+    if any(token in value for token in ("journal", "article", "論文", "紀要")):
+        return "journalArticle"
+    if any(token in value for token in ("thesis", "dissertation", "学位")):
+        return "thesis"
+    if "conference" in value:
+        return "conferencePaper"
+    return "book" if any(token in value for token in ("book", "図書")) else "document"
+
+
+def _identifier(candidate: Mapping[str, Any], name: str) -> str:
+    value = (candidate.get("identifiers") or {}).get(name)
+    if isinstance(value, list):
+        value = value[0] if value else ""
+    return str(value or "").strip()
+
+
+def _zotero_items(row: Mapping[str, Any]) -> tuple[str, str, list[dict[str, Any]]]:
+    candidate = row["candidate"]
+    parent_key = "".join(secrets.choice(_KEY_ALPHABET) for _ in range(8))
+    attachment_key = "".join(secrets.choice(_KEY_ALPHABET) for _ in range(8))
+    collections = [row["collection_key"]] if row.get("collection_key") else []
+    item_type = _item_type(candidate)
+    parent = {
+        "key": parent_key,
+        "itemType": item_type,
+        "title": candidate["title"],
+        "creators": [{"creatorType": "author", "name": name} for name in candidate["creators"]],
+        "date": candidate["date"],
+        "url": candidate["landing_url"],
+        "libraryCatalog": candidate["source"],
+        "collections": collections,
+        "tags": [{"tag": "agent-approved-import"}],
+        "relations": {},
+    }
+    if item_type == "book":
+        parent.update({"publisher": candidate["publisher"], "ISBN": _identifier(candidate, "isbn")})
+    elif item_type == "journalArticle":
+        parent.update({
+            "publicationTitle": candidate["container_title"],
+            "DOI": _identifier(candidate, "doi"), "ISSN": _identifier(candidate, "issn"),
+        })
+    attachment = {
+        "key": attachment_key,
+        "itemType": "attachment",
+        "parentItem": parent_key,
+        "linkMode": "imported_file" if row["import_mode"] == "pdf" else "linked_url",
+        "title": "Full Text PDF" if row["import_mode"] == "pdf" else "Source URL",
+        "url": row.get("pdf_url") or candidate["landing_url"],
+        "contentType": "application/pdf" if row["import_mode"] == "pdf" else "text/html",
+        "filename": f"{parent_key}.pdf" if row["import_mode"] == "pdf" else "",
+        "tags": [], "collections": [], "relations": {},
+    }
+    return parent_key, attachment_key, [parent, attachment]
+
+
+class ZoteroLocalWriter:
+    """Local API writer whose authorization always comes from Zotero's native dialog."""
+
+    def __init__(self, *, transport: httpx.AsyncBaseTransport | None = None, timeout: float = 120.0):
+        self.base = local_api_base()
+        self.prefix = local_api_prefix()
+        self.transport = transport
+        self.timeout = timeout
+        self.server_id = ""
+        self.write_key = ""
+        self.remember_key = False
+
+    def _client(self) -> httpx.AsyncClient:
+        return httpx.AsyncClient(timeout=self.timeout, transport=self.transport)
+
+    async def _server(self) -> None:
+        async with self._client() as client:
+            response = await client.get(f"{self.base}/", headers=zotero_api_headers())
+        response.raise_for_status()
+        self.server_id = str(response.headers.get("Zotero-Server-ID") or "")
+        if not self.server_id:
+            raise RuntimeError("Zotero Local API did not return Zotero-Server-ID")
+
+    async def _authorize(self) -> None:
+        if not self.server_id:
+            await self._server()
+        async with self._client() as client:
+            response = await client.post(
+                f"{self.base}/local/authorize",
+                headers=zotero_api_headers(**{
+                    "Content-Type": "application/json", "Zotero-Server-ID": self.server_id,
+                }),
+                json={"appName": "zotero-local-rag"},
+            )
+        response.raise_for_status()
+        payload = response.json()
+        self.write_key = str(payload.get("key") or "")
+        self.remember_key = bool(payload.get("remember"))
+        if not self.write_key:
+            raise RuntimeError("Zotero did not grant a local write key")
+
+    async def _write(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
+        extra_headers = dict(kwargs.pop("headers", {}))
+        for attempt in range(2):
+            if not self.write_key:
+                await self._authorize()
+            headers = zotero_api_headers(self.write_key, **{
+                "Zotero-Server-ID": self.server_id, **extra_headers,
+            })
+            async with self._client() as client:
+                response = await client.request(method, url, headers=headers, **kwargs)
+            if response.status_code != 401 or attempt:
+                response.raise_for_status()
+                if not self.remember_key:
+                    self.write_key = ""
+                return response
+            self.write_key = ""
+        raise RuntimeError("Zotero write authorization failed")
+
+    async def create_items(self, items: list[dict[str, Any]]) -> dict[str, Any]:
+        token = secrets.token_hex(16)
+        response = await self._write(
+            "POST", f"{self.base}/{self.prefix}/items", json=items,
+            headers={"Content-Type": "application/json", "Zotero-Write-Token": token},
+        )
+        payload = response.json()
+        failed = payload.get("failed") or {}
+        if failed:
+            raise RuntimeError(f"Zotero rejected imported items: {failed}")
+        return payload
+
+    async def upload_file(self, attachment_key: str, file_path: Path) -> None:
+        content = file_path.read_bytes()
+        digest = hashlib.md5(content, usedforsecurity=False).hexdigest()
+        endpoint = f"{self.base}/{self.prefix}/items/{attachment_key}/file"
+        request = await self._write(
+            "POST", endpoint,
+            data={
+                "md5": digest, "filename": file_path.name,
+                "filesize": str(len(content)), "mtime": str(int(file_path.stat().st_mtime * 1000)),
+            },
+            headers={"If-None-Match": "*"},
+        )
+        payload = request.json()
+        if payload.get("exists"):
+            return
+        upload_url = str(payload.get("url") or "")
+        upload_key = str(payload.get("uploadKey") or "")
+        if not upload_url or not upload_key:
+            raise RuntimeError("Zotero file upload authorization was incomplete")
+        async with self._client() as client:
+            uploaded = await client.post(
+                urljoin(self.base + "/", upload_url),
+                content=content,
+                headers={"Content-Type": payload.get("contentType") or "application/pdf"},
+            )
+        uploaded.raise_for_status()
+        await self._write("POST", endpoint, data={"upload": upload_key}, headers={"If-None-Match": "*"})
+
+
+async def download_candidate_pdf(row: Mapping[str, Any], destination: Path) -> Path:
+    url = str(row.get("pdf_url") or "")
+    allowed = SOURCE_DOWNLOAD_HOSTS.get(str(row["candidate"].get("source") or ""), frozenset())
+    for _hop in range(6):
+        parsed = urlparse(url)
+        if parsed.scheme != "https" or (parsed.hostname or "").casefold() not in allowed:
+            raise ValueError("PDF download redirected outside the candidate source allowlist")
+        async with httpx.AsyncClient(timeout=120, follow_redirects=False) as client:
+            response = await client.get(url)
+        if response.is_redirect:
+            url = str(response.next_request.url) if response.next_request else ""
+            continue
+        response.raise_for_status()
+        if len(response.content) > MAX_PDF_BYTES:
+            raise ValueError("candidate PDF exceeds the import size limit")
+        if not response.content.startswith(b"%PDF-"):
+            raise ValueError("candidate download is not a PDF")
+        destination.write_bytes(response.content)
+        return destination
+    raise ValueError("candidate PDF redirected too many times")
+
+
+async def execute_import(row: Mapping[str, Any], *, writer: ZoteroLocalWriter | None = None) -> dict[str, Any]:
+    parent_key, attachment_key, items = _zotero_items(row)
+    active_writer = writer or ZoteroLocalWriter()
+    temporary: Path | None = None
+    try:
+        if row["import_mode"] == "pdf":
+            suffix = mimetypes.guess_extension("application/pdf") or ".pdf"
+            handle, name = tempfile.mkstemp(prefix="zotero-import-", suffix=suffix)
+            os.close(handle)
+            temporary = Path(name)
+            await download_candidate_pdf(row, temporary)
+            items[1]["filename"] = temporary.name
+        await active_writer.create_items(items)
+        if temporary is not None:
+            await active_writer.upload_file(attachment_key, temporary)
+        return {
+            "item_key": parent_key,
+            "attachment_key": attachment_key,
+            "import_mode": row["import_mode"],
+            "file_uploaded": temporary is not None,
+            "writes_performed": True,
+        }
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+__all__ = [
+    "ZoteroLocalWriter", "claim_import_proposal", "create_import_proposal",
+    "download_candidate_pdf", "execute_import", "finish_import_proposal",
+]

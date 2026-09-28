@@ -461,4 +461,13 @@ active V3はM5 clean rebuildと後続の対象修復を完了した監査済み�
 - 新規の未到達防御分岐2件（PyMuPDF詳細辞書の例外fallback、re-OCR構造fingerprint不一致）
   は直接テストを追加した。
 - macOSでは追加後に旧上限へ戻る一方、Linuxでは既存の任意依存・環境分岐により
-  `pdf_extract.py` がさらに3文、`text_utils.py` が1文未到達になるため、その差だけ上限を補正した。
+  `pdf_extract.py` がさらに4文、`text_utils.py` が1文未到達になるため、その差だけ上限を補正した。
+
+# 2026-09-29 承認付きZotero収録
+
+- `propose_zotero_import`は候補と重複検査結果を24時間固定し、保存しない承認句を返す。外部書込みなし。
+- `approve_zotero_import`は承認句の完全一致、単回claim、直前重複再検査、Zotero Local APIの
+  native runtime authorizationを経てmetadataまたはPDFを追加する。
+- PDFはsource別HTTPS allowlist、250MB、`%PDF-`を検証し、Zoteroの3段階upload後に
+  `index_from_zotero.py --item ... --force-reparse`で対象だけ索引化する。
+- proposal状態は既定で`data/zotero_import_proposals.json`（gitignore対象のdata配下）へ保存する。

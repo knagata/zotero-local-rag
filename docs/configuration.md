@@ -59,6 +59,7 @@ APIキー入力には非表示入力を使い、入力直前にもその旨を�
 | `EMB_DEVICE` | `cpu`、`mps`、`cuda` | 環境から選択 |
 | `HF_HUB_OFFLINE` | `1`でHugging Faceへの接続を禁止 | 任意 |
 | `CHROMA_HNSW_SYNC_THRESHOLD` | HNSW索引を永続化する頻度。大きくすると再取り込みが高速化する | `100` |
+| `ZOTERO_IMPORT_PROPOSALS_PATH` | 承認待ち収録提案の保存先 | `data/zotero_import_proposals.json` |
 
 `FEATURE_LEVEL`は管理用で、セキュリティ境界ではありません。
 

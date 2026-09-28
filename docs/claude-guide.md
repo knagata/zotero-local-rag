@@ -18,10 +18,10 @@
 - **`limit`**: 最大取得件数 (デフォルト `20`)。
 - **`qmode`**: 検索モード。`"titleCreatorYear"`（タイトル・著者・出版年のみを検索 - 推奨・超高速）または `"everything"`（添付ファイル本文を含むすべてを検索）。
 
-### `search_open_texts` / `inspect_open_text_candidate`（外部収書候補）
+### 外部収書候補と承認付きZotero収録
 
 NDLサーチ、J-STAGE、Open Library、CiNii Researchから文字資料を検索し、Zoteroへ収録する前の
-候補として提示します。どちらも読取専用で、Zotero登録、ファイル取得、索引更新は行いません。
+候補として提示します。検索・検査・提案までは読取専用です。
 
 - `search_open_texts(query, sources, limit_per_source, search_mode)`: 外部書誌を横断検索します。
   `sources`は`ndl`、`jstage`、`openlibrary`、`cinii`です。CiNiiだけは`CINII_APP_ID`が必要です。
@@ -31,10 +31,17 @@ NDLサーチ、J-STAGE、Open Library、CiNii Researchから文字資料を検�
   確認できます。
 - `inspect_open_text_candidate(candidate)`: 検索結果1件について書誌情報の不足、本文公開状態、
   Zotero内の同名候補を確認します。
+- `propose_zotero_import(candidate, import_mode, collection_key, allow_duplicate)`: 検査済み候補を
+  24時間有効な変更不能の提案として保存し、ユーザーへ示す承認句を返します。ここでは書き込みません。
+  `import_mode`は`metadata`または`pdf`です。重複候補がある場合は、ユーザーが確認した後に限り
+  `allow_duplicate=true`で提案できます。
+- `approve_zotero_import(proposal_id, approval_phrase)`: ユーザーが提案の承認句を明示した場合だけ
+  呼び出します。提案は1回だけ実行でき、Zotero本体もAllow / Always Allow / Denyダイアログを
+  表示します。PDF収録が成功した場合は、その資料だけRAG索引へ追加します。
 
 Claudeは学位、掲載誌、所属、引用数、文章の流暢さだけで品質を断定しません。確認できた本文範囲、
 具体的な推薦理由、留意点を示し、引用情報の欠落は「不明」として扱います。収録する場合も、候補を
-ユーザーへ提示して明示的な判断を求めます。
+ユーザーへ提示して明示的な判断を求めます。「はい」だけを承認句の代わりに補完してはいけません。
 
 NDL検索は短時間キャッシュされ、同時呼出しを直列化します。HTTP 429では`Retry-After`を尊重して
 限定回数だけ再試行し、それでも失敗した場合はほかのサービスの結果を保持したままエラーを表示します。

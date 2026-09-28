@@ -20,6 +20,8 @@ def test_create_mcp_preserves_tools_and_returns_distinct_servers():
     assert "rag_search" in _tool_names(first)
     assert "search_open_texts" in _tool_names(first)
     assert "inspect_open_text_candidate" in _tool_names(first)
+    assert "propose_zotero_import" in _tool_names(first)
+    assert "approve_zotero_import" in _tool_names(first)
 
 
 def test_external_discovery_tools_are_read_only_and_check_duplicates(monkeypatch):
@@ -67,3 +69,40 @@ def test_external_discovery_tools_are_read_only_and_check_duplicates(monkeypatch
         assert "must not be empty" in str(exc)
     else:
         raise AssertionError("empty external query must be rejected")
+
+
+def test_zotero_import_tools_separate_proposal_from_approved_write(monkeypatch):
+    candidate = {
+        "source": "ndl", "title": "New book",
+        "landing_url": "https://ndlsearch.ndl.go.jp/books/example",
+    }
+    calls = []
+
+    async def fake_inspect(value):
+        return {"zotero_duplicates": [], "candidate": value, "writes_performed": False}
+
+    def fake_create(value, duplicates, **kwargs):
+        calls.append(("propose", value, duplicates, kwargs))
+        return {"proposal_id": "P1", "approval_phrase": "IMPORT P1", "writes_performed": False}
+
+    def fake_claim(proposal_id, phrase):
+        calls.append(("claim", proposal_id, phrase))
+        return {"candidate": candidate, "import_mode": "metadata", "allow_duplicate": False}
+
+    async def fake_execute(row):
+        calls.append(("write", row))
+        return {"item_key": "ITEM1", "import_mode": "metadata", "writes_performed": True}
+
+    monkeypatch.setattr(server, "inspect_open_text_candidate", fake_inspect)
+    monkeypatch.setattr(server, "create_import_proposal", fake_create)
+    monkeypatch.setattr(server, "claim_import_proposal", fake_claim)
+    monkeypatch.setattr(server, "execute_import", fake_execute)
+    monkeypatch.setattr(server, "finish_import_proposal", lambda *args: calls.append(("finish", args)))
+
+    proposed = asyncio.run(server.propose_zotero_import(candidate))
+    approved = asyncio.run(server.approve_zotero_import("P1", "IMPORT P1"))
+
+    assert proposed["writes_performed"] is False
+    assert approved["writes_performed"] is True
+    assert approved["indexing"]["status"] == "not_applicable"
+    assert [call[0] for call in calls] == ["propose", "claim", "write", "finish"]
