@@ -1,5 +1,11 @@
 # Tasks
 
+## 2026-09-28 summary freshness excludes empty structures
+
+- [x] **階層要約の実候補と管理画面の件数を一致させる。** `rag:exclude`で本文・nodeが0件になったitemも
+  空の`unavailable`構造ヘッダとstale summary状態を持つため、要約監査だけが更新候補として数えていた。
+  監査対象を1件以上の構造nodeを持つitemに限定し、本文起点の実バッチ選択と一致させた。
+
 ## 2026-09-28 Laokoon RAG exclusion
 
 - [x] **LaokoonのPDF添付をRAGから除外。** Zotero添付へ`rag:exclude`を付与後、除外同期を実行した。

@@ -14,6 +14,15 @@ def _connection():
     return connection
 
 
+def _empty_structure_connection():
+    connection = MagicMock()
+    connection.execute.side_effect = [
+        MagicMock(fetchall=MagicMock(return_value=[])),
+        MagicMock(fetchall=MagicMock(return_value=[("EXCLUDED", "stale")])),
+    ]
+    return connection
+
+
 def _summary_row():
     return {
         "node_id": "node-1",
@@ -108,3 +117,27 @@ def test_summary_audit_rejects_stale_index_content_with_same_id():
         report = audit_structure_summaries.build_report(collection_name="v3")
     assert report["passed"] is False
     assert "summary_index_content_mismatch" in report["failures"]
+
+
+def test_summary_audit_ignores_status_for_structure_without_nodes():
+    collection = MagicMock()
+    collection.get.return_value = {"ids": [], "documents": [], "metadatas": []}
+    client = MagicMock()
+    client.get_collection.return_value = collection
+    with (
+        patch.object(
+            audit_structure_summaries,
+            "get_db_connection",
+            return_value=_empty_structure_connection(),
+        ),
+        patch.object(
+            audit_structure_summaries,
+            "get_all_document_node_summaries",
+            return_value=[],
+        ),
+        patch.object(audit_structure_summaries.chromadb, "PersistentClient", return_value=client),
+    ):
+        report = audit_structure_summaries.build_report(collection_name="v3")
+    assert report["passed"] is True
+    assert report["counts"]["structures"] == 0
+    assert report["details"]["failed_status_items"] == []

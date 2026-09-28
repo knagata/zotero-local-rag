@@ -2,6 +2,11 @@
 
 Updated: 2026-09-28
 
+## 2026-09-28 summary freshness excludes empty structures
+
+- 管理画面の階層要約件数が、本文・node 0件の`rag:exclude` itemも空の構造ヘッダとstale summary状態だけで
+  1件と数えていた。要約監査を1件以上の構造nodeを持つitemに限定し、本文起点の実バッチ候補と一致させた。
+
 ## 2026-09-28 Laokoon RAG exclusion
 
 - ZoteroのLaokoon PDF添付へ`rag:exclude`を付与し、除外同期済み。manifest、本文・要約Chroma、FTS、

@@ -22,14 +22,18 @@ from src.summary_core import is_meta_summary
 from src.v3_data_plane import V3_COLLECTION
 
 
-def build_report(*, collection_name: str) -> dict:
+def _eligible_structures_and_statuses() -> tuple[dict[str, str], dict[str, str]]:
     connection = get_db_connection()
     try:
         structures = {
             str(row[0]): str(row[1])
-            for row in connection.execute(
-                "SELECT item_key, source_fingerprint FROM document_structures"
-            ).fetchall()
+            for row in connection.execute("""
+                SELECT s.item_key, s.source_fingerprint
+                FROM document_structures AS s
+                WHERE EXISTS (
+                    SELECT 1 FROM document_nodes AS n WHERE n.item_key = s.item_key
+                )
+            """).fetchall()
         }
         statuses = {
             str(row[0]): str(row[1])
@@ -38,8 +42,13 @@ def build_report(*, collection_name: str) -> dict:
                 "WHERE artifact_type='summary'"
             ).fetchall()
         }
+        return structures, statuses
     finally:
         connection.close()
+
+
+def build_report(*, collection_name: str) -> dict:
+    structures, statuses = _eligible_structures_and_statuses()
 
     rows = get_all_document_node_summaries()
     failures: list[str] = []
@@ -50,7 +59,8 @@ def build_report(*, collection_name: str) -> dict:
     )
     stale_rows = sorted({
         str(row["item_key"]) for row in rows
-        if str(row.get("source_fingerprint") or "") != structures.get(str(row["item_key"]), "")
+        if str(row["item_key"]) in structures
+        and str(row.get("source_fingerprint") or "") != structures[str(row["item_key"])]
     })
     stale_prompt_rows = sorted({
         str(row["node_id"]) for row in rows
