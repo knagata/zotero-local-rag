@@ -120,6 +120,24 @@ class DetectLanguageTests(unittest.TestCase):
         self.assertTrue(quality["structured_listing"])
         self.assertEqual(quality["content_corruption_score"], 0.0)
 
+    def test_short_readable_page_is_not_classified_as_unscanned(self):
+        for text in (
+            "育種技師の自民族中心主義 永井威三郎と朝鮮",
+            "Chapter Four The Green Revolution in Taiwan",
+            "科学的な手法で開発された品種の特質は、こうしたものによっても支えられていた。",
+        ):
+            with self.subTest(text=text):
+                quality = analyze_text_quality(text)
+                self.assertTrue(quality["readable_sparse_text"])
+                self.assertFalse(quality["is_scanned"])
+
+    def test_sparse_symbol_noise_remains_suspicious(self):
+        for text in ("…… ・・・ 123", "□□□□ □□□□", "A-1"):
+            with self.subTest(text=text):
+                quality = analyze_text_quality(text)
+                self.assertFalse(quality["readable_sparse_text"])
+                self.assertTrue(quality["is_scanned"])
+
 
 if __name__ == "__main__":
     unittest.main()

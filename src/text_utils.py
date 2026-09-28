@@ -564,6 +564,25 @@ def _looks_like_structured_listing(text: str) -> bool:
     return explicit_region or leader_dots or (table_signal and digit_ratio >= 0.08)
 
 
+def _looks_like_readable_sparse_text(text: str) -> bool:
+    """Distinguish short readable text from an image-only extraction result.
+
+    Chapter openers, half-empty chapter endings and colophons can contain less
+    than 80 characters while still having a perfectly usable OCR text layer.
+    Length alone must not send those pages to OCR again.  Keep this deliberately
+    narrow: symbol/control-character output and tiny labels remain suspicious.
+    """
+    compact = "".join(str(text or "").split())
+    if len(compact) < 8 or "\ufffd" in compact or looks_like_gibberish(compact):
+        return False
+    letters = sum(ch.isalpha() for ch in compact)
+    return (
+        letters >= 8
+        and letters / len(compact) >= 0.5
+        and _control_char_ratio(compact) <= 0.02
+    )
+
+
 def analyze_text_quality(text: str) -> Dict[str, Any]:
     """
     Analyse page text quality and return scores + derived classifications.
@@ -588,7 +607,10 @@ def analyze_text_quality(text: str) -> Dict[str, Any]:
     t = text.strip()
 
     # --- Scan score: how likely is this page unscanned (image-only)? ---
-    if len(t) < 40:
+    readable_sparse_text = _looks_like_readable_sparse_text(t)
+    if len(t) < 80 and readable_sparse_text:
+        scan_score = 0.4
+    elif len(t) < 40:
         scan_score = 1.0
     elif len(t) < 80:
         scan_score = 0.8
@@ -663,6 +685,7 @@ def analyze_text_quality(text: str) -> Dict[str, Any]:
         "content_corruption_score": round(content_score, 3),
         "corruption_score": round(corruption_score, 3),
         "structured_listing": structured_listing,
+        "readable_sparse_text": readable_sparse_text,
         "is_scanned": scan_score >= SCAN_THRESHOLD,
         "is_corrupted": corruption_score >= CORRUPTION_THRESHOLD,
         "corruption_type": corruption_type,

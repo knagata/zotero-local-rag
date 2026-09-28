@@ -9,6 +9,13 @@ Updated: 2026-09-28
   `EMB_DEVICE=mps`を明記した。MPS availabilityはtrue、関連59テスト合格、Remote MCP再起動後の
   local/public OAuth healthはいずれも正常。埋め込みモデル・次元・fingerprintは変更していない。
 
+## 2026-09-28 readable sparse OCR pages
+
+- 80字未満という長さだけで章扉・短い章末を未解決スキャン頁に数えていた。十分な文字率、制御文字なし、
+  文字化けなしを満たす短文は正常なOCR文字層として保持し、空画像・短いラベル・記号ノイズは従来どおり
+  疑わしい頁とする。文書全体の2%許容値は変更しない。対象PDFは再判定で未解決scan頁7→0、対象限定
+  再取込後にextraction success、203頁・2,362 chunk・90,585字、未解決artifact全体は2→1となった。
+
 ## 2026-09-27 coverage budget platform correction
 
 - macOSにだけある任意依存で到達した既存分岐までcoverage予算を縮め、Linux CIで5モジュールが
