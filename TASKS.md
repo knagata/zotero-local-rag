@@ -2096,3 +2096,6 @@ A（PDF構造化）・B（課金LLM）は独立、C（構造抽出エンジン�
 
 - [x] **韓国語本文を英語破損と誤判定しない。** Hangul比率20%以上の本文には英語common-word
   欠落規則を適用せず、正常な韓国語PDFを`content_corruption`へ分類しない真偽テストを追加する。
+- [x] **対象修復後の索引公開を復旧する。** 韓国語PDFと新規Leow添付を対象索引化し、Chromaにのみ
+  あった85 IDを既存repair経路でFTSへ補完、HNSW実queryを検証した。DB監査は616/616・失敗0・
+  global failure 0で合格した。

@@ -514,3 +514,6 @@ active V3はM5 clean rebuildと後続の対象修復を完了した監査済み�
 - 24ページの`content_corruption=0.6`は、Hangul主体の本文へ英語common-word欠落規則を適用した
   誤検知。Hangul比率20%以上なら同規則を適用しない。2文字の韓国語語句がFTSで0件になるのは
   trigram tokenizerの別制約であり、この品質修正には混ぜない。
+- 親item `5GLU7NDK`で対象再取込し、F4RRNSZZは28頁・109 chunk・corrupted 0へ更新した。監査で
+  新規Leow添付の未索引を検出して対象索引化し、Chromaのみの85 IDをFTSへ補完、HNSWを検証した。
+  最終cutoverは616/616、failed 0、global failures 0で合格した。

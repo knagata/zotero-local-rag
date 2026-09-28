@@ -202,8 +202,6 @@ def _latin_ratio(text: str) -> float:
 
 def _hangul_ratio(text: str) -> float:
     """Return ratio of Hangul letters and syllables in non-whitespace text."""
-    if not text:
-        return 0.0
     significant = [ch for ch in text if not ch.isspace()]
     hangul = sum(
         1 for ch in significant
