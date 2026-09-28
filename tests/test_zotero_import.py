@@ -87,7 +87,7 @@ def test_epub_proposal_and_structure_validation(tmp_path):
         zotero_import._validate_download(b"PK-not-really-a-zip", "epub")
 
 
-def test_preassigned_parent_and_attachment_keys_are_explicitly_new():
+def test_new_parent_and_attachment_have_no_preassigned_identity():
     row = {
         "candidate": zotero_import._candidate_payload(candidate()),
         "collection_key": "",
@@ -95,13 +95,11 @@ def test_preassigned_parent_and_attachment_keys_are_explicitly_new():
         "download_url": candidate()["download_urls"][0],
     }
 
-    parent_key, attachment_key, items = zotero_import._zotero_items(row)
+    parent, attachment = zotero_import._zotero_items(row)
 
-    assert items[0]["key"] == parent_key
-    assert items[0]["version"] == 0
-    assert items[1]["key"] == attachment_key
-    assert items[1]["version"] == 0
-    assert items[1]["parentItem"] == parent_key
+    assert "key" not in parent and "version" not in parent
+    assert "key" not in attachment and "version" not in attachment
+    assert "parentItem" not in attachment
 
 
 def test_expired_proposal_cannot_be_claimed(tmp_path, monkeypatch):
@@ -301,15 +299,22 @@ def test_download_allows_cross_origin_https_redirect(tmp_path, monkeypatch):
 
 def test_execute_epub_import_uploads_and_removes_temporary_file(monkeypatch):
     paths = []
+    created = []
 
     class Writer:
         async def create_items(self, items):
-            assert items[0]["tags"] == [{"tag": "AI-added"}]
-            assert items[1]["contentType"] == "application/epub+zip"
-            assert items[1]["filename"].endswith(".epub")
+            created.append(items[0])
+            if len(created) == 1:
+                assert items[0]["tags"] == [{"tag": "AI-added"}]
+                assert "parentItem" not in items[0]
+                return {"successful": {"0": {"key": "PARENT01"}}}
+            assert items[0]["contentType"] == "application/epub+zip"
+            assert items[0]["filename"].endswith(".epub")
+            assert items[0]["parentItem"] == "PARENT01"
+            return {"successful": {"0": {"key": "ATTACH01"}}}
 
         async def upload_file(self, attachment_key, file_path):
-            assert len(attachment_key) == 8
+            assert attachment_key == "ATTACH01"
             assert file_path.read_bytes() == b"validated epub"
             paths.append(file_path)
 
@@ -334,7 +339,10 @@ def test_execute_epub_import_uploads_and_removes_temporary_file(monkeypatch):
     result = asyncio.run(zotero_import.execute_import(row, writer=Writer()))
 
     assert result["import_mode"] == "epub"
+    assert result["item_key"] == "PARENT01"
+    assert result["attachment_key"] == "ATTACH01"
     assert result["file_uploaded"] is True
+    assert len(created) == 2
     assert paths and not paths[0].exists()
 
 

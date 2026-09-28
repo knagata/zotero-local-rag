@@ -30,7 +30,6 @@ SUPPORTED_IMPORT_MODES = frozenset({"metadata", "pdf", "epub"})
 AI_ADDED_TAG = "AI-added"
 _PROPOSAL_LOCK = threading.Lock()
 _AUTH_LOCK = threading.Lock()
-_KEY_ALPHABET = "23456789ABCDEFGHIJKLMNPQRSTUVWXYZ"
 
 
 def _proposal_path() -> Path:
@@ -242,15 +241,11 @@ def _identifier(candidate: Mapping[str, Any], name: str) -> str:
     return str(value or "").strip()
 
 
-def _zotero_items(row: Mapping[str, Any]) -> tuple[str, str, list[dict[str, Any]]]:
+def _zotero_items(row: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
     candidate = row["candidate"]
-    parent_key = "".join(secrets.choice(_KEY_ALPHABET) for _ in range(8))
-    attachment_key = "".join(secrets.choice(_KEY_ALPHABET) for _ in range(8))
     collections = [row["collection_key"]] if row.get("collection_key") else []
     item_type = _item_type(candidate)
     parent = {
-        "key": parent_key,
-        "version": 0,
         "itemType": item_type,
         "title": candidate["title"],
         "creators": [{"creatorType": "author", "name": name} for name in candidate["creators"]],
@@ -275,18 +270,24 @@ def _zotero_items(row: Mapping[str, Any]) -> tuple[str, str, list[dict[str, Any]
         "pdf": "application/pdf", "epub": "application/epub+zip",
     }.get(mode, "text/html")
     attachment = {
-        "key": attachment_key,
-        "version": 0,
         "itemType": "attachment",
-        "parentItem": parent_key,
         "linkMode": "imported_file" if has_file else "linked_url",
         "title": f"Full Text {mode.upper()}" if has_file else "Source URL",
         "url": row.get("download_url") or row.get("pdf_url") or candidate["landing_url"],
         "contentType": content_type,
-        "filename": f"{parent_key}.{extension}" if has_file else "",
+        "filename": f"full-text.{extension}" if has_file else "",
         "tags": [], "collections": [], "relations": {},
     }
-    return parent_key, attachment_key, [parent, attachment]
+    return parent, attachment
+
+
+def _created_key(payload: Mapping[str, Any]) -> str:
+    successful = payload.get("successful") or {}
+    item = successful.get("0") or successful.get(0) or {}
+    key = str(item.get("key") or "") if isinstance(item, Mapping) else ""
+    if not key:
+        raise RuntimeError("Zotero created an item but did not return its key")
+    return key
 
 
 class ZoteroLocalWriter:
@@ -473,7 +474,7 @@ async def download_candidate_file(row: Mapping[str, Any], destination: Path) -> 
 
 
 async def execute_import(row: Mapping[str, Any], *, writer: ZoteroLocalWriter | None = None) -> dict[str, Any]:
-    parent_key, attachment_key, items = _zotero_items(row)
+    parent, attachment = _zotero_items(row)
     active_writer = writer or ZoteroLocalWriter()
     temporary: Path | None = None
     try:
@@ -486,8 +487,10 @@ async def execute_import(row: Mapping[str, Any], *, writer: ZoteroLocalWriter | 
             os.close(handle)
             temporary = Path(name)
             await download_candidate_file(row, temporary)
-            items[1]["filename"] = temporary.name
-        await active_writer.create_items(items)
+            attachment["filename"] = temporary.name
+        parent_key = _created_key(await active_writer.create_items([parent]))
+        attachment["parentItem"] = parent_key
+        attachment_key = _created_key(await active_writer.create_items([attachment]))
         if temporary is not None:
             await active_writer.upload_file(attachment_key, temporary)
         return {

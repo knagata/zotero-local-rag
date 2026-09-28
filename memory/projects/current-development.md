@@ -503,3 +503,6 @@ active V3はM5 clean rebuildと後続の対象修復を完了した監査済み�
   30秒で終了し、unlock後に`authorize_zotero_local.py`を実行するよう案内する。
 - 認可後のHarwood収録は親・添付とも428になった。親子参照用の事前keyを持つ新規itemに
   `version`がなかったためで、両方へ`version: 0`を追加した。
+- 続くHarwood試行では親・添付とも`primaryData not loaded for item (null/1/<key>)`になり、
+  Local APIは`version: 0`でも事前keyを新規作成として正常処理しなかった。事前keyを廃止し、
+  親作成→返却key取得→添付作成の二段階に変更した。

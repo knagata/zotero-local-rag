@@ -2088,3 +2088,6 @@ A（PDF構造化）・B（課金LLM）は独立、C（構造抽出エンジン�
   認可画面を操作できない場合は30秒で打ち切り、Macのunlockと補助コマンドを案内する。
 - [x] **事前採番した新規itemを新規作成として送る。** 同一request内で添付から親を参照するため
   親・添付のkeyは維持し、両方へ`version: 0`を付けてZoteroの428を解消する。
+- [x] **Local APIではZotero採番へ切り替える。** `version: 0`付き事前keyもLocal APIで
+  `primaryData not loaded`になったため、親をkeyなしで作成し、返却keyを使って添付をkeyなしで
+  作成する二段階フローへ変更する。Web API fallbackも同じ経路を使う。
