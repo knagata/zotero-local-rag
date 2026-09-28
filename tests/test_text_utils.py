@@ -111,6 +111,17 @@ class DetectLanguageTests(unittest.TestCase):
         self.assertTrue(quality["structured_listing"])
         self.assertEqual(quality["extraction_failure_score"], 0.0)
 
+    def test_readable_korean_is_not_scored_as_broken_english(self):
+        korean = (
+            "이 글은 식민지 제국의 신흥 콘체른 일본질소가 세운 도시 흥남을 중심으로 "
+            "제국의 식민지 개발과 공업화가 불러일으킨 노동자의 이동과 그 효과를 다룬다. "
+            "특히 다민족 구성 노동자들의 경험과 미나마타의 관계를 검토한다. "
+        ) * 3
+        quality = analyze_text_quality(korean)
+        self.assertEqual(quality["extraction_failure_score"], 0.0)
+        self.assertEqual(quality["content_corruption_score"], 0.0)
+        self.assertFalse(quality["is_corrupted"])
+
     def test_figure_credit_is_not_linguistic_corruption(self):
         caption = (
             "Richard Misrach, Abandoned Trailerhome, Mississippi River, 1998. "

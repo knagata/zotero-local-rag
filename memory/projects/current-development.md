@@ -506,3 +506,11 @@ active V3はM5 clean rebuildと後続の対象修復を完了した監査済み�
 - 続くHarwood試行では親・添付とも`primaryData not loaded for item (null/1/<key>)`になり、
   Local APIは`version: 0`でも事前keyを新規作成として正常処理しなかった。事前keyを廃止し、
   親作成→返却key取得→添付作成の二段階に変更した。
+
+# 2026-09-29 韓国語PDF品質判定
+
+- 報告された韓国語PDFを原本とFTSで監査した。28ページ全てに可読な埋込本文があり、索引にも
+  108チャンク存在する。水俣・移住労働者・日本窒素・興南工場の韓国語長語は検索可能だった。
+- 24ページの`content_corruption=0.6`は、Hangul主体の本文へ英語common-word欠落規則を適用した
+  誤検知。Hangul比率20%以上なら同規則を適用しない。2文字の韓国語語句がFTSで0件になるのは
+  trigram tokenizerの別制約であり、この品質修正には混ぜない。

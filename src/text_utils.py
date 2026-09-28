@@ -200,6 +200,22 @@ def _latin_ratio(text: str) -> float:
     return latin / max(total, 1)
 
 
+def _hangul_ratio(text: str) -> float:
+    """Return ratio of Hangul letters and syllables in non-whitespace text."""
+    if not text:
+        return 0.0
+    significant = [ch for ch in text if not ch.isspace()]
+    hangul = sum(
+        1 for ch in significant
+        if 0x1100 <= ord(ch) <= 0x11FF
+        or 0x3130 <= ord(ch) <= 0x318F
+        or 0xA960 <= ord(ch) <= 0xA97F
+        or 0xAC00 <= ord(ch) <= 0xD7AF
+        or 0xD7B0 <= ord(ch) <= 0xD7FF
+    )
+    return hangul / max(len(significant), 1)
+
+
 def detect_lang(text: str, hint: Optional[str] = None) -> str:
     """Return ``ja``, ``zh``, ``en``, or ``other`` using metadata then script ratios."""
     if hint:
@@ -639,6 +655,7 @@ def analyze_text_quality(text: str) -> Dict[str, Any]:
     content_score = 0.0
     if len(t) >= 200 and extraction_score < 0.5 and not structured_listing:
         is_cjk = is_no_space_language_document(t)
+        is_korean = _hangul_ratio(t) >= 0.20
 
         if is_cjk:
             cjk = _cjk_ratio(t)
@@ -652,7 +669,7 @@ def analyze_text_quality(text: str) -> Dict[str, Any]:
                         # Score based on how many particles are missing
                         found = sum(1 for p in particles if p in t)
                         content_score = 1.0 - (found / len(particles))
-        else:
+        elif not is_korean:
             t_lower = t.lower()
             common_words = {"the", "of", "and", "to", "in", "is", "that", "for",
                            "it", "on", "with", "as", "this", "by", "an", "at"}
