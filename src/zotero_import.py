@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import mimetypes
 import os
@@ -9,6 +10,7 @@ import secrets
 import tempfile
 import threading
 import time
+import zipfile
 from pathlib import Path
 from collections.abc import Mapping
 from typing import Any
@@ -23,8 +25,8 @@ except ImportError:
 
 
 PROPOSAL_TTL_SECONDS = 24 * 60 * 60
-MAX_PDF_BYTES = 250 * 1024 * 1024
-SUPPORTED_IMPORT_MODES = frozenset({"metadata", "pdf"})
+MAX_FULLTEXT_BYTES = 250 * 1024 * 1024
+SUPPORTED_IMPORT_MODES = frozenset({"metadata", "pdf", "epub"})
 SOURCE_DOWNLOAD_HOSTS = {
     "jstage": frozenset({"www.jstage.jst.go.jp", "jstage.jst.go.jp"}),
     "ndl": frozenset({"dl.ndl.go.jp", "ndlsearch.ndl.go.jp"}),
@@ -86,12 +88,20 @@ def _candidate_payload(candidate: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _direct_pdf_url(candidate: Mapping[str, Any]) -> str:
+def _direct_download_url(candidate: Mapping[str, Any], mode: str) -> str:
     source = str(candidate.get("source") or "")
     allowed = SOURCE_DOWNLOAD_HOSTS.get(source, frozenset())
     for value in candidate.get("download_urls") or []:
         parsed = urlparse(str(value))
-        if parsed.scheme == "https" and (parsed.hostname or "").casefold() in allowed:
+        path = parsed.path.casefold()
+        is_requested_format = (
+            mode == "pdf" and (path.endswith(".pdf") or "_pdf" in path)
+        ) or (mode == "epub" and path.endswith(".epub"))
+        if (
+            is_requested_format
+            and parsed.scheme == "https"
+            and (parsed.hostname or "").casefold() in allowed
+        ):
             return str(value)
     return ""
 
@@ -106,9 +116,9 @@ def create_import_proposal(
     mode = str(import_mode or "metadata").casefold()
     if mode not in SUPPORTED_IMPORT_MODES:
         raise ValueError(f"unsupported import_mode: {mode}")
-    pdf_url = _direct_pdf_url(normalized)
-    if mode == "pdf" and not pdf_url:
-        raise ValueError("candidate has no allowlisted direct PDF URL; use metadata mode")
+    download_url = _direct_download_url(normalized, mode) if mode != "metadata" else ""
+    if mode != "metadata" and not download_url:
+        raise ValueError(f"candidate has no allowlisted direct {mode.upper()} URL; use metadata mode")
     if duplicates and not allow_duplicate:
         raise ValueError("Zotero duplicate candidates exist; set allow_duplicate only after user review")
     proposal_id = secrets.token_hex(8)
@@ -124,7 +134,7 @@ def create_import_proposal(
         "duplicates": duplicates,
         "allow_duplicate": bool(allow_duplicate),
         "import_mode": mode,
-        "pdf_url": pdf_url,
+        "download_url": download_url,
         "collection_key": str(collection_key or "").strip(),
     }
     target = path or _proposal_path()
@@ -139,7 +149,7 @@ def create_import_proposal(
         "candidate": normalized,
         "duplicates": duplicates,
         "import_mode": mode,
-        "pdf_url": pdf_url or None,
+        "download_url": download_url or None,
         "writes_performed": False,
         "next_step": "Show this proposal to the user. Call approve_zotero_import only after explicit approval.",
     }
@@ -227,15 +237,21 @@ def _zotero_items(row: Mapping[str, Any]) -> tuple[str, str, list[dict[str, Any]
             "publicationTitle": candidate["container_title"],
             "DOI": _identifier(candidate, "doi"), "ISSN": _identifier(candidate, "issn"),
         })
+    mode = str(row["import_mode"])
+    has_file = mode in {"pdf", "epub"}
+    extension = mode if has_file else ""
+    content_type = {
+        "pdf": "application/pdf", "epub": "application/epub+zip",
+    }.get(mode, "text/html")
     attachment = {
         "key": attachment_key,
         "itemType": "attachment",
         "parentItem": parent_key,
-        "linkMode": "imported_file" if row["import_mode"] == "pdf" else "linked_url",
-        "title": "Full Text PDF" if row["import_mode"] == "pdf" else "Source URL",
-        "url": row.get("pdf_url") or candidate["landing_url"],
-        "contentType": "application/pdf" if row["import_mode"] == "pdf" else "text/html",
-        "filename": f"{parent_key}.pdf" if row["import_mode"] == "pdf" else "",
+        "linkMode": "imported_file" if has_file else "linked_url",
+        "title": f"Full Text {mode.upper()}" if has_file else "Source URL",
+        "url": row.get("download_url") or row.get("pdf_url") or candidate["landing_url"],
+        "contentType": content_type,
+        "filename": f"{parent_key}.{extension}" if has_file else "",
         "tags": [], "collections": [], "relations": {},
     }
     return parent_key, attachment_key, [parent, attachment]
@@ -341,26 +357,39 @@ class ZoteroLocalWriter:
         await self._write("POST", endpoint, data={"upload": upload_key}, headers={"If-None-Match": "*"})
 
 
-async def download_candidate_pdf(row: Mapping[str, Any], destination: Path) -> Path:
-    url = str(row.get("pdf_url") or "")
+def _validate_download(content: bytes, mode: str) -> None:
+    if len(content) > MAX_FULLTEXT_BYTES:
+        raise ValueError(f"candidate {mode.upper()} exceeds the import size limit")
+    if mode == "pdf":
+        if not content.startswith(b"%PDF-"):
+            raise ValueError("candidate download is not a PDF")
+        return
+    try:
+        with zipfile.ZipFile(io.BytesIO(content)) as archive:
+            if archive.read("mimetype") != b"application/epub+zip":
+                raise ValueError("candidate download has an invalid EPUB mimetype")
+    except (KeyError, zipfile.BadZipFile) as exc:
+        raise ValueError("candidate download is not an EPUB") from exc
+
+
+async def download_candidate_file(row: Mapping[str, Any], destination: Path) -> Path:
+    mode = str(row["import_mode"])
+    url = str(row.get("download_url") or row.get("pdf_url") or "")
     allowed = SOURCE_DOWNLOAD_HOSTS.get(str(row["candidate"].get("source") or ""), frozenset())
     for _hop in range(6):
         parsed = urlparse(url)
         if parsed.scheme != "https" or (parsed.hostname or "").casefold() not in allowed:
-            raise ValueError("PDF download redirected outside the candidate source allowlist")
+            raise ValueError(f"{mode.upper()} download redirected outside the candidate source allowlist")
         async with httpx.AsyncClient(timeout=120, follow_redirects=False) as client:
             response = await client.get(url)
         if response.is_redirect:
             url = str(response.next_request.url) if response.next_request else ""
             continue
         response.raise_for_status()
-        if len(response.content) > MAX_PDF_BYTES:
-            raise ValueError("candidate PDF exceeds the import size limit")
-        if not response.content.startswith(b"%PDF-"):
-            raise ValueError("candidate download is not a PDF")
+        _validate_download(response.content, mode)
         destination.write_bytes(response.content)
         return destination
-    raise ValueError("candidate PDF redirected too many times")
+    raise ValueError(f"candidate {mode.upper()} redirected too many times")
 
 
 async def execute_import(row: Mapping[str, Any], *, writer: ZoteroLocalWriter | None = None) -> dict[str, Any]:
@@ -368,12 +397,15 @@ async def execute_import(row: Mapping[str, Any], *, writer: ZoteroLocalWriter | 
     active_writer = writer or ZoteroLocalWriter()
     temporary: Path | None = None
     try:
-        if row["import_mode"] == "pdf":
-            suffix = mimetypes.guess_extension("application/pdf") or ".pdf"
+        if row["import_mode"] in {"pdf", "epub"}:
+            content_type = (
+                "application/pdf" if row["import_mode"] == "pdf" else "application/epub+zip"
+            )
+            suffix = mimetypes.guess_extension(content_type) or f".{row['import_mode']}"
             handle, name = tempfile.mkstemp(prefix="zotero-import-", suffix=suffix)
             os.close(handle)
             temporary = Path(name)
-            await download_candidate_pdf(row, temporary)
+            await download_candidate_file(row, temporary)
             items[1]["filename"] = temporary.name
         await active_writer.create_items(items)
         if temporary is not None:
@@ -392,5 +424,5 @@ async def execute_import(row: Mapping[str, Any], *, writer: ZoteroLocalWriter | 
 
 __all__ = [
     "ZoteroLocalWriter", "claim_import_proposal", "create_import_proposal",
-    "download_candidate_pdf", "execute_import", "finish_import_proposal",
+    "download_candidate_file", "execute_import", "finish_import_proposal",
 ]

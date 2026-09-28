@@ -2059,3 +2059,5 @@ A（PDF構造化）・B（課金LLM）は独立、C（構造抽出エンジン�
   upload、redirect拒否、MCP tool公開を自動テストで固定した。
 - [x] **Linux coverageを安定化する。** CI実行順で未到達になった既存citation更新のskip、
   DOI解決成功、mapper例外分岐を直接テストし、環境依存の偶然の到達に頼らないようにした。
+- [x] **EPUB添付にも対応する。** PDFと同じ承認・allowlist・容量制限・Zotero upload・
+  対象限定再索引を使い、ZIP内`mimetype`が`application/epub+zip`であることを検証する。

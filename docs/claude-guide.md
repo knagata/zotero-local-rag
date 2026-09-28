@@ -33,11 +33,11 @@ NDLサーチ、J-STAGE、Open Library、CiNii Researchから文字資料を検�
   Zotero内の同名候補を確認します。
 - `propose_zotero_import(candidate, import_mode, collection_key, allow_duplicate)`: 検査済み候補を
   24時間有効な変更不能の提案として保存し、ユーザーへ示す承認句を返します。ここでは書き込みません。
-  `import_mode`は`metadata`または`pdf`です。重複候補がある場合は、ユーザーが確認した後に限り
+  `import_mode`は`metadata`、`pdf`、`epub`です。重複候補がある場合は、ユーザーが確認した後に限り
   `allow_duplicate=true`で提案できます。
 - `approve_zotero_import(proposal_id, approval_phrase)`: ユーザーが提案の承認句を明示した場合だけ
   呼び出します。提案は1回だけ実行でき、Zotero本体もAllow / Always Allow / Denyダイアログを
-  表示します。PDF収録が成功した場合は、その資料だけRAG索引へ追加します。
+  表示します。PDF・EPUB収録が成功した場合は、その資料だけRAG索引へ追加します。
 
 Claudeは学位、掲載誌、所属、引用数、文章の流暢さだけで品質を断定しません。確認できた本文範囲、
 具体的な推薦理由、留意点を示し、引用情報の欠落は「不明」として扱います。収録する場合も、候補を

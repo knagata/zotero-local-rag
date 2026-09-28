@@ -1820,7 +1820,7 @@ async def propose_zotero_import(
 ) -> Dict[str, Any]:
     """Create an expiring, read-only Zotero import proposal.
 
-    ``import_mode`` is ``metadata`` or ``pdf``. The PDF mode is accepted only
+    ``import_mode`` is ``metadata``, ``pdf``, or ``epub``. File modes are accepted only
     for a direct HTTPS URL on the selected catalog's allowlist. Duplicate
     candidates block the proposal unless the user has reviewed them and
     ``allow_duplicate`` is explicitly true. This tool never writes to Zotero.
@@ -1868,7 +1868,7 @@ async def approve_zotero_import(proposal_id: str, approval_phrase: str) -> Dict[
         if new_duplicates and not row.get("allow_duplicate"):
             raise ValueError("Zotero duplicate candidates appeared after proposal creation")
         result = await execute_import(row)
-        if result["import_mode"] == "pdf":
+        if result["import_mode"] in {"pdf", "epub"}:
             result["indexing"] = await _index_imported_item(result["item_key"])
         else:
             result["indexing"] = {

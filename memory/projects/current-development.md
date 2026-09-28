@@ -473,3 +473,5 @@ active V3はM5 clean rebuildと後続の対象修復を完了した監査済み�
 - proposal状態は既定で`data/zotero_import_proposals.json`（gitignore対象のdata配下）へ保存する。
 - 新機能初回CIで`update_citations.py`の既存11文が実行順依存で未到達になったため、skip、
   DOI解決成功、mapper例外の3経路を直接テストへ固定した。coverage上限は緩めていない。
+- `import_mode=epub`を追加。allowlist内の`.epub`直接URLだけを受け入れ、ZIP内`mimetype`を
+  検証して`application/epub+zip`添付として保存し、PDF同様に対象限定で索引化する。

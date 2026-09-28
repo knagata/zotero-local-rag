@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
+import zipfile
 
 import httpx
 import pytest
@@ -30,7 +32,7 @@ def test_proposal_is_read_only_single_use_and_phrase_bound(tmp_path):
     proposal = zotero_import.create_import_proposal(candidate(), [], import_mode="pdf", path=path)
 
     assert proposal["writes_performed"] is False
-    assert proposal["pdf_url"].endswith("/_pdf")
+    assert proposal["download_url"].endswith("/_pdf")
     stored = json.loads(path.read_text())["proposals"][proposal["proposal_id"]]
     assert proposal["approval_phrase"] not in json.dumps(stored)
 
@@ -61,6 +63,28 @@ def test_proposal_blocks_duplicates_unless_reviewed_and_rejects_bad_pdf_url(tmp_
         zotero_import.create_import_proposal(
             unsafe, [], import_mode="pdf", path=tmp_path / "three.json",
         )
+
+
+def test_epub_proposal_and_structure_validation(tmp_path):
+    epub_candidate = candidate(
+        source="openlibrary",
+        landing_url="https://openlibrary.org/works/OL1W",
+        download_urls=["https://archive.org/download/book/book.epub"],
+        resource_type="book",
+    )
+    proposal = zotero_import.create_import_proposal(
+        epub_candidate, [], import_mode="epub", path=tmp_path / "epub.json",
+    )
+    assert proposal["download_url"].endswith(".epub")
+
+    payload = io.BytesIO()
+    with zipfile.ZipFile(payload, "w") as archive:
+        archive.writestr("mimetype", "application/epub+zip", compress_type=zipfile.ZIP_STORED)
+        archive.writestr("META-INF/container.xml", "<container/>")
+    zotero_import._validate_download(payload.getvalue(), "epub")
+
+    with pytest.raises(ValueError, match="not an EPUB"):
+        zotero_import._validate_download(b"PK-not-really-a-zip", "epub")
 
 
 def test_expired_proposal_cannot_be_claimed(tmp_path, monkeypatch):
@@ -131,9 +155,50 @@ def test_download_rejects_cross_origin_redirect(tmp_path, monkeypatch):
             )
 
     monkeypatch.setattr(zotero_import.httpx, "AsyncClient", lambda **kwargs: Client())
-    row = {"candidate": candidate(), "pdf_url": candidate()["download_urls"][0]}
+    row = {
+        "candidate": candidate(), "import_mode": "pdf",
+        "download_url": candidate()["download_urls"][0],
+    }
     with pytest.raises(ValueError, match="outside"):
-        asyncio.run(zotero_import.download_candidate_pdf(row, tmp_path / "file.pdf"))
+        asyncio.run(zotero_import.download_candidate_file(row, tmp_path / "file.pdf"))
+
+
+def test_execute_epub_import_uploads_and_removes_temporary_file(monkeypatch):
+    paths = []
+
+    class Writer:
+        async def create_items(self, items):
+            assert items[1]["contentType"] == "application/epub+zip"
+            assert items[1]["filename"].endswith(".epub")
+
+        async def upload_file(self, attachment_key, file_path):
+            assert len(attachment_key) == 8
+            assert file_path.read_bytes() == b"validated epub"
+            paths.append(file_path)
+
+    async def fake_download(row, destination):
+        assert row["import_mode"] == "epub"
+        destination.write_bytes(b"validated epub")
+        return destination
+
+    monkeypatch.setattr(zotero_import, "download_candidate_file", fake_download)
+    row = {
+        "candidate": zotero_import._candidate_payload(candidate(
+            source="openlibrary",
+            landing_url="https://openlibrary.org/works/OL1W",
+            download_urls=["https://archive.org/download/book/book.epub"],
+            resource_type="book",
+        )),
+        "collection_key": "",
+        "import_mode": "epub",
+        "download_url": "https://archive.org/download/book/book.epub",
+    }
+
+    result = asyncio.run(zotero_import.execute_import(row, writer=Writer()))
+
+    assert result["import_mode"] == "epub"
+    assert result["file_uploaded"] is True
+    assert paths and not paths[0].exists()
 
 
 def test_finish_records_terminal_result(tmp_path):
