@@ -87,6 +87,23 @@ def test_epub_proposal_and_structure_validation(tmp_path):
         zotero_import._validate_download(b"PK-not-really-a-zip", "epub")
 
 
+def test_preassigned_parent_and_attachment_keys_are_explicitly_new():
+    row = {
+        "candidate": zotero_import._candidate_payload(candidate()),
+        "collection_key": "",
+        "import_mode": "pdf",
+        "download_url": candidate()["download_urls"][0],
+    }
+
+    parent_key, attachment_key, items = zotero_import._zotero_items(row)
+
+    assert items[0]["key"] == parent_key
+    assert items[0]["version"] == 0
+    assert items[1]["key"] == attachment_key
+    assert items[1]["version"] == 0
+    assert items[1]["parentItem"] == parent_key
+
+
 def test_expired_proposal_cannot_be_claimed(tmp_path, monkeypatch):
     path = tmp_path / "proposals.json"
     monkeypatch.setattr(zotero_import.time, "time", lambda: 100)

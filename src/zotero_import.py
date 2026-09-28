@@ -250,6 +250,7 @@ def _zotero_items(row: Mapping[str, Any]) -> tuple[str, str, list[dict[str, Any]
     item_type = _item_type(candidate)
     parent = {
         "key": parent_key,
+        "version": 0,
         "itemType": item_type,
         "title": candidate["title"],
         "creators": [{"creatorType": "author", "name": name} for name in candidate["creators"]],
@@ -275,6 +276,7 @@ def _zotero_items(row: Mapping[str, Any]) -> tuple[str, str, list[dict[str, Any]
     }.get(mode, "text/html")
     attachment = {
         "key": attachment_key,
+        "version": 0,
         "itemType": "attachment",
         "parentItem": parent_key,
         "linkMode": "imported_file" if has_file else "linked_url",

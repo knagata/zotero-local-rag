@@ -501,3 +501,5 @@ active V3はM5 clean rebuildと後続の対象修復を完了した監査済み�
   `data/zotero_local_write_auth.json`へmode 600で保存・再利用し、401なら削除して再認可する。
   診断時のconsole sessionはscreen lockedだったため許可画面を操作できなかった。認可要求だけは
   30秒で終了し、unlock後に`authorize_zotero_local.py`を実行するよう案内する。
+- 認可後のHarwood収録は親・添付とも428になった。親子参照用の事前keyを持つ新規itemに
+  `version`がなかったためで、両方へ`version: 0`を追加した。
