@@ -59,15 +59,34 @@ function renderActions(data) {
     if(def.paid) card.append(node("div","paid","有料APIを使用")); const button=node("button","","実行する"); button.disabled=busy;
     button.addEventListener("click",()=>openConfirmation(def)); card.append(button); target.append(card); });
 }
-function jobElement(job) {
+function logProgress(log) {
+  const matches=[...String(log||"").matchAll(/(?:PROGRESS|進捗)[^\n]*?(\d+)\s*\/\s*(\d+)/gi)];
+  for(let index=matches.length-1;index>=0;index-=1){const current=Number(matches[index][1]),total=Number(matches[index][2]);if(total>0&&current>=0&&current<=total)return current/total;}
+  return null;
+}
+function progressEstimate(job,log="") {
+  if(job.status==="completed") return {percent:100,label:"100% · 完了",estimated:false};
+  const total=Math.max(1,Number(job.step_total)||1),step=Math.max(0,Number(job.step_index)||0);
+  if(job.status==="queued") return {percent:2,label:`開始待ち · 0/${total}ステップ`,estimated:true};
+  const measured=logProgress(log),started=job.started_at?new Date(job.started_at).getTime():Date.now();
+  const elapsed=Math.max(0,(Date.now()-started)/1000);
+  const within=measured??Math.min(.9,.1+elapsed/(elapsed+300)*.8);
+  const percent=Math.max(2,Math.min(99,((Math.max(1,step)-1+within)/total)*100));
+  const detail=measured===null?"経過時間からの目安":`${Math.round(measured*100)}% · ログ実測`;
+  return {percent,label:`${Math.round(percent)}% · ${step||1}/${total}ステップ · ${detail}`,estimated:measured===null};
+}
+function jobElement(job,progress=null) {
   const row=node("div","job"); const left=node("div"); left.append(node("strong","",job.label),node("p","",job.current_step || job.type));
-  const right=node("div"); right.append(node("span",`status ${job.status}`,statusLabel(job.status)),node("time","",localTime(job.started_at || job.created_at))); row.append(left,right); return row;
+  const right=node("div","job-meta"); right.append(node("span",`status ${job.status}`,statusLabel(job.status)),node("time","",localTime(job.started_at || job.created_at))); row.append(left,right);
+  if(progress){const wrap=node("div","job-progress");const labels=node("div","job-progress-labels");labels.append(node("span","","進捗"),node("span","",progress.label));const track=node("div",`progress-track${progress.estimated?" estimated":""}`);track.setAttribute("role","progressbar");track.setAttribute("aria-valuemin","0");track.setAttribute("aria-valuemax","100");track.setAttribute("aria-valuenow",String(Math.round(progress.percent)));const fill=node("div","progress-fill");fill.style.width=`${progress.percent}%`;track.append(fill);wrap.append(labels,track);row.append(wrap);}
+  return row;
 }
 async function renderActive(data) {
   const section=$("active-section"); if(!data.active_job){section.hidden=true; $("active-log").textContent=""; return;}
-  section.hidden=false; const job=data.active_job; const box=$("active-job"); box.replaceChildren(jobElement(job));
+  section.hidden=false; const job=data.active_job; const box=$("active-job");let log="";
+  try { log=await api(`/admin/api/jobs/${job.id}/log`); $("active-log").textContent=log; $("active-log").scrollTop=$("active-log").scrollHeight; } catch(error){ log=""; $("active-log").textContent=error.message; }
+  box.replaceChildren(jobElement(job,progressEstimate(job,log)));
   const stop=node("button","danger","停止する"); stop.addEventListener("click",()=>stopJob(job)); box.append(stop);
-  try { $("active-log").textContent=await api(`/admin/api/jobs/${job.id}/log`); $("active-log").scrollTop=$("active-log").scrollHeight; } catch(error){ $("active-log").textContent=error.message; }
 }
 function renderHistory(data) { const target=$("history"); target.replaceChildren(); if(!data.jobs.length) target.append(node("p","","履歴はありません。")); data.jobs.forEach(job=>target.append(jobElement(job))); }
 async function startDefinition(def, confirmation="") {

@@ -66,7 +66,13 @@ button.danger { border-color:var(--status-failed); background:color-mix(in srgb,
 .job:first-child { border-top:0; }
 .job strong { font-size:12px; font-weight:600; }
 .job p { margin:2px 0 0; color:var(--on-surface-variant); font-size:11px; }
-.job > div:last-child { display:flex; align-items:flex-end; flex-direction:column; gap:4px; }
+.job-meta { display:flex; align-items:flex-end; flex-direction:column; gap:4px; }
+.job-progress { grid-column:1/-1; display:grid; gap:5px; }
+.job-progress-labels { display:flex!important; align-items:center!important; flex-direction:row!important; justify-content:space-between; gap:12px!important; color:var(--on-surface-variant); font-size:10.5px; }
+.progress-track { position:relative; height:9px; overflow:hidden; border:1px solid var(--outline-variant); border-radius:999px; background:var(--surface); }
+.progress-fill { height:100%; border-radius:inherit; background:linear-gradient(90deg,var(--node-ref),var(--node-zotero)); transition:width .45s ease; }
+.progress-track.estimated .progress-fill { background:repeating-linear-gradient(115deg,var(--node-ref) 0 10px,color-mix(in srgb,var(--node-ref) 62%,var(--node-zotero)) 10px 20px); background-size:28px 100%; animation:progress-stripes 1.2s linear infinite; }
+@keyframes progress-stripes { to { background-position:28px 0; } }
 .job time { color:var(--on-surface-variant); font-size:10px; }
 .status { display:inline-block; width:max-content; padding:2px 7px; border:1px solid var(--outline-variant); border-radius:999px; font-size:9.5px; font-weight:600; text-transform:uppercase; }
 .status.completed { color:var(--status-confirmed); background:color-mix(in srgb,var(--status-confirmed) 10%,transparent); }
@@ -92,5 +98,6 @@ input:focus { border-color:var(--node-zotero); outline:none; }
   main { padding:12px 12px 36px; } section { padding:13px; }
   .freshness,.metrics,.actions { grid-template-columns:1fr; }
   .job { grid-template-columns:1fr; }
-  .job > div:last-child { align-items:flex-start; }
+  .job-meta { align-items:flex-start; }
 }
+@media (prefers-reduced-motion:reduce) { .progress-track.estimated .progress-fill { animation:none; } }

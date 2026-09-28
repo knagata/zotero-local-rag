@@ -103,6 +103,16 @@ class StaticAssetTests(unittest.TestCase):
         self.assertIn('metric("Mistral Batch"', script)
         self.assertIn("batch.completed_requests", script)
 
+    def test_admin_shows_accessible_estimated_job_progress(self):
+        script = (self.static_dir / "admin.js").read_text(encoding="utf-8")
+        css = (self.static_dir / "admin.css").read_text(encoding="utf-8")
+        self.assertIn("function progressEstimate(job,log=\"\")", script)
+        self.assertIn('track.setAttribute("role","progressbar")', script)
+        self.assertIn("経過時間からの目安", script)
+        self.assertIn("ログ実測", script)
+        self.assertIn(".progress-track.estimated", css)
+        self.assertIn("prefers-reduced-motion", css)
+
     def test_app_js_stays_a_classic_synchronous_script(self):
         # The JS has no DOMContentLoaded guard and touches
         # getElementById('loading') on its first statement, and it depends on

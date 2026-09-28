@@ -475,3 +475,8 @@ active V3はM5 clean rebuildと後続の対象修復を完了した監査済み�
   DOI解決成功、mapper例外の3経路を直接テストへ固定した。coverage上限は緩めていない。
 - `import_mode=epub`を追加。allowlist内の`.epub`直接URLだけを受け入れ、ZIP内`mimetype`を
   検証して`application/epub+zip`添付として保存し、PDF同様に対象限定で索引化する。
+# 2026-09-29 Maintenance進捗バー
+
+- 管理画面の実行中ジョブに進捗バーを追加。ログの`PROGRESS x/y`または`進捗 x/y`を優先し、
+  取得不能時はstep index/totalと開始後経過時間から各step内10〜90%を概算する。
+- 概算は「経過時間からの目安」とストライプで区別し、完了状態以外は99%を超えない。
