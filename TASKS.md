@@ -1,5 +1,15 @@
 # Tasks
 
+## 2026-09-29 re-OCR adoption audit completeness
+
+- [x] **再OCR採用後もDB監査契約を満たす。** prepared OCRの品質情報でmanifestを置換した際に
+  `source_coverage`を保存せず、全頁処理済みでも`incomplete_source_coverage`となっていた。採用する
+  chunkからcoverageを再構成・検証し、不完全な結果は正本を書き換える前に拒否する。
+- [x] **索引済み段落と構造fingerprintを一致させる。** 構造メタデータ付与前の段落からfingerprintを
+  作っていたうえ、リスト型メタデータを通常取込と異なるChroma表現で保存していた。付与後の正規形から
+  構造を確定し、リストは監査読取と互換のJSON scalarで保存する。対象再採用後のDB監査は614/614、
+  failed 0、global failure 0で合格した。
+
 ## 2026-09-28 vertical Japanese PDF reading order
 
 - [x] **縦組みPDFを本文の読み順で段落化する。** PyMuPDFの座標を横組みと同じ規則で並べ替えると、

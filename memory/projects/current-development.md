@@ -1,6 +1,15 @@
 # Current development handoff
 
-Updated: 2026-09-28
+Updated: 2026-09-29
+
+## 2026-09-29 re-OCR adoption audit completeness
+
+- 再OCR採用はprepared chunkから共通`source_coverage`を再構成・検証してmanifestへ保存する。不完全な
+  coverageは正本更新前に拒否する。構造メタデータ付与後の段落からfingerprintを確定し、リスト値を
+  通常取込・SQLite監査と同じJSON scalarでChromaへ保存する。
+- 既存の対象資料を保存済み48/48頁・540 chunk結果から再採用した。coverageはexpected/attempted/textが
+  すべて48、索引・構造・manifestのfingerprintは一致。DB監査はZotero required 639/639、原本欠落・
+  orphan・dangling・unretrievable 0、cutover 614/614、failed 0で合格した。
 
 ## 2026-09-28 vertical Japanese PDF reading order
 

@@ -7,6 +7,7 @@ Chroma/FTS rows are retained in memory until every canonical write succeeds.
 from __future__ import annotations
 
 import hashlib
+import json
 import sys
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
@@ -16,9 +17,14 @@ from .db_relations import (
     mark_artifact_status,
     replace_document_structure,
 )
-from .document_structure import attach_structure_metadata, build_document_structure
+from .document_structure import (
+    attach_structure_metadata,
+    build_document_structure,
+    source_fingerprint,
+)
 from .lexical_index import delete_by_attachment_keys, upsert_chunks
 from .manifest import load_manifest, save_manifest
+from .source_coverage import coverage_from_extraction, validate_source_coverage
 from .text_utils import detect_lang
 
 
@@ -186,6 +192,68 @@ def _finish_bookkeeping(
     return errors
 
 
+def _adoption_quality(
+    prepared: Mapping[str, Any], rows: Sequence[Mapping[str, Any]],
+    built: Mapping[str, Any], *, force: bool,
+) -> dict[str, Any]:
+    """Build manifest quality without dropping the canonical coverage contract."""
+    quality = dict(prepared.get("quality") or {})
+    source_type = str((rows[0].get("metadata") or {}).get("source_type") or "pdf")
+    coverage = coverage_from_extraction(
+        source_type,
+        ((str(row["id"]), str(row["text"]), row.get("metadata") or {}) for row in rows),
+        quality,
+    )
+    verdict = validate_source_coverage(coverage)
+    if not verdict["passed"]:
+        raise ValueError(
+            "prepared re-OCR result does not account for the complete source: "
+            + ", ".join(str(reason) for reason in verdict["reasons"])
+        )
+    quality.update({
+        "parser": str(prepared.get("engine") or "unknown"),
+        "parser_version": str(prepared.get("version") or "unknown"),
+        "reocr_adopted": True,
+        "force_adopted": bool(force),
+        "source_coverage": coverage,
+        "source_coverage_verdict": verdict,
+        "structure_v3": {
+            "status": built["status"],
+            "version": built["structure_version"],
+            "nodes": len(built["nodes"]),
+            "leaves": built["diagnostics"].get("leaf_count", 0),
+            "zone_counts": built["diagnostics"].get("zone_counts", {}),
+        },
+    })
+    return quality
+
+
+def _build_annotated_structure(
+    item_key: str, rows: Sequence[Mapping[str, Any]],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Return a tree whose fingerprint describes the rows actually indexed."""
+    built = build_document_structure(item_key, rows)
+    annotated = attach_structure_metadata(rows, built["nodes"])
+    # Annotation supplies canonical roles and zones used by the fingerprint.
+    # Build once more from that canonical metadata so the structure record does
+    # not describe the pre-annotation rows while Chroma stores the post-annotation
+    # rows (the re-OCR path's stale_structure_fingerprint failure, 2026-09-28).
+    built = build_document_structure(item_key, annotated)
+    annotated = attach_structure_metadata(annotated, built["nodes"])
+    if source_fingerprint(annotated) != built["source_fingerprint"]:
+        raise RuntimeError("structure annotation did not reach a stable fingerprint")
+    return built, annotated
+
+
+def _storage_metadata(metadata: Mapping[str, Any]) -> dict[str, Any]:
+    """Use the scalar metadata representation shared by audits and old Chroma rows."""
+    return {
+        key: json.dumps(value, ensure_ascii=False) if isinstance(value, (list, tuple)) else value
+        for key, value in metadata.items()
+        if value != []
+    }
+
+
 def adopt_prepared_reocr(
     *,
     item_key: str,
@@ -229,15 +297,14 @@ def adopt_prepared_reocr(
         row for row in old_rows
         if str(row["metadata"].get("attachmentKey") or "") != attachment_key
     ] + new_attachment
-    built = build_document_structure(item_key, combined)
-    annotated = attach_structure_metadata(combined, built["nodes"])
+    built, annotated = _build_annotated_structure(item_key, combined)
     new_attachment = [
         row for row in annotated
         if str(row["metadata"].get("attachmentKey") or "") == attachment_key
     ]
     new_ids = [row["id"] for row in new_attachment]
     new_docs = [row["text"] for row in new_attachment]
-    new_metas = [row["metadata"] for row in new_attachment]
+    new_metas = [_storage_metadata(row["metadata"]) for row in new_attachment]
     old_ids = [row["id"] for row in old_attachment]
     old_docs = [row["text"] for row in old_attachment]
     old_metas = [row["metadata"] for row in old_attachment]
@@ -246,20 +313,7 @@ def adopt_prepared_reocr(
     manifest_after = dict(manifest_before)
     manifest_after["files"] = dict(manifest_before.get("files") or {})
     previous_entry = dict(manifest_after["files"].get(attachment_key) or {})
-    quality = dict(prepared.get("quality") or {})
-    quality.update({
-        "parser": str(prepared.get("engine") or "unknown"),
-        "parser_version": str(prepared.get("version") or "unknown"),
-        "reocr_adopted": True,
-        "force_adopted": bool(force),
-        "structure_v3": {
-            "status": built["status"],
-            "version": built["structure_version"],
-            "nodes": len(built["nodes"]),
-            "leaves": built["diagnostics"].get("leaf_count", 0),
-            "zone_counts": built["diagnostics"].get("zone_counts", {}),
-        },
-    })
+    quality = _adoption_quality(prepared, new_attachment, built, force=force)
     previous_entry.update({"quality": quality, "source_fingerprint": built["source_fingerprint"]})
     manifest_after["files"][attachment_key] = previous_entry
 
