@@ -496,3 +496,8 @@ active V3はM5 clean rebuildと後続の対象修復を完了した監査済み�
   未設定なら必要な対応を版番号付きで通知する。
 - 公開MCPは`import_zotero_candidate`へ一本化した。Claude UIのdestructive tool確認をユーザー承認
   とし、独自のproposal承認句は内部の単回実行保護にだけ用いる。
+- Remote MCPからの初回収録4回が`POST /api/local/authorize`で120秒待ってReadTimeoutになった。
+  Local API readとserver IDは正常で、Zoteroのnative許可画面待ちが原因。`Always Allow`のキーを
+  `data/zotero_local_write_auth.json`へmode 600で保存・再利用し、401なら削除して再認可する。
+  診断時のconsole sessionはscreen lockedだったため許可画面を操作できなかった。認可要求だけは
+  30秒で終了し、unlock後に`authorize_zotero_local.py`を実行するよう案内する。

@@ -2083,3 +2083,6 @@ A（PDF構造化）・B（課金LLM）は独立、C（構造抽出エンジン�
   `prefix`/`suffix`も反映し、Zotero 10以降では従来どおりnative authorizationを優先する。
 - [x] **承認経路をClaude UIへ一本化する。** 公開MCP toolから承認句付き二段階操作を外し、
   destructive annotation付き`import_zotero_candidate`をUI確認後に直接実行する。
+- [x] **Local API認可を再利用する。** `Always Allow`で得たキーをserver IDとともに権限600で
+  保存し、呼出しごとの認可ダイアログとremote timeoutを防ぐ。401時は破棄して再認可する。
+  認可画面を操作できない場合は30秒で打ち切り、Macのunlockと補助コマンドを案内する。

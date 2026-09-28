@@ -29,6 +29,7 @@ MAX_FULLTEXT_BYTES = 250 * 1024 * 1024
 SUPPORTED_IMPORT_MODES = frozenset({"metadata", "pdf", "epub"})
 AI_ADDED_TAG = "AI-added"
 _PROPOSAL_LOCK = threading.Lock()
+_AUTH_LOCK = threading.Lock()
 _KEY_ALPHABET = "23456789ABCDEFGHIJKLMNPQRSTUVWXYZ"
 
 
@@ -37,6 +38,44 @@ def _proposal_path() -> Path:
     return Path(configured).expanduser() if configured else (
         Path(__file__).resolve().parents[1] / "data" / "zotero_import_proposals.json"
     )
+
+
+def _auth_path() -> Path:
+    configured = os.environ.get("ZOTERO_LOCAL_AUTH_PATH")
+    return Path(configured).expanduser() if configured else (
+        Path(__file__).resolve().parents[1] / "data" / "zotero_local_write_auth.json"
+    )
+
+
+def _load_local_auth(server_id: str) -> str:
+    with _AUTH_LOCK:
+        try:
+            payload = json.loads(_auth_path().read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return ""
+    if payload.get("server_id") != server_id:
+        return ""
+    return str(payload.get("key") or "")
+
+
+def _save_local_auth(server_id: str, key: str) -> None:
+    target = _auth_path()
+    with _AUTH_LOCK:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_suffix(target.suffix + ".tmp")
+        temporary.write_text(
+            json.dumps({"server_id": server_id, "key": key}) + "\n", encoding="utf-8",
+        )
+        temporary.chmod(0o600)
+        os.replace(temporary, target)
+        target.chmod(0o600)
+
+
+def _clear_local_auth() -> None:
+    target = _auth_path()
+    with _AUTH_LOCK:
+        if target.exists():
+            target.unlink()
 
 
 def _load_proposals(path: Path) -> dict[str, Any]:
@@ -261,8 +300,8 @@ class ZoteroLocalWriter:
         self.remember_key = False
         self.web_api = False
 
-    def _client(self) -> httpx.AsyncClient:
-        return httpx.AsyncClient(timeout=self.timeout, transport=self.transport)
+    def _client(self, timeout: float | None = None) -> httpx.AsyncClient:
+        return httpx.AsyncClient(timeout=timeout or self.timeout, transport=self.transport)
 
     async def _server(self) -> None:
         async with self._client() as client:
@@ -285,26 +324,50 @@ class ZoteroLocalWriter:
                 "Upgrade Zotero, or configure both ZOTERO_USER_ID and ZOTERO_API_KEY "
                 "to use the Zotero Web API fallback."
             )
+        self.write_key = _load_local_auth(self.server_id)
+        self.remember_key = bool(self.write_key)
 
     async def _authorize(self) -> None:
         if not self.server_id:
             await self._server()
+        if self.write_key:
+            return
         if self.web_api:
             return
-        async with self._client() as client:
-            response = await client.post(
-                f"{self.base}/local/authorize",
-                headers=zotero_api_headers(**{
-                    "Content-Type": "application/json", "Zotero-Server-ID": self.server_id,
-                }),
-                json={"appName": "zotero-local-rag"},
-            )
+        try:
+            async with self._client(timeout=min(self.timeout, 30.0)) as client:
+                response = await client.post(
+                    f"{self.base}/local/authorize",
+                    headers=zotero_api_headers(**{
+                        "Content-Type": "application/json", "Zotero-Server-ID": self.server_id,
+                    }),
+                    json={"appName": "zotero-local-rag"},
+                )
+        except httpx.ReadTimeout as exc:
+            raise RuntimeError(
+                "Zotero write authorization timed out. Unlock this Mac, run "
+                "`uv run python scripts/authorize_zotero_local.py`, and choose Always Allow."
+            ) from exc
         response.raise_for_status()
         payload = response.json()
         self.write_key = str(payload.get("key") or "")
         self.remember_key = bool(payload.get("remember"))
         if not self.write_key:
             raise RuntimeError("Zotero did not grant a local write key")
+        if self.remember_key:
+            _save_local_auth(self.server_id, self.write_key)
+
+    async def authorize(self) -> dict[str, Any]:
+        """Obtain or reuse local write authorization without changing the library."""
+        if not self.server_id:
+            await self._server()
+        if not self.write_key:
+            await self._authorize()
+        return {
+            "server_id": self.server_id,
+            "remembered": self.remember_key,
+            "web_api": self.web_api,
+        }
 
     async def _write(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
         extra_headers = dict(kwargs.pop("headers", {}))
@@ -324,6 +387,8 @@ class ZoteroLocalWriter:
                 if not self.remember_key:
                     self.write_key = ""
                 return response
+            if not self.web_api:
+                _clear_local_auth()
             self.write_key = ""
         raise RuntimeError("Zotero write authorization failed")
 

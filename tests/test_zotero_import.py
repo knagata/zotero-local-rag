@@ -102,6 +102,7 @@ def test_expired_proposal_cannot_be_claimed(tmp_path, monkeypatch):
 def test_local_writer_uses_native_authorization_and_three_phase_upload(tmp_path, monkeypatch):
     monkeypatch.setenv("ZOTERO_LOCAL_API_BASE", "http://zotero.test/api")
     monkeypatch.setenv("ZOTERO_LOCAL_API_PREFIX", "users/0")
+    monkeypatch.setenv("ZOTERO_LOCAL_AUTH_PATH", str(tmp_path / "auth.json"))
     requests = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -137,6 +138,75 @@ def test_local_writer_uses_native_authorization_and_three_phase_upload(tmp_path,
         "/api/users/0/items/ATTACH01/file", "/storage/upload",
         "/api/users/0/items/ATTACH01/file",
     ]
+    auth_path = tmp_path / "auth.json"
+    assert json.loads(auth_path.read_text()) == {
+        "server_id": "server-1", "key": "write-key",
+    }
+    assert auth_path.stat().st_mode & 0o777 == 0o600
+
+
+def test_local_writer_reuses_remembered_authorization(tmp_path, monkeypatch):
+    monkeypatch.setenv("ZOTERO_LOCAL_API_BASE", "http://zotero.test/api")
+    monkeypatch.setenv("ZOTERO_LOCAL_API_PREFIX", "users/0")
+    auth_path = tmp_path / "auth.json"
+    monkeypatch.setenv("ZOTERO_LOCAL_AUTH_PATH", str(auth_path))
+    auth_path.write_text(json.dumps({"server_id": "server-1", "key": "saved-key"}))
+    requests = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path == "/api/":
+            return httpx.Response(200, headers={"Zotero-Server-ID": "server-1"})
+        assert request.url.path == "/api/users/0/items"
+        assert request.headers["Zotero-API-Key"] == "saved-key"
+        return httpx.Response(200, json={"successful": {"0": {}}})
+
+    writer = zotero_import.ZoteroLocalWriter(transport=httpx.MockTransport(handler))
+    asyncio.run(writer.create_items([{"itemType": "book", "title": "Example"}]))
+
+    assert [request.url.path for request in requests] == ["/api/", "/api/users/0/items"]
+
+
+def test_local_writer_clears_rejected_remembered_authorization(tmp_path, monkeypatch):
+    monkeypatch.setenv("ZOTERO_LOCAL_API_BASE", "http://zotero.test/api")
+    monkeypatch.setenv("ZOTERO_LOCAL_API_PREFIX", "users/0")
+    auth_path = tmp_path / "auth.json"
+    monkeypatch.setenv("ZOTERO_LOCAL_AUTH_PATH", str(auth_path))
+    auth_path.write_text(json.dumps({"server_id": "server-1", "key": "old-key"}))
+    writes = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal writes
+        if request.url.path == "/api/":
+            return httpx.Response(200, headers={"Zotero-Server-ID": "server-1"})
+        if request.url.path == "/api/local/authorize":
+            assert not auth_path.exists()
+            return httpx.Response(200, json={"key": "new-key", "remember": True})
+        writes += 1
+        if writes == 1:
+            assert request.headers["Zotero-API-Key"] == "old-key"
+            return httpx.Response(401)
+        assert request.headers["Zotero-API-Key"] == "new-key"
+        return httpx.Response(200, json={"successful": {"0": {}}})
+
+    writer = zotero_import.ZoteroLocalWriter(transport=httpx.MockTransport(handler))
+    asyncio.run(writer.create_items([{"itemType": "book", "title": "Example"}]))
+
+    assert json.loads(auth_path.read_text())["key"] == "new-key"
+
+
+def test_local_authorization_timeout_has_unlock_instructions(tmp_path, monkeypatch):
+    monkeypatch.setenv("ZOTERO_LOCAL_API_BASE", "http://zotero.test/api")
+    monkeypatch.setenv("ZOTERO_LOCAL_AUTH_PATH", str(tmp_path / "auth.json"))
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/":
+            return httpx.Response(200, headers={"Zotero-Server-ID": "server-1"})
+        raise httpx.ReadTimeout("permission dialog was not answered", request=request)
+
+    writer = zotero_import.ZoteroLocalWriter(transport=httpx.MockTransport(handler))
+    with pytest.raises(RuntimeError, match="Unlock this Mac.*Always Allow"):
+        asyncio.run(writer.authorize())
 
 
 def test_zotero_9_uses_configured_web_api_fallback(monkeypatch):
