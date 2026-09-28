@@ -207,7 +207,7 @@ def main(argv: list[str] | None = None) -> int:
             report["adoption"] = adopt_prepared_reocr(
                 item_key=key[0], attachment_key=key[1], prepared=prepared[key],
                 collection=collection, old_item_chunks=old_chunks,
-                manifest_file=manifest_file, lexical_file=lexical_file,
+                manifest_path=manifest_file, lexical_path=lexical_file,
                 force=bool(args.force_adopt),
                 gate_passed=bool(comparison["quality_gate"]["passed"]),
             )

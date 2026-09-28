@@ -2,6 +2,15 @@
 
 Updated: 2026-09-28
 
+## 2026-09-28 compact CJK retrieval and targeted re-OCR
+
+- `MIN_RETURN_CHARS=200`が、縦組みPDFの正常な30〜40字日本語source regionをsemantic検索と
+  `search_items`から除外していた。`ja`/`zh`は既定30字（`MIN_RETURN_CHARS_CJK`）とし、FTS直接一致は
+  長さfloorだけで捨てない。報告された3 queryはいずれも対象限定段落検索5件、資料検索1件を返す。
+- 対象限定NDLOCR-Lite再抽出は48/48頁、540 chunk、coverage 1.0、文字量比0.959でgate通過。
+  queue runnerの採用関数キーワード不一致を直して正本へ採用し、構造`exact`、要約`stale`となった。
+- 文字化け資料の除外同期は本文・FTS・構造・要約を削除済み。Remote MCPは検索修正版で再起動済み。
+
 ## 2026-09-28 summary freshness excludes empty structures
 
 - 管理画面の階層要約件数が、本文・node 0件の`rag:exclude` itemも空の構造ヘッダとstale summary状態だけで

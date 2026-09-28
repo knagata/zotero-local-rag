@@ -1,5 +1,14 @@
 # Tasks
 
+## 2026-09-28 compact CJK retrieval and targeted re-OCR
+
+- [x] **短い日本語本文を検索結果から落とさない。** 共通の200字floorが、縦組みPDFから得た30〜40字の
+  正常な日本語source regionをsemantic検索・資料検索の双方で全件除外していた。日本語・中国語には
+  30字floorを適用し、FTSの直接一致は長さだけでは除外しない。実資料の報告3 queryで段落・資料検索を確認した。
+- [x] **対象限定re-OCRの採用経路を復旧。** queue runnerが採用関数へ旧引数名を渡していたため、品質gate後の
+  本番採用だけが開始前に失敗していた。正規引数名へ合わせ、別engineの48頁・540 chunkをgate通過後に採用した。
+  報告された誤読3組は新結果で正字が現れ、誤字は0件。構造は`exact`、要約は再生成待ちの`stale`。
+
 ## 2026-09-28 summary freshness excludes empty structures
 
 - [x] **階層要約の実候補と管理画面の件数を一致させる。** `rag:exclude`で本文・nodeが0件になったitemも

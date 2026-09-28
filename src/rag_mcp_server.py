@@ -1068,6 +1068,16 @@ def _query_chroma_candidates(
     return None, col
 
 
+def _minimum_return_chars(metadata: Any, configured_floor: int) -> int:
+    """Use a CJK-aware floor for source regions that are naturally compact."""
+    if isinstance(metadata, dict) and metadata.get("lang") in {"ja", "zh"}:
+        cjk_floor = bounded_env_int(
+            "MIN_RETURN_CHARS_CJK", 30, minimum=0, maximum=10000,
+        )
+        return min(configured_floor, cjk_floor)
+    return configured_floor
+
+
 def _count_usable_semantic_candidates(
     responses: List[Dict[str, Any]], *, exclude_set: set[str], min_return_chars: int,
     allow_explicit: bool, include_corrupted: bool,
@@ -1087,7 +1097,8 @@ def _count_usable_semantic_candidates(
                 document = q_docs[hit_idx] if hit_idx < len(q_docs) else ""
                 metadata = q_metas[hit_idx] if hit_idx < len(q_metas) else {}
                 if (
-                    len(str(document or "").strip()) >= min_return_chars
+                    len(str(document or "").strip())
+                    >= _minimum_return_chars(metadata, min_return_chars)
                     and retrieval_policy_allowed(
                         metadata if isinstance(metadata, dict) else {},
                         allow_explicit=allow_explicit,
@@ -1177,11 +1188,13 @@ def _fuse_lexical_results(
                 contribution = 1.0 / (RRF_K + rank)
                 if chunk_id in hits_combined:
                     hits_combined[chunk_id]["rrf_score"] += contribution
+                    hits_combined[chunk_id]["lexical_match"] = True
                 else:
                     hits_combined[chunk_id] = {
                         "distance": None, "rrf_score": contribution,
                         "document": lexical_docs[chunk_id],
                         "metadata": lexical_metas[chunk_id],
+                        "lexical_match": True,
                     }
     except Exception as exc:
         _log.warning("Lexical search unavailable; using semantic results: %s", exc)
@@ -1239,7 +1252,14 @@ def _rank_rag_hits(
     sorted_hits = [hit for hit in sorted_hits if hit[0] not in exclude_set]
     sorted_hits = [
         hit for hit in sorted_hits
-        if len(str(hit[1].get("document") or "").strip()) >= min_return_chars
+        if (
+            len(str(hit[1].get("document") or "").strip())
+            >= _minimum_return_chars(hit[1].get("metadata"), min_return_chars)
+            # A direct FTS match is positive evidence, not an embedding-only
+            # fragment.  Dropping it solely because the source region is short
+            # makes compact but exact source regions impossible to find.
+            or hit[1].get("lexical_match") is True
+        )
     ]
     if language_balance:
         sorted_hits = language_balanced_order(sorted_hits, k)
@@ -1898,7 +1918,10 @@ def search_items(
                 md if isinstance(md, dict) else {}, allow_explicit=allow_explicit,
             ):
                 continue
-            if len(str(document or "").strip()) < min_return_chars:
+            if (
+                len(str(document or "").strip())
+                < _minimum_return_chars(md, min_return_chars)
+            ):
                 continue
 
             # RRF contribution based on rank in THIS query's result list
