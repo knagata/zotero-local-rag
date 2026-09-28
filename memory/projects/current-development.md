@@ -471,3 +471,5 @@ active V3はM5 clean rebuildと後続の対象修復を完了した監査済み�
 - PDFはsource別HTTPS allowlist、250MB、`%PDF-`を検証し、Zoteroの3段階upload後に
   `index_from_zotero.py --item ... --force-reparse`で対象だけ索引化する。
 - proposal状態は既定で`data/zotero_import_proposals.json`（gitignore対象のdata配下）へ保存する。
+- 新機能初回CIで`update_citations.py`の既存11文が実行順依存で未到達になったため、skip、
+  DOI解決成功、mapper例外の3経路を直接テストへ固定した。coverage上限は緩めていない。

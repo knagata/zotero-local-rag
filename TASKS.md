@@ -2057,3 +2057,5 @@ A（PDF構造化）・B（課金LLM）は独立、C（構造抽出エンジン�
   3段階file upload、収録PDFの対象限定再索引を実装した。
 - [x] **回帰テストと利用ガイドを追加する。** proposalの無書込み・失効・再利用拒否、承認、
   upload、redirect拒否、MCP tool公開を自動テストで固定した。
+- [x] **Linux coverageを安定化する。** CI実行順で未到達になった既存citation更新のskip、
+  DOI解決成功、mapper例外分岐を直接テストし、環境依存の偶然の到達に頼らないようにした。

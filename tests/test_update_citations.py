@@ -110,6 +110,46 @@ class MaintenanceUtilityTests(unittest.TestCase):
         with mock.patch.object(self.module.os.path, "exists", return_value=False):
             self.assertEqual(self.module._get_chunk_count("ITEM"), -1)
 
+    def test_process_item_skip_path_still_runs_epub_step(self):
+        with mock.patch.object(self.module, "_run_epub_step") as epub:
+            result = self.module.process_item("ITEM", {"title": "T"}, "/tmp", skip_s2=True)
+        self.assertEqual(result, (True, True, True))
+        epub.assert_called_once()
+
+    def test_process_item_persists_resolved_doi_and_success(self):
+        item = {
+            "title": "A title", "version": 3,
+            "creators": [{"lastName": "Author", "firstName": "A"}],
+        }
+        with (
+            mock.patch.object(self.module, "query_openalex", return_value="10.1/example"),
+            mock.patch.object(self.module, "_zotero_web_patch_doi") as patch_doi,
+            mock.patch.object(
+                self.module, "map_item_global_citations",
+                return_value={"status": "success", "message": "ok", "s2_resolved": False},
+            ),
+            mock.patch.object(self.module, "_run_epub_step"),
+            mock.patch("db_relations.update_item_citation_status") as update_status,
+        ):
+            result = self.module.process_item("ITEM", item, "/tmp")
+        self.assertEqual(result, (True, False, True))
+        patch_doi.assert_called_once_with("ITEM", "10.1/example", 3)
+        update_status.assert_called_once_with(
+            "ITEM", "pending", doi="10.1/example", isbn=None,
+        )
+
+    def test_process_item_converts_mapper_exception_to_retryable_failure(self):
+        with (
+            mock.patch.object(
+                self.module, "map_item_global_citations", side_effect=RuntimeError("offline"),
+            ),
+            mock.patch.object(self.module, "_run_epub_step"),
+        ):
+            result = self.module.process_item(
+                "ITEM", {"title": "", "creators": []}, "/tmp",
+            )
+        self.assertEqual(result, (False, True, True))
+
 
 if __name__ == "__main__":
     unittest.main()
