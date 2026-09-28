@@ -2039,3 +2039,10 @@ A（PDF構造化）・B（課金LLM）は独立、C（構造抽出エンジン�
   - 外側`DoclingWorker.timeout_sec`は1800→3600秒に緩和し、「本当にハングした場合」専用のbackstopへ役割変更（単一ページがネイティブOCRコード内でPythonに制御を返さず固まるケースなど、Docling自身のループ内チェックでは検知できないケース向け）。
   - 当初検討していたCPU使用率ベースのliveness detection（Sonnet subagent, task #10）はこの修正で不要となり中止（`docling_worker.py`に変更は未反映のまま、実装差し替え済み）。
   - 既存テスト18件（test_docling_extract.py / test_extraction_engine.py / test_docling_worker.py）は全通過。モックの一つに`ConversionStatus.SUCCESS`を追加。
+
+# 2026-09-29 CI coverage予算のLinux差分修正
+
+- [x] **新規防御分岐を直接テストする。** PDF詳細レイアウト取得失敗時のblock fallbackと、
+  re-OCR構造fingerprintが安定しない場合の拒否を回帰テストで固定した。
+- [x] **プラットフォーム差の上限を補正する。** Linux CIでのみ未到達になる既存の
+  `pdf_extract.py` 3文と `text_utils.py` 1文をcoverage予算へ反映した。

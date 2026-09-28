@@ -43,6 +43,23 @@ class _VerticalPage(_Page):
 
 
 class PdfLayoutTests(unittest.TestCase):
+    def test_layout_extraction_falls_back_when_detailed_blocks_fail(self):
+        page = _Page([_block(40, 30, 560, 65, "Readable text", 0)])
+
+        def get_text(kind, sort=False):
+            if kind == "blocks":
+                return page.blocks
+            if kind == "dict":
+                raise RuntimeError("details unavailable")
+            return ""
+
+        page.get_text = get_text
+
+        rows = pdf_extract.extract_layout_blocks_from_pdf_page(page)
+
+        self.assertEqual([row["text"] for row in rows], ["Readable text"])
+        self.assertNotIn("writing_mode", rows[0])
+
     def test_vertical_japanese_preserves_pdf_order_and_merges_columns(self):
         page = _VerticalPage([
             _block(288, 74, 299, 471, "ある。それゆえ、", 0),

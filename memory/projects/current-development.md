@@ -454,3 +454,11 @@ active V3はM5 clean rebuildと後続の対象修復を完了した監査済み�
 
 変更ごとに`TASKS.md`と品質予算を同じコミットへ含める。完了または方針変更時にはこのファイルも
 更新し、新しいセッションが古いDB診断や開始点を前提にしないようにする。
+
+# 2026-09-29 CI coverage予算のLinux差分
+
+- GitHub Actions run `36441132574` はテスト成功後のcoverage ratchetで失敗した。
+- 新規の未到達防御分岐2件（PyMuPDF詳細辞書の例外fallback、re-OCR構造fingerprint不一致）
+  は直接テストを追加した。
+- macOSでは追加後に旧上限へ戻る一方、Linuxでは既存の任意依存・環境分岐により
+  `pdf_extract.py` がさらに3文、`text_utils.py` が1文未到達になるため、その差だけ上限を補正した。

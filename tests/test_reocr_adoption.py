@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
-from src.manifest import load_manifest, save_manifest
+from src import reocr_adoption
 from src.document_structure import source_fingerprint
+from src.manifest import load_manifest, save_manifest
 from src.reocr_adoption import adopt_prepared_reocr, canonicalize_prepared_blocks
 
 
@@ -48,6 +49,21 @@ def prepared():
 
 
 class ReocrAdoptionTests(unittest.TestCase):
+    def test_structure_build_rejects_an_unstable_annotation_fingerprint(self):
+        rows = old_chunks()
+        with (
+            patch.object(reocr_adoption, "build_document_structure") as build,
+            patch.object(reocr_adoption, "attach_structure_metadata", return_value=rows),
+            patch.object(reocr_adoption, "source_fingerprint", return_value="actual"),
+        ):
+            build.side_effect = [
+                {"nodes": [], "source_fingerprint": "first"},
+                {"nodes": [], "source_fingerprint": "expected"},
+            ]
+
+            with self.assertRaisesRegex(RuntimeError, "stable fingerprint"):
+                reocr_adoption._build_annotated_structure("ITEM", rows)
+
     def test_canonical_ids_are_new_and_content_versioned(self):
         first = canonicalize_prepared_blocks("ITEM", "ATT", prepared())
         second_payload = prepared()
