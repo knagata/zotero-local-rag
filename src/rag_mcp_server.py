@@ -1821,7 +1821,8 @@ async def propose_zotero_import(
     """Create an expiring, read-only Zotero import proposal.
 
     ``import_mode`` is ``metadata``, ``pdf``, or ``epub``. File modes are accepted only
-    for a direct HTTPS URL on the selected catalog's allowlist. Duplicate
+    for a direct HTTPS URL. The URL may be hosted outside the discovery catalog
+    after the user approves the proposal. Duplicate
     candidates block the proposal unless the user has reviewed them and
     ``allow_duplicate`` is explicitly true. This tool never writes to Zotero.
     """

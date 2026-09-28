@@ -38,6 +38,8 @@ NDLサーチ、J-STAGE、Open Library、CiNii Researchから文字資料を検�
 - `approve_zotero_import(proposal_id, approval_phrase)`: ユーザーが提案の承認句を明示した場合だけ
   呼び出します。提案は1回だけ実行でき、Zotero本体もAllow / Always Allow / Denyダイアログを
   表示します。PDF・EPUB収録が成功した場合は、その資料だけRAG索引へ追加します。
+  ユーザー承認済みの直接HTTPS URLであれば、検索元とは異なる配布サイトからも取得できます。
+  AI経由で追加した親資料には`AI-added`タグが付くため、Zoteroでまとめて検索・管理できます。
 
 Claudeは学位、掲載誌、所属、引用数、文章の流暢さだけで品質を断定しません。確認できた本文範囲、
 具体的な推薦理由、留意点を示し、引用情報の欠落は「不明」として扱います。収録する場合も、候補を

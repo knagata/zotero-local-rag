@@ -27,12 +27,7 @@ except ImportError:
 PROPOSAL_TTL_SECONDS = 24 * 60 * 60
 MAX_FULLTEXT_BYTES = 250 * 1024 * 1024
 SUPPORTED_IMPORT_MODES = frozenset({"metadata", "pdf", "epub"})
-SOURCE_DOWNLOAD_HOSTS = {
-    "jstage": frozenset({"www.jstage.jst.go.jp", "jstage.jst.go.jp"}),
-    "ndl": frozenset({"dl.ndl.go.jp", "ndlsearch.ndl.go.jp"}),
-    "cinii": frozenset({"cir.nii.ac.jp"}),
-    "openlibrary": frozenset({"archive.org", "openlibrary.org"}),
-}
+AI_ADDED_TAG = "AI-added"
 _PROPOSAL_LOCK = threading.Lock()
 _KEY_ALPHABET = "23456789ABCDEFGHIJKLMNPQRSTUVWXYZ"
 
@@ -65,8 +60,6 @@ def _candidate_payload(candidate: Mapping[str, Any]) -> dict[str, Any]:
     source = str(candidate.get("source") or "").strip().casefold()
     title = str(candidate.get("title") or "").strip()
     landing_url = str(candidate.get("landing_url") or "").strip()
-    if source not in SOURCE_DOWNLOAD_HOSTS:
-        raise ValueError("candidate source is not supported for Zotero import")
     if not title or not landing_url:
         raise ValueError("candidate title and landing_url are required")
     parsed = urlparse(landing_url)
@@ -89,8 +82,6 @@ def _candidate_payload(candidate: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _direct_download_url(candidate: Mapping[str, Any], mode: str) -> str:
-    source = str(candidate.get("source") or "")
-    allowed = SOURCE_DOWNLOAD_HOSTS.get(source, frozenset())
     for value in candidate.get("download_urls") or []:
         parsed = urlparse(str(value))
         path = parsed.path.casefold()
@@ -100,7 +91,7 @@ def _direct_download_url(candidate: Mapping[str, Any], mode: str) -> str:
         if (
             is_requested_format
             and parsed.scheme == "https"
-            and (parsed.hostname or "").casefold() in allowed
+            and bool(parsed.hostname)
         ):
             return str(value)
     return ""
@@ -118,7 +109,7 @@ def create_import_proposal(
         raise ValueError(f"unsupported import_mode: {mode}")
     download_url = _direct_download_url(normalized, mode) if mode != "metadata" else ""
     if mode != "metadata" and not download_url:
-        raise ValueError(f"candidate has no allowlisted direct {mode.upper()} URL; use metadata mode")
+        raise ValueError(f"candidate has no direct HTTPS {mode.upper()} URL; use metadata mode")
     if duplicates and not allow_duplicate:
         raise ValueError("Zotero duplicate candidates exist; set allow_duplicate only after user review")
     proposal_id = secrets.token_hex(8)
@@ -227,7 +218,7 @@ def _zotero_items(row: Mapping[str, Any]) -> tuple[str, str, list[dict[str, Any]
         "url": candidate["landing_url"],
         "libraryCatalog": candidate["source"],
         "collections": collections,
-        "tags": [{"tag": "agent-approved-import"}],
+        "tags": [{"tag": AI_ADDED_TAG}],
         "relations": {},
     }
     if item_type == "book":
@@ -375,15 +366,15 @@ def _validate_download(content: bytes, mode: str) -> None:
 async def download_candidate_file(row: Mapping[str, Any], destination: Path) -> Path:
     mode = str(row["import_mode"])
     url = str(row.get("download_url") or row.get("pdf_url") or "")
-    allowed = SOURCE_DOWNLOAD_HOSTS.get(str(row["candidate"].get("source") or ""), frozenset())
     for _hop in range(6):
         parsed = urlparse(url)
-        if parsed.scheme != "https" or (parsed.hostname or "").casefold() not in allowed:
-            raise ValueError(f"{mode.upper()} download redirected outside the candidate source allowlist")
+        if parsed.scheme != "https" or not parsed.hostname:
+            raise ValueError(f"{mode.upper()} download URL and redirects must use HTTPS")
         async with httpx.AsyncClient(timeout=120, follow_redirects=False) as client:
             response = await client.get(url)
         if response.is_redirect:
-            url = str(response.next_request.url) if response.next_request else ""
+            location = str(response.headers.get("location") or "")
+            url = str(response.next_request.url) if response.next_request else urljoin(url, location)
             continue
         response.raise_for_status()
         _validate_download(response.content, mode)

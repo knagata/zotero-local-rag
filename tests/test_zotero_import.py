@@ -49,7 +49,7 @@ def test_proposal_is_read_only_single_use_and_phrase_bound(tmp_path):
         )
 
 
-def test_proposal_blocks_duplicates_unless_reviewed_and_rejects_bad_pdf_url(tmp_path):
+def test_proposal_blocks_duplicates_unless_reviewed_and_rejects_non_https_pdf(tmp_path):
     duplicate = [{"key": "DUP1", "title": "Rice research"}]
     with pytest.raises(ValueError, match="duplicate"):
         zotero_import.create_import_proposal(candidate(), duplicate, path=tmp_path / "one.json")
@@ -58,8 +58,8 @@ def test_proposal_blocks_duplicates_unless_reviewed_and_rejects_bad_pdf_url(tmp_
     )
     assert reviewed["duplicates"] == duplicate
 
-    unsafe = candidate(download_urls=["https://example.test/file.pdf"])
-    with pytest.raises(ValueError, match="allowlisted"):
+    unsafe = candidate(download_urls=["http://example.test/file.pdf"])
+    with pytest.raises(ValueError, match="direct HTTPS"):
         zotero_import.create_import_proposal(
             unsafe, [], import_mode="pdf", path=tmp_path / "three.json",
         )
@@ -67,9 +67,9 @@ def test_proposal_blocks_duplicates_unless_reviewed_and_rejects_bad_pdf_url(tmp_
 
 def test_epub_proposal_and_structure_validation(tmp_path):
     epub_candidate = candidate(
-        source="openlibrary",
-        landing_url="https://openlibrary.org/works/OL1W",
-        download_urls=["https://archive.org/download/book/book.epub"],
+        source="publisher-site",
+        landing_url="https://publisher.example/books/one",
+        download_urls=["https://cdn.example/files/book.epub"],
         resource_type="book",
     )
     proposal = zotero_import.create_import_proposal(
@@ -139,7 +139,9 @@ def test_local_writer_uses_native_authorization_and_three_phase_upload(tmp_path,
     ]
 
 
-def test_download_rejects_cross_origin_redirect(tmp_path, monkeypatch):
+def test_download_allows_cross_origin_https_redirect(tmp_path, monkeypatch):
+    calls = []
+
     class Client:
         async def __aenter__(self):
             return self
@@ -148,6 +150,12 @@ def test_download_rejects_cross_origin_redirect(tmp_path, monkeypatch):
             return None
 
         async def get(self, url):
+            calls.append(url)
+            if len(calls) > 1:
+                return httpx.Response(
+                    200, content=b"%PDF-1.7\nredirected",
+                    request=httpx.Request("GET", url),
+                )
             return httpx.Response(
                 302,
                 headers={"Location": "https://evil.example/file.pdf"},
@@ -159,8 +167,14 @@ def test_download_rejects_cross_origin_redirect(tmp_path, monkeypatch):
         "candidate": candidate(), "import_mode": "pdf",
         "download_url": candidate()["download_urls"][0],
     }
-    with pytest.raises(ValueError, match="outside"):
-        asyncio.run(zotero_import.download_candidate_file(row, tmp_path / "file.pdf"))
+    destination = asyncio.run(
+        zotero_import.download_candidate_file(row, tmp_path / "file.pdf"),
+    )
+    assert destination.read_bytes().startswith(b"%PDF-")
+    assert calls == [
+        "https://www.jstage.jst.go.jp/article/example/_pdf",
+        "https://evil.example/file.pdf",
+    ]
 
 
 def test_execute_epub_import_uploads_and_removes_temporary_file(monkeypatch):
@@ -168,6 +182,7 @@ def test_execute_epub_import_uploads_and_removes_temporary_file(monkeypatch):
 
     class Writer:
         async def create_items(self, items):
+            assert items[0]["tags"] == [{"tag": "AI-added"}]
             assert items[1]["contentType"] == "application/epub+zip"
             assert items[1]["filename"].endswith(".epub")
 
@@ -184,14 +199,14 @@ def test_execute_epub_import_uploads_and_removes_temporary_file(monkeypatch):
     monkeypatch.setattr(zotero_import, "download_candidate_file", fake_download)
     row = {
         "candidate": zotero_import._candidate_payload(candidate(
-            source="openlibrary",
-            landing_url="https://openlibrary.org/works/OL1W",
-            download_urls=["https://archive.org/download/book/book.epub"],
+            source="publisher-site",
+            landing_url="https://publisher.example/books/one",
+            download_urls=["https://cdn.example/files/book.epub"],
             resource_type="book",
         )),
         "collection_key": "",
         "import_mode": "epub",
-        "download_url": "https://archive.org/download/book/book.epub",
+        "download_url": "https://cdn.example/files/book.epub",
     }
 
     result = asyncio.run(zotero_import.execute_import(row, writer=Writer()))

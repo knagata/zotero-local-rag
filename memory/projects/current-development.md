@@ -480,3 +480,9 @@ active V3はM5 clean rebuildと後続の対象修復を完了した監査済み�
 - 管理画面の実行中ジョブに進捗バーを追加。ログの`PROGRESS x/y`または`進捗 x/y`を優先し、
   取得不能時はstep index/totalと開始後経過時間から各step内10〜90%を概算する。
 - 概算は「経過時間からの目安」とストライプで区別し、完了状態以外は99%を超えない。
+
+# 2026-09-29 承認済み取得元とAI追加タグ
+
+- 収録proposalでsource catalog/domain allowlistを要求せず、承認済みの任意の直接HTTPS URLと
+  HTTPS redirectを許可する。250MB上限とPDF/EPUB実体検証は継続する。
+- AI経由で作成する親Zotero itemには`AI-added`タグを付ける。
