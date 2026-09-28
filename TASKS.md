@@ -2073,3 +2073,13 @@ A（PDF構造化）・B（課金LLM）は独立、C（構造抽出エンジン�
 - [x] **取得元ドメイン制限を外す。** PDF・EPUBはユーザー承認済みの任意の直接HTTPS URLと
   HTTPS redirectを許可し、容量・ファイル形式検証は維持する。
 - [x] **AI追加資料を識別可能にする。** 追加する親Zotero itemへ固定タグ`AI-added`を付与する。
+
+# 2026-09-29 Zotero 9書込み互換性
+
+- [x] **Local API書込みの対応版を正しく判定する。** `Zotero-Server-ID`がないZotero 9を
+  停止・設定不良と誤診せず、Local API書込みにはZotero 10以降が必要だと版番号付きで通知する。
+- [x] **Web APIへ安全にフォールバックする。** `ZOTERO_USER_ID`と書込み権限付き
+  `ZOTERO_API_KEY`が揃う場合は、承認済みproposalをWeb API経由で追加する。ファイルuploadの
+  `prefix`/`suffix`も反映し、Zotero 10以降では従来どおりnative authorizationを優先する。
+- [x] **承認経路をClaude UIへ一本化する。** 公開MCP toolから承認句付き二段階操作を外し、
+  destructive annotation付き`import_zotero_candidate`をUI確認後に直接実行する。

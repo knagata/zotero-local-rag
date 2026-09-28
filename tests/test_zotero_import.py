@@ -139,6 +139,41 @@ def test_local_writer_uses_native_authorization_and_three_phase_upload(tmp_path,
     ]
 
 
+def test_zotero_9_uses_configured_web_api_fallback(monkeypatch):
+    monkeypatch.setenv("ZOTERO_LOCAL_API_BASE", "http://zotero.test/api")
+    monkeypatch.setenv("ZOTERO_USER_ID", "12345")
+    monkeypatch.setenv("ZOTERO_API_KEY", "web-write-key")
+    requests = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.host == "zotero.test":
+            return httpx.Response(200, headers={"X-Zotero-Version": "9.0.6"})
+        assert request.url == "https://api.zotero.org/users/12345/items"
+        assert request.headers["Zotero-API-Key"] == "web-write-key"
+        assert "Zotero-Server-ID" not in request.headers
+        return httpx.Response(200, json={"successful": {"0": {}}})
+
+    writer = zotero_import.ZoteroLocalWriter(transport=httpx.MockTransport(handler))
+    asyncio.run(writer.create_items([{"itemType": "book", "title": "Example"}]))
+
+    assert len(requests) == 2
+    assert writer.web_api is True
+
+
+def test_zotero_9_without_web_credentials_reports_actionable_error(monkeypatch):
+    monkeypatch.setenv("ZOTERO_LOCAL_API_BASE", "http://zotero.test/api")
+    monkeypatch.delenv("ZOTERO_USER_ID", raising=False)
+    monkeypatch.delenv("ZOTERO_API_KEY", raising=False)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, headers={"X-Zotero-Version": "9.0.6"})
+
+    writer = zotero_import.ZoteroLocalWriter(transport=httpx.MockTransport(handler))
+    with pytest.raises(RuntimeError, match=r"Zotero 9\.0\.6.*Zotero 10\+ required"):
+        asyncio.run(writer.create_items([{"itemType": "book", "title": "Example"}]))
+
+
 def test_download_allows_cross_origin_https_redirect(tmp_path, monkeypatch):
     calls = []
 

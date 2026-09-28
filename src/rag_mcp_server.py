@@ -258,15 +258,16 @@ reader encountering it is often the only signal there is: when damage would stop
 a passage being quoted accurately or found at all, call report_chunk_quality for
 that chunk. A few characters you can read through do not need a report.
 
-External open-text discovery is read-only until a user approves an immutable
-import proposal. search_open_texts and inspect_open_text_candidate never write.
-propose_zotero_import also performs no write and returns an exact approval phrase.
-Call approve_zotero_import only after the user explicitly supplies that phrase;
-Zotero then presents its own native Allow / Always Allow / Deny dialog.
+External open-text discovery is read-only. search_open_texts and
+inspect_open_text_candidate never write. import_zotero_candidate writes only
+after the Claude client confirms the tool call. Explain the candidate, mode,
+duplicate assessment, and cautions before calling it; do not ask for a second
+approval phrase. Zotero may also present its native Allow / Always Allow / Deny
+dialog when granting Local API write access.
 Do not treat a degree, journal, institution, citation count, or polished prose as
 proof of quality. Explain a proposal using observable metadata and available text;
 state the inspected text range and concrete cautions. Missing citation data is
-unknown, not negative evidence. Ask the user before any future import operation.
+unknown, not negative evidence. Treat the client tool confirmation as approval.
 """.strip()
 
 
@@ -1811,30 +1812,36 @@ async def inspect_open_text_candidate(candidate: Dict[str, Any]) -> Dict[str, An
     return screening_observations(candidate, duplicates)
 
 
-@mcp.tool()
-async def propose_zotero_import(
+@mcp.tool(annotations={
+    "readOnlyHint": False,
+    "destructiveHint": True,
+    "idempotentHint": False,
+    "openWorldHint": True,
+})
+async def import_zotero_candidate(
     candidate: Dict[str, Any],
     import_mode: str = "metadata",
     collection_key: str = "",
     allow_duplicate: bool = False,
 ) -> Dict[str, Any]:
-    """Create an expiring, read-only Zotero import proposal.
+    """Add a screened candidate after the Claude client confirms this tool call.
 
     ``import_mode`` is ``metadata``, ``pdf``, or ``epub``. File modes are accepted only
-    for a direct HTTPS URL. The URL may be hosted outside the discovery catalog
-    after the user approves the proposal. Duplicate
-    candidates block the proposal unless the user has reviewed them and
-    ``allow_duplicate`` is explicitly true. This tool never writes to Zotero.
+    for a direct HTTPS URL. The URL may be hosted outside the discovery catalog.
+    Duplicate candidates block the import unless the user has reviewed them and
+    ``allow_duplicate`` is explicitly true. Successful PDF/EPUB imports are indexed.
     """
     inspection = await inspect_open_text_candidate(candidate)
     duplicates = list(inspection.get("zotero_duplicates") or [])
-    return create_import_proposal(
+    proposal = create_import_proposal(
         candidate,
         duplicates,
         import_mode=import_mode,
         collection_key=collection_key,
         allow_duplicate=allow_duplicate,
     )
+    row = claim_import_proposal(proposal["proposal_id"], proposal["approval_phrase"])
+    return await _execute_claimed_import(proposal["proposal_id"], row)
 
 
 async def _index_imported_item(item_key: str) -> Dict[str, Any]:
@@ -1853,16 +1860,7 @@ async def _index_imported_item(item_key: str) -> Dict[str, Any]:
             "exit_code": process.returncode, "output": output}
 
 
-@mcp.tool()
-async def approve_zotero_import(proposal_id: str, approval_phrase: str) -> Dict[str, Any]:
-    """Execute one pending proposal after explicit user and native Zotero approval.
-
-    The approval phrase must exactly match the phrase returned by
-    ``propose_zotero_import``. A proposal expires after 24 hours and can be
-    claimed only once. Zotero itself shows an Allow / Always Allow / Deny dialog
-    before the Local API accepts any write. Imported PDFs are indexed afterward.
-    """
-    row = claim_import_proposal(proposal_id, approval_phrase)
+async def _execute_claimed_import(proposal_id: str, row: Dict[str, Any]) -> Dict[str, Any]:
     try:
         latest = await inspect_open_text_candidate(dict(row["candidate"]))
         new_duplicates = list(latest.get("zotero_duplicates") or [])

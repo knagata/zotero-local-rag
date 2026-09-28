@@ -486,3 +486,13 @@ active V3はM5 clean rebuildと後続の対象修復を完了した監査済み�
 - 収録proposalでsource catalog/domain allowlistを要求せず、承認済みの任意の直接HTTPS URLと
   HTTPS redirectを許可する。250MB上限とPDF/EPUB実体検証は継続する。
 - AI経由で作成する親Zotero itemには`AI-added`タグを付ける。
+
+# 2026-09-29 Zotero 9書込み互換性
+
+- 実機Zotero 9.0.6はLocal API readには応答するが、Zotero 10以降のwrite protocolで必要な
+  `Zotero-Server-ID`を返さない。停止・Local API無効ではなく、版の非対応だった。
+- Zotero 10以降ではnative runtime authorizationを優先する。旧版では
+  `ZOTERO_USER_ID`と書込み権限付き`ZOTERO_API_KEY`が揃う場合だけWeb APIへ切り替え、
+  未設定なら必要な対応を版番号付きで通知する。
+- 公開MCPは`import_zotero_candidate`へ一本化した。Claude UIのdestructive tool確認をユーザー承認
+  とし、独自のproposal承認句は内部の単回実行保護にだけ用いる。

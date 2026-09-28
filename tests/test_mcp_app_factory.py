@@ -20,8 +20,13 @@ def test_create_mcp_preserves_tools_and_returns_distinct_servers():
     assert "rag_search" in _tool_names(first)
     assert "search_open_texts" in _tool_names(first)
     assert "inspect_open_text_candidate" in _tool_names(first)
-    assert "propose_zotero_import" in _tool_names(first)
-    assert "approve_zotero_import" in _tool_names(first)
+    assert "import_zotero_candidate" in _tool_names(first)
+    import_tool = next(
+        tool for tool in asyncio.run(first.list_tools())
+        if tool.name == "import_zotero_candidate"
+    )
+    assert import_tool.annotations.readOnlyHint is False
+    assert import_tool.annotations.destructiveHint is True
 
 
 def test_external_discovery_tools_are_read_only_and_check_duplicates(monkeypatch):
@@ -71,7 +76,7 @@ def test_external_discovery_tools_are_read_only_and_check_duplicates(monkeypatch
         raise AssertionError("empty external query must be rejected")
 
 
-def test_zotero_import_tools_separate_proposal_from_approved_write(monkeypatch):
+def test_zotero_import_uses_client_confirmation_without_second_phrase(monkeypatch):
     candidate = {
         "source": "ndl", "title": "New book",
         "landing_url": "https://ndlsearch.ndl.go.jp/books/example",
@@ -99,10 +104,8 @@ def test_zotero_import_tools_separate_proposal_from_approved_write(monkeypatch):
     monkeypatch.setattr(server, "execute_import", fake_execute)
     monkeypatch.setattr(server, "finish_import_proposal", lambda *args: calls.append(("finish", args)))
 
-    proposed = asyncio.run(server.propose_zotero_import(candidate))
-    approved = asyncio.run(server.approve_zotero_import("P1", "IMPORT P1"))
+    approved = asyncio.run(server.import_zotero_candidate(candidate))
 
-    assert proposed["writes_performed"] is False
     assert approved["writes_performed"] is True
     assert approved["indexing"]["status"] == "not_applicable"
     assert [call[0] for call in calls] == ["propose", "claim", "write", "finish"]

@@ -104,7 +104,7 @@ Google Client ID、Client secret、許可メールは`REMOTE_MCP_GOOGLE_CLIENT_I
 | 変数 | 用途 |
 |---|---|
 | `S2_API_KEY` | Semantic Scholar APIキー。Citation Networkでは必須 |
-| `ZOTERO_USER_ID` + `ZOTERO_API_KEY` | 解決したDOIのZotero書き戻し。任意 |
+| `ZOTERO_USER_ID` + `ZOTERO_API_KEY` | 解決したDOIの書き戻し、およびZotero 9以前で承認済み資料を追加するWeb APIフォールバック。書き込み権限付きキーが必要。任意 |
 | `CINII_APP_ID` | CiNii Research v2。任意 |
 | `CROSSREF_MAILTO` | Crossref polite pool。任意 |
 

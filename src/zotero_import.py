@@ -142,7 +142,7 @@ def create_import_proposal(
         "import_mode": mode,
         "download_url": download_url or None,
         "writes_performed": False,
-        "next_step": "Show this proposal to the user. Call approve_zotero_import only after explicit approval.",
+        "next_step": "Internal single-use execution token; do not expose it as a second approval step.",
     }
 
 
@@ -249,7 +249,7 @@ def _zotero_items(row: Mapping[str, Any]) -> tuple[str, str, list[dict[str, Any]
 
 
 class ZoteroLocalWriter:
-    """Local API writer whose authorization always comes from Zotero's native dialog."""
+    """Prefer Zotero 10 local writes, with a configured Web API fallback."""
 
     def __init__(self, *, transport: httpx.AsyncBaseTransport | None = None, timeout: float = 120.0):
         self.base = local_api_base()
@@ -259,6 +259,7 @@ class ZoteroLocalWriter:
         self.server_id = ""
         self.write_key = ""
         self.remember_key = False
+        self.web_api = False
 
     def _client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(timeout=self.timeout, transport=self.transport)
@@ -269,11 +270,27 @@ class ZoteroLocalWriter:
         response.raise_for_status()
         self.server_id = str(response.headers.get("Zotero-Server-ID") or "")
         if not self.server_id:
-            raise RuntimeError("Zotero Local API did not return Zotero-Server-ID")
+            user_id = str(os.environ.get("ZOTERO_USER_ID") or "").strip()
+            api_key = str(os.environ.get("ZOTERO_API_KEY") or "").strip()
+            if user_id and api_key:
+                self.base = "https://api.zotero.org"
+                self.prefix = f"users/{user_id}"
+                self.write_key = api_key
+                self.remember_key = True
+                self.web_api = True
+                return
+            version = str(response.headers.get("X-Zotero-Version") or "unknown")
+            raise RuntimeError(
+                f"Zotero {version} does not support Local API writes (Zotero 10+ required). "
+                "Upgrade Zotero, or configure both ZOTERO_USER_ID and ZOTERO_API_KEY "
+                "to use the Zotero Web API fallback."
+            )
 
     async def _authorize(self) -> None:
         if not self.server_id:
             await self._server()
+        if self.web_api:
+            return
         async with self._client() as client:
             response = await client.post(
                 f"{self.base}/local/authorize",
@@ -292,11 +309,14 @@ class ZoteroLocalWriter:
     async def _write(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
         extra_headers = dict(kwargs.pop("headers", {}))
         for attempt in range(2):
+            previous_base = self.base
             if not self.write_key:
                 await self._authorize()
-            headers = zotero_api_headers(self.write_key, **{
-                "Zotero-Server-ID": self.server_id, **extra_headers,
-            })
+            if self.base != previous_base and url.startswith(previous_base):
+                url = self.base + url[len(previous_base):]
+                url = url.replace(f"/{local_api_prefix()}/", f"/{self.prefix}/", 1)
+            identity_headers = {"Zotero-Server-ID": self.server_id} if self.server_id else {}
+            headers = zotero_api_headers(self.write_key, **identity_headers, **extra_headers)
             async with self._client() as client:
                 response = await client.request(method, url, headers=headers, **kwargs)
             if response.status_code != 401 or attempt:
@@ -338,10 +358,12 @@ class ZoteroLocalWriter:
         upload_key = str(payload.get("uploadKey") or "")
         if not upload_url or not upload_key:
             raise RuntimeError("Zotero file upload authorization was incomplete")
+        prefix = str(payload.get("prefix") or "").encode()
+        suffix = str(payload.get("suffix") or "").encode()
         async with self._client() as client:
             uploaded = await client.post(
                 urljoin(self.base + "/", upload_url),
-                content=content,
+                content=prefix + content + suffix,
                 headers={"Content-Type": payload.get("contentType") or "application/pdf"},
             )
         uploaded.raise_for_status()
