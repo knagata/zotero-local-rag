@@ -2162,7 +2162,10 @@ def _reparse_decision(
     force_docling = False
     if source_type == "pdf":
         if reocr_route:
-            force_ndlocr = not force_mistral and str(reocr_route.get("lang") or "") == "ja"
+            route_language = str(
+                reocr_route.get("lang") or reocr_route.get("language") or ""
+            )
+            force_ndlocr = not force_mistral and route_language == "ja"
             force_docling = not force_mistral and not force_ndlocr
         elif args.use_docling:
             force_docling = not (

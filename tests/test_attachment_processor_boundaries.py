@@ -66,7 +66,7 @@ class ReparseDecisionTests(unittest.TestCase):
         self.assertFalse(mistral.force_ndlocr)
         japanese = module._reparse_decision(
             self._args(), source_type="pdf", previous=None,
-            reocr_route={"target_engine": "local", "lang": "ja"},
+            reocr_route={"target_engine": "local", "language": "ja"},
         )
         self.assertTrue(japanese.force_ndlocr)
 

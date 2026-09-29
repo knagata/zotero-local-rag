@@ -2,6 +2,12 @@
 
 Updated: 2026-09-29
 
+## 2026-09-29 Japanese re-OCR route schema
+
+- 再OCR候補JSONは言語を`language`で出力する一方、indexerは`lang`だけを読み、日本語候補もDoclingへ
+  戻していた。両フィールドを受けて`ja`をNDLOCR-Liteへ送る。『朝鮮酒に就て』p.32–33でDoclingが
+  縦列を左から右へ逆順連結したことから判明した。
+
 ## 2026-09-29 quick-update pre-audit catch-up
 
 - クイック実行中にZoteroへ資料が追加され、最初の添付列挙にはなく監査時のrequiredだけ増える競合を
