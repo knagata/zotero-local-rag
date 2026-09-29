@@ -50,15 +50,18 @@ def test_quick_update_runs_the_bounded_daily_sequence(tmp_path):
     assert [label for label, _command in definition.steps] == [
         "ライブラリ差分更新",
         "文書構造・目次の差分更新",
+        "監査前のライブラリ差分再確認",
         "DB監査",
         "Citation Network更新",
     ]
     assert [Path(command[1]).name for _label, command in definition.steps] == [
         "index_from_zotero.py",
         "rebuild_document_structure.py",
+        "index_from_zotero.py",
         "run_db_audit.py",
         "update_citations.py",
     ]
+    assert definition.steps[0][1] == definition.steps[2][1]
 
 
 def test_start_requires_exact_confirmation_and_redacts_runner_token(tmp_path, monkeypatch):

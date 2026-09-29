@@ -2,6 +2,12 @@
 
 Updated: 2026-09-29
 
+## 2026-09-29 quick-update pre-audit catch-up
+
+- クイック実行中にZoteroへ資料が追加され、最初の添付列挙にはなく監査時のrequiredだけ増える競合を
+  確認した。DB監査直前に同じ差分索引をもう1回だけ実行し、途中追加をmanifest・本文索引へ追い込んで
+  から監査する。再確認は有界で、変更なしなら通常の差分skipとなる。
+
 ## 2026-09-29 re-OCR adoption audit completeness
 
 - 再OCR採用はprepared chunkから共通`source_coverage`を再構成・検証してmanifestへ保存する。不完全な

@@ -58,6 +58,10 @@ def job_definitions(root: Path = ROOT) -> dict[str, JobDefinition]:
         "ライブラリ差分更新",
         (python, str(root / "src" / "index_from_zotero.py"), "--progress"),
     )
+    pre_audit_library_step = (
+        "監査前のライブラリ差分再確認",
+        library_step[1],
+    )
     structure_step = (
         "文書構造・目次の差分更新",
         (python, str(root / "scripts" / "rebuild_document_structure.py"), "--all"),
@@ -80,8 +84,8 @@ def job_definitions(root: Path = ROOT) -> dict[str, JobDefinition]:
         ),
         "quick_update": JobDefinition(
             "quick_update", "クイック実行",
-            "索引・文書構造・目次の差分更新、DB監査、Citation Network更新を順番に実行します。",
-            (library_step, structure_step, audit_step, citation_step),
+            "索引・文書構造・目次を差分更新し、実行中の追加資料を再確認してからDB監査とCitation Network更新を行います。",
+            (library_step, structure_step, pre_audit_library_step, audit_step, citation_step),
         ),
         "library_update": JobDefinition(
             "library_update", "ライブラリ差分更新",
