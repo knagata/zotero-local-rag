@@ -29,7 +29,7 @@ load_dotenv_native(ROOT)
 
 from src.v3_data_plane import V3_COLLECTION, enforce_environment  # noqa: E402
 from src.v3_data_plane import (  # noqa: E402
-    chroma_dir as v3_chroma_dir, lexical_path, manifest_path,
+    chroma_dir as v3_chroma_dir, lexical_path, manifest_path, resolve_configured_path,
 )
 
 
@@ -46,14 +46,58 @@ def _run(*args: str) -> None:
         raise SystemExit(result.returncode)
 
 
-def main() -> None:
-    gate_path = Path(os.environ.get(
-        "SERVER_DB_GATE_PATH", str(ROOT / "data" / "quality" / "server_database_gate.json"),
+def _validated_report_paths() -> tuple[Path, Path, Path]:
+    """Validate all outputs before invalidating a gate or starting a writer.
+
+    Read raw settings here so even an invalid V3 environment cannot turn gate
+    invalidation into deletion of a configured input. Resolve aliases once and
+    pass these same absolute paths to the children.
+    """
+    def configured(name: str, default: Path) -> Path:
+        return resolve_configured_path(ROOT, os.environ.get(name, default)).resolve()
+
+    chroma = configured("CHROMA_DIR", ROOT / "data" / "chroma")
+    protected = [
+        configured("MANIFEST_PATH", ROOT / "data" / "manifest_v3.json"),
+        configured("PIPELINE_CONFIG_PATH", chroma / "embedder_config_v3.json"),
+    ]
+    for name, default in (
+        ("LEXICAL_DB_PATH", ROOT / "data" / "lexical_v3.sqlite3"),
+        ("RELATIONS_DB_PATH", ROOT / "data" / "relations.db"),
+    ):
+        database = configured(name, default)
+        protected.extend(Path(str(database) + suffix).resolve()
+                         for suffix in ("", "-wal", "-shm", "-journal"))
+
+    outputs = tuple(configured(name, ROOT / "data" / "quality" / default) for name, default in (
+        ("SERVER_DB_GATE_PATH", "server_database_gate.json"),
+        ("SERVER_ZOTERO_AUDIT_PATH", "server_zotero_reconciliation.json"),
+        ("SERVER_SOURCE_AUDIT_PATH", "server_source_verification.json"),
     ))
+
+    def aliases(left: Path, right: Path) -> bool:
+        return left == right or (left.exists() and right.exists() and left.samefile(right))
+
+    for index, output in enumerate(outputs):
+        if output == chroma or chroma in output.parents or output.is_dir():
+            raise RuntimeError(f"Unsafe DB-audit output path: {output}")
+        if any(aliases(output, source) for source in protected):
+            raise RuntimeError(f"DB-audit output overlaps protected data: {output}")
+        if any(aliases(output, other) or output in other.parents or other in output.parents
+               for other in outputs[:index]):
+            raise RuntimeError(f"DB-audit output paths collide: {output}")
+    return outputs
+
+
+def main() -> None:
+    try:
+        gate_path, zotero_audit_path, source_audit_path = _validated_report_paths()
+    except (RuntimeError, OSError, ValueError) as exc:
+        raise SystemExit(f"[停止] {exc}") from exc
     # A failed re-audit must never leave a previous passing gate available for
     # the summary step, so the invalidation happens before anything that can
-    # fail -- including the environment guard below. Its path does not depend
-    # on that guard, and erring toward "no gate" only costs a re-audit.
+    # fail -- including the environment guard below -- after output safety has
+    # been established. An unsafe output configuration must change no files.
     if gate_path.exists():
         print(f"[情報] 前回のDB監査合格証明を無効化します: {gate_path}")
         gate_path.unlink()
@@ -79,13 +123,6 @@ def main() -> None:
     manifest = manifest_path(ROOT)
     lexical_db = lexical_path(ROOT)
     collection = os.environ.get("CHROMA_COLLECTION", V3_COLLECTION)
-
-    zotero_audit_path = Path(os.environ.get(
-        "SERVER_ZOTERO_AUDIT_PATH", str(ROOT / "data" / "quality" / "server_zotero_reconciliation.json"),
-    ))
-    source_audit_path = Path(os.environ.get(
-        "SERVER_SOURCE_AUDIT_PATH", str(ROOT / "data" / "quality" / "server_source_verification.json"),
-    ))
 
     _run(
         "python", "scripts/verify_zotero_reconciliation.py",

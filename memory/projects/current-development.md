@@ -1,6 +1,13 @@
 # Current development handoff
 
-Updated: 2026-09-29
+Updated: 2026-09-30
+
+## 2026-09-30 DB audit output protection
+
+- `run_db_audit.py`の既知P1を修正。3出力すべての保護対象・出力間衝突を検証してから旧gateを
+  無効化する。相対パス、symlink、hardlink、SQLite補助ファイルを含む回帰テストを追加した。
+  対象と関連チェック63テスト・compileall・致命的Ruff・CLI importに合格。
+  実DBへの監査・書込みは行っていない。
 
 ## 2026-09-29 Zotero import duplicate-write prevention
 
@@ -417,8 +424,7 @@ Updated: 2026-09-29
   この部分世代は再利用せずclean rebuildを再度最初から行い、完了した。query expansion、LLM summaries/
   reference extraction、Mistral OCRはuser確認により1でよく、保存設定は1。再実行childは開始時環境を
   固定しているため前3機能は0のまま完走させる。Mistral queue deferred 1件、Batch送信・採用なし。
-- review残件のP1は`run_db_audit.py`のreport出力先保護。現在の設定は全て`data/quality/`で安全だが、
-  任意設定でactive DBを指せるためfollow-upへ記録した。埋め込み開始条件には含めず、今回未修正。
+- reviewのP1だった`run_db_audit.py`のreport出力先保護は2026-09-30に修正済み。
   残るP3はS2 author-less識別とflat PDF 3形状で、どちらも実データを読んでから方針を決める。
 
 ## Existing V3 database assessment

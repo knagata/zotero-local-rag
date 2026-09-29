@@ -1,5 +1,15 @@
 # Tasks
 
+## 2026-09-30 DB監査の出力先保護
+
+- [x] `run_db_audit.py`の3出力を削除・mkdir・子プロセス起動前に検証する。manifest、
+  lexical/relations DBとSQLite補助ファイル、pipeline config、Chroma配下への衝突を拒否する。
+  相対パス・symlinkを解決した同じ絶対パスを子へ渡し、hardlinkと出力同士の衝突も拒否する。
+- [x] 一時ディレクトリの既存データが拒否後も保持される回帰テストと、通常監査の順序・失敗停止・
+  安全な旧gateの無効化を検証する。実DBへの監査・書込みは行わない。
+- [x] 対象・文書参照・選択規則・function/lint予算の63テスト、compileall、致命的Ruff、
+  CLI import、差分検査に合格。変更はscripts配下のためsrc/citation_graphのcoverage予算は変更なし。
+
 ## 2026-09-29 re-OCR adoption audit completeness
 
 - [x] **再OCR採用後もDB監査契約を満たす。** prepared OCRの品質情報でmanifestを置換した際に

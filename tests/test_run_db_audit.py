@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import tempfile
 import unittest
+import pytest
 from pathlib import Path
 from unittest.mock import patch
 
@@ -125,6 +126,90 @@ class RunDbAuditTests(unittest.TestCase):
                     run_db_audit.main()
             self.assertIn("[停止]", str(ctx.exception.code))
             mock_run.assert_not_called()
+
+
+@pytest.mark.parametrize("output_name", [
+    "SERVER_DB_GATE_PATH", "SERVER_ZOTERO_AUDIT_PATH", "SERVER_SOURCE_AUDIT_PATH",
+])
+@pytest.mark.parametrize("target", [
+    "data/manifest_v3.json", "data/lexical_v3.sqlite3", "data/relations.db",
+    "data/lexical_v3.sqlite3-wal", "data/lexical_v3.sqlite3-shm",
+    "data/lexical_v3.sqlite3-journal", "data/relations.db-wal",
+    "data/relations.db-shm", "data/relations.db-journal",
+    "data/chroma/embedder_config_v3.json", "data/chroma/segment/index.bin",
+])
+def test_protected_outputs_leave_all_files_intact(tmp_path, monkeypatch, output_name, target):
+    victim = tmp_path / target
+    victim.parent.mkdir(parents=True)
+    victim.write_bytes(b"original data")
+    gate = tmp_path / "data/quality/gate.json"
+    gate.parent.mkdir(parents=True)
+    gate.write_bytes(b"old gate")
+    monkeypatch.setattr(run_db_audit, "ROOT", tmp_path)
+    environment = _env(tmp_path, RELATIONS_DB_PATH=str(tmp_path / "data/relations.db"))
+    environment[output_name] = target
+    with patch.dict("os.environ", environment, clear=True), patch.object(run_db_audit, "_run") as run:
+        with pytest.raises(SystemExit, match=r"\[停止\]"):
+            run_db_audit.main()
+        run.assert_not_called()
+    assert victim.read_bytes() == b"original data"
+    assert gate.read_bytes() == b"old gate"
+
+
+@pytest.mark.parametrize("alias_kind", ["symlink", "hardlink", "parent_symlink"])
+def test_alias_of_protected_data_is_rejected(tmp_path, monkeypatch, alias_kind):
+    victim = tmp_path / "data/manifest_v3.json"
+    victim.parent.mkdir()
+    victim.write_bytes(b"original")
+    alias = tmp_path / "report.json"
+    if alias_kind == "symlink":
+        alias.symlink_to(victim)
+    elif alias_kind == "hardlink":
+        alias.hardlink_to(victim)
+    else:
+        directory = tmp_path / "alias"
+        directory.symlink_to(victim.parent, target_is_directory=True)
+        alias = directory / victim.name
+    monkeypatch.setattr(run_db_audit, "ROOT", tmp_path)
+    with patch.dict("os.environ", _env(tmp_path, SERVER_SOURCE_AUDIT_PATH=str(alias)), clear=True), \
+         patch.object(run_db_audit, "_run") as run:
+        with pytest.raises(SystemExit, match="protected data"):
+            run_db_audit.main()
+        run.assert_not_called()
+    assert victim.read_bytes() == b"original"
+    assert not (tmp_path / "data/quality").exists()
+
+
+@pytest.mark.parametrize("target", ["data/quality/gate.json", "data/quality/gate.json/child.json"])
+def test_colliding_outputs_are_rejected_before_gate_deletion(tmp_path, monkeypatch, target):
+    monkeypatch.setattr(run_db_audit, "ROOT", tmp_path)
+    with patch.dict("os.environ", _env(tmp_path, SERVER_SOURCE_AUDIT_PATH=target), clear=True), \
+         patch.object(run_db_audit, "_run") as run:
+        with pytest.raises(SystemExit, match="collide"):
+            run_db_audit.main()
+        run.assert_not_called()
+    assert not (tmp_path / "data").exists()
+
+
+def test_relative_reports_are_resolved_against_root(tmp_path, monkeypatch):
+    monkeypatch.setattr(run_db_audit, "ROOT", tmp_path)
+    with patch.dict("os.environ", _env(tmp_path, SERVER_SOURCE_AUDIT_PATH="reports/source.json"), clear=True), \
+         patch.object(run_db_audit, "_run") as run:
+        run_db_audit.main()
+    assert str(tmp_path / "reports/source.json") in run.call_args_list[1].args
+    assert str(tmp_path / "reports/source.json") in run.call_args_list[2].args
+
+
+def test_safe_gate_is_invalidated_even_for_invalid_environment(tmp_path, monkeypatch):
+    monkeypatch.setattr(run_db_audit, "ROOT", tmp_path)
+    gate = tmp_path / "gate.json"
+    gate.write_text("old gate")
+    with patch.dict("os.environ", _env(tmp_path, SERVER_DB_GATE_PATH=str(gate), CHROMA_COLLECTION="legacy"), clear=True), \
+         patch.object(run_db_audit, "_run") as run:
+        with pytest.raises(SystemExit, match="Unsupported Chroma"):
+            run_db_audit.main()
+        run.assert_not_called()
+    assert not gate.exists()
 
 
 if __name__ == "__main__":

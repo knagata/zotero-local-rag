@@ -13,7 +13,7 @@ than deleted silently, because the same review would otherwise raise them again.
 
 Priority means: **P1** can lose or corrupt data, or has no bound; **P2** is a
 robustness or cost defect within the local-only workflow; **P3** costs accuracy
-or clarity in what the user is shown. P1 has one deferred audit-path guard;
+or clarity in what the user is shown. P1 is empty (audit-path guard fixed 2026-09-30);
 P2 is empty. The two P3 items need data this repository does not have
 (a re-measurement, and the corpus). Everything closed is in [Closed](#closed).
 Structural work is prioritized separately below; the size ratchet
@@ -21,19 +21,7 @@ Structural work is prioritized separately below; the size ratchet
 
 ## P1
 
-### 1. Protect DB-audit report paths from the active data plane
-
-- Location: `scripts/run_db_audit.py` (`main`)
-- `SERVER_DB_GATE_PATH` is unlinked before environment validation, and the two
-  report paths are passed to JSON writers without checking whether any resolves
-  to the manifest, lexical/relations SQLite files, pipeline config, or a file
-  below active Chroma. A mistaken override can therefore delete or overwrite
-  operational data.
-- The current local values all resolve below `data/quality/`, so this does not
-  block the pinned M5 embedding run or its audit with the present configuration.
-  Before supporting redirected report paths, reject protected files, SQLite
-  sidecars, Chroma descendants and collisions among the three outputs before
-  unlinking or starting a subprocess.
+No open items.
 
 ## P3
 
@@ -137,6 +125,13 @@ that the size number does not say.
   `RuntimeWarning`.
 
 ## Closed
+
+- **DB-audit output paths could overwrite operational data** (fixed 2026-09-30).
+  `scripts/run_db_audit.py` validates all three outputs before unlinking the gate,
+  creating directories or starting children. Protected data, SQLite sidecars,
+  Chroma descendants and output collisions are rejected, including resolved
+  symlinks and hardlink aliases of protected files. Regression tests in
+  `tests/test_run_db_audit.py` verify rejection leaves existing files intact.
 
 - **The four prioritized post-refactor seams remained coupled** (fixed
   2026-08-10). Citation Graph now shares external citer/reference assembly and
