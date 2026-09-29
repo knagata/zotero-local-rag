@@ -19,6 +19,9 @@ def candidate(**overrides):
         "creators": ["Example Author"],
         "date": "2026",
         "resource_type": "journalArticle",
+        "container_title": "Journal of Rice Research",
+        "publisher": "Rice Research Society",
+        "volume": "12", "issue": "3", "pages": "101-119",
         "landing_url": "https://www.jstage.jst.go.jp/article/example",
         "download_urls": ["https://www.jstage.jst.go.jp/article/example/_pdf"],
         "identifiers": {"doi": "10.1234/example"},
@@ -100,6 +103,22 @@ def test_new_parent_and_attachment_have_no_preassigned_identity():
     assert "key" not in parent and "version" not in parent
     assert "key" not in attachment and "version" not in attachment
     assert "parentItem" not in attachment
+    assert parent["publicationTitle"] == "Journal of Rice Research"
+    assert parent["publisher"] == "Rice Research Society"
+    assert (parent["volume"], parent["issue"], parent["pages"]) == ("12", "3", "101-119")
+
+
+def test_book_preserves_publisher_and_volume():
+    book = candidate(resource_type="book", publisher="Example Press", volume="2")
+    row = {
+        "candidate": zotero_import._candidate_payload(book),
+        "collection_key": "", "import_mode": "metadata", "download_url": "",
+    }
+
+    parent, _attachment = zotero_import._zotero_items(row)
+
+    assert parent["itemType"] == "book"
+    assert (parent["publisher"], parent["volume"]) == ("Example Press", "2")
 
 
 def test_expired_proposal_cannot_be_claimed(tmp_path, monkeypatch):

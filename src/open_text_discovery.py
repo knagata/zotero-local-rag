@@ -54,12 +54,24 @@ def _candidate(**values: Any) -> dict[str, Any]:
     result = {
         "source": "", "record_id": "", "title": "", "creators": [],
         "date": "", "resource_type": "text", "container_title": "",
-        "publisher": "", "identifiers": {}, "landing_url": "",
+        "publisher": "", "volume": "", "issue": "", "pages": "",
+        "identifiers": {}, "landing_url": "",
         "fulltext_status": "unknown", "download_urls": [],
         "textual_resource": True,
     }
     result.update(values)
     return result
+
+
+def _page_range(start: Any, end: Any, explicit: Any = "") -> str:
+    page_range = str(explicit or "").strip()
+    if page_range:
+        return page_range
+    first = str(start or "").strip()
+    last = str(end or "").strip()
+    if first and last and first != last:
+        return f"{first}-{last}"
+    return first or last
 
 
 def _cinii_identifiers(item: dict[str, Any], record_id: str) -> dict[str, Any]:
@@ -94,7 +106,13 @@ def parse_ndl(text: str) -> list[dict[str, Any]]:
             source="ndl", record_id=_identifier(url), title=_first(item, "title"),
             creators=_texts(item, "creator", "author"), date=_first(item, "issued", "date"),
             resource_type=categories[0] if categories else "text",
-            publisher=_first(item, "publisher"), landing_url=url,
+            publisher=_first(item, "publisher"),
+            volume=_first(item, "volume"), issue=_first(item, "number", "issue"),
+            pages=_page_range(
+                _first(item, "startingpage"), _first(item, "endingpage"),
+                _first(item, "pagerange"),
+            ),
+            landing_url=url,
             identifiers={"ndl_url": url},
             fulltext_status="unknown",
         ))
@@ -120,6 +138,10 @@ def parse_jstage(text: str) -> list[dict[str, Any]]:
             creators=_texts(entry, "name"),
             date=_first(entry, "pubyear", "publicationdate", "date", "year"),
             resource_type="journalArticle", container_title=_first(entry, "material_title"),
+            volume=_first(entry, "volume"), issue=_first(entry, "number"),
+            pages=_page_range(
+                _first(entry, "startingpage"), _first(entry, "endingpage"),
+            ),
             identifiers=identifiers, landing_url=url,
             fulltext_status="pdf_link_available_unverified" if pdf_url else "landing_page_available",
             download_urls=[pdf_url] if pdf_url else [],
@@ -128,10 +150,13 @@ def parse_jstage(text: str) -> list[dict[str, Any]]:
     for entry, row in zip((n for n in root.iter() if _local_name(n.tag) == "entry"), rows):
         title_node = next((n for n in entry if _local_name(n.tag) == "article_title"), None)
         material_node = next((n for n in entry if _local_name(n.tag) == "material_title"), None)
+        publisher_node = next((n for n in entry if _local_name(n.tag) == "publisher"), None)
         if title_node is not None:
             row["title"] = _first(title_node, "ja", "en")
         if material_node is not None:
             row["container_title"] = _first(material_node, "ja", "en")
+        if publisher_node is not None:
+            row["publisher"] = _first(publisher_node, "ja", "en", "name")
     return [row for row in rows if row["title"]]
 
 
@@ -155,7 +180,14 @@ def parse_cinii(payload: dict[str, Any]) -> list[dict[str, Any]]:
             date=str(item.get("prism:publicationDate") or item.get("dc:date") or ""),
             resource_type=resource_type,
             container_title=str(item.get("prism:publicationName") or ""),
-            publisher=str(item.get("dc:publisher") or ""), landing_url=url,
+            publisher=str(item.get("dc:publisher") or ""),
+            volume=str(item.get("prism:volume") or ""),
+            issue=str(item.get("prism:number") or ""),
+            pages=_page_range(
+                item.get("prism:startingPage"), item.get("prism:endingPage"),
+                item.get("prism:pageRange"),
+            ),
+            landing_url=url,
             identifiers=_cinii_identifiers(item, record_id), fulltext_status="unknown",
         ))
     return [row for row in rows if row["title"]]

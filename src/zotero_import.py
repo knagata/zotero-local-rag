@@ -112,6 +112,9 @@ def _candidate_payload(candidate: Mapping[str, Any]) -> dict[str, Any]:
         "resource_type": str(candidate.get("resource_type") or "text").strip(),
         "container_title": str(candidate.get("container_title") or "").strip(),
         "publisher": str(candidate.get("publisher") or "").strip(),
+        "volume": str(candidate.get("volume") or "").strip(),
+        "issue": str(candidate.get("issue") or "").strip(),
+        "pages": str(candidate.get("pages") or "").strip(),
         "identifiers": dict(candidate.get("identifiers") or {}),
         "landing_url": landing_url,
         "fulltext_status": str(candidate.get("fulltext_status") or "unknown"),
@@ -257,10 +260,19 @@ def _zotero_items(row: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, Any
         "relations": {},
     }
     if item_type == "book":
-        parent.update({"publisher": candidate["publisher"], "ISBN": _identifier(candidate, "isbn")})
+        parent.update({
+            "publisher": candidate["publisher"],
+            "volume": str(candidate.get("volume") or ""),
+            "ISBN": _identifier(candidate, "isbn"),
+        })
     elif item_type == "journalArticle":
         parent.update({
             "publicationTitle": candidate["container_title"],
+            "publisher": candidate["publisher"],
+            # ``get`` keeps proposals created before these fields were added executable.
+            "volume": str(candidate.get("volume") or ""),
+            "issue": str(candidate.get("issue") or ""),
+            "pages": str(candidate.get("pages") or ""),
             "DOI": _identifier(candidate, "doi"), "ISSN": _identifier(candidate, "issn"),
         })
     mode = str(row["import_mode"])

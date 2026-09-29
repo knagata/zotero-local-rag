@@ -2099,3 +2099,12 @@ A（PDF構造化）・B（課金LLM）は独立、C（構造抽出エンジン�
 - [x] **対象修復後の索引公開を復旧する。** 韓国語PDFと新規Leow添付を対象索引化し、Chromaにのみ
   あった85 IDを既存repair経路でFTSへ補完、HNSW実queryを検証した。DB監査は616/616・失敗0・
   global failure 0で合格した。
+
+# 2026-09-29 Zotero取込の巻号ページ保存
+
+- [x] **候補メタデータを欠落させない。** `volume`・`issue`・`pages`を候補契約とimmutable
+  proposalに保持し、J-STAGE・CiNii・NDLの取得結果から正規化する。
+- [x] **Zotero論文項目へ書き込む。** journalArticle作成時に`volume`・`issue`・`pages`を送信し、
+  巻号と開始・終了ページの回帰テストを追加する。
+- [x] **出版社も保持する。** J-STAGEの入れ子publisherを候補へ正規化し、論文と図書の
+  `publisher`、図書の`volume`をZoteroへ送る。

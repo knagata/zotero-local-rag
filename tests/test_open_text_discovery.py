@@ -33,14 +33,19 @@ def test_jstage_parser_reads_nested_japanese_fields():
         <article_link><ja>https://www.jstage.jst.go.jp/article/a/1/1/1/_article/-char/ja/</ja></article_link>
         <author><ja><name>著者名</name></ja></author>
         <material_title><ja>雑誌名</ja></material_title><prism:issn>1234-5678</prism:issn>
+        <publisher><name><ja>植物学会</ja><en>Botanical Society</en></name></publisher>
+        <prism:volume>19</prism:volume><prism:number>216</prism:number>
+        <prism:startingPage>1b</prism:startingPage><prism:endingPage>3b</prism:endingPage>
         <pubyear>1935</pubyear><doi>10.1234/example</doi>
       </entry></feed>"""
     row = parse_jstage(xml)[0]
     assert row["title"] == "論文名"
     assert row["creators"] == ["著者名"]
     assert row["container_title"] == "雑誌名"
+    assert row["publisher"] == "植物学会"
     assert row["record_id"] == "article:a:1:1:1"
     assert row["date"] == "1935"
+    assert (row["volume"], row["issue"], row["pages"]) == ("19", "216", "1b-3b")
     assert row["identifiers"]["doi"] == "10.1234/example"
     assert row["download_urls"] == ["https://www.jstage.jst.go.jp/article/a/1/1/1/_pdf/-char/ja"]
     assert discovery._jstage_identifier("") == ""
@@ -50,6 +55,8 @@ def test_cinii_parser_does_not_treat_missing_citations_as_negative():
     rows = parse_cinii({"items": [None, {
         "title": "研究", "link": {"@id": "https://cir.nii.ac.jp/crid/123"},
         "dc:creator": "著者", "dc:type": "journal article", "prism:publicationDate": "2011",
+        "prism:volume": "7", "prism:number": "2", "prism:startingPage": "11",
+        "prism:endingPage": "29",
         "dc:identifier": [None, {"@type": "cir:NAID", "@value": "4001"},
                           {"@type": "cir:NAID", "@value": "4002"},
                           {"@type": "cir:NAID", "@value": "4003"}],
@@ -60,7 +67,12 @@ def test_cinii_parser_does_not_treat_missing_citations_as_negative():
     assert screened["citation_evidence"] == "unknown_not_penalized"
     assert screened["eligible_for_proposal"] is True
     assert rows[0]["date"] == "2011"
+    assert (rows[0]["volume"], rows[0]["issue"], rows[0]["pages"]) == ("7", "2", "11-29")
     assert rows[0]["identifiers"]["naid"] == ["4001", "4002", "4003"]
+
+
+def test_explicit_page_range_wins_over_start_and_end():
+    assert discovery._page_range("11", "29", "S1-S4") == "S1-S4"
 
 
 def test_openlibrary_marks_only_public_scans_as_downloadable():

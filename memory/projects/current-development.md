@@ -517,3 +517,12 @@ active V3はM5 clean rebuildと後続の対象修復を完了した監査済み�
 - 親item `5GLU7NDK`で対象再取込し、F4RRNSZZは28頁・109 chunk・corrupted 0へ更新した。監査で
   新規Leow添付の未索引を検出して対象索引化し、Chromaのみの85 IDをFTSへ補完、HNSWを検証した。
   最終cutoverは616/616、failed 0、global failures 0で合格した。
+
+# 2026-09-29 Zotero取込の巻号ページ保存
+
+- 取込候補の正規化契約に`volume`・`issue`・`pages`がなく、J-STAGE/CiNiiが返すPRISM書誌を
+  proposal保存時に捨て、Zotero journalArticleにも送っていなかった。
+- 3項目を候補・proposal・Zotero payloadまで通し、開始・終了ページは`pages`の範囲表記へ統合する。
+  J-STAGEは`prism:volume/number/startingPage/endingPage`、CiNiiも同名PRISM項目を使用する。
+- 出版社はCiNii/NDLに加えてJ-STAGEの`publisher/name/(ja|en)`も読み、journalArticleとbookの
+  `publisher`へ保存する。bookは候補に巻がある場合に`volume`も保存する。
