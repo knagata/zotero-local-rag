@@ -56,10 +56,12 @@ from open_text_discovery import (
 )
 from evidence_reference import build_evidence_reference
 from zotero_import import (
+    acquire_import_write_lock,
     claim_import_proposal,
     create_import_proposal,
     execute_import,
     finish_import_proposal,
+    release_import_write_lock,
 )
 
 
@@ -1807,6 +1809,7 @@ async def inspect_open_text_candidate(candidate: Dict[str, Any]) -> Dict[str, An
                 duplicates.append({
                     "key": data.get("key"), "title": data.get("title"),
                     "date": data.get("date"), "creators": data.get("creators"),
+                    "url": data.get("url"),
                     "match_reason": reason,
                 })
     return screening_observations(candidate, duplicates)
@@ -1828,8 +1831,9 @@ async def import_zotero_candidate(
 
     ``import_mode`` is ``metadata``, ``pdf``, or ``epub``. File modes are accepted only
     for a direct HTTPS URL. The URL may be hosted outside the discovery catalog.
-    Duplicate candidates block the import unless the user has reviewed them and
-    ``allow_duplicate`` is explicitly true. Successful PDF/EPUB imports are indexed.
+    Similar-title candidates block the import unless the user has reviewed them and
+    ``allow_duplicate`` is explicitly true. Exact identifier or source-URL matches
+    cannot be overridden. Successful PDF/EPUB imports are indexed.
     """
     inspection = await inspect_open_text_candidate(candidate)
     duplicates = list(inspection.get("zotero_duplicates") or [])
@@ -1861,12 +1865,32 @@ async def _index_imported_item(item_key: str) -> Dict[str, Any]:
 
 
 async def _execute_claimed_import(proposal_id: str, row: Dict[str, Any]) -> Dict[str, Any]:
+    descriptor: Optional[int] = None
     try:
+        # The initial inspection and proposal claim are not an atomic unit. Two
+        # MCP processes could otherwise both inspect an absent work and then
+        # create it. Hold one cross-process lease across the final inspection
+        # and Zotero write; file download is included because it precedes the
+        # first write in execute_import.
+        descriptor = await asyncio.to_thread(acquire_import_write_lock)
         latest = await inspect_open_text_candidate(dict(row["candidate"]))
         new_duplicates = list(latest.get("zotero_duplicates") or [])
+        candidate_url = str(row["candidate"].get("landing_url") or "").rstrip("/")
+        exact_duplicates = [
+            duplicate for duplicate in new_duplicates
+            if duplicate.get("match_reason") == "identifier"
+            or (
+                candidate_url
+                and str(duplicate.get("url") or "").rstrip("/") == candidate_url
+            )
+        ]
+        if exact_duplicates:
+            raise ValueError("Zotero already contains this exact identifier or source URL")
         if new_duplicates and not row.get("allow_duplicate"):
             raise ValueError("Zotero duplicate candidates appeared after proposal creation")
         result = await execute_import(row)
+        release_import_write_lock(descriptor)
+        descriptor = None
         if result["import_mode"] in {"pdf", "epub"}:
             result["indexing"] = await _index_imported_item(result["item_key"])
         else:
@@ -1879,6 +1903,9 @@ async def _execute_claimed_import(proposal_id: str, row: Dict[str, Any]) -> Dict
     except Exception as exc:
         finish_import_proposal(proposal_id, "failed", {"error": str(exc)})
         raise
+    finally:
+        if descriptor is not None:
+            release_import_write_lock(descriptor)
 
 
 

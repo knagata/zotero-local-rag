@@ -2,6 +2,8 @@ import asyncio
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import rag_mcp_server as server
 
@@ -101,6 +103,8 @@ def test_zotero_import_uses_client_confirmation_without_second_phrase(monkeypatc
     monkeypatch.setattr(server, "inspect_open_text_candidate", fake_inspect)
     monkeypatch.setattr(server, "create_import_proposal", fake_create)
     monkeypatch.setattr(server, "claim_import_proposal", fake_claim)
+    monkeypatch.setattr(server, "acquire_import_write_lock", lambda: 42)
+    monkeypatch.setattr(server, "release_import_write_lock", lambda _descriptor: None)
     monkeypatch.setattr(server, "execute_import", fake_execute)
     monkeypatch.setattr(server, "finish_import_proposal", lambda *args: calls.append(("finish", args)))
 
@@ -109,3 +113,34 @@ def test_zotero_import_uses_client_confirmation_without_second_phrase(monkeypatc
     assert approved["writes_performed"] is True
     assert approved["indexing"]["status"] == "not_applicable"
     assert [call[0] for call in calls] == ["propose", "claim", "write", "finish"]
+
+
+def test_exact_duplicate_cannot_be_overridden_and_write_lock_is_released(monkeypatch):
+    candidate = {
+        "source": "jstage", "title": "Same article",
+        "landing_url": "https://example.test/article",
+        "identifiers": {"doi": "10.1234/same"},
+    }
+    events = []
+
+    async def fake_inspect(_value):
+        return {"zotero_duplicates": [{
+            "key": "EXISTING", "match_reason": "identifier",
+            "url": "https://example.test/article",
+        }]}
+
+    async def forbidden_write(_row):
+        raise AssertionError("an exact duplicate must not be written")
+
+    monkeypatch.setattr(server, "inspect_open_text_candidate", fake_inspect)
+    monkeypatch.setattr(server, "execute_import", forbidden_write)
+    monkeypatch.setattr(server, "acquire_import_write_lock", lambda: events.append("acquire") or 7)
+    monkeypatch.setattr(server, "release_import_write_lock", lambda fd: events.append(("release", fd)))
+    monkeypatch.setattr(server, "finish_import_proposal", lambda *args: events.append(("finish", args[1])))
+
+    with pytest.raises(ValueError, match="exact identifier"):
+        asyncio.run(server._execute_claimed_import("P1", {
+            "candidate": candidate, "import_mode": "metadata", "allow_duplicate": True,
+        }))
+
+    assert events == ["acquire", ("finish", "failed"), ("release", 7)]

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import fcntl
 import io
 import json
 import mimetypes
@@ -30,6 +31,28 @@ SUPPORTED_IMPORT_MODES = frozenset({"metadata", "pdf", "epub"})
 AI_ADDED_TAG = "AI-added"
 _PROPOSAL_LOCK = threading.Lock()
 _AUTH_LOCK = threading.Lock()
+
+
+def acquire_import_write_lock(path: Path | None = None) -> int:
+    """Serialize the duplicate-check/write boundary across MCP processes."""
+    target = path or (
+        Path(__file__).resolve().parents[1] / "data" / "zotero_import_write.lock"
+    )
+    target.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(target, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+    except BaseException:
+        os.close(descriptor)
+        raise
+    return descriptor
+
+
+def release_import_write_lock(descriptor: int) -> None:
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+    finally:
+        os.close(descriptor)
 
 
 def _proposal_path() -> Path:
@@ -518,6 +541,7 @@ async def execute_import(row: Mapping[str, Any], *, writer: ZoteroLocalWriter | 
 
 
 __all__ = [
-    "ZoteroLocalWriter", "claim_import_proposal", "create_import_proposal",
+    "ZoteroLocalWriter", "acquire_import_write_lock", "claim_import_proposal",
     "download_candidate_file", "execute_import", "finish_import_proposal",
+    "release_import_write_lock",
 ]

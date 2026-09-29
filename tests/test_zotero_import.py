@@ -374,3 +374,13 @@ def test_finish_records_terminal_result(tmp_path):
     row = json.loads(path.read_text())["proposals"][proposal["proposal_id"]]
     assert row["status"] == "failed"
     assert row["result"] == {"error": "denied"}
+
+
+def test_import_write_lock_uses_a_private_cross_process_file(tmp_path):
+    target = tmp_path / "import.lock"
+    descriptor = zotero_import.acquire_import_write_lock(target)
+    try:
+        assert target.exists()
+        assert target.stat().st_mode & 0o777 == 0o600
+    finally:
+        zotero_import.release_import_write_lock(descriptor)

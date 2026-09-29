@@ -2,6 +2,12 @@
 
 Updated: 2026-09-29
 
+## 2026-09-29 Zotero import duplicate-write prevention
+
+- 『朝鮮酒類製法』が13秒差で2件登録され、両requestが`allow_duplicate=true`だった。proposalの単回性は
+  別proposal間を排他せず、索引待ち中の再試行が最終検査を同時通過できた。全MCPプロセス共通のwrite
+  lock内で再検査とZotero書込みを行い、identifierまたはsource URL完全一致はoverride不能にした。
+
 ## 2026-09-29 Japanese re-OCR route schema
 
 - 再OCR候補JSONは言語を`language`で出力する一方、indexerは`lang`だけを読み、日本語候補もDoclingへ
