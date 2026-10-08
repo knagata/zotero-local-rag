@@ -1,5 +1,16 @@
 # Tasks
 
+## 2026-10-08 隔離検索索引の検証と排他
+
+- 全ID/本文/metadata/dimensionのSQLite署名、全vectorの照合、実検索、close/reopenを検査する
+  scripts/verify_vector_recovery.pyを追加。vector再正規化のfloat32丸めだけを許容し、既存DB監査の
+  条件は変更しない。途中停止・不一致時はverified=falseの証明を残す。関連28テスト合格。
+- 隔離copy作成のmetadata読取りをsegmentとIDのindex検索へ変更。初回の遅い試作は中断・保存し、
+  新copyで再開。稼働DBの変更や再embeddingはない。
+- 復旧中は共有writer lockを保持。Graph・OAuth proxy・定期確認Agentを再登録してrestart完了、
+  Graph/health HTTP200を確認。検索MCPは停止中。Native原本HNSWのhandleなし。
+- 現在は隔離copy作成中。全監査は未索引12添付で不合格のまま。検証合格前の切替えはしない。
+
 ## 2026-10-08 HNSW再障害と保存vectorの隔離復旧（進行中）
 
 - threads=1の復旧copyでも3添付目の書込みでSIGSEGVが再発した。Chroma Rust bindingの

@@ -112,7 +112,8 @@ def export_snapshot(source: Path, output: Path) -> dict:
     output = output.resolve()
     if not (source.parent / "RAW_SNAPSHOT_COMPLETE").is_file():
         raise ValueError("source must be a completed immutable raw snapshot")
-    if source == output or source in output.parents or output.exists():
+    if (source == output or source in output.parents or output.exists()
+            or output.with_suffix(".json").exists()):
         raise ValueError("output must be a new artifact outside the source snapshot")
     original = sqlite3.connect(f"{(source / 'chroma.sqlite3').as_uri()}?mode=ro", uri=True)
     destination = sqlite3.connect(output)

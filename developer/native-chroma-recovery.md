@@ -20,3 +20,8 @@ vectorのdimension/有限性、persisted sequence以後のWAL、SQLite全ID一�
 `rebuild_chroma_from_vectors.py`はその完成証明とID/vector hashを検査し、保存vectorを明示して
 新しい隔離Chromaだけを作る。原本抽出・モデル実行・manifest変更・自動activationは行わない。
 作成完了だけで健康とは扱わず、全ID/本文/metadata/vector、close/reopen、実検索を別途検証する。
+
+`verify_vector_recovery.py`は全ID・本文・metadata・dimensionのSQLite署名を厳密に比較し、
+全vectorを入力proofへ照合する。cosine再正規化のfloat32丸めを超える変更は拒否する。
+保存vectorの実検索とclose/reopenも検査する。検証開始時に旧証明をverified=falseへ戻し、
+全検査が終わるまで健康と公開しない。既存の全DB監査を代替するものではない。

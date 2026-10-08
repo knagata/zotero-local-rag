@@ -193,3 +193,52 @@ def test_isolated_copy_requires_new_output_and_bounded_batches(tmp_path):
     for output, size in [(source / 'nested', 128), (source, 128), (tmp_path / 'bad', 0)]:
         with pytest.raises(ValueError):
             builder.build_copy(source, vectors, output, batch_size=size)
+
+
+def test_isolated_recovery_verification_checks_all_data_and_native_reopen(tmp_path, monkeypatch):
+    import chromadb
+    from scripts import rebuild_chroma_from_vectors as builder, verify_vector_recovery as verifier
+    source, vectors = _copy_inputs(tmp_path)
+    candidate = tmp_path / 'verified-copy'
+    builder.build_copy(source, vectors, candidate)
+    native_client = chromadb.PersistentClient
+    def candidate_only(*args, **kwargs):
+        assert Path(kwargs['path']).resolve() != source.resolve()
+        return native_client(*args, **kwargs)
+    monkeypatch.setattr(chromadb, 'PersistentClient', candidate_only)
+    report = verifier.verify_copy(source, vectors, candidate)
+    assert report['verified'] and report['reopened']
+    assert report['collections']['test']['count'] == 2
+    assert report['collections']['test']['logical_signature']['metadata_rows'] == 4
+    assert report['collections']['test']['max_abs_float32_difference'] == 0
+
+
+def test_recovery_verification_rejects_changed_metadata_and_invalidates_old_proof(tmp_path):
+    import json
+    from scripts import rebuild_chroma_from_vectors as builder, verify_vector_recovery as verifier
+    source, vectors = _copy_inputs(tmp_path)
+    candidate = tmp_path / 'changed-copy'
+    builder.build_copy(source, vectors, candidate)
+    certificate = candidate.parent / f'{candidate.name}-verification.json'
+    certificate.write_text('{"verified":true}')
+    connection = sqlite3.connect(candidate / 'chroma.sqlite3')
+    connection.execute("UPDATE embedding_metadata SET string_value='wrong' WHERE key='itemKey'")
+    connection.commit()
+    connection.close()
+    with pytest.raises(ValueError, match='content differs'):
+        verifier.verify_copy(source, vectors, candidate)
+    assert json.loads(certificate.read_text())['verified'] is False
+
+
+def test_recovery_verification_rejects_vector_changes_beyond_machine_rounding():
+    from unittest.mock import MagicMock
+    from scripts import verify_vector_recovery as verifier
+    vector_db = sqlite3.connect(':memory:')
+    vector_db.execute('CREATE TABLE vectors (collection TEXT, id TEXT, vector BLOB)')
+    vector_db.execute('INSERT INTO vectors VALUES (?, ?, ?)', ('test', 'A', struct.pack('<3f', 1, 0, 0)))
+    collection = MagicMock()
+    collection.count.return_value = 1
+    collection.get.return_value = {'ids': ['A'], 'embeddings': [[0.99, 0, 0]]}
+    with pytest.raises(ValueError, match='rounding'):
+        verifier.verify_collection(collection, vector_db, 'test', {'count': 1, 'dimension': 3})
+    vector_db.close()

@@ -27,15 +27,18 @@ def _value(row):
 
 
 def stored_records(connection, collection_id, keys):
+    segment = connection.execute(
+        "SELECT id FROM segments WHERE collection=? AND scope='METADATA'", (collection_id,),
+    ).fetchone()
+    if segment is None:
+        raise ValueError("source metadata segment is missing")
     placeholders = ",".join("?" for _ in keys)
     rows = connection.execute(f"""
         SELECT e.embedding_id, em.key, em.string_value, em.int_value,
                em.float_value, em.bool_value
-        FROM embeddings e JOIN segments s ON s.id=e.segment_id
-        JOIN embedding_metadata em ON em.id=e.id
-        WHERE s.collection=? AND s.scope='METADATA'
-          AND e.embedding_id IN ({placeholders})
-    """, (collection_id, *keys))
+        FROM embeddings e JOIN embedding_metadata em ON em.id=e.id
+        WHERE e.segment_id=? AND e.embedding_id IN ({placeholders})
+    """, (segment[0], *keys))
     records = {key: {"document": None, "metadata": {}} for key in keys}
     for key, field, *values in rows:
         value = _value(values)
