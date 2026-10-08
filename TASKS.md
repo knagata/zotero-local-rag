@@ -1,5 +1,16 @@
 # Tasks
 
+## 2026-10-08 Graph読取りと取込の競合防止
+
+- Graphのitem vector読取りは、native clientのcloseまでwriter公開を排他するread leaseを取得する。
+  writer稼働中・manifest未検証時は保存済みlayout用vectorを使用し、Chromaを開かない。
+  既存writerのlock所有者検証・更新処理は保持した。SIGBUSの根因確定とは扱わない。
+- 要約索引の状態確認はSQLiteからID・本文・metadataを照合する。監査条件は変更せず、
+  定期確認によるnative HNSW openを除去した。
+- 関連37テスト合格。実取込中のGraph復帰後、HTTP 200とHNSW handleがindexerのみであることを確認。
+  OAuth管理画面は未認証時302、proxy health 200。実ブラウザの目視確認は未実施。
+- 差分取込と後続全DB監査は継続中。全DB合格はまだ未確認。有料OCR/LLMは無効のまま。
+
 ## 2026-10-08 SIGBUS復旧作業（進行中）
 
 - 権限制限解除後、Zotero API HTTP 200を確認。全inventory 689添付、ローカル原本欠落0。

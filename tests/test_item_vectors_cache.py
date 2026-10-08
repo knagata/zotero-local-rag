@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from contextlib import nullcontext
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -34,6 +35,11 @@ class FakeCollection:
 
 
 class ItemVectorsCacheTests(unittest.TestCase):
+    def setUp(self):
+        ready = patch("src.item_vectors._native_read_ready", side_effect=lambda: nullcontext())
+        ready.start()
+        self.addCleanup(ready.stop)
+
     def test_first_call_computes_and_persists_chunk_count(self):
         with tempfile.TemporaryDirectory() as directory:
             cache_path = Path(directory) / "cache.json"
@@ -95,3 +101,48 @@ class ItemVectorsCacheTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_native_reads_defer_for_writer_and_unvalidated_generation(tmp_path, monkeypatch):
+    from src import item_vectors
+    monkeypatch.setattr(item_vectors, "PROJECT_ROOT", tmp_path)
+    data = tmp_path / "data"
+    data.mkdir()
+    manifest = data / "manifest_v3.json"
+    monkeypatch.setattr(item_vectors, "v3_manifest_path", lambda root: manifest)
+    cache = data / "cache.json"
+    cache.write_text(json.dumps({"ITEM": [1.0, 0.0]}))
+    lock = data / "indexing.lock"
+    lock.write_text("writer")
+    with patch.object(item_vectors, "_open_collection") as native:
+        assert item_vectors.get_item_vectors(["ITEM"], cache_path=cache) == {"ITEM": [1.0, 0.0]}
+        native.assert_not_called()
+    lock.unlink()
+    manifest.write_text(json.dumps({"hnsw_validated": False}))
+    with patch.object(item_vectors, "_open_collection") as native:
+        item_vectors.get_item_vectors(["ITEM"], cache_path=cache)
+        native.assert_not_called()
+    assert json.loads(cache.read_text()) == {"ITEM": [1.0, 0.0]}
+    manifest.write_text(json.dumps({"hnsw_validated": True}))
+    with patch.object(item_vectors, "_open_collection", return_value=(Mock(), FakeCollection(1, 1.0))) as native:
+        assert "ITEM" in item_vectors.get_item_vectors(["ITEM"], cache_path=cache)
+        native.assert_called_once()
+
+
+def test_standalone_reader_defers_invalid_or_missing_manifest(tmp_path, monkeypatch):
+    import importlib.util
+    from src import item_vectors
+    spec = importlib.util.spec_from_file_location('item_vectors_standalone', item_vectors.__file__)
+    standalone = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(standalone)
+    monkeypatch.setattr(standalone, 'PROJECT_ROOT', tmp_path)
+    data = tmp_path / 'data'
+    data.mkdir()
+    manifest = data / 'manifest_v3.json'
+    monkeypatch.setattr(standalone, 'v3_manifest_path', lambda root: manifest)
+    for content in (None, '[]', 'invalid json'):
+        if content is not None:
+            manifest.write_text(content)
+        with patch.object(standalone, '_open_collection') as native:
+            assert standalone.get_item_vectors(['ITEM'], cache_path=data / 'cache.json') == {}
+            native.assert_not_called()

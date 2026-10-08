@@ -106,3 +106,25 @@ class IndexingLockTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_native_read_lease_excludes_writer_publication(tmp_path):
+    from src import indexing_lock
+    path = tmp_path / 'indexing.lock'
+    started = threading.Event()
+    acquired = threading.Event()
+    def write():
+        started.set()
+        owner = indexing_lock.acquire(path)
+        acquired.set()
+        indexing_lock.release(owner, lock_path=path)
+    thread = threading.Thread(target=write)
+    with indexing_lock.native_read_access(path):
+        thread.start()
+        assert started.wait(1)
+        assert not acquired.wait(0.1)
+        assert not path.exists()
+    thread.join(timeout=2)
+    assert not thread.is_alive()
+    assert acquired.is_set()
+    assert not path.exists()

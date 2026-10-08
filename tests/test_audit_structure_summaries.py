@@ -5,6 +5,11 @@ from unittest.mock import MagicMock, patch
 from scripts import audit_structure_summaries
 
 
+def _stored_rows(result):
+    return [{"id": key, "text": text, "metadata": metadata}
+            for key, text, metadata in zip(result["ids"], result["documents"], result["metadatas"])]
+
+
 def _connection():
     connection = MagicMock()
     connection.execute.side_effect = [
@@ -64,7 +69,7 @@ def test_summary_audit_passes_when_db_and_index_match():
             "get_all_document_node_summaries",
             return_value=[_summary_row()],
         ),
-        patch.object(audit_structure_summaries.chromadb, "PersistentClient", return_value=client),
+        patch.object(audit_structure_summaries, "get_collection_chunks", return_value=_stored_rows(collection.get.return_value)),
     ):
         report = audit_structure_summaries.build_report(collection_name="v3")
     assert report["passed"] is True
@@ -83,7 +88,7 @@ def test_summary_audit_rejects_missing_summary_index_row():
             "get_all_document_node_summaries",
             return_value=[_summary_row()],
         ),
-        patch.object(audit_structure_summaries.chromadb, "PersistentClient", return_value=client),
+        patch.object(audit_structure_summaries, "get_collection_chunks", return_value=_stored_rows(collection.get.return_value)),
     ):
         report = audit_structure_summaries.build_report(collection_name="v3")
     assert report["passed"] is False
@@ -112,7 +117,7 @@ def test_summary_audit_rejects_stale_index_content_with_same_id():
             "get_all_document_node_summaries",
             return_value=[_summary_row()],
         ),
-        patch.object(audit_structure_summaries.chromadb, "PersistentClient", return_value=client),
+        patch.object(audit_structure_summaries, "get_collection_chunks", return_value=_stored_rows(collection.get.return_value)),
     ):
         report = audit_structure_summaries.build_report(collection_name="v3")
     assert report["passed"] is False
@@ -135,9 +140,19 @@ def test_summary_audit_ignores_status_for_structure_without_nodes():
             "get_all_document_node_summaries",
             return_value=[],
         ),
-        patch.object(audit_structure_summaries.chromadb, "PersistentClient", return_value=client),
+        patch.object(audit_structure_summaries, "get_collection_chunks", return_value=_stored_rows(collection.get.return_value)),
     ):
         report = audit_structure_summaries.build_report(collection_name="v3")
     assert report["passed"] is True
     assert report["counts"]["structures"] == 0
     assert report["details"]["failed_status_items"] == []
+
+
+def test_summary_audit_rejects_unreadable_sqlite_index():
+    import sqlite3
+    with patch.object(audit_structure_summaries, "get_db_connection", return_value=_connection()), \
+            patch.object(audit_structure_summaries, "get_all_document_node_summaries", return_value=[_summary_row()]), \
+            patch.object(audit_structure_summaries, "get_collection_chunks", side_effect=sqlite3.OperationalError("unreadable")):
+        report = audit_structure_summaries.build_report(collection_name="v3")
+    assert not report["passed"]
+    assert "summary_collection_missing" in report["failures"]

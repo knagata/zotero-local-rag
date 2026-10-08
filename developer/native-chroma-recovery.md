@@ -9,3 +9,7 @@ HNSWの更新thread数は`CHROMA_HNSW_NUM_THREADS`（既定1）で制御し、na
 適用する。設定拒否を無視しない。thread数を下げるだけで既存の障害が必ず治るとは保証しない。
 復旧copyを使う場合も、全ID・本文・metadataの一致、実検索、再openを確認し、稼働元を保存する。
 稼働SQLiteへの直接上書き、vectorの推測、原本欠落や途中取込の記録だけの削除はしない。
+
+Graphのnative読取りはwriter公開と同じ安定inodeのflockをclient closeまで保持する。
+writer稼働中・manifest未検証時は保存済みlayout vectorへ戻す。要約の定期状態確認は
+SQLiteのID・本文・metadataを照合し、native HNSWを開かない。本文の実検索監査は維持する。

@@ -3,23 +3,37 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
 try:
+    from . import indexing_lock
     from .v3_data_plane import (
         chroma_dir as v3_chroma_dir, collection_name as v3_collection_name,
+        manifest_path as v3_manifest_path,
     )
 except ImportError:
+    import indexing_lock
     from v3_data_plane import (
         chroma_dir as v3_chroma_dir, collection_name as v3_collection_name,
+        manifest_path as v3_manifest_path,
     )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CACHE_PATH = PROJECT_ROOT / "data" / "item_vectors_cache.json"
 _META_KEY = "__meta__"
+
+
+@contextmanager
+def _native_read_ready():
+    with indexing_lock.native_read_access(indexing_lock.default_path(PROJECT_ROOT)):
+        manifest = json.loads(v3_manifest_path(PROJECT_ROOT).read_text(encoding="utf-8"))
+        if not isinstance(manifest, dict) or manifest.get("hnsw_validated") is False:
+            raise RuntimeError("索引の検証が未完了のため、文献間の距離計算を保留します。")
+        yield
 
 
 def _open_collection():
@@ -78,79 +92,81 @@ def get_item_vectors(
             vectors = {}
             chunk_counts = {}
 
-    client = None
-    try:
-        client, collection = _open_collection()
-        peek = collection.peek(1)
-        embeddings = peek.get("embeddings") if peek else None
-        current_dim = None
-        if embeddings is not None and len(embeddings):
-            current_dim = int(np.asarray(embeddings).shape[-1])
-        collection_name = collection.name
-        if (
-            metadata.get("embedding_dim") not in (None, current_dim)
-            or metadata.get("collection") not in (None, collection_name)
-        ):
-            vectors = {}
-            chunk_counts = {}
+    with ExitStack() as access:
+        client = None
+        try:
+            access.enter_context(_native_read_ready())
+            client, collection = _open_collection()
+            peek = collection.peek(1)
+            embeddings = peek.get("embeddings") if peek else None
+            current_dim = None
+            if embeddings is not None and len(embeddings):
+                current_dim = int(np.asarray(embeddings).shape[-1])
+            collection_name = collection.name
+            if (
+                metadata.get("embedding_dim") not in (None, current_dim)
+                or metadata.get("collection") not in (None, collection_name)
+            ):
+                vectors = {}
+                chunk_counts = {}
 
-        stale_keys: set[str] = set()
-        for key in (key for key in requested if key in vectors):
-            try:
-                current_count = collection.get(where={"itemKey": key}, include=[])
-                current_count = len(current_count.get("ids") or [])
-            except Exception:
-                continue
-            if chunk_counts.get(key) != current_count:
-                stale_keys.add(key)
-        for key in stale_keys:
-            vectors.pop(key, None)
-            chunk_counts.pop(key, None)
+            stale_keys: set[str] = set()
+            for key in (key for key in requested if key in vectors):
+                try:
+                    current_count = collection.get(where={"itemKey": key}, include=[])
+                    current_count = len(current_count.get("ids") or [])
+                except Exception:
+                    continue
+                if chunk_counts.get(key) != current_count:
+                    stale_keys.add(key)
+            for key in stale_keys:
+                vectors.pop(key, None)
+                chunk_counts.pop(key, None)
 
-        for key in (key for key in requested if key not in vectors):
-            try:
-                result = collection.get(where={"itemKey": key}, include=["embeddings"])
-                item_embeddings = result.get("embeddings")
-                if item_embeddings is None or len(item_embeddings) == 0:
+            for key in (key for key in requested if key not in vectors):
+                try:
+                    result = collection.get(where={"itemKey": key}, include=["embeddings"])
+                    item_embeddings = result.get("embeddings")
+                    if item_embeddings is None or len(item_embeddings) == 0:
+                        continue
+                    array = np.asarray(item_embeddings, dtype=np.float32)
+                    array = array[np.isfinite(array).all(axis=1)]
+                    if not len(array):
+                        continue
+                    vector = array.mean(axis=0)
+                    norm = float(np.linalg.norm(vector))
+                    if norm <= 0:
+                        continue
+                    vector /= norm
+                    vectors[key] = [round(float(value), 6) for value in vector]
+                    chunk_counts[key] = len(item_embeddings)
+                    current_dim = current_dim or len(vector)
+                except Exception:
                     continue
-                array = np.asarray(item_embeddings, dtype=np.float32)
-                array = array[np.isfinite(array).all(axis=1)]
-                if not len(array):
-                    continue
-                vector = array.mean(axis=0)
-                norm = float(np.linalg.norm(vector))
-                if norm <= 0:
-                    continue
-                vector /= norm
-                vectors[key] = [round(float(value), 6) for value in vector]
-                chunk_counts[key] = len(item_embeddings)
-                current_dim = current_dim or len(vector)
-            except Exception:
-                continue
 
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        payload: dict[str, Any] = {
-            _META_KEY: {
-                "embedding_dim": current_dim,
-                "collection": collection_name,
-            },
-            **{
-                key: {"v": value, "n": chunk_counts[key]}
-                for key, value in vectors.items()
-                if key in chunk_counts
-            },
-        }
-        temporary = cache_path.with_suffix(".tmp")
-        temporary.write_text(json.dumps(payload), encoding="utf-8")
-        temporary.replace(cache_path)
-    except Exception:
-        pass
-    finally:
-        if client is not None:
-            try:
-                client.close()
-            except Exception:
-                pass
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            payload: dict[str, Any] = {
+                _META_KEY: {
+                    "embedding_dim": current_dim,
+                    "collection": collection_name,
+                },
+                **{
+                    key: {"v": value, "n": chunk_counts[key]}
+                    for key, value in vectors.items()
+                    if key in chunk_counts
+                },
+            }
+            temporary = cache_path.with_suffix(".tmp")
+            temporary.write_text(json.dumps(payload), encoding="utf-8")
+            temporary.replace(cache_path)
+        except Exception:
+            pass
+        finally:
+            if client is not None:
+                try:
+                    client.close()
+                except Exception:
+                    pass
     return {key: vectors[key] for key in requested if key in vectors}
 
 

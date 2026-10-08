@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import chromadb
+from src.chunk_store import get_collection_chunks
 
 from src.build_structure_summaries import (
     CHROMA_DIR, PROMPT_VERSION, _select_searchable_summary_rows, inherited_title,
@@ -119,19 +119,14 @@ def build_report(*, collection_name: str) -> dict:
         }
     actual_records = {}
     try:
-        collection = chromadb.PersistentClient(path=str(CHROMA_DIR)).get_collection(
-            f"{collection_name}__sum_node"
+        indexed = get_collection_chunks(
+            chroma_dir=Path(CHROMA_DIR), collection_name=f"{collection_name}__sum_node",
         )
-        indexed = collection.get(include=["documents", "metadatas"])
-        actual_ids = set(indexed.get("ids") or [])
-        for summary_id, document, metadata in zip(
-            indexed.get("ids") or [],
-            indexed.get("documents") or [],
-            indexed.get("metadatas") or [], strict=False,
-        ):
-            actual_records[str(summary_id)] = {
-                "document": str(document or ""),
-                "metadata": dict(metadata or {}),
+        actual_ids = {str(row["id"]) for row in indexed}
+        for row in indexed:
+            actual_records[str(row["id"])] = {
+                "document": str(row.get("text") or ""),
+                "metadata": dict(row.get("metadata") or {}),
             }
     except Exception:
         actual_ids = set()

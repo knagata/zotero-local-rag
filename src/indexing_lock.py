@@ -59,6 +59,15 @@ def _metadata_guard(lock_path: Path):
         fcntl.flock(guard_fd, fcntl.LOCK_UN)
         os.close(guard_fd)
 
+@contextmanager
+def native_read_access(lock_path: Path):
+    """Keep writer publication excluded until a native reader has closed."""
+    with _metadata_guard(lock_path):
+        if lock_path.exists():
+            raise RuntimeError("索引更新中のため、文献間の距離計算を保留します。")
+        yield
+
+
 def acquire(lock_path: Path) -> dict:
     """Create the indexing lock file.  Exits with an error if another indexer
     is currently running (lock file exists and the owning process is alive).
