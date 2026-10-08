@@ -11,12 +11,14 @@ import numpy as np
 
 try:
     from . import indexing_lock
+    from .search_snapshot import read_lock_path
     from .v3_data_plane import (
         chroma_dir as v3_chroma_dir, collection_name as v3_collection_name,
         manifest_path as v3_manifest_path,
     )
 except ImportError:
     import indexing_lock
+    from search_snapshot import read_lock_path
     from v3_data_plane import (
         chroma_dir as v3_chroma_dir, collection_name as v3_collection_name,
         manifest_path as v3_manifest_path,
@@ -29,7 +31,7 @@ _META_KEY = "__meta__"
 
 @contextmanager
 def _native_read_ready():
-    with indexing_lock.native_read_access(indexing_lock.default_path(PROJECT_ROOT)):
+    with indexing_lock.native_read_access(read_lock_path(PROJECT_ROOT)):
         manifest = json.loads(v3_manifest_path(PROJECT_ROOT).read_text(encoding="utf-8"))
         if not isinstance(manifest, dict) or manifest.get("hnsw_validated") is False:
             raise RuntimeError("索引の検証が未完了のため、文献間の距離計算を保留します。")

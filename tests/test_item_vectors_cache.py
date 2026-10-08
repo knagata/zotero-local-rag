@@ -105,6 +105,8 @@ if __name__ == "__main__":
 
 def test_native_reads_defer_for_writer_and_unvalidated_generation(tmp_path, monkeypatch):
     from src import item_vectors
+    monkeypatch.delenv('_RAG_SEARCH_SNAPSHOT_ROOT', raising=False)
+    monkeypatch.delenv('_RAG_SEARCH_ORIGINAL_ENV', raising=False)
     monkeypatch.setattr(item_vectors, "PROJECT_ROOT", tmp_path)
     data = tmp_path / "data"
     data.mkdir()
@@ -131,6 +133,8 @@ def test_native_reads_defer_for_writer_and_unvalidated_generation(tmp_path, monk
 
 def test_standalone_reader_defers_invalid_or_missing_manifest(tmp_path, monkeypatch):
     import importlib.util
+    monkeypatch.delenv('_RAG_SEARCH_SNAPSHOT_ROOT', raising=False)
+    monkeypatch.delenv('_RAG_SEARCH_ORIGINAL_ENV', raising=False)
     from src import item_vectors
     spec = importlib.util.spec_from_file_location('item_vectors_standalone', item_vectors.__file__)
     standalone = importlib.util.module_from_spec(spec)

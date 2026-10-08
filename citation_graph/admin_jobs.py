@@ -56,7 +56,7 @@ def job_definitions(root: Path = ROOT) -> dict[str, JobDefinition]:
     gate = str(root / "data" / "quality" / "server_database_gate.json")
     library_step = (
         "ライブラリ差分更新",
-        (python, str(root / "src" / "index_from_zotero.py"), "--progress"),
+        (python, str(root / "scripts" / "run_searchable_index.py"), "--progress"),
     )
     pre_audit_library_step = (
         "監査前のライブラリ差分再確認",
@@ -416,6 +416,7 @@ def _mistral_batch_status(root: Path) -> dict[str, Any] | None:
 
 
 def system_status(root: Path = ROOT) -> dict[str, Any]:
+    from src.search_snapshot import public_status
     reconcile_stale_jobs(root)
     manifest_path = root / "data" / "manifest_v3.json"
     gate_path = root / "data" / "quality" / "server_database_gate.json"
@@ -499,6 +500,7 @@ def system_status(root: Path = ROOT) -> dict[str, Any]:
             ).isoformat() if gate_path.exists() else None,
         },
         "indexing_lock": lock,
+        "search_snapshot": public_status(root),
         "artifacts": _artifact_counts(root),
         "mistral_batch": _mistral_batch_status(root),
         "update_status": update_status,

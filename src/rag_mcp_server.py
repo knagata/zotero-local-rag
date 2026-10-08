@@ -23,7 +23,8 @@ from typing_extensions import TypedDict
 
 from pathlib import Path
 
-from env_utils import load_dotenv_native
+from env_utils import environment_with_saved_dotenv, load_dotenv_native
+from search_snapshot import apply_search_snapshot, read_lock_path
 from v3_data_plane import (
     chroma_dir,
     V3_COLLECTION, enforce_environment as enforce_v3_environment,
@@ -32,6 +33,7 @@ from v3_data_plane import (
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 load_dotenv_native(PROJECT_ROOT)
+apply_search_snapshot(PROJECT_ROOT)
 enforce_v3_environment(PROJECT_ROOT)
 
 import chromadb
@@ -44,7 +46,6 @@ from search_fusion import language_balanced_order
 from hierarchical_retrieval import (
     explicit_note_intent, fuse_retrieval_paths, partition_leaf_ids, retrieval_policy_allowed,
 )
-from indexing_lock import default_path as indexing_lock_path
 from runtime_config import bounded_env_int
 from retrieval_service import HierarchicalRetrievalDependencies, RetrievalService
 from db_relations import (
@@ -72,7 +73,7 @@ ROOT = str(PROJECT_ROOT)
 # drifted twice, each time leaving one configuration naming two databases.
 CHROMA_DIR = str(chroma_dir(PROJECT_ROOT))
 MANIFEST_PATH = str(v3_manifest_path(PROJECT_ROOT))
-INDEXING_LOCK_PATH = str(indexing_lock_path(Path(ROOT)))
+INDEXING_LOCK_PATH = str(read_lock_path(PROJECT_ROOT))
 _LOCK_STALE_HOURS = 4
 _LOG_PATH = os.path.join(ROOT, "data", "zotero-rag.log")
 
@@ -1857,6 +1858,7 @@ async def _index_imported_item(item_key: str) -> Dict[str, Any]:
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
         cwd=str(PROJECT_ROOT),
+        env=environment_with_saved_dotenv(PROJECT_ROOT),
     )
     stdout, _ = await process.communicate()
     output = stdout.decode("utf-8", errors="replace")[-4000:]

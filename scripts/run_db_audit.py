@@ -23,7 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.env_utils import load_dotenv_native  # noqa: E402
+from src.env_utils import environment_with_saved_dotenv, load_dotenv_native  # noqa: E402
 
 load_dotenv_native(ROOT)
 
@@ -89,6 +89,16 @@ def _validated_report_paths() -> tuple[Path, Path, Path]:
     return outputs
 
 
+def _refresh_search_snapshot() -> None:
+    from src.search_snapshot import pointer_path
+    if pointer_path(ROOT).exists():
+        print("[検索DB更新] 全監査に合格した資料を検索側へ反映します。", flush=True)
+        subprocess.run([
+            sys.executable, str(ROOT / "scripts" / "publish_search_snapshot.py"),
+            "--restart-services",
+        ], cwd=ROOT, env=environment_with_saved_dotenv(ROOT), check=True)
+
+
 def main() -> None:
     try:
         gate_path, zotero_audit_path, source_audit_path = _validated_report_paths()
@@ -143,6 +153,7 @@ def main() -> None:
     )
 
     print(f"\n[合格] 現在のDB世代に結び付いた要約実行の合格証明を作成しました: {gate_path}")
+    _refresh_search_snapshot()
 
 
 if __name__ == "__main__":

@@ -53,10 +53,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+load_dotenv(PROJECT_ROOT / ".env")
+from src.search_snapshot import apply_search_snapshot
+apply_search_snapshot(PROJECT_ROOT)
 from src.item_vectors import get_item_vectors as _shared_get_item_vectors
 from src.v3_data_plane import chroma_dir
 from citation_graph.graph_service import GraphBuildService
-load_dotenv(PROJECT_ROOT / ".env")
 
 DB_PATH         = os.environ.get("RELATIONS_DB_PATH", str(PROJECT_ROOT / "data" / "relations.db"))
 CHROMA_DB       = str(chroma_dir(PROJECT_ROOT) / "chroma.sqlite3")

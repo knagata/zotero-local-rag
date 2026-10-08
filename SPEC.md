@@ -8,7 +8,7 @@ versioned.
 
 ## Active data plane
 
-The only active search and ingestion plane is V3:
+The only supported search and ingestion plane is V3:
 
 | component | active value |
 |---|---|
@@ -21,11 +21,24 @@ The only active search and ingestion plane is V3:
 An attachment is processed transactionally.  Canonical chunks retain source
 locator, zone, extraction provenance, policy, and structure-node metadata.
 The manifest, Chroma IDs, and FTS IDs must agree; pending/inflight state or an
-unvalidated HNSW index fails the cutover gate.  A live indexing lock blocks MCP
-reads, and an explicitly unvalidated manifest continues to block them after a
+unvalidated HNSW index fails the cutover gate. A live indexing lock blocks reads
+of that same generation, and an explicitly unvalidated manifest continues to block them after a
 failed writer has released its process lock; a partial clean-rebuild generation
 must never become the active retrieval source.  Notes are searchable annotations
 but are not canonical document structure.
+
+MCP and Citation Graph can use a separately published V3 search snapshot. It
+contains Chroma, the lexical index, the structure database and the manifest,
+and is pinned per query process by `data/search_snapshot.json`. Snapshot creation
+holds the canonical writer lock and validates native queries and close/reopen
+before publication. Reader paths and locks are separate from the indexing plane;
+maintenance children must restore canonical paths instead of inheriting reader
+paths. Invalid snapshot certificates fail closed, without falling back to a
+possibly updating indexing plane. Initial pinning may preserve the current
+query-ready corpus while outstanding PDFs remain explicitly unindexed; it does
+not certify a full DB audit. Subsequent refresh requires the unchanged full DB
+audit to pass, then publishes a new pointer and restarts query services. A failed
+update or snapshot validation retains the previous search generation.
 
 ## Extraction and quality routing
 

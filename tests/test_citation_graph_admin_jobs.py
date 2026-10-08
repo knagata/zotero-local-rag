@@ -55,9 +55,9 @@ def test_quick_update_runs_the_bounded_daily_sequence(tmp_path):
         "Citation Network更新",
     ]
     assert [Path(command[1]).name for _label, command in definition.steps] == [
-        "index_from_zotero.py",
+        "run_searchable_index.py",
         "rebuild_document_structure.py",
-        "index_from_zotero.py",
+        "run_searchable_index.py",
         "run_db_audit.py",
         "update_citations.py",
     ]

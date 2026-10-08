@@ -54,7 +54,11 @@ def environment_with_saved_dotenv(
     project_root: Path, base: Mapping[str, str] | None = None,
 ) -> dict[str, str]:
     """Return a child environment where saved config beats stale parent values."""
-    environment = dict(os.environ if base is None else base)
+    try:
+        from .search_snapshot import writer_environment
+    except ImportError:  # pragma: no cover - direct src/ entrypoints
+        from search_snapshot import writer_environment
+    environment = writer_environment(os.environ if base is None else base)
     environment.update(dotenv_values_native(project_root))
     return environment
 

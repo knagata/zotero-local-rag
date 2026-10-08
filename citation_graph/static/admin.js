@@ -26,6 +26,7 @@ function renderMetrics(data) {
     metric("索引済み添付",m.attachments,`ノート ${m.notes}`), metric("HNSW検証",m.hnsw_validated?"正常":"要確認",`inflight ${m.inflight}`),
     metric("DB監査gate",gate.passed?"合格":"未合格",localTime(gate.modified_at)), metric("未解決artifact",a.unresolved ?? "—",a.error || "failed + blocked"),
     metric("索引書き込み",data.indexing_lock?"実行中":"停止中",data.indexing_lock?.started_at || "ロックなし"),
+    metric("検索用の添付",data.search_snapshot?.available ? data.search_snapshot.attachments : "未分離",data.search_snapshot?.available ? `更新中も検索可能 · ${localTime(data.search_snapshot.published_at)}時点（新しい資料は監査後に反映）` : "検索と更新は同じDBを使用"),
     metric("Mistral Batch",batch?statusLabel(batch.phase):"未実行",batch?`${batch.completed_requests}/${batch.total_requests || batch.candidate_count}件 · 確認 ${localTime(batch.last_checked_at)}`:"")
   ); $("updated").textContent=`更新 ${new Date().toLocaleTimeString("ja-JP")}`;
 }
