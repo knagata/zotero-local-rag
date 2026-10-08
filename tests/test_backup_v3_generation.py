@@ -26,6 +26,17 @@ def _sources(root: Path) -> backup_v3_generation.GenerationSources:
     chroma = root / "active-chroma"
     chroma.mkdir()
     (chroma / "segment.bin").write_bytes(b"vector-data")
+    connection = sqlite3.connect(chroma / "chroma.sqlite3")
+    connection.executescript("""
+        CREATE TABLE collections(id TEXT, name TEXT);
+        CREATE TABLE segments(id TEXT, scope TEXT, collection TEXT);
+        CREATE TABLE embeddings(id TEXT, segment_id TEXT);
+        INSERT INTO collections VALUES ('C', 'zotero_paragraphs_v3'), ('OTHER', 'other');
+        INSERT INTO segments VALUES ('S', 'METADATA', 'C'), ('O', 'METADATA', 'OTHER');
+        INSERT INTO embeddings VALUES ('one', 'S'), ('two', 'S'), ('unrelated', 'O');
+    """)
+    connection.close()
+
     (chroma / "embedder_config_v3.json").write_text(
         json.dumps({
             "embedding_dim": 1024,
@@ -107,3 +118,23 @@ def test_verification_refuses_an_incomplete_snapshot(tmp_path):
 
     with pytest.raises(RuntimeError, match="marked incomplete"):
         backup_v3_generation.verify_backup(snapshot)
+
+
+def test_backup_preserves_raw_files_before_native_verification_fails(tmp_path, monkeypatch):
+    sources = _sources(tmp_path)
+    destination = tmp_path / "snapshot"
+    opened = []
+    def native_count(path):
+        opened.append(path)
+        assert path != sources.chroma
+        assert (destination / "RAW_SNAPSHOT_COMPLETE").exists()
+        assert (destination / "lexical_v3.sqlite3").exists()
+        assert (destination / "relations.db").exists()
+        raise RuntimeError("native verification failed")
+    monkeypatch.setattr(backup_v3_generation, "_chroma_count", native_count)
+    monkeypatch.setattr(backup_v3_generation.indexing_lock, "held", lambda path: nullcontext())
+    with pytest.raises(RuntimeError, match="native verification failed"):
+        backup_v3_generation.backup_generation(destination, root=tmp_path, sources=sources)
+    assert opened == [destination / "chroma"]
+    assert (destination / "INCOMPLETE").exists()
+    assert (destination / "chroma" / "segment.bin").read_bytes() == b"vector-data"

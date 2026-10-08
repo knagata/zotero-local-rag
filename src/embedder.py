@@ -360,6 +360,7 @@ def open_chroma_collection(
     The embedding function is attached manually to avoid ChromaDB Rust FFI
     deadlocks on reads.
     """
+    num_threads = max(1, int(os.environ.get("CHROMA_HNSW_NUM_THREADS", "1")))
     chroma_dir = Path(chroma_dir)
     chroma_dir.mkdir(parents=True, exist_ok=True)
     client = chromadb.PersistentClient(path=str(chroma_dir))
@@ -377,6 +378,9 @@ def open_chroma_collection(
         name=collection_name,
         metadata=metadata,
     )
+    # Serialize native HNSW updates: parallel replay/upserts can crash the
+    # whole interpreter on the macOS Rust backend. Apply before loading it.
+    col.modify(configuration={"hnsw": {"num_threads": num_threads}})
     col._embedding_function = ef
     # Keep the Client wrapper reachable from the collection so callers can
     # close() it.  Without close(), chromadb keeps the System (and its

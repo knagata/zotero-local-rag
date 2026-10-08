@@ -84,3 +84,27 @@ class EmbedderSettingsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_hnsw_thread_limit_is_applied_before_any_native_read(tmp_path, monkeypatch):
+    from src.embedder import open_chroma_collection
+    monkeypatch.delenv("CHROMA_HNSW_NUM_THREADS", raising=False)
+    with patch("src.embedder.chromadb.PersistentClient") as factory:
+        collection = factory.return_value.get_or_create_collection.return_value
+        result = open_chroma_collection(tmp_path, "test", lambda rows: rows)
+        assert result is collection
+        assert collection.modify.call_args_list[0].kwargs == {"configuration": {"hnsw": {"num_threads": 1}}}
+        collection.count.assert_not_called()
+    monkeypatch.setenv("CHROMA_HNSW_NUM_THREADS", "2")
+    with patch("src.embedder.chromadb.PersistentClient") as factory:
+        open_chroma_collection(tmp_path, "test", lambda rows: rows)
+        assert factory.return_value.get_or_create_collection.return_value.modify.call_args_list[0].kwargs["configuration"]["hnsw"]["num_threads"] == 2
+
+
+def test_native_thread_configuration_failure_is_not_silenced(tmp_path):
+    import pytest
+    from src.embedder import open_chroma_collection
+    with patch("src.embedder.chromadb.PersistentClient") as factory:
+        factory.return_value.get_or_create_collection.return_value.modify.side_effect = RuntimeError("thread config failed")
+        with pytest.raises(RuntimeError, match="thread config failed"):
+            open_chroma_collection(tmp_path, "test", lambda rows: rows)

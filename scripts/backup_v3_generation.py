@@ -85,6 +85,16 @@ def _backup_sqlite(source: Path, destination: Path) -> None:
         source_connection.close()
 
 
+def _sqlite_chroma_count(path: Path) -> int:
+    """Count source metadata without loading or mutating a native vector index."""
+    return int(_sqlite_read(path / "chroma.sqlite3", f"""
+        SELECT COUNT(*) FROM embeddings e
+        JOIN segments s ON s.id = e.segment_id AND s.scope = 'METADATA'
+        JOIN collections c ON c.id = s.collection
+        WHERE c.name = '{V3_COLLECTION}'
+    """))
+
+
 def _chroma_count(path: Path) -> int:
     import chromadb
 
@@ -174,7 +184,7 @@ def backup_generation(
         raise FileNotFoundError(f"pipeline config is missing: {source.pipeline_config}")
 
     with indexing_lock.held(source.lock):
-        source_chroma_count = _chroma_count(source.chroma)
+        source_chroma_count = _sqlite_chroma_count(source.chroma)
         source_lexical_count = int(
             _sqlite_read(source.lexical, "SELECT COUNT(*) FROM chunks_fts")
         )
@@ -192,6 +202,10 @@ def backup_generation(
         _backup_sqlite(source.lexical, destination / "lexical_v3.sqlite3")
         _backup_sqlite(source.relations, destination / "relations.db")
 
+        (destination / "RAW_SNAPSHOT_COMPLETE").write_text(
+            "Files copied; native health verification is separate and may still fail.\n",
+            encoding="utf-8",
+        )
         verification = verify_backup(destination, _during_creation=True)
         if verification["chroma_count"] != source_chroma_count:
             raise RuntimeError(

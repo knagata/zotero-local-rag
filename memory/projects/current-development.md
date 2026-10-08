@@ -2,6 +2,29 @@
 
 Updated: 2026-09-30
 
+## 2026-10-08 SIGBUS復旧作業（進行中）
+
+- 権限制限解除後、Zotero API HTTP 200を確認。全inventory 689添付、ローカル原本欠落0。
+- writer lock下で障害時点のChroma、manifest、lexical、relationsを全コピー。
+  data/backups/pre-sigbus-recovery-20261008は障害保存であり、健康なrollback世代ではない。
+  Chromaを開く検証はSIGBUSを再現。SQLite quick_checkはok。
+- 隔離copyでnative num_threads=1設定後、本文547,325・要約8,127件の実検索、close/reopen、
+  保存vectorによる128件×5回のupsertが成功。稼働元への設定のみでは再クラッシュしたため、
+  設定単独での完全解決とは扱わず、復旧copyを使用した。詳細root causeは未確定。
+- SQLite識別子555,452行・本文/metadata18,856,370行を全件SHA256比較し同一を確認。
+  seq_id等の操作履歴は比較対象外。コピーをwriter lock下でactiveへ切替え、旧activeも
+  data/recovery/chroma-before-activationへ保存。切替後の本文・要約実検索成功。
+- indexerのHNSW threadsは既定1、CHROMA_HNSW_NUM_THREADSで明示変更可。設定拒否は停止する。
+  原本・抽出・embedding model・audit基準・fingerprintの手修正はしていない。
+- 復旧前監査は未索引14添付で不合格。14添付は合計11,147頁。現在、全差分取込をHerdr
+  w1:tX/w1:pZで実行中。保存済み設定は保持し、childでhosted featureを強制off。
+  リモート検索・Graph・定期update-checkは競合回避のため一時停止。完了後に復帰する。
+- 関連133テスト合格、追加embedder18合格、fatal Ruff/compileall/diff check合格。
+  slow5件skipは手元baseline未生成。Herdr検証tab w1:tZ/pane w1:p11。
+  Browser skillで接続を試したが利用可能browserなし。実画面の目視検証は未実施。
+- 次は取込終了・全DB監査再実行・必要時backup済み安全修復・サービス復帰・表示状態確認。
+  今回の復旧後全DB合格はまだ未確認。一次ログと比較証明はdata/quality/sigbus-*。
+
 ## 2026-09-30 DB audit output protection
 
 - `run_db_audit.py`の既知P1を修正。3出力すべての保護対象・出力間衝突を検証してから旧gateを

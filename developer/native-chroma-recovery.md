@@ -1,0 +1,11 @@
+# Chromaのネイティブ異常終了後の確認
+
+
+負の終了コードはOSシグナルによる異常終了として表示する。SIGBUS等ではChromaを開くだけで
+再クラッシュする場合があるため、最初の保存はnative clientを開かずwriter lock下でDB一式を
+コピーする。保存完了と健康な世代の検証は区別し、検証に失敗したcopyは障害保存として保持する。
+
+HNSWの更新thread数は`CHROMA_HNSW_NUM_THREADS`（既定1）で制御し、native read/write前に
+適用する。設定拒否を無視しない。thread数を下げるだけで既存の障害が必ず治るとは保証しない。
+復旧copyを使う場合も、全ID・本文・metadataの一致、実検索、再openを確認し、稼働元を保存する。
+稼働SQLiteへの直接上書き、vectorの推測、原本欠落や途中取込の記録だけの削除はしない。
