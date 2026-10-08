@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.chunk_store import get_collection_chunks
+from src.chunk_store import get_collection_chunks, list_chunk_ids
 
 from src.build_structure_summaries import (
     CHROMA_DIR, PROMPT_VERSION, _select_searchable_summary_rows, inherited_title,
@@ -122,7 +122,9 @@ def build_report(*, collection_name: str) -> dict:
         indexed = get_collection_chunks(
             chroma_dir=Path(CHROMA_DIR), collection_name=f"{collection_name}__sum_node",
         )
-        actual_ids = {str(row["id"]) for row in indexed}
+        actual_ids = set(list_chunk_ids(
+            chroma_dir=Path(CHROMA_DIR), collection_name=f"{collection_name}__sum_node",
+        ))
         for row in indexed:
             actual_records[str(row["id"])] = {
                 "document": str(row.get("text") or ""),

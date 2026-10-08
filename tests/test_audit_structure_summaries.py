@@ -70,6 +70,7 @@ def test_summary_audit_passes_when_db_and_index_match():
             return_value=[_summary_row()],
         ),
         patch.object(audit_structure_summaries, "get_collection_chunks", return_value=_stored_rows(collection.get.return_value)),
+        patch.object(audit_structure_summaries, "list_chunk_ids", return_value=collection.get.return_value["ids"]),
     ):
         report = audit_structure_summaries.build_report(collection_name="v3")
     assert report["passed"] is True
@@ -89,6 +90,7 @@ def test_summary_audit_rejects_missing_summary_index_row():
             return_value=[_summary_row()],
         ),
         patch.object(audit_structure_summaries, "get_collection_chunks", return_value=_stored_rows(collection.get.return_value)),
+        patch.object(audit_structure_summaries, "list_chunk_ids", return_value=collection.get.return_value["ids"]),
     ):
         report = audit_structure_summaries.build_report(collection_name="v3")
     assert report["passed"] is False
@@ -118,6 +120,7 @@ def test_summary_audit_rejects_stale_index_content_with_same_id():
             return_value=[_summary_row()],
         ),
         patch.object(audit_structure_summaries, "get_collection_chunks", return_value=_stored_rows(collection.get.return_value)),
+        patch.object(audit_structure_summaries, "list_chunk_ids", return_value=collection.get.return_value["ids"]),
     ):
         report = audit_structure_summaries.build_report(collection_name="v3")
     assert report["passed"] is False
@@ -141,6 +144,7 @@ def test_summary_audit_ignores_status_for_structure_without_nodes():
             return_value=[],
         ),
         patch.object(audit_structure_summaries, "get_collection_chunks", return_value=_stored_rows(collection.get.return_value)),
+        patch.object(audit_structure_summaries, "list_chunk_ids", return_value=collection.get.return_value["ids"]),
     ):
         report = audit_structure_summaries.build_report(collection_name="v3")
     assert report["passed"] is True
@@ -156,3 +160,28 @@ def test_summary_audit_rejects_unreadable_sqlite_index():
         report = audit_structure_summaries.build_report(collection_name="v3")
     assert not report["passed"]
     assert "summary_collection_missing" in report["failures"]
+
+
+def test_summary_audit_rejects_unexpected_id_without_metadata(tmp_path):
+    import sqlite3
+    connection = sqlite3.connect(tmp_path / "chroma.sqlite3")
+    connection.executescript("""
+        CREATE TABLE collections (id TEXT, name TEXT);
+        CREATE TABLE segments (id TEXT, collection TEXT, scope TEXT);
+        CREATE TABLE embeddings (id INTEGER, segment_id TEXT, embedding_id TEXT);
+        CREATE TABLE embedding_metadata (id INTEGER, key TEXT, string_value TEXT,
+            int_value INTEGER, float_value REAL, bool_value INTEGER);
+        INSERT INTO collections VALUES ('c', 'v3__sum_node');
+        INSERT INTO segments VALUES ('s', 'c', 'METADATA');
+        INSERT INTO embeddings VALUES (1, 's', 'sum:node:orphan');
+    """)
+    connection.commit()
+    connection.close()
+    with (
+        patch.object(audit_structure_summaries, "CHROMA_DIR", tmp_path),
+        patch.object(audit_structure_summaries, "get_db_connection", return_value=_empty_structure_connection()),
+        patch.object(audit_structure_summaries, "get_all_document_node_summaries", return_value=[]),
+    ):
+        report = audit_structure_summaries.build_report(collection_name="v3")
+    assert report["passed"] is False
+    assert report["details"]["unexpected_index_ids"] == ["sum:node:orphan"]

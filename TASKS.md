@@ -1,5 +1,12 @@
 # Tasks
 
+## 2026-10-08 要約索引のmetadata欠落検出
+
+- SQLiteでの要約照合ではmetadata行がないembedding IDも独立して全件列挙する。
+  本文・metadata読取りのinner joinで未知IDを見落とさない。監査基準は維持する。
+- metadataなしの余分な要約IDを持つ実SQLite fixtureで不合格を確認。関連21テスト合格。
+  差分取込と後続全監査は引き続き実行中、有料OCR/LLMは無効。
+
 ## 2026-10-08 Graph読取りと取込の競合防止
 
 - Graphのitem vector読取りは、native clientのcloseまでwriter公開を排他するread leaseを取得する。
