@@ -13,3 +13,10 @@ HNSWの更新thread数は`CHROMA_HNSW_NUM_THREADS`（既定1）で制御し、na
 Graphのnative読取りはwriter公開と同じ安定inodeのflockをclient closeまで保持する。
 writer稼働中・manifest未検証時は保存済みlayout vectorへ戻す。要約の定期状態確認は
 SQLiteのID・本文・metadataを照合し、native HNSWを開かない。本文の実検索監査は維持する。
+
+thread制限でも異常終了する場合は、稼働DBを繰り返し更新せず、追加の障害保存を先行する。
+`export_persisted_vectors.py`は完成済みraw snapshotから、physical labelの一意性、IDの双方向map、
+vectorのdimension/有限性、persisted sequence以後のWAL、SQLite全ID一致を検査して隔離SQLiteへ保存する。
+`rebuild_chroma_from_vectors.py`はその完成証明とID/vector hashを検査し、保存vectorを明示して
+新しい隔離Chromaだけを作る。原本抽出・モデル実行・manifest変更・自動activationは行わない。
+作成完了だけで健康とは扱わず、全ID/本文/metadata/vector、close/reopen、実検索を別途検証する。

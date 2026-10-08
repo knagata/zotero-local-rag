@@ -2,6 +2,27 @@
 
 Updated: 2026-09-30
 
+## 2026-10-08 HNSW再障害と保存vectorの隔離復旧（進行中）
+
+- threads=1の復旧copyでも3添付目の書込みでSIGSEGVが再発した。Chroma Rust bindingの
+  先頭4frameは前のSIGBUSと同じoffset。thread制限単独で解消したとは扱わない。
+- 最初の2添付はcommit済み、manifest674・inflight1・HNSW未検証。全監査再実行は
+  required686/manifest674・未索引12添付でexit2。管理画面statusもfailed12を確認。
+- writer lock下で追加の障害保存を作成。検索MCPは再び停止。GraphとOAuth proxyは稼働、
+  定期update-checkは停止中。自動service restartは停止済みAgent不足で未完了。
+- nativeを開かず、persisted HNSWのphysical labelとIDの双方向map、SQLite WALを照合した。
+  本文557,112・要約8,127の全IDがSQLite正本と一致。dimension1024・有限非零vectorを検証し、
+  ID/vector SHA256を保存した。本文WAL128・要約WAL88操作を反映。原本・manifestは変更しない。
+- scripts/export_persisted_vectors.pyとscripts/rebuild_chroma_from_vectors.pyは完成済み障害保存だけを
+  入力とし、新しい隔離artifactだけを作る。embedding_function=Noneで保存vectorを明示投入する。
+  欠落vector・不一致map・不明WAL・不完全proof・既存outputは拒否する。原本の全再抽出や
+  再embedding・有料OCR/LLM・稼働DB切替は行っていない。
+- 関連25テスト合格（実native tiny copyの検索・close/reopenを含む）。隔離copyで全文557,112件と
+  要約8,127件の検索索引を作成中。Herdr w1:tX/w1:pZ。全監査の合格はまだ未確認。
+- 次は隔離copyの全ID/本文/metadata/vector照合、native close/reopenと実検索検証。
+  同一データを証明できた場合のみbackup済みの稼働元を保持して切替え、残り差分取込と全再監査へ進む。
+  記録と一次ログはdata/quality/sigsegv-*、旧診断はsigbus-*を保持。
+
 ## 2026-10-08 要約索引のmetadata欠落検出
 
 - SQLiteでの要約照合ではmetadata行がないembedding IDも独立して全件列挙する。
