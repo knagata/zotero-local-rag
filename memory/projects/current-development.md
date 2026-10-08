@@ -623,3 +623,15 @@ active V3はM5 clean rebuildと後続の対象修復を完了した監査済み�
   J-STAGEは`prism:volume/number/startingPage/endingPage`、CiNiiも同名PRISM項目を使用する。
 - 出版社はCiNii/NDLに加えてJ-STAGEの`publisher/name/(ja|en)`も読み、journalArticleとbookの
   `publisher`へ保存する。bookは候補に巻がある場合に`volume`も保存する。
+
+
+### 2026-10-08: 未処理PDFの後回しと検索再開
+
+- ユーザーの指示で差分インデクサーをSIGINT停止。処理中の8M827WG3は添付単位の補償処理で巻戻し、Chroma/全文索引の残行0を確認。書込みロック下でバックアップ後、残存inflight印のみ除去した。
+- 完了済みRPW9Y5TNのみの限定実行で追加埋込み0、HNSW最終検証成功。manifest添付678、notes39、inflight0、post_index_pending0、hnsw_validated=true。
+- scripts/run_db_audit.pyを再実行したが、要求686添付に対し未登録PDF8件でexit2。監査基準は変更せず、不合格を管理状態へ記録した。監査は照合段階で停止しており、後続の全監査合格は未確認。
+- MCP/Graph/Proxyを再起動。各管理スクリプトのstatusでlocal/public OAuth、Graph/Proxy応答ok。管理バックエンドの状態をdata/quality/pdf-deferral-admin-status.jsonへ記録。実ブラウザ画面は未確認。
+- 最新の巻戻し後バックアップ: data/backups/completed-before-pdf-deferral-20261008。別途data/backups/recovery-point-pre-index-20261008にraw＋保存済み全ベクトルと復旧証明を保持。
+- 復旧コピー検証の自己cosine距離が-6 float32 epsとなり、旧下限-5 epsで誤判定した。検索プローブの丸め許容幅を対称±10 epsへ修正。ベクトル一致の許容幅は既存±5 epsを維持し、全件照合・検索70プローブ・再オープンは成功。
+- 有料OCR/LLMは実行していない。未処理PDF8件の取込み再開と全DB監査合格は未完了。更新中も旧検証済みDBで検索を続ける世代分離は次回更新前の課題で、今回未実装。
+- Herdr: w1:tX/w1:pZの限定最終処理exit0、w1:tZ/w1:p11の全監査exit2、w1:t0/w1:p12のバックアップ準備exit0。

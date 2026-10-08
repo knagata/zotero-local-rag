@@ -16,6 +16,7 @@ from pathlib import Path
 import numpy as np
 
 ROUNDING_LIMIT = 5 * np.finfo(np.float32).eps
+QUERY_ROUNDING_LIMIT = 10 * np.finfo(np.float32).eps
 
 
 def logical_signature(directory: Path, name: str) -> dict:
@@ -91,7 +92,10 @@ def check_query(collection, vector):
     if not result["ids"] or not result["ids"][0] or not distances or not distances[0]:
         raise ValueError("native vector query returned no result")
     distance = distances[0][0]
-    if not np.isfinite(distance) or not -ROUNDING_LIMIT <= distance <= 2 * ROUNDING_LIMIT:
+    # Chroma's float32 cosine distance can be slightly negative for an exact
+    # self-query. A 1024-dimensional vector measured -6 eps from accumulation
+    # rounding, so use a small symmetric numeric tolerance here.
+    if not np.isfinite(distance) or not -QUERY_ROUNDING_LIMIT <= distance <= QUERY_ROUNDING_LIMIT:
         raise ValueError("stored-vector self query failed")
 
 
