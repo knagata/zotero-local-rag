@@ -2267,3 +2267,11 @@ A（PDF構造化）・B（課金LLM）は独立、C（構造抽出エンジン�
 
 - 管理画面の階層要約から最大10件の制限を外し、既定limit=0の全差分対象へ変更。表示を「階層要約の差分更新（全件）」へ統一。10並列、DB監査gate、更新済み要約のskip、有料API同意は維持する。今回の操作は実行範囲の設定変更であり、有料要約生成は開始していない。
 - 固定argvと工程選択の双方を検証し、関連37passed/1skip、fatal Ruff合格。サービス再起動後のGraph/local/public OAuthと実管理状態の全件表示を確認した。Herdr w1:t11/w1:p13のテストexit0。既存未コミット変更とstaged修復ファイルを保持。
+
+### 2026-10-11: 検索コピーの容量不足復旧と世代整理
+
+- 管理HTTP500の原因は検索用SQLiteコピー中のdisk fullと、異常終了したジョブ状態の保存失敗。全DB監査自体は合格後で、有料階層要約は未開始。未公開の失敗コピー3個・参照もopen handleもない旧4世代を整理し、空き容量を約0.1GiBから36.8GiBへ回復。原本・正本DB・復旧バックアップは保持した。
+- 公開前にコピー必要容量を検査し、失敗した自分の途中コピーをfinallyで除去。公開の前後に完成済み旧世代を整理する。現世代・直前世代・lsofで使用中の世代は保持、検査不能時は削除しない。バックアップや未知のディレクトリは対象外。運用条件はdeveloper/search-snapshots.mdを参照。
+- 管理statusのENOSPCは原因と空き容量確保を案内するHTTP507へ変更し、他のOSErrorは隠さない。関連42テスト・function/lint ratchet・fatal Ruff・compile検査合格。単独実行時の既存検索テストのimport環境汚染も除去した。
+- 最新701添付の監査済みDBの検索コピー公開・サービス再起動を完了。実データと現行status handlerを認証差替えTestClientでHTTP200確認、実ブラウザ目視は未実施。最終空き容量約39.8GiB。証明はdata/quality/disk-full-recovery-20261011.json、整理記録はdata/quality/search-copy-cleanup-20261011.json。有料処理は再開していない。
+- Herdr w1:t11/w1:p13のテストexit0、w1:t12/w1:p14の再公開exit0。既存未コミット変更とstaged修復ファイルを保持。

@@ -195,7 +195,10 @@ def test_graph_reader_lease_uses_snapshot_during_canonical_write(tmp_path, monke
 
 def test_import_index_child_restores_canonical_environment(tmp_path, monkeypatch):
     import asyncio
+    monkeypatch.syspath_prepend(str(publisher.ROOT / 'src'))
     import rag_mcp_server as server
+    for key in (*snapshots.PATH_KEYS, snapshots.ORIGINAL_ENV, snapshots.ACTIVE_ROOT):
+        monkeypatch.delenv(key, raising=False)
     fake_snapshot(tmp_path)
     monkeypatch.setenv('CHROMA_DIR', str(tmp_path / 'data/chroma'))
     snapshots.apply_search_snapshot(tmp_path)
@@ -274,3 +277,70 @@ def test_native_fts_nul_compatibility_requires_matching_document_contents(tmp_pa
         assert publisher.verified_fts_compatibility(db) is False
     with pytest.raises(ValueError, match='SQLite snapshot verification failed'):
         publisher.sqlite_copy(source / 'chroma.sqlite3', tmp_path / 'bad-copy.sqlite3', chroma=True)
+
+
+def test_failed_sqlite_copy_removes_unpublished_stage(tmp_path, monkeypatch):
+    native_source(tmp_path, monkeypatch)
+    old = publisher.publish(tmp_path, initialize=True)
+    gate = tmp_path / 'data/quality'
+    gate.mkdir()
+    (gate / 'server_database_gate.json').write_text(json.dumps({'gate': {'passed': True}}))
+    def fail(*args, **kwargs):
+        raise sqlite3.OperationalError('database or disk is full')
+    monkeypatch.setattr(publisher, 'sqlite_copy', fail)
+    with pytest.raises(sqlite3.OperationalError, match='disk is full'):
+        publisher.publish(tmp_path)
+    assert not list((tmp_path / 'data/search_snapshots').glob('.partial-*'))
+    assert snapshots.load_snapshot(tmp_path)['generation'] == old['generation']
+    assert (tmp_path / 'data/chroma/chroma.sqlite3').exists()
+
+
+@pytest.mark.parametrize('platform', ['darwin', 'linux'])
+def test_snapshot_space_check_fails_before_copy(tmp_path, monkeypatch, platform):
+    source = tmp_path / 'chroma'
+    source.mkdir()
+    for name in ['chroma.sqlite3', 'chroma.sqlite3-wal']:
+        (source / name).write_bytes(b'source')
+    lexical = tmp_path / 'lexical.db'
+    lexical.write_bytes(b'lexical')
+    monkeypatch.setattr(publisher, 'lexical_path', lambda root: lexical)
+    monkeypatch.setattr(publisher.sys, 'platform', platform)
+    monkeypatch.setattr(publisher.shutil, 'disk_usage', lambda path: SimpleNamespace(free=0))
+    with pytest.raises(RuntimeError, match='空き容量'):
+        publisher.require_copy_space(tmp_path, source, tmp_path)
+    monkeypatch.setattr(publisher.shutil, 'disk_usage', lambda path: SimpleNamespace(free=10 * 1024 ** 3))
+    publisher.require_copy_space(tmp_path, source, tmp_path)
+
+
+def test_pruning_retains_current_previous_open_and_unknown_copies(tmp_path, monkeypatch):
+    current = fake_snapshot(tmp_path)
+    home = current.parent
+    for name in ('previous', 'unused', 'open', 'unknown'):
+        directory = home / name
+        directory.mkdir()
+        if name != 'unknown':
+            (directory / 'snapshot.json').write_text(json.dumps({'ready': True, 'generation': name}))
+    record = snapshots.load_snapshot(tmp_path)
+    record['previous'] = str(home / 'previous')
+    monkeypatch.setattr(publisher, 'load_snapshot', lambda root: record)
+    monkeypatch.setattr(publisher.shutil, 'which', lambda name: '/usr/bin/lsof')
+    monkeypatch.setattr(publisher.subprocess, 'run', lambda *a, **k: SimpleNamespace(stdout=f'n{home / "open" / "db"}\n'))
+    assert publisher.prune_unused_copies(tmp_path) == ['unused']
+    assert {p.name for p in home.iterdir()} == {'first', 'previous', 'open', 'unknown'}
+    monkeypatch.setattr(publisher.shutil, 'which', lambda name: None)
+    assert publisher.prune_unused_copies(tmp_path) == []
+
+
+def test_pruning_does_not_delete_when_open_file_inspection_fails(tmp_path, monkeypatch):
+    import subprocess
+    current = fake_snapshot(tmp_path)
+    unused = current.parent / 'unused'
+    unused.mkdir()
+    (unused / 'snapshot.json').write_text(json.dumps({'ready': True, 'generation': 'unused'}))
+    monkeypatch.setattr(publisher.shutil, 'which', lambda name: '/usr/bin/lsof')
+    def fail(*args, **kwargs):
+        raise subprocess.CalledProcessError(1, args[0])
+    monkeypatch.setattr(publisher.subprocess, 'run', fail)
+    with pytest.raises(subprocess.CalledProcessError):
+        publisher.prune_unused_copies(tmp_path)
+    assert unused.exists()

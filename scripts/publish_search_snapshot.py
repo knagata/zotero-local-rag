@@ -127,6 +127,7 @@ def restore_services(labels: list[str]) -> None:
 def publish(root: Path, *, initialize: bool = False, restart_services: bool = False) -> dict:
     with held(default_path(root)):
         previous = load_snapshot(root)
+        prune_unused_copies(root)
         if initialize and previous is not None:
             return previous
         manifest = manifest_path(root)
@@ -160,7 +161,48 @@ def publish(root: Path, *, initialize: bool = False, restart_services: bool = Fa
     if services and not stopped:
         for label in services:
             subprocess.run(["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{label}"], check=True)
+    with held(default_path(root)):
+        prune_unused_copies(root)
     return record
+
+
+def prune_unused_copies(root: Path) -> list[str]:
+    """Caller holds the writer lock; retain rollback and every open generation."""
+    current = load_snapshot(root)
+    inspector = shutil.which("lsof")
+    if current is None or inspector is None:
+        return []
+    result = subprocess.run([inspector, "-n", "-F", "n"], capture_output=True, text=True, check=True)
+    opened = [Path(line[1:]) for line in result.stdout.splitlines() if line.startswith("n/")]
+    keep = {current["directory"], current.get("previous")}
+    home = root / "data" / "search_snapshots"
+    removed = []
+    for directory in home.iterdir():
+        if (directory.is_symlink() or not directory.is_dir() or str(directory.resolve()) in keep
+                or any(directory.resolve() == path or directory.resolve() in path.parents for path in opened)):
+            continue
+        certificate = directory / "snapshot.json"
+        if not certificate.is_file() or certificate.is_symlink():
+            continue
+        data = json.loads(certificate.read_text())
+        if data.get("ready") is not True or data.get("generation") != directory.name:
+            continue
+        shutil.rmtree(directory)
+        removed.append(directory.name)
+        print(f"[検索用DB] 未使用の旧世代を削除しました：{directory.name}", flush=True)
+    return removed
+
+
+def require_copy_space(root: Path, source: Path, destination: Path) -> None:
+    databases = [source / "chroma.sqlite3", lexical_path(root),
+                 resolve_configured_path(root, os.environ.get("RELATIONS_DB_PATH", root / "data" / "relations.db"))]
+    required = 1024 ** 3 + sum(
+        p.stat().st_size for db in databases for p in (db, Path(str(db) + "-wal")) if p.exists())
+    if sys.platform != "darwin":
+        required += sum(p.stat().st_size for p in source.rglob("*") if p.is_file())
+    free = shutil.disk_usage(destination).free
+    if free < required:
+        raise RuntimeError(f"検索DB公開に必要な空き容量が不足しています（空き {free / 1024**3:.1f} GiB、必要目安 {required / 1024**3:.1f} GiB）。旧検索DBは保持しています。空き容量を確保してから再実行してください。")
 
 
 def build_copy(root: Path, home: Path, source: Path, manifest: Path, data: dict, audit_passed: bool) -> dict:
@@ -169,30 +211,35 @@ def build_copy(root: Path, home: Path, source: Path, manifest: Path, data: dict,
     stage = home / f".partial-{generation}"
     destination = home / generation
     stage.mkdir()
-    print("[検索用DB] 更新前の索引と全文・構造DBを保存します。", flush=True)
-    clone_tree(source, stage / "chroma")
-    # Query entry points may touch SQLite operational state. Back up its live
-    # logical contents and discard copied sidecars before any native open.
-    for name in ("chroma.sqlite3", "chroma.sqlite3-wal", "chroma.sqlite3-shm"):
-        (stage / "chroma" / name).unlink(missing_ok=True)
-    compatibility = sqlite_copy(source / "chroma.sqlite3", stage / "chroma" / "chroma.sqlite3", chroma=True)
-    sqlite_copy(lexical_path(root), stage / "lexical_v3.sqlite3")
-    relations = resolve_configured_path(root, os.environ.get("RELATIONS_DB_PATH", root / "data" / "relations.db"))
-    sqlite_copy(relations, stage / "relations.db")
-    shutil.copy2(manifest, stage / "manifest_v3.json")
-    counts = expected_counts(source)
-    print(f"[検索用DB] 保存コピーの検索・再オープンを検証します：{counts}", flush=True)
-    verify_native_copy(stage / "chroma", counts)
-    record = {"generation": generation, "directory": str(destination), "ready": True,
-              "published_at": datetime.now(timezone.utc).isoformat(),
-              "attachments": len(data.get("files", {})), "collection_counts": counts,
-              "audit_passed": audit_passed, "previous": None, "sqlite_compatibility": compatibility}
-    previous = load_snapshot(root)
-    if previous:
-        record["previous"] = previous["directory"]
-    (stage / "snapshot.json").write_text(json.dumps(record, indent=2) + "\n")
-    stage.rename(destination)
-    return record
+    try:
+        require_copy_space(root, source, home)
+        print("[検索用DB] 更新前の索引と全文・構造DBを保存します。", flush=True)
+        clone_tree(source, stage / "chroma")
+        # Query entry points may touch SQLite operational state. Back up its live
+        # logical contents and discard copied sidecars before any native open.
+        for name in ("chroma.sqlite3", "chroma.sqlite3-wal", "chroma.sqlite3-shm"):
+            (stage / "chroma" / name).unlink(missing_ok=True)
+        compatibility = sqlite_copy(source / "chroma.sqlite3", stage / "chroma" / "chroma.sqlite3", chroma=True)
+        sqlite_copy(lexical_path(root), stage / "lexical_v3.sqlite3")
+        relations = resolve_configured_path(root, os.environ.get("RELATIONS_DB_PATH", root / "data" / "relations.db"))
+        sqlite_copy(relations, stage / "relations.db")
+        shutil.copy2(manifest, stage / "manifest_v3.json")
+        counts = expected_counts(source)
+        print(f"[検索用DB] 保存コピーの検索・再オープンを検証します：{counts}", flush=True)
+        verify_native_copy(stage / "chroma", counts)
+        record = {"generation": generation, "directory": str(destination), "ready": True,
+                  "published_at": datetime.now(timezone.utc).isoformat(),
+                  "attachments": len(data.get("files", {})), "collection_counts": counts,
+                  "audit_passed": audit_passed, "previous": None, "sqlite_compatibility": compatibility}
+        previous = load_snapshot(root)
+        if previous:
+            record["previous"] = previous["directory"]
+        (stage / "snapshot.json").write_text(json.dumps(record, indent=2) + "\n")
+        stage.rename(destination)
+        return record
+    finally:
+        if stage.exists():
+            shutil.rmtree(stage)
 
 
 def main() -> None:

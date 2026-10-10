@@ -15,8 +15,9 @@ Create the first copy only when the existing indexing manifest is query-ready:
 
 This holds the writer lock, closes canonical query services, copies the stores,
 checks SQLite storage and native collection counts/search/close/reopen, then
-publishes the pointer and restores services. It retains failed partial copies
-for diagnosis. macOS uses APFS copy-on-write cloning for the HNSW files; SQLite
+publishes the pointer and restores services. Failed unpublished partial copies
+are removed in a finally block; process kills or power loss can still leave them.
+A capacity check runs before copying. macOS uses APFS copy-on-write cloning for the HNSW files; SQLite
 online backup includes WAL contents. The initial snapshot records whether the
 full audit passed; a corpus with explicitly deferred PDFs remains an audit
 failure even when the existing indexed corpus is physically query-ready.
@@ -33,7 +34,11 @@ remain authoritative; this wrapper must not re-enable hosted processing. The
 audit runner refreshes an existing snapshot after all original checks pass and
 after releasing its writer lock. Publication rejects an unvalidated manifest,
 inflight/post-index work, overlapping paths and a failed full audit. Old copies
-remain available for rollback; no automatic deletion is performed.
+are pruned before and after publication, retaining the current generation, its
+immediate predecessor, and generations with open files reported by lsof. Without
+lsof no pruning occurs; inspection errors abort cleanup. Only completed copies
+with matching generation certificates are eligible. Canonical databases, source
+files, unknown directories and recovery backups are never pruned by this policy.
 
 Python SQLite 3.53.1 reports the Chroma FTS5 trigram index as malformed when its
 content includes NUL. The same result was reproduced in a brand-new native

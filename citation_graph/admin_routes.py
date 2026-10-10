@@ -1,6 +1,7 @@
 """OAuth-protected browser administration routes for Citation Graph."""
 from __future__ import annotations
 
+import errno
 from pathlib import Path
 from typing import Any
 
@@ -80,7 +81,13 @@ def register_admin_routes(app: FastAPI, settings: Any, authenticated_email) -> N
         unauthorized = require_admin(request)
         if unauthorized:
             return unauthorized
-        return JSONResponse(system_status(ROOT), headers={"Cache-Control": "no-store"})
+        try:
+            status = system_status(ROOT)
+        except OSError as exc:
+            if exc.errno != errno.ENOSPC:
+                raise
+            return JSONResponse({"error": "ディスク容量不足で管理状態を保存できません。空き容量を確保して再読込してください。"}, status_code=507, headers={"Cache-Control": "no-store"})
+        return JSONResponse(status, headers={"Cache-Control": "no-store"})
 
     @app.get("/admin/api/jobs/{job_id}/log")
     async def admin_log(request: Request, job_id: str) -> Response:
