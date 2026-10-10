@@ -445,6 +445,7 @@ def system_status(root: Path = ROOT) -> dict[str, Any]:
     except (OSError, ValueError):
         pass
     if update_status is not None:
+        update_status.pop("local_checks_signature", None)
         generated_at = update_status.get("generated_at")
         age_seconds: float | None = None
         try:

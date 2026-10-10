@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import argparse
+import time
 import json
 import sqlite3
 import subprocess
@@ -30,6 +32,7 @@ from index_from_zotero import (  # noqa: E402
 from zotero_source_localapi import ZoteroLocalAPI  # noqa: E402
 from update_citations import _unwrap_item, get_all_items  # noqa: E402
 from scripts.audit_structure_summaries import build_report as build_summary_audit  # noqa: E402
+from scripts.update_status_cache import cached_checks, lightweight_checks
 from src.v3_data_plane import V3_COLLECTION  # noqa: E402
 
 REPORT_PATH = ROOT / "data" / "admin_update_status.json"
@@ -188,13 +191,22 @@ def _summary_freshness() -> dict[str, Any]:
     }
 
 
-async def inspect() -> dict[str, Any]:
+def _prime_parent_metadata(items, *apis):
+    parents = {str(key): row for row in items for key, _ in [_unwrap_item(row)] if key}
+    for api in apis:
+        api._parent_cache.update(parents)
+
+
+async def inspect(*, detailed: bool = False) -> dict[str, Any]:
+    started = time.monotonic()
     ingest_paths = paths()
     manifest = json.loads(ingest_paths.manifest_path.read_text(encoding="utf-8"))
     attachment_api = ZoteroLocalAPI()
     note_api = ZoteroLocalAPI()
     zotero_dir = ingest_paths.zotero_data_dir if ingest_paths.zotero_data_dir else None
-    rows, notes, citation_items = await asyncio.gather(
+    citation_items = await asyncio.to_thread(get_all_items)
+    _prime_parent_metadata(citation_items, attachment_api, note_api)
+    rows, notes = await asyncio.gather(
         attachment_api.list_normalized_attachments(
             zotero_data_dir=zotero_dir,
             pdf_cache_dir=str(ingest_paths.pdf_cache_dir),
@@ -203,7 +215,6 @@ async def inspect() -> dict[str, Any]:
             allow_missing_files=True,
         ),
         note_api.list_notes(collection_key=None),
-        asyncio.to_thread(get_all_items),
     )
     inventory = list(rows)
     included, excluded, preferred = _apply_rag_tag_policy(inventory)
@@ -222,15 +233,37 @@ async def inspect() -> dict[str, Any]:
             list(attachment_status["sample_keys"]) + list(note_status["sample_keys"])
         ),
     }
-    structure_status = _structure_freshness()
+    local_inputs = [ingest_paths.manifest_path, ROOT / "data" / "relations.db",
+                    ROOT / "data" / "relations.db-wal"]
+    # Include SQLite WAL and implementation/config changes, not just the DB file.
+    from src.v3_data_plane import chroma_dir
+    chroma = chroma_dir(ROOT)
+    local_inputs.extend([chroma / "chroma.sqlite3", chroma / "chroma.sqlite3-wal"])
+    local_inputs.extend(sorted((ROOT / "src").glob("*.py")))
+    local_inputs.extend(sorted((ROOT / "scripts").glob("*.py")))
+    local_inputs.extend([ROOT / ".env", ROOT / ".env.policy", chroma / "embedder_config_v3.json"])
+    expected_items = {str(row.parentItemKey) for row in included if row.parentItemKey}
+    import hashlib
+    inventory_digest = hashlib.sha256(json.dumps(sorted(expected_items)).encode()).hexdigest()
+    local_inputs.append(ROOT / (".inventory-" + inventory_digest))
+    local_inputs.append(ROOT / (".update-status-detailed" if detailed else ".update-status-lightweight"))
+    def compute_local():
+        if detailed:
+            return _structure_freshness(), _summary_freshness()
+        return lightweight_checks(ROOT / "data" / "relations.db", expected_items)
+    structure_status, summary_status, local_signature, reused = await asyncio.to_thread(
+        cached_checks, REPORT_PATH, local_inputs, compute_local,
+    )
     structure_status["attention"] = (
         int(structure_status["failed"]) + int(structure_status["source_refresh_failed"])
     )
     citation_status = _citation_freshness(citation_items, ROOT / "data" / "relations.db")
     citation_status["attention"] = int(citation_status["errors"])
-    summary_status = _summary_freshness()
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
+        "elapsed_seconds": round(time.monotonic() - started, 3),
+        "local_checks_signature": local_signature,
+        "local_checks_reused": reused,
         "index": index_status,
         "structure": structure_status,
         "summaries": summary_status,
@@ -250,7 +283,10 @@ def _write_report(report: dict[str, Any]) -> None:
 
 
 def main() -> int:
-    report = asyncio.run(inspect())
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--detailed", action="store_true", help="構造・要約索引の詳細照合も実行")
+    args = parser.parse_args()
+    report = asyncio.run(inspect(detailed=args.detailed))
     _write_report(report)
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return 0

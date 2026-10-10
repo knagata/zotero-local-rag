@@ -134,3 +134,9 @@ evaluation evidence; it is not a production quality gate. V3 node summaries
 and the V3 summary index are the only supported summary data plane. There is
 no supported runtime rollback to a legacy collection, manifest, FTS, or summary
 store; recovery uses a V3 backup or a clean rebuild from source files.
+
+
+## 管理画面の簡易更新確認
+
+通常の更新確認はZotero一括取得済み書誌を添付・ノート処理で共有し、原本stat・Zotero version・引用台帳を比較する。構造・要約は保存状態・欠落・失敗・要約の構造指紋をSQLで簡易確認し、全チャンク再構築と要約索引全件照合は行わない。簡易確認を監査合格や索引整合の証明として表示しない。従来の詳細照合はcheck_admin_update_status.py --detailedで選択でき、全DB監査の条件は変更しない。
+ローカル照合結果の再利用はmanifest・DBとWAL・実装・保存設定・対象資料集合が同一の場合だけとし、照合中の入力変更時は再利用可能な署名を保存しない。工程選択欄は画面幅によらず実行順の縦1列リストとする。

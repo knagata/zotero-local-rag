@@ -142,3 +142,14 @@ def test_citation_identifier_sync_can_clear_removed_zotero_values(tmp_path, monk
         assert connection.execute(
             "SELECT doi, isbn FROM item_citation_status WHERE item_key = 'ITEM'"
         ).fetchone() == (None, None)
+
+
+def test_parent_metadata_is_shared_without_per_item_api_calls():
+    import asyncio
+    from scripts.check_admin_update_status import _prime_parent_metadata
+    from src.zotero_source_localapi import ZoteroLocalAPI
+    attachment_api, note_api = ZoteroLocalAPI(), ZoteroLocalAPI()
+    item = {"key": "PARENT", "data": {"itemType": "book", "title": "Example"}}
+    _prime_parent_metadata([item], attachment_api, note_api)
+    assert asyncio.run(attachment_api.get_item("PARENT")) is item
+    assert asyncio.run(note_api.get_item("PARENT")) is item

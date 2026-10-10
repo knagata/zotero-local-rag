@@ -52,7 +52,8 @@ section { margin:0 0 14px; padding:16px; border:1px solid var(--outline-variant)
 .metric { min-height:76px; padding:11px 12px; border:1px solid color-mix(in srgb,var(--outline-variant) 72%,transparent); border-radius:var(--radius-md); background:var(--surface-container-high); }
 .metric b { display:block; margin:5px 0 2px; font-size:18px; line-height:1.2; font-weight:600; }
 .metric small { color:var(--on-surface-variant); font-size:10.5px; }
-.actions { display:grid; grid-template-columns:repeat(auto-fit,minmax(245px,1fr)); gap:8px; }
+.actions { display:flex; flex-direction:column; gap:0; }
+.actions > button { align-self:flex-start; margin-top:12px; }
 .action { display:flex; flex-direction:column; min-height:158px; padding:13px; border:1px solid var(--outline-variant); border-radius:var(--radius-md); background:var(--surface); }
 .action h3 { margin:0 0 6px; font-size:12.5px; font-weight:600; }
 .action p { flex:1; margin-bottom:10px; color:var(--on-surface-variant); font-size:11.5px; line-height:1.5; }
@@ -101,3 +102,5 @@ input:focus { border-color:var(--node-zotero); outline:none; }
   .job-meta { align-items:flex-start; }
 }
 @media (prefers-reduced-motion:reduce) { .progress-track.estimated .progress-fill { animation:none; } }
+
+.stage{display:flex;flex-direction:row;min-height:0;gap:12px;align-items:flex-start;cursor:pointer;padding:14px 4px;border:0;border-bottom:1px solid var(--outline-variant);border-radius:0;background:transparent}.stage > span{flex:1;min-width:0}.stage input{width:18px;height:18px;flex-shrink:0;margin-top:4px}.stage.unavailable{opacity:.5;cursor:not-allowed}.stage p{margin:8px 0}#confirm-label{display:flex;gap:10px;align-items:center}#confirm-consent{width:20px;height:20px}

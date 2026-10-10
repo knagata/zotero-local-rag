@@ -644,3 +644,11 @@ active V3はM5 clean rebuildと後続の対象修復を完了した監査済み�
 - 関連170テスト合格・2skip。search_snapshotは81文すべて到達。fatal lint・compileall・関数サイズ・文書参照検査も合格。MCP/OAuth/Graphの各statusはok。管理画面は検索件数・保存時刻を表示する実装を反映したが、ブラウザ目視は未実施。
 - Python SQLiteのChroma FTS5 NUL文書に対するquick_check不一致は新規native controlでも再現。コピー検証のみ全FTS本文一致と再現を必須条件に区別し、原本・監査基準は変更しない。
 - 復旧用バックアップと旧検索コピーは保持。設計・検証手順はdeveloper/search-snapshots.md。検索コピー公開はHerdr w1:tX/w1:pZ exit0、並行検索検証はw1:t0/w1:p12成功。現在の埋め込みと後続監査はw1:tX/w1:pZで継続中。
+
+### 2026-10-10: 簡易更新確認の高速化と工程リスト
+
+- Zotero一括書誌を添付・ノートのparent cacheで共有し、個別再取得を削減。通常確認はSQLによる保存状態・欠落・失敗・要約構造指紋の簡易確認とし、全チャンク再構築と要約索引全件照合は--detailedへ分離。全DB監査の条件は維持した。
+- 同一入力時だけローカル照合を再利用。manifest、relations/ChromaのDBとWAL、実装、保存設定、対象資料集合の変更で無効化。照合中の変更時は再利用署名を残さず、署名は管理status APIへ送信しない。
+- 実測は旧確認154.4秒、簡易確認41.3秒（各ログ生成開始からgenerated_atまで）。別の簡易実行40.2秒。関連58passed/2skip、fatal Ruff・compileall・function/lint ratchet・文書参照検査合格。
+- 工程のチェック欄はグリッドから実行順の縦1列へ変更。checkboxは説明の左へ配置し、カードの最低高さを除去。簡易確認・索引整合性未検査を画面へ明示した。サービス再起動成功、Graph/local/public OAuth proxy正常。
+- Herdr w1:t11/w1:p13の実測確認exit0。関連テストはw1:t0/w1:p12 exit0。実ブラウザの目視は未実施。
