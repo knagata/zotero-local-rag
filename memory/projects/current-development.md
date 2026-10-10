@@ -652,3 +652,10 @@ active V3はM5 clean rebuildと後続の対象修復を完了した監査済み�
 - 実測は旧確認154.4秒、簡易確認41.3秒（各ログ生成開始からgenerated_atまで）。別の簡易実行40.2秒。関連58passed/2skip、fatal Ruff・compileall・function/lint ratchet・文書参照検査合格。
 - 工程のチェック欄はグリッドから実行順の縦1列へ変更。checkboxは説明の左へ配置し、カードの最低高さを除去。簡易確認・索引整合性未検査を画面へ明示した。サービス再起動成功、Graph/local/public OAuth proxy正常。
 - Herdr w1:t11/w1:p13の実測確認exit0。関連テストはw1:t0/w1:p12 exit0。実ブラウザの目視は未実施。
+
+### 2026-10-10: 承認済み対象資料のMistral OCR品質検証
+
+- 対象1PDFのみ有料OCRを実行。writer lock下でChroma APFS clone、manifest、全文索引/relations SQLite backupを保存。大容量原本を一時PDFへ分割した。
+- 80/195頁取得後の原本画像との比較で、品種名欠落と架空の反復を検出。画像のみ、見開き片側crop、回転、OCR3の代表6サンプルでも改善不十分のため追加送信を停止し、採用を拒否した。成功応答は計86頁（原本unique80頁）/8request、HTTP400は2request。195頁完走・DB反映は未達。
+- manifest、対象Chroma1040行、全文索引1027行のbackup同一、検索snapshot不変を検証。700添付/HNSW検証済み/既存全監査completedを保持。MCP/Graph/publicproxy正常。DB変更なしのため全DB監査再実行は行っていない。
+- 一次証明とraw結果はdata/quality/rice-ocr-20261010/completion-report.json、backupはdata/backups/pre-rice-mistral-20261010。Herdr w1:t12/w1:p14の最終検証exit0は原DB保持の検証成功を意味し、OCR品質合格ではない。品質改善には別の手段が必要。
