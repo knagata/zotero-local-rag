@@ -256,6 +256,7 @@ async def inspect(*, detailed: bool = False) -> dict[str, Any]:
     )
     structure_status["attention"] = (
         int(structure_status["failed"]) + int(structure_status["source_refresh_failed"])
+        + int(structure_status.get("degraded", 0))
     )
     citation_status = _citation_freshness(citation_items, ROOT / "data" / "relations.db")
     citation_status["attention"] = int(citation_status["errors"])

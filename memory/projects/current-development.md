@@ -1,6 +1,6 @@
 # Current development handoff
 
-Updated: 2026-10-10
+Updated: 2026-10-11
 
 現在の検証済み状態: 700添付・全DB監査合格・検索世代公開済み。原画像確認済み94件の校訂補助を反映。全文校訂は未完了。以下の古い日付の進行中記録は履歴であり、最新結果は末尾と上記完了証明を参照。
 
@@ -670,3 +670,10 @@ active V3はM5 clean rebuildと後続の対象修復を完了した監査済み�
 - 全DB監査は700添付のZotero照合・原本照合・DB gateすべて合格。検証済み検索世代へ公開・サービス再起動後、校訂名の全文検索、保存vectorでの実検索、MCP/Graph/local/public OAuth正常を確認した。
 - 管理状態は監査completed/gate合格/HNSW正常/inflight0。実statusを現行admin.jsのDOMハーネスで描画して合格表示を検証した。ブラウザbackendなしのため実画面の目視は未実施。
 - 全巻校訂・全属性転記は未完了であり、94件の補助反映を全文OCR置換の成功とは扱わない。一次証明・再生成/検証スクリプトはdata/quality/rice-ocr-20261010/adoption-completion-report.jsonから参照。Herdr w1:t12/w1:p14で取り込み・照合・全監査・公開検証を完了。
+
+### 2026-10-11: 文書構造の未復元を失敗・処理待ちから分離
+
+- 簡易更新確認は文書構造を未処理・更新待ち・処理失敗・その他要確認・章立て未復元へ分離。flat_fallbackは本文検索可能な保存済み状態としてpending/failedへ含めない。失敗/blocked/unavailableや更新中・staleは優先して別判定し、平坦構造を理由に隠さない。
+- 管理画面に各内訳と「章立て未復元（本文検索可）」を表示。旧応答との互換表示を維持し、JSの版を更新。DB監査条件・原本・チャンク・構造DBは変更しない。
+- 実再集計は未処理0・更新待ち0・処理失敗0・その他要確認0・章立て未復元213。現行JSで実reportの表示文言を検証。証明はdata/quality/structure-freshness-display-20261011.json。サービス再起動成功、Graph/local/public OAuth正常。ブラウザ目視は未実施。
+- 関連48passed/2skip、fatal Ruff合格。Herdr w1:t11/w1:p13のテスト、w1:t12/w1:p14の実更新確認はexit0。既存未コミット変更とstaged修復ファイルを保持。

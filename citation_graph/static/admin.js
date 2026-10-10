@@ -36,6 +36,10 @@ function freshnessCard(label, value, detail, keys=[], attention=0) {
   box.append(node("span","",label),node("b",state,value),node("small","",detail));
   if(keys.length) box.append(node("code","",keys.join(" · "))); return box;
 }
+function structureFreshnessDetail(structure) {
+  if(structure.flat_fallback !== undefined) return `未処理 ${structure.unprocessed||0}件・更新待ち ${structure.outdated||0}件・処理失敗 ${structure.failed||0}件・その他要確認 ${structure.degraded||0}件・章立て未復元 ${structure.flat_fallback}件（本文検索可）`;
+  return structure.attention?`失敗・要確認 ${structure.attention}件`:structure.lightweight?"簡易確認（保存された処理状態）":"保存チャンクと照合";
+}
 function renderFreshness(data) {
   const target=$("freshness"), report=data.update_status; target.replaceChildren();
   if(!report) {
@@ -48,7 +52,7 @@ function renderFreshness(data) {
   else if(report.stale) target.append(node("p","freshness-warning","確認結果が古くなっています。定期確認の状態を確認してください。"));
   target.append(
     freshnessCard("索引",`${text(index.pending)}件`,index.attention?`原本欠落 ${index.attention}件`:index.pending?`添付・ノートの差分（ノート ${index.notes?.pending||0}件）`:"差分なし",index.sample_keys||[],index.attention||0),
-    freshnessCard("文書構造・目次",`${text(structure.pending)}件`,structure.attention?`失敗・要確認 ${structure.attention}件`:structure.lightweight?"簡易確認（保存された処理状態）":"保存チャンクと照合",structure.sample_keys||[],structure.attention||0),
+    freshnessCard("文書構造・目次",`${text(structure.pending)}件`,structureFreshnessDetail(structure),structure.sample_keys||[],structure.attention||0),
     freshnessCard("階層要約",`${text(summaries.pending)}件`,summaries.attention?`要確認 ${summaries.attention}項目・索引不整合 ${summaries.index_issues||0}件`:summaries.lightweight?"簡易確認（要約索引の整合性は未検査）":`要約索引 ${summaries.actual_index_rows||0}件・整合`,summaries.sample_keys||[],summaries.attention||0),
     freshnessCard("Citation Network",`${text(citations.pending)}件`,citations.attention?`うちエラー ${citations.attention}件`:citations.metadata_changed?`書誌情報変更 ${citations.metadata_changed}件`:"未処理・再試行対象",citations.sample_keys||[],citations.attention||0)
   );
