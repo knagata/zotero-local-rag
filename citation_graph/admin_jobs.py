@@ -103,14 +103,14 @@ def job_definitions(root: Path = ROOT) -> dict[str, JobDefinition]:
             (structure_step,),
         ),
         "summary_batch": JobDefinition(
-            "summary_batch", "階層要約の差分更新（10件）",
-            "構造更新とDB監査後、未処理・変更資料を最大10件、10並列でDeepSeek要約します。",
+            "summary_batch", "階層要約の差分更新（全件）",
+            "構造更新とDB監査後、未処理・変更資料すべてを対象に、10並列でDeepSeek要約します。",
             (
                 ("文書構造・目次の差分確認", structure_step[1]),
                 audit_step,
-                ("階層要約10件バッチ", (
+                ("階層要約の全差分更新", (
                     python, str(root / "scripts" / "build_structure_summaries.py"),
-                    "--all", "--mode", "llm", "--limit", "10", "--workers", "10",
+                    "--all", "--mode", "llm", "--workers", "10",
                     "--embed", "--database-gate", gate,
                 )),
             ),
