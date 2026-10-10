@@ -117,32 +117,109 @@ def _save_proposals(path: Path, payload: Mapping[str, Any]) -> None:
     os.replace(temporary, path)
 
 
+CANDIDATE_TEXT_FIELDS = (
+    "source", "record_id", "title", "date", "resource_type", "container_title",
+    "publisher", "volume", "issue", "pages", "landing_url", "fulltext_status", "language", "extra",
+)
+# These are annotations returned by discovery/inspection, never bibliographic writes.
+CANDIDATE_ANNOTATIONS = {
+    "textual_resource", "search_strategy", "matched_query", "zotero_duplicates",
+    "bibliographic_missing", "cautions", "citation_evidence", "eligible_for_proposal",
+    "writes_performed", "zotero_preview",
+}
+
+
+def _text(value: Any, field: str) -> str:
+    if not isinstance(value, str):
+        raise TypeError(f"{field} must be a string; received {type(value).__name__}")
+    return value.strip()
+
+
+def _creator_name(value: str) -> str:
+    name = " ".join(value.split())
+    if not name or name.startswith(("{", "[")):
+        raise ValueError("creators contains an empty or serialized object name")
+    # Collapse only identical repeated names; a comma can be part of a real name.
+    parts = [part.strip() for part in name.split(",")]
+    return parts[0] if len(parts) > 1 and len(set(parts)) == 1 else name
+
+
+def _creators(values: Any) -> list[dict[str, str]]:
+    if not isinstance(values, list):
+        raise TypeError("creators must be a list of names or firstName/lastName objects")
+    result = []
+    for value in values:
+        if isinstance(value, str):
+            name = _creator_name(value)
+            creator = {"creatorType": "author", "name": name}
+        elif isinstance(value, Mapping):
+            if set(value) - {"creatorType", "name", "firstName", "lastName"}:
+                raise ValueError("creator has unknown fields; use name or firstName/lastName")
+            creator = {key: _text(entry, f"creators.{key}") for key, entry in value.items()}
+            creator.setdefault("creatorType", "author")
+            if creator["creatorType"] not in {"author", "editor", "translator", "contributor"}:
+                raise ValueError("unsupported creatorType; use author, editor, translator or contributor")
+            if "name" in creator:
+                creator["name"] = _creator_name(creator["name"])
+                if not creator["name"] or {"firstName", "lastName"} & creator.keys():
+                    raise ValueError("creator must use either name or firstName/lastName")
+            elif not creator.get("lastName"):
+                raise ValueError("split creator requires a nonempty lastName")
+        else:
+            raise TypeError("each creator must be a string or a name object")
+        if creator not in result:
+            result.append(creator)
+    return result
+
+
 def _candidate_payload(candidate: Mapping[str, Any]) -> dict[str, Any]:
-    source = str(candidate.get("source") or "").strip().casefold()
-    title = str(candidate.get("title") or "").strip()
-    landing_url = str(candidate.get("landing_url") or "").strip()
-    if not title or not landing_url:
+    if not isinstance(candidate, Mapping):
+        raise TypeError("candidate must be an object")
+    unknown = set(candidate) - set(CANDIDATE_TEXT_FIELDS) - CANDIDATE_ANNOTATIONS - {
+        "creators", "identifiers", "download_urls"}
+    if unknown:
+        raise ValueError(f"unknown candidate fields: {', '.join(sorted(unknown))}; "
+                         "use resource_type (not item_type), container_title (not publicationTitle), creators")
+    payload = {key: _text(candidate.get(key, ""), key) for key in CANDIDATE_TEXT_FIELDS}
+    payload["source"] = payload["source"].casefold()
+    payload["resource_type"] = payload["resource_type"] or "text"
+    payload["fulltext_status"] = payload["fulltext_status"] or "unknown"
+    if not payload["title"] or not payload["landing_url"]:
         raise ValueError("candidate title and landing_url are required")
-    parsed = urlparse(landing_url)
+    parsed = urlparse(payload["landing_url"])
     if parsed.scheme != "https" or not parsed.hostname:
         raise ValueError("candidate landing_url must be HTTPS")
-    return {
-        "source": source,
-        "record_id": str(candidate.get("record_id") or "").strip(),
-        "title": title,
-        "creators": [str(value).strip() for value in candidate.get("creators") or [] if str(value).strip()],
-        "date": str(candidate.get("date") or "").strip(),
-        "resource_type": str(candidate.get("resource_type") or "text").strip(),
-        "container_title": str(candidate.get("container_title") or "").strip(),
-        "publisher": str(candidate.get("publisher") or "").strip(),
-        "volume": str(candidate.get("volume") or "").strip(),
-        "issue": str(candidate.get("issue") or "").strip(),
-        "pages": str(candidate.get("pages") or "").strip(),
-        "identifiers": dict(candidate.get("identifiers") or {}),
-        "landing_url": landing_url,
-        "fulltext_status": str(candidate.get("fulltext_status") or "unknown"),
-        "download_urls": [str(value).strip() for value in candidate.get("download_urls") or [] if str(value).strip()],
+    payload["creators"] = _creators(candidate.get("creators", []))
+    identifiers = candidate.get("identifiers", {})
+    if not isinstance(identifiers, Mapping):
+        raise TypeError("identifiers must be an object of strings or string lists")
+    payload["identifiers"] = {
+        _text(key, "identifier key"): [_text(v, f"identifiers.{key}") for v in value]
+        if isinstance(value, list) else _text(value, f"identifiers.{key}")
+        for key, value in identifiers.items()
     }
+    downloads = candidate.get("download_urls", [])
+    if not isinstance(downloads, list):
+        raise TypeError("download_urls must be a list of strings")
+    payload["download_urls"] = [_text(value, "download_urls") for value in downloads]
+    kind = _item_type(payload)
+    if kind == "document" and payload["resource_type"].casefold() not in {"text", "document"}:
+        raise ValueError("unsupported resource_type; use book, journalArticle, thesis, conferencePaper or text")
+    if kind not in {"journalArticle", "conferencePaper"} and any(
+            payload[key] for key in ("container_title", "issue", "pages")):
+        raise ValueError("journal fields would be lost; set resource_type to journalArticle or conferencePaper")
+    if kind == "conferencePaper" and payload["issue"]:
+        raise ValueError("issue is not supported for conferencePaper")
+    if kind == "document" and payload["volume"]:
+        raise ValueError("volume would be lost; specify resource_type explicitly")
+    return payload
+
+
+def preview_import_candidate(candidate: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate without writes and return the exact bibliographic parent payload."""
+    normalized = _candidate_payload(candidate)
+    parent, _ = _zotero_items({"candidate": normalized, "import_mode": "metadata"})
+    return {"candidate": normalized, "zotero_preview": parent}
 
 
 def _direct_download_url(candidate: Mapping[str, Any], mode: str) -> str:
@@ -202,6 +279,7 @@ def create_import_proposal(
         "approval_phrase": approval_phrase,
         "expires_at": row["expires_at"],
         "candidate": normalized,
+        "zotero_preview": _zotero_items(row)[0],
         "duplicates": duplicates,
         "import_mode": mode,
         "download_url": download_url or None,
@@ -268,16 +346,17 @@ def _identifier(candidate: Mapping[str, Any], name: str) -> str:
 
 
 def _zotero_items(row: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
-    candidate = row["candidate"]
+    candidate = _candidate_payload(row["candidate"])
     collections = [row["collection_key"]] if row.get("collection_key") else []
     item_type = _item_type(candidate)
     parent = {
         "itemType": item_type,
         "title": candidate["title"],
-        "creators": [{"creatorType": "author", "name": name} for name in candidate["creators"]],
+        "creators": candidate["creators"],
         "date": candidate["date"],
         "url": candidate["landing_url"],
         "libraryCatalog": candidate["source"],
+        "language": candidate["language"], "extra": candidate["extra"],
         "collections": collections,
         "tags": [{"tag": AI_ADDED_TAG}],
         "relations": {},
@@ -288,7 +367,7 @@ def _zotero_items(row: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, Any
             "volume": str(candidate.get("volume") or ""),
             "ISBN": _identifier(candidate, "isbn"),
         })
-    elif item_type == "journalArticle":
+    elif item_type in {"journalArticle", "conferencePaper"}:
         parent.update({
             "publicationTitle": candidate["container_title"],
             "publisher": candidate["publisher"],
@@ -298,6 +377,10 @@ def _zotero_items(row: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, Any
             "pages": str(candidate.get("pages") or ""),
             "DOI": _identifier(candidate, "doi"), "ISSN": _identifier(candidate, "issn"),
         })
+    if item_type == "conferencePaper":
+        parent["proceedingsTitle"] = parent.pop("publicationTitle")
+        parent.pop("issue", None)
+        parent.pop("ISSN", None)
     mode = str(row["import_mode"])
     has_file = mode in {"pdf", "epub"}
     extension = mode if has_file else ""

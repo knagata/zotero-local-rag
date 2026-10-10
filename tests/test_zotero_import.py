@@ -26,6 +26,8 @@ def candidate(**overrides):
         "download_urls": ["https://www.jstage.jst.go.jp/article/example/_pdf"],
         "identifiers": {"doi": "10.1234/example"},
     }
+    if overrides.get("resource_type") == "book":
+        row.update(container_title="", issue="", pages="")
     row.update(overrides)
     return row
 

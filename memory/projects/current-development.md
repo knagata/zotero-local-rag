@@ -697,3 +697,10 @@ active V3はM5 clean rebuildと後続の対象修復を完了した監査済み�
 - 残す完全バックアップは本文・要約のnative実検索とclose/reopen、全文索引/relationsのSQLite quick_checkに合格。原本・有料OCR応答・校訂証拠・モデル・稼働DBは保持。検索世代や全DB監査の結果は変更しない。有料処理なし。
 - du集計でdata約151GiBから45GiB（約48GB）へ減少。APFS共有ブロックのため削除した論理容量約106GiBと物理回収量は異なり、df空き容量は約39.8GiBから102.9GiBへ回復。残存主要用途は検索2世代約20GiB、完全バックアップ約9.9GiB、稼働Chroma約7.7GiB、モデル約4.3GiBと全文/関連DB・OCR等。
 - 一次証明はdata/quality/recovery-retention-20261011.json。復旧完了後の保管・整理条件をdeveloper/search-snapshots.mdへ記録。Herdr w1:t12/w1:p14の検証・整理exit0。Graph/local/public OAuthの正常応答確認。既存未コミット変更とstaged修復ファイルは保持。
+
+### 2026-10-11: Zotero書誌入力の検証と姓名・言語対応
+
+- 著者オブジェクトを文字列化し、未知のitem_type等を無視する経路を修正。確認ツールはZotero照会前に検証し、準備時・書込み直前にも共通検証を適用。既存保存proposalにも実行時に適用する。不正な型・欄名・雑誌項目が消える資料種別を拒否し、修正すべき欄をエラーで案内する。
+- 明示的なfirstName/lastNameと単一nameを保存、文字列名は推測分割しない。文字列化済みobject名は拒否し、空白と完全重複著者・同一名だけのカンマ反復を正規化する。language・extraを保存、巻号頁・既存metadataリンク添付は維持。確認/準備に実payloadのzotero_previewを追加し、公開ツール説明へ入力形式を記載。
+- 関連77テスト合格（入力拒否時のwriter未到達・確認前のAPI未到達・正しい姓名/団体/巻号頁/言語・実payload一致・既存目録adapterを含む）。function/lint ratchet・文書参照・fatal Ruff・compileall・src.cli import・diff検査合格。計測付き関連74テストで追加実行行の未到達0を確認し、品質予算は緩めていない。
+- 実Zotero書誌・添付の更新や有料API処理は未実行。MCP再起動後local/public OAuth正常。Herdr w1:t11/w1:p13の検証exit0。既存未コミット変更とstaged修復ファイルを保持。

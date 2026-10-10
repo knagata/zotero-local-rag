@@ -29,6 +29,7 @@ def test_create_mcp_preserves_tools_and_returns_distinct_servers():
     )
     assert import_tool.annotations.readOnlyHint is False
     assert import_tool.annotations.destructiveHint is True
+    assert all(field in import_tool.description for field in ("resource_type", "firstName", "language", "extra", "Unknown fields"))
 
 
 def test_external_discovery_tools_are_read_only_and_check_duplicates(monkeypatch):
@@ -144,3 +145,13 @@ def test_exact_duplicate_cannot_be_overridden_and_write_lock_is_released(monkeyp
         }))
 
     assert events == ["acquire", ("finish", "failed"), ("release", 7)]
+
+
+@pytest.mark.parametrize("changes", [{"item_type": "book"}, {"creators": "Bad"}, {"creators": [{"lastName": 12}]}])
+def test_inspection_rejects_invalid_metadata_before_zotero_access(monkeypatch, changes):
+    def unavailable():
+        pytest.fail("invalid metadata should fail before contacting Zotero")
+    monkeypatch.setattr(server, "_z_api", unavailable)
+    candidate = {"title": "Example", "landing_url": "https://example.test", **changes}
+    with pytest.raises((ValueError, TypeError)):
+        asyncio.run(server.inspect_open_text_candidate(candidate))

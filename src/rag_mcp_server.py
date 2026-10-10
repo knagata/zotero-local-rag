@@ -1780,12 +1780,27 @@ def _candidate_identifier_values(candidate: Dict[str, Any]) -> List[str]:
 async def inspect_open_text_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
     """Screen one external textual-resource candidate before proposing it to the user.
 
+
+    Candidate fields: title and HTTPS landing_url are required. Use resource_type
+    (book, journalArticle, thesis, conferencePaper or text), container_title for
+    the journal/proceedings title, and creators as a list of name strings or
+    {"firstName": "文克", "lastName": "久保", "creatorType": "author"} objects.
+    Corporate names use {"name": "Research Institute", "creatorType": "author"}.
+    Optional strings: source, record_id, date, publisher, volume, issue, pages,
+    language, extra, fulltext_status. identifiers maps keys to strings/string lists;
+    download_urls is a string list. Unknown fields and wrong types are rejected.
+    inspect_open_text_candidate returns zotero_preview with the actual fields;
+    present that preview before importing. Name strings are never guessed apart.
+
     This checks bibliographic completeness and searches the local Zotero library
     for likely title duplicates. It does not score scholarly quality, download a
     file, add an item, or update the RAG index. The calling model should present
     observable recommendation reasons, cautions, and how much text it inspected.
     """
-    title = str(candidate.get("title") or "").strip()
+    from zotero_import import preview_import_candidate
+    preview = preview_import_candidate(candidate)
+    candidate = preview["candidate"]
+    title = candidate["title"]
     duplicates: List[Dict[str, Any]] = []
     searches = [(title, "titleCreatorYear", "title")] if title else []
     searches.extend((value, "everything", "identifier") for value in _candidate_identifier_values(candidate))
@@ -1813,7 +1828,7 @@ async def inspect_open_text_candidate(candidate: Dict[str, Any]) -> Dict[str, An
                     "url": data.get("url"),
                     "match_reason": reason,
                 })
-    return screening_observations(candidate, duplicates)
+    return {**screening_observations(candidate, duplicates), "zotero_preview": preview["zotero_preview"]}
 
 
 @mcp.tool(annotations={
@@ -1829,6 +1844,18 @@ async def import_zotero_candidate(
     allow_duplicate: bool = False,
 ) -> Dict[str, Any]:
     """Add a screened candidate after the Claude client confirms this tool call.
+
+
+    Candidate fields: title and HTTPS landing_url are required. Use resource_type
+    (book, journalArticle, thesis, conferencePaper or text), container_title for
+    the journal/proceedings title, and creators as a list of name strings or
+    {"firstName": "文克", "lastName": "久保", "creatorType": "author"} objects.
+    Corporate names use {"name": "Research Institute", "creatorType": "author"}.
+    Optional strings: source, record_id, date, publisher, volume, issue, pages,
+    language, extra, fulltext_status. identifiers maps keys to strings/string lists;
+    download_urls is a string list. Unknown fields and wrong types are rejected.
+    inspect_open_text_candidate returns zotero_preview with the actual fields;
+    present that preview before importing. Name strings are never guessed apart.
 
     ``import_mode`` is ``metadata``, ``pdf``, or ``epub``. File modes are accepted only
     for a direct HTTPS URL. The URL may be hosted outside the discovery catalog.
