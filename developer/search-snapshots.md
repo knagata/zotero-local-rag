@@ -53,3 +53,15 @@ is changed. Separate lexical SQLite verification remains strict.
 failed publication, canonical child paths, caller hosted-feature overrides,
 invalid certificates, NUL compatibility/content mismatch, and publication only
 after a successful audit releases its lock.
+
+Recovery artifacts have a separate retention policy. After recovery and a full
+DB audit succeed, retain one healthy complete pre-change backup in addition to
+the current and previous query generations. Before retiring older full backups
+or crash-state working copies, verify the retained backup's FTS/relations SQLite
+integrity and native body/summary queries across close/reopen, confirm no process
+has files open in the candidates, and preserve their small recovery certificates
+and a deletion manifest under data/quality. Retain source documents, paid OCR
+outputs, correction evidence and the active model. Do not treat backup age or a
+folder name alone as evidence that its contents are redundant. Query publication
+pruning does not delete recovery backups; this review is required after recovery
+work so full copies do not accumulate indefinitely.

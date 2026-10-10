@@ -2275,3 +2275,10 @@ A（PDF構造化）・B（課金LLM）は独立、C（構造抽出エンジン�
 - 管理statusのENOSPCは原因と空き容量確保を案内するHTTP507へ変更し、他のOSErrorは隠さない。関連42テスト・function/lint ratchet・fatal Ruff・compile検査合格。単独実行時の既存検索テストのimport環境汚染も除去した。
 - 最新701添付の監査済みDBの検索コピー公開・サービス再起動を完了。実データと現行status handlerを認証差替えTestClientでHTTP200確認、実ブラウザ目視は未実施。最終空き容量約39.8GiB。証明はdata/quality/disk-full-recovery-20261011.json、整理記録はdata/quality/search-copy-cleanup-20261011.json。有料処理は再開していない。
 - Herdr w1:t11/w1:p13のテストexit0、w1:t12/w1:p14の再公開exit0。既存未コミット変更とstaged修復ファイルを保持。
+
+### 2026-10-11: 旧バックアップ・復旧作業コピーの整理
+
+- 前回の整理対象外だった旧完全バックアップ・障害保存・復旧試作コピーが容量の大半を占めていた。正常な変更前完全バックアップ1世代と現行/直前検索世代を保持し、置換済みの10artifactをwriter lockとopen handle検査下で削除。古い保存vectorの重複SHA256一致と復旧証明を確認し、小さい診断証明をdata/qualityへ退避した。
+- 残す完全バックアップは本文・要約のnative実検索とclose/reopen、全文索引/relationsのSQLite quick_checkに合格。原本・有料OCR応答・校訂証拠・モデル・稼働DBは保持。検索世代や全DB監査の結果は変更しない。有料処理なし。
+- du集計でdata約151GiBから45GiB（約48GB）へ減少。APFS共有ブロックのため削除した論理容量約106GiBと物理回収量は異なり、df空き容量は約39.8GiBから102.9GiBへ回復。残存主要用途は検索2世代約20GiB、完全バックアップ約9.9GiB、稼働Chroma約7.7GiB、モデル約4.3GiBと全文/関連DB・OCR等。
+- 一次証明はdata/quality/recovery-retention-20261011.json。復旧完了後の保管・整理条件をdeveloper/search-snapshots.mdへ記録。Herdr w1:t12/w1:p14の検証・整理exit0。Graph/local/public OAuthの正常応答確認。既存未コミット変更とstaged修復ファイルは保持。
