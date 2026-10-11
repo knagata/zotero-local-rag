@@ -257,7 +257,8 @@ Source chunks themselves can also be damaged, which is a separate matter from a
 summary being wrong. Some documents were OCRed years ago and their text layer
 carries systematic misreadings ("srorage" for "storage"), mojibake, missing
 pages, or interleaved columns. Such text is invisible to lexical search, so a
-reader encountering it is often the only signal there is: when damage would stop
+reader encountering it is often the only signal there is: use get_source_page
+to compare the original PDF image with the OCR when needed; when damage would stop
 a passage being quoted accurately or found at all, call report_chunk_quality for
 that chunk. A few characters you can read through do not need a report.
 
@@ -1633,6 +1634,60 @@ def detect_translation(item_key: str, dry_run: bool = True) -> Dict[str, Any]:
         return run_detection(item_key, dry_run=dry_run)
     except Exception as exc:
         return {"item_key": item_key, "status": "error", "error": str(exc)}
+
+
+@mcp.tool(annotations={"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False})
+async def get_source_page(
+    attachment_key: str = "", pdf_page: Optional[int] = None, chunk_id: str = "",
+    crop: Optional[List[float]] = None, rotation: int = 0,
+) -> list:
+    """View original PDF paper as an image to verify garbled OCR or a table.
+
+    Supply a search result chunk_id, or attachment_key and pdf_page. pdf_page is
+    1-based physical PDF page order, NOT the printed folio; returned page_label
+    helps distinguish them. With chunk_id, attachment/page are derived from the
+    stored metadata; an explicit page may select an adjacent PDF page. crop is
+    optional normalized [left, top, right, bottom] in the original displayed page;
+    rotation is 0/90/180/270 degrees clockwise after cropping. The image's longest
+    side is 1800 pixels; crop to magnify small text. Returns provenance text plus
+    an actual MCP image, no file path to open separately. Requires the original
+    PDF synced locally; does not run OCR/LLM, change text or retain image files.
+    Compare visually; distinguish a proposed reading from stored OCR. Report
+    substantial OCR damage with report_chunk_quality and cite the source page.
+    """
+    import re
+    from fastmcp.utilities.types import Image
+    from mcp.types import TextContent
+    from source_page import render_source_page
+    if chunk_id:
+        chunk = _chunk_by_id(chunk_id)
+        if chunk is None:
+            raise ValueError("chunk_id was not found in the active search database")
+        metadata = chunk.get("metadata") or {}
+        key = str(metadata.get("attachmentKey") or "")
+        if attachment_key and attachment_key != key:
+            raise ValueError("attachment_key does not match chunk_id")
+        attachment_key = key
+        if pdf_page is None:
+            pdf_page = metadata.get("page")
+    if not re.fullmatch(r"[A-Z0-9]{8}", attachment_key):
+        raise ValueError("provide a PDF attachment_key or a PDF search chunk_id")
+    if pdf_page is None:
+        raise ValueError("pdf_page is required when the chunk has no PDF page metadata")
+    api = _z_api()
+    raw = await api.get_item(attachment_key)
+    key, data = api._unwrap_item(raw)
+    if key != attachment_key or data.get("itemType") != "attachment":
+        raise ValueError("attachment_key must identify a Zotero attachment")
+    path = api.resolve_pdf_path_from_attachment(
+        attachment_key, data, os.environ.get("ZOTERO_DATA_DIR", str(Path.home() / "Zotero")))
+    if not path:
+        raise FileNotFoundError("原本がローカルにありません。Zoteroで添付の同期完了を確認して再実行してください。")
+    details, encoded = await asyncio.to_thread(
+        render_source_page, Path(path), pdf_page, crop=crop, rotation=rotation)
+    details.update(attachment_key=attachment_key, item_key=data.get("parentItem"), chunk_id=chunk_id)
+    return [TextContent(type="text", text=json.dumps(details, ensure_ascii=False)),
+            Image(data=encoded, format="jpeg").to_image_content()]
 
 
 @mcp.tool()

@@ -2289,3 +2289,10 @@ A（PDF構造化）・B（課金LLM）は独立、C（構造抽出エンジン�
 - 明示的なfirstName/lastNameと単一nameを保存、文字列名は推測分割しない。文字列化済みobject名は拒否し、空白と完全重複著者・同一名だけのカンマ反復を正規化する。language・extraを保存、巻号頁・既存metadataリンク添付は維持。確認/準備に実payloadのzotero_previewを追加し、公開ツール説明へ入力形式を記載。
 - 関連77テスト合格（入力拒否時のwriter未到達・確認前のAPI未到達・正しい姓名/団体/巻号頁/言語・実payload一致・既存目録adapterを含む）。function/lint ratchet・文書参照・fatal Ruff・compileall・src.cli import・diff検査合格。計測付き関連74テストで追加実行行の未到達0を確認し、品質予算は緩めていない。
 - 実Zotero書誌・添付の更新や有料API処理は未実行。MCP再起動後local/public OAuth正常。Herdr w1:t11/w1:p13の検証exit0。既存未コミット変更とstaged修復ファイルを保持。
+
+### 2026-10-11: MCPから原本PDFの紙面画像を取得
+
+- get_source_pageを追加。chunkの添付/頁参照、または添付ID＋物理PDF頁指定から、Zotero Local APIの原本を画像として返す。範囲拡大と回転を提供し、MCP TextContentに頁情報・画像署名、ImageContentにJPEGを返す。MCP指示でOCR確認と既存のreport_chunk_qualityへ接続した。
+- 同期未完了・PDF以外・暗号化・頁/範囲不正は理由付きで拒否。ユーザー入力の任意パスを受けない。worker threadで原本を読み、長辺1800px/6MiB上限でメモリ内生成。画像キャッシュを蓄積せず、OCR/LLM・原本/DB変更なし。
+- 実Zotero原本1頁の取得と表・文字の画像目視を確認。一次証明はdata/quality/source-page-verification-20261011.json。関連44テスト（実PDF、crop/回転、同期不備、MCP画像serialization、品質ratchet・文書参照）合格。新規render module41文すべて到達、wrapper追加実行行も未到達0。fatal Ruff・compileall・src.cli import・diff検査合格。
+- MCP再起動後local/public OAuth正常。実Claudeクライアントの描画確認は未実施。PDF skillの画像確認手順を使用。Herdr w1:t11/w1:p13の検証exit0。既存未コミット変更とstaged修復ファイルを保持。
