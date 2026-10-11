@@ -162,3 +162,7 @@ store; recovery uses a V3 backup or a clean rebuild from source files.
 
 - 親資料またはPDF添付のocr-completeタグは、既存文字層の取込を許可し、全OCRエンジンによる再処理・自動Batch待機・明示再OCR経路を禁止する。no-mistral-ocrの意味はMistral送信禁止のまま維持する。
 - 文字層抽出のTesseract fallbackも禁止し、空/欠落/品質不足の記録とsource coverage監査条件は維持する。Batch候補と最新タグの送信前検査にも適用する。利用方法はdocs/daily-use.md、契約詳細はdeveloper/mistral-send-policy.mdを参照。
+
+## Citation Networkのコレクション選択
+
+- コレクション一覧と所属資料はZotero Local APIからページング取得し、Zotero SQLiteを直接開かない。親コレクションの階層pathと空コレクションを返し、API障害は起動・通信設定の案内付き503とする。

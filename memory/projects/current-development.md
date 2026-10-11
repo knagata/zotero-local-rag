@@ -725,3 +725,9 @@ active V3はM5 clean rebuildと後続の対象修復を完了した監査済み�
 - 空/品質不足/欠落の記録とsource coverage検証は維持し、タグを品質合格とは扱わない。Batch候補除外と送信直前の最新タグ検査も適用。送信済みjobは取消不可、対象はPDF。
 - 関連134テスト合格、policy42文すべて到達。function/lint ratchet・文書参照・fatal Ruff・compileall・src.cli import・diff検査合格。slowは手元baseline未生成のため5skip/1deselected。Herdr w1:t11/w1:p13の検証、w1:t12/w1:p14のslow検証はexit0。
 - 実Zoteroタグ付け・実DB更新・有料API処理は行っていない。次のCLI起動から適用。既存未コミット変更とstaged修復ファイルを保持。
+
+### 2026-10-12: Citation Networkのコレクション取得をLocal APIへ変更
+
+- 起動中ZoteroのSQLiteへのnolock読取りがunable to open database file、通常ro読取りもdatabase is lockedとなることを実測。コレクションと所属資料をLocal APIのページング取得へ変更し、階層path・空collection・循環parentの終了を維持した。接続失敗時はZotero起動とローカル通信設定を案内する。
+- 関連28テスト合格、新規module34文すべて到達。function/lint ratchet・文書参照・fatal Ruff・compileall・src.cli import・diff検査合格。広い例外を減らしlint予算を縮小。DB原本変更・有料処理なし。
+- Graph再起動後、実/api/collectionsはHTTP200、7コレクション・所属84件。Graph/local/public OAuth正常。Browser skillで確認を試みたが利用可能browserなしのため実画面目視は未実施。証明はdata/quality/zotero-collections-verification.json。Herdr w1:t11/w1:p13の検証、w1:t12/w1:p14の再起動はexit0。既存未コミット変更とstaged修復ファイルを保持。

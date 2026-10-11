@@ -47,6 +47,7 @@ import webbrowser
 from dataclasses import dataclass
 from pathlib import Path
 
+import httpx
 from dotenv import load_dotenv
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -2316,69 +2317,16 @@ def _route_close() -> JSONResponse:
 
 @router.get("/api/collections")
 def _route_collections() -> JSONResponse:
-    """Zotero SQLite からコレクション一覧と所属 item_key を返す。"""
-    if not os.path.exists(ZOTERO_SQLITE):
-        return JSONResponse(
-            {"error": "zotero_not_found",
-             "message": f"Zotero データベースが見つかりません（{ZOTERO_SQLITE}）。"
-                        "Zotero を起動してください。"},
-            status_code=503,
-        )
+    """Read collections without opening Zotero's locked SQLite database."""
+    from citation_graph.zotero_collections import load_collections
     try:
-        uri = f"file:{ZOTERO_SQLITE}?mode=ro&nolock=1"
-        zconn = sqlite3.connect(uri, uri=True, timeout=5)
-        zconn.row_factory = sqlite3.Row
-
-        # コレクション全件（ID, 名前, 親ID）
-        cols = zconn.execute(
-            "SELECT collectionID, collectionName, parentCollectionID "
-            "FROM collections ORDER BY collectionName"
-        ).fetchall()
-
-        # 親IDをたどってパスを構築
-        col_by_id: dict = {r["collectionID"]: dict(r) for r in cols}
-        def _path(cid: int) -> str:
-            parts = []
-            visited = set()
-            while cid and cid not in visited:
-                visited.add(cid)
-                c = col_by_id.get(cid)
-                if not c:
-                    break
-                parts.append(c["collectionName"])
-                cid = c["parentCollectionID"]
-            return " / ".join(reversed(parts))
-
-        # collectionItems → items.key のマッピング
-        rows = zconn.execute("""
-            SELECT ci.collectionID, i.key AS item_key
-            FROM collectionItems ci
-            JOIN items i ON i.itemID = ci.itemID
-        """).fetchall()
-        zconn.close()
-
-        # コレクションごとに item_key リストを集約
-        from collections import defaultdict as _dd
-        col_items: dict = _dd(list)
-        for r in rows:
-            col_items[r["collectionID"]].append(r["item_key"])
-
-        result = [
-            {
-                "id":        cid,
-                "path":      _path(cid),
-                "item_keys": col_items.get(cid, []),
-            }
-            for cid in col_by_id
-        ]
-        result.sort(key=lambda x: x["path"])
-        return JSONResponse({"collections": result})
-
-    except Exception as e:
+        return JSONResponse({"collections": load_collections()})
+    except (httpx.HTTPError, ValueError, TypeError, KeyError) as exc:
         return JSONResponse(
             {"error": "read_failed",
-             "message": f"Zotero データベースの読み込みに失敗しました: {e}。"
-                        "Zotero が起動中の場合はしばらく待ってから再試行してください。"},
+             "message": f"Zotero Local APIからライブラリ一覧を取得できません: {exc}。"
+                        "Zoteroを起動し、設定の「このコンピューター上の他のアプリケーションに"
+                        "Zoteroとの通信を許可する」を確認して再試行してください。"},
             status_code=503,
         )
 
