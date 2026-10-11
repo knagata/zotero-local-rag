@@ -152,3 +152,8 @@ store; recovery uses a V3 backup or a clean rebuild from source files.
 - get_source_pageは検索chunk_idまたは添付IDと1始まりPDFページ順から、原本紙面をMCP画像として返す読み取り専用ツール。任意ファイルパス・URLは受けず、Zotero添付のローカル原本のみ参照する。未同期時は対処法を示す。
 - 範囲指定と時計回り回転を提供し、ページ順・PDFページラベル・総ページ数・範囲・画像署名を返す。PDFページラベルを印刷ノンブルと同一視しない。画像はメモリ内生成、長辺1800px・6MiB上限、永続キャッシュなし。有料OCR/LLMやDB更新を行わない。
 - 読取り結果は原本確認の証拠でありOCR自動上書きではない。重大な崩れは既存の品質報告へ接続する。実装・制約・検証はdeveloper/source-page-tool.mdを参照。
+
+## Mistral OCRの資料単位送信除外
+
+- Zoteroの親資料または添付のno-mistral-ocrタグは、その添付のMistral OCR送信を禁止する。品質合格を意味せず、通常取込・検索・品質監査・階層要約の対象除外とは独立する。
+- Batch準備で除外し、アップロード前・課金ジョブ作成前に最新タグを再照会する。直接OCRのrefetchも禁止し、照会失敗時は送信しない。保存結果の再利用と採用は送信を伴わないため許可する。送信済みジョブの取消は行わない。利用方法はdocs/daily-use.md、実装契約はdeveloper/mistral-send-policy.mdを参照。

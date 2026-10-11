@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from src.mistral_send_policy import assert_mistral_send_allowed, has_send_exclusion
 from src.env_utils import load_dotenv_native
 from src.mistral_ocr_batch import (
     MistralBatchClient, evaluate_ocr_result, parse_batch_output, save_json_atomic,
@@ -63,6 +64,9 @@ async def resolve_candidates(item_filters: list[str] | None) -> list[tuple[dict[
         attachment = by_key.get(row["attachment_key"])
         if not attachment:
             print(f"[WARN] unresolved attachment={row['attachment_key']}", file=sys.stderr)
+            continue
+        if has_send_exclusion(getattr(attachment, "tags", ()), getattr(attachment, "parentTags", ())):
+            print(f"[情報] no-mistral-ocr: 送信対象外 attachment={row['attachment_key']}", file=sys.stderr)
             continue
         source_path = Path(attachment.pdf_path).expanduser()
         batch_path = Path(str(row.get("batch_document_path") or source_path)).expanduser()
@@ -216,6 +220,8 @@ def submit(args: argparse.Namespace, state: dict[str, Any]) -> dict[str, Any]:
         allowed_cloud, reason = mistral_ocr_available()
         if not allowed_cloud:
             raise RuntimeError(f"cloud policy changed item={row.get('item_key')}: {reason}")
+    for row in state.get("candidates") or []:
+        assert_mistral_send_allowed(str(row["attachment_key"]))
     client = client_from_env()
     pending = [entry for entry in input_files if not entry.get("input_file_id")]
     if pending:
@@ -243,6 +249,8 @@ def submit(args: argparse.Namespace, state: dict[str, Any]) -> dict[str, Any]:
                 )
                 state.update({"phase": "uploaded", "uploaded_at": utc_now()})
                 save_json_atomic(args.state, state)
+    for row in state.get("candidates") or []:
+        assert_mistral_send_allowed(str(row["attachment_key"]))
     input_file_ids = [str(entry["input_file_id"]) for entry in input_files]
     state.update({"phase": "submitting", "submit_attempted_at": utc_now()})
     save_json_atomic(args.state, state)

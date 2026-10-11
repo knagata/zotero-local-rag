@@ -2296,3 +2296,10 @@ A（PDF構造化）・B（課金LLM）は独立、C（構造抽出エンジン�
 - 同期未完了・PDF以外・暗号化・頁/範囲不正は理由付きで拒否。ユーザー入力の任意パスを受けない。worker threadで原本を読み、長辺1800px/6MiB上限でメモリ内生成。画像キャッシュを蓄積せず、OCR/LLM・原本/DB変更なし。
 - 実Zotero原本1頁の取得と表・文字の画像目視を確認。一次証明はdata/quality/source-page-verification-20261011.json。関連44テスト（実PDF、crop/回転、同期不備、MCP画像serialization、品質ratchet・文書参照）合格。新規render module41文すべて到達、wrapper追加実行行も未到達0。fatal Ruff・compileall・src.cli import・diff検査合格。
 - MCP再起動後local/public OAuth正常。実Claudeクライアントの描画確認は未実施。PDF skillの画像確認手順を使用。Herdr w1:t11/w1:p13の検証exit0。既存未コミット変更とstaged修復ファイルを保持。
+
+### 2026-10-11: 外部OCR済み資料のMistral送信除外
+
+- 外部でOCRしたPDFは内部の有料処理履歴がないため、明示的なno-mistral-ocrタグで送信を禁止する方式を実装。親資料のタグは全添付へ、添付のタグはその添付へ適用。品質判定・通常索引・階層要約を除外せず、不足の記録は保持する。
+- Batch候補解決で除外し、アップロード前と課金ジョブ作成前にZoteroから最新タグを確認。uploaded状態やアップロード中のタグ追加でも課金job作成を拒否。直接refetchの送信直前も検査。照会不能時はfail closed、保存raw応答の再利用とstaged採用は可能。
+- 関連92テスト合格・新規policy37文すべて到達。function/lint ratchet・文書参照・fatal Ruff・compileall・src.cli import・diff検査合格。slow取込baselineは明示実行し手元baseline未生成のため5skip/1deselected。有料機能offで実行。Herdr w1:t11/w1:p13の検証、w1:t12/w1:p14のslow検証はexit0。
+- 実Zoteroのタグ付け、DB変更、有料API処理は行っていない。対象6件は利用者による親資料/添付へのタグ指定待ち。未来のCLI起動から修正版を使用する。既存未コミット変更とstaged修復ファイルを保持。

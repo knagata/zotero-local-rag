@@ -285,6 +285,12 @@ class OcrPageCoverageTests(unittest.TestCase):
 class MistralOcrCacheIntegrationTests(unittest.TestCase):
     """The archive must remove the API call, not the parsing."""
 
+    @classmethod
+    def setUpClass(cls):
+        patcher = mock.patch.object(mistral_ocr_extract, "assert_mistral_send_allowed")
+        patcher.start()
+        cls.addClassCleanup(patcher.stop)
+
     def setUp(self):
         import tempfile
 

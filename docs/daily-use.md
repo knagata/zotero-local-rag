@@ -159,3 +159,9 @@ uv run python scripts/manage_citation_graph_service.py restart
 - Citationの再開や参照回収: [Citation Network](citation-network.md)
 - LLM要約・参考文献抽出: [LLMとプライバシー](llm-and-privacy.md)
 - OCRやエラー対応: [トラブルシューティング](troubleshooting.md)
+
+### 外部でOCR済みのPDFをMistralへ再送しない
+
+Zoteroで対象の親資料に `no-mistral-ocr` タグを付けると、その資料の添付をMistral OCRの送信対象から除外します。特定の添付だけを除外したい場合は、その添付にタグを付けてください。外部でMistral処理したPDFにも使えます。
+
+本文検索・通常の取り込み・階層要約は継続します。品質不足の表示は残り、保存済みOCR結果の再利用も可能です。再送が必要になったときだけタグを外してください。すでにMistralへ送信済みのジョブは、このタグで取り消されません。

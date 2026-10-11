@@ -15,6 +15,7 @@ try:
         build_pdf_page_chapter_lookup, build_pdf_page_structure_path_lookup, get_pdf_toc,
         infer_structure_roles,
     )
+    from .mistral_send_policy import assert_mistral_send_allowed
     from .env_utils import load_dotenv_native
     from .ocr_cache import (
         MISTRAL_REQUEST_CONTRACT, load_result, load_result_any_model, source_digest, store_result,
@@ -29,6 +30,7 @@ except ImportError:  # direct `python src/index_from_zotero.py` execution
         build_pdf_page_chapter_lookup, build_pdf_page_structure_path_lookup, get_pdf_toc,
         infer_structure_roles,
     )
+    from mistral_send_policy import assert_mistral_send_allowed
     from env_utils import load_dotenv_native
     from ocr_cache import (
         MISTRAL_REQUEST_CONTRACT, load_result, load_result_any_model, source_digest, store_result,
@@ -291,6 +293,7 @@ def extract_chunks_from_pdf_with_mistral_ocr(
     base_url = os.environ.get("MISTRAL_OCR_BASE_URL", "").strip() or DEFAULT_BASE_URL
     timeout = max(1.0, float(os.environ.get("MISTRAL_OCR_TIMEOUT_SEC", "120")))
 
+    assert_mistral_send_allowed(attachment_key)
     result = _call_mistral_ocr_api(pdf_path, api_key=api_key, model=model, base_url=base_url, timeout=timeout)
     chunks, quality = extract_chunks_from_mistral_ocr_result(
         pdf_path, attachment_key, meta_base, result, model=model,
