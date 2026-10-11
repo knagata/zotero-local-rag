@@ -27,3 +27,18 @@ turn an unsuccessful quality gate into success. No vendor calls are made by the
 policy itself. tests/test_mistral_send_policy.py verifies tag filtering, fresh
 parent checks, refusal before vendor access, a tag added during upload, direct
 refetch refusal, and cache replay preserving degraded quality.
+
+## Completed external OCR
+
+`ocr-complete` is a separate instruction: for PDF attachments, index existing
+text layers and never run automatic or explicitly routed OCR replacements.
+Attachment and parent tags have the same scope as the send exclusion above.
+The PDF orchestrator returns text-layer extraction before local overrides,
+page repairs, Docling/AI-outline escalation, or Batch deferral. The text-layer
+extractor also disables its Tesseract fallback. Text quality and source coverage
+checks still apply; an empty or incomplete text layer does not become a success.
+The tag is included in the fresh Mistral send check and Batch filtering, while
+`no-mistral-ocr` alone continues to allow local OCR. Removing `ocr-complete`
+is required to request re-OCR. Already submitted vendor jobs cannot be canceled
+by adding either tag. This implementation covers PDFs; it does not mark image
+EPUBs as OCR-complete.

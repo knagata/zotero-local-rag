@@ -1179,7 +1179,7 @@ def extract_chunks_from_pdf(
                     # page to an image and OCR it — much lighter than Docling.
                     ocr_used = False
                     if (
-                        PDF_OCR_FALLBACK
+                        PDF_OCR_FALLBACK and not meta_base.get("ocr_complete", False)
                         and quality["corruption_type"] == "extraction_failure"
                         and quality["extraction_failure_score"] >= 0.5
                     ):

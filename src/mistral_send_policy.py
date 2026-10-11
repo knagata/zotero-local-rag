@@ -12,6 +12,18 @@ except ImportError:  # direct src entrypoint
     from zotero_source_localapi import local_api_url, zotero_api_headers
 
 NO_MISTRAL_OCR_TAG = 'no-mistral-ocr'
+OCR_COMPLETE_TAG = 'ocr-complete'
+
+def has_ocr_complete(*tag_groups: Any) -> bool:
+    return any(
+        isinstance(tag, str) and tag.strip().casefold() == OCR_COMPLETE_TAG
+        for group in tag_groups for value in group or ()
+        for tag in [value.get('tag', '') if isinstance(value, dict) else value]
+    )
+
+def attachment_ocr_complete(attachment: Any) -> bool:
+    return has_ocr_complete(getattr(attachment, 'tags', ()), getattr(attachment, 'parentTags', ()))
+
 
 
 def has_send_exclusion(*tag_groups: Any) -> bool:
@@ -20,7 +32,7 @@ def has_send_exclusion(*tag_groups: Any) -> bool:
             tag = value.get('tag', '') if isinstance(value, dict) else value
             if isinstance(tag, str) and tag.strip().casefold() == NO_MISTRAL_OCR_TAG:
                 return True
-    return False
+    return has_ocr_complete(*tag_groups)
 
 
 def assert_mistral_send_allowed(attachment_key: str) -> None:
@@ -49,5 +61,5 @@ def assert_mistral_send_allowed(attachment_key: str) -> None:
             groups.append(raw.get('data', raw).get('tags', []))
     if has_send_exclusion(*groups):
         raise RuntimeError(
-            f'{attachment_key}: no-mistral-ocrタグによりMistral OCRへの送信を禁止しています。'
+            f'{attachment_key}: no-mistral-ocrまたはocr-completeタグによりMistral OCRへの送信を禁止しています。'
             '品質不足の記録は保持します。再送が必要な場合だけZoteroでタグを外してください。')

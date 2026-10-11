@@ -718,3 +718,10 @@ active V3はM5 clean rebuildと後続の対象修復を完了した監査済み�
 - Batch候補解決で除外し、アップロード前と課金ジョブ作成前にZoteroから最新タグを確認。uploaded状態やアップロード中のタグ追加でも課金job作成を拒否。直接refetchの送信直前も検査。照会不能時はfail closed、保存raw応答の再利用とstaged採用は可能。
 - 関連92テスト合格・新規policy37文すべて到達。function/lint ratchet・文書参照・fatal Ruff・compileall・src.cli import・diff検査合格。slow取込baselineは明示実行し手元baseline未生成のため5skip/1deselected。有料機能offで実行。Herdr w1:t11/w1:p13の検証、w1:t12/w1:p14のslow検証はexit0。
 - 実Zoteroのタグ付け、DB変更、有料API処理は行っていない。対象6件は利用者による親資料/添付へのタグ指定待ち。未来のCLI起動から修正版を使用する。既存未コミット変更とstaged修復ファイルを保持。
+
+### 2026-10-11: 外部OCR済みPDFの再OCR禁止タグ
+
+- ocr-completeを実装。親資料/添付のタグで既存PDF文字層から取込み、NDLOCR/Docling・頁補修・Tesseract fallback・Mistral Batchへの再投入を止める。明示再OCR経路でもタグが優先。no-mistral-ocr単独の意味は変更しない。
+- 空/品質不足/欠落の記録とsource coverage検証は維持し、タグを品質合格とは扱わない。Batch候補除外と送信直前の最新タグ検査も適用。送信済みjobは取消不可、対象はPDF。
+- 関連134テスト合格、policy42文すべて到達。function/lint ratchet・文書参照・fatal Ruff・compileall・src.cli import・diff検査合格。slowは手元baseline未生成のため5skip/1deselected。Herdr w1:t11/w1:p13の検証、w1:t12/w1:p14のslow検証はexit0。
+- 実Zoteroタグ付け・実DB更新・有料API処理は行っていない。次のCLI起動から適用。既存未コミット変更とstaged修復ファイルを保持。

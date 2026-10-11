@@ -29,6 +29,7 @@ from pdf_extract import (
 )
 from docling_worker import DoclingWorker
 from granite_worker import GraniteWorker
+from mistral_send_policy import attachment_ocr_complete
 from ndlocr_extract import extract_chunks_from_pdf_with_ndlocr
 from rapidocr_extract import extract_chunks_from_pdf_with_rapidocr
 from local_ocr_pipeline import REPEAT_ARTIFACT_RE, run_local_ocr
@@ -231,7 +232,7 @@ RUN_CODE_PATHS = tuple(
         "pdf_extract.py", "docling_extract.py", "docling_worker.py", "extraction_engine.py",
         "local_ocr_pipeline.py", "rapidocr_extract.py", "ndlocr_extract.py", "epub_fallback.py",
         "pdf_toc_recovery.py", "document_structure.py", "v3_migration.py", "v3_runtime.py",
-        "pdf_provenance.py", "ocr_layer_audit.py", "source_coverage.py",
+        "pdf_provenance.py", "ocr_layer_audit.py", "source_coverage.py", "mistral_send_policy.py",
     )
 )
 
@@ -2153,11 +2154,12 @@ def _reparse_decision(
     source_type: str,
     previous: dict[str, Any] | None,
     reocr_route: dict[str, Any] | None,
+    attachment: Any = None,
 ) -> ReparseDecision:
     """Choose explicit parser overrides without performing extraction."""
     has_quality = bool(previous and isinstance(previous.get("quality"), dict))
     target_engine = str((reocr_route or {}).get("target_engine") or "").strip()
-    force_mistral = bool(reocr_route and target_engine == "mistral_ocr")
+    force_mistral = bool(reocr_route and target_engine == "mistral_ocr") and not attachment_ocr_complete(attachment)
     force_ndlocr = False
     force_docling = False
     if source_type == "pdf":
@@ -3252,6 +3254,13 @@ def _extract_pdf_chunks(
     v3_pipeline_fingerprint: Any,
 ) -> PdfExtraction:
     """Coordinate explicit overrides, measured extraction, and the PDF gate."""
+    if attachment_ocr_complete(a):
+        chunks, quality = extract_chunks_from_pdf(
+            file_path, a.attachmentKey, {**meta_base, "ocr_complete": True},
+        )
+        quality = _attach_pdf_source_provenance(quality, source_metadata)
+        quality["ocr_policy"] = "ocr-complete"
+        return PdfExtraction(chunks, quality)
     override = _extract_pdf_override(
         attachment_key=a.attachmentKey,
         file_path=file_path,
@@ -4029,7 +4038,7 @@ async def _index_library(
 
         reocr_route = reocr_routes.get(a.attachmentKey)
         reparse = _reparse_decision(
-            args, source_type=stype, previous=prev, reocr_route=reocr_route,
+            args, source_type=stype, previous=prev, reocr_route=reocr_route, attachment=a,
         )
         force_docling = reparse.force_docling
         force_ndlocr = reparse.force_ndlocr
@@ -4040,7 +4049,7 @@ async def _index_library(
         }
         if (
                 not args.rebuild
-                and _skip_current_mistral_toc_candidate(
+                and not attachment_ocr_complete(a) and _skip_current_mistral_toc_candidate(
                     stype=stype, reocr_route=reocr_route,
                     force_reparse=args.force_reparse,
                     reparse_corrupted=args.reparse_corrupted,

@@ -157,3 +157,8 @@ store; recovery uses a V3 backup or a clean rebuild from source files.
 
 - Zoteroの親資料または添付のno-mistral-ocrタグは、その添付のMistral OCR送信を禁止する。品質合格を意味せず、通常取込・検索・品質監査・階層要約の対象除外とは独立する。
 - Batch準備で除外し、アップロード前・課金ジョブ作成前に最新タグを再照会する。直接OCRのrefetchも禁止し、照会失敗時は送信しない。保存結果の再利用と採用は送信を伴わないため許可する。送信済みジョブの取消は行わない。利用方法はdocs/daily-use.md、実装契約はdeveloper/mistral-send-policy.mdを参照。
+
+## 外部OCR処理済みPDFの再OCR禁止
+
+- 親資料またはPDF添付のocr-completeタグは、既存文字層の取込を許可し、全OCRエンジンによる再処理・自動Batch待機・明示再OCR経路を禁止する。no-mistral-ocrの意味はMistral送信禁止のまま維持する。
+- 文字層抽出のTesseract fallbackも禁止し、空/欠落/品質不足の記録とsource coverage監査条件は維持する。Batch候補と最新タグの送信前検査にも適用する。利用方法はdocs/daily-use.md、契約詳細はdeveloper/mistral-send-policy.mdを参照。
