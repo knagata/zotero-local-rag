@@ -181,6 +181,7 @@ def ingest(item_key: str, plane: Path, *, force: bool = True,
         "MANIFEST_PATH": str(plane / "manifest_v3.json"),
         "LEXICAL_DB_PATH": str(plane / "lexical_v3.sqlite3"),
         "RELATIONS_DB_PATH": str(plane / "relations.db"),
+        "PDF_CACHE_DIR": str(plane / "pdf_cache"),
         "PYTHONPATH": str(ROOT / "src"),
         **{name: "0" for name in HOSTED_INGESTION_FEATURE_FLAGS},
     })
@@ -246,14 +247,14 @@ def observe(item_key: str, plane: Path) -> dict:
     if relations.exists():
         connection = sqlite3.connect(f"file:{relations}?mode=ro", uri=True)
         try:
+            if not connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='artifact_processing_status'").fetchone():
+                return {"chunks": recorded, "manifest": rows, "artifact_status": []}
             statuses = [
-                dict(zip(("scope", "status", "reason_code"), row, strict=False))
+                dict(zip(("artifact_type", "attachment_key", "status", "reason_code"), row, strict=False))
                 for row in connection.execute(
-                    "SELECT scope, status, reason_code FROM artifact_processing_status "
-                    "WHERE item_key = ? ORDER BY scope, status", (item_key,))
+                    "SELECT artifact_type, attachment_key, status, reason_code FROM artifact_processing_status "
+                    "WHERE item_key = ? ORDER BY artifact_type, attachment_key, status", (item_key,))
             ]
-        except sqlite3.OperationalError:
-            statuses = []
         finally:
             connection.close()
     return {"chunks": recorded, "manifest": rows, "artifact_status": statuses}
@@ -283,6 +284,18 @@ def measure() -> list[dict]:
                 "quality_pass": {k: requested[k] for k in ("exit_code", "counters", "summary")},
             })
     return measured
+
+
+def validate_measurement(rows: list[dict]) -> None:
+    """Never adopt an empty corpus or failed extraction as a regression oracle."""
+    if not rows:
+        raise ValueError("Cannot adopt an empty ingestion baseline")
+    for row in rows:
+        for phase in (row, row.get("second_pass", {}), row.get("quality_pass", {})):
+            if phase.get("exit_code") != 0:
+                raise ValueError(f"Ingestion baseline has a failed pass: {row['item_key']}")
+        if not row.get("chunks") or not row.get("manifest"):
+            raise ValueError(f"Ingestion baseline has no indexed source: {row['item_key']}")
 
 
 def diff(previous: list[dict], current: list[dict]) -> list[str]:
@@ -330,6 +343,7 @@ def main() -> None:
         if BASELINE_PATH.exists() else {"items": []}
     )
     current = measure()
+    validate_measurement(current)
 
     changes = diff(previous["items"], current)
     print("\n".join(changes) if changes

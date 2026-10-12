@@ -2329,3 +2329,11 @@ A（PDF構造化）・B（課金LLM）は独立、C（構造抽出エンジン�
 - CIと同じ非slow/corpusの計測付き全テストは2,100passed/2skip/9deselected（97.63秒）。coverage予算check・function/lint ratchet・文書参照・fatal Ruff・compileall・src.cli import合格。Nodeで管理UIの依存選択・polling保持・課金同意・取消・旧service案内を検証した。slow/corpusも明示実行したが、比較baseline未生成で9skip。実画面の目視と実コーパスbaseline比較は未検証。
 - 全DB監査は728添付・703資料で合格、自動修復なし。検索コピーは本文661,436・要約8,680のnative検索/close/reopen検証後に公開。Graph/MCP/local/public OAuthとcollections HTTP200正常。有料OCR/LLM・原本変更なし。既存正常backup・旧検索世代を保持した。
 - 一次証明はdata/quality/full-verification-20261012.jsonと同日のfull-tests/full-coverage/full-db-audit/corpus-testsログ。Herdr全テストw1:t11/w1:p13・監査/サービスw1:t12/w1:p14はexit0、分担確認はw1:t13/w1:p15・w1:t14/w1:p16。開始時の作業差分は/tmp/zotero-full-check-before-20261012へ保存。今回差分だけをコミットし、既存作業とstaged修復ファイルを保持。
+
+### 2026-10-12: 実資料の比較ベースラインを整備
+
+- PDF/EPUB/HTMLの5資料を隔離データ面で初回・変更なし・品質再確認の3回処理。本文296チャンクのハッシュが既存DBと一致し、原本文字列と代表PDF紙面を確認した。縦書きPDFの既存認識ノイズは品質合格とは扱わず、挙動比較の制約として記録。
+- 構造復元は保守的に見送る71添付に、境界を確認した成功3添付を加え74添付。成功例の全境界を文字列確認し先頭/末尾紙面を目視。不自然な注の階層を持つ別候補は採用せず、成功/見送りの両方が必須のテストを追加。
+- 取込記録器の存在しないscope列参照とSQLエラーの隠蔽を修正。PDF cacheも一時領域へ隔離。失敗工程・空本文・空manifestの基準採用を拒否する検査を追加。安全性・function/lint ratchet・文書検査19件とfatal Ruff合格。
+- ローカルbaselineはtests/baselines/、確認証跡はdata/quality/baselines-20261012/へ保存しGit対象外。有料API・本番への取込なし。既存未コミット作業とstaged修復ファイルを保持。手順はdeveloper/development.md。
+- slow/corpus比較は10passed/0skip/2,104deselected（381.66秒）。Herdr w1:t11/w1:p13はexit0、安全検査w1:t12/w1:p14もexit0。前回未検証の9件を補完し、成功/見送り必須の1件を追加した。依存ライブラリの非推奨警告のみ。

@@ -205,3 +205,11 @@ def test_no_recovered_tree_hangs_the_whole_book_off_one_boundary():
             + "\n".join(offenders),
             pytrace=False,
         )
+
+
+@_needs_baseline
+@pytest.mark.corpus
+def test_reviewed_corpus_contains_both_recovery_and_conservative_decline():
+    entries = _baseline()['items']
+    assert any(entry['paths'] for entry in entries), 'review at least one successful recovery'
+    assert any(entry['paths'] is None for entry in entries), 'retain cases that must remain flat'

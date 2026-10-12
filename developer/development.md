@@ -306,3 +306,17 @@ autouse fixture runs too late for imports. The existing real-data write guard
 remains active. Synthetic Zotero adapters must accept the current source API's
 optional arguments so end-to-end tests exercise ingestion instead of failing at
 the fixture boundary.
+
+## 実資料の比較ベースライン
+
+`tests/baselines/ingestion.json` と `structure_recovery.json` はローカル専用・Git対象外。
+取込はPDF/EPUB/HTMLの5資料を隔離データ面へ3回ずつ処理し、本文ハッシュ・manifest・工程状態を比較する。
+生成器は有料機能を無効化し、PDF cacheも一時領域へ隔離する。失敗した工程・空本文・空manifestは採用を拒否する。
+工程状態のDB列不一致は空結果へ隠さずエラーにする。
+
+基準更新前には原本と抽出結果を確認する。構造復元は、正しく復元する例と保守的に見送る例の両方を含める。
+現在の出力を無条件に正解として採用せず、不自然な章境界は除外・別途調査する。
+本文の比較基準は既存OCRの無誤りを保証しない。既知の認識誤りはレビュー記録へ残す。
+資料名・キー・紙面画像・レビュー証跡はGit対象外の `data/quality/` に置く。
+
+検証は `uv run pytest -q -m "slow or corpus" -rs`。資料の更新で差分が出た場合も、自動再採用せず原本と差分を確認する。
