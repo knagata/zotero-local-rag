@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shutil
+import json
 import subprocess
 import unittest
 from pathlib import Path
@@ -89,7 +90,7 @@ class StaticAssetTests(unittest.TestCase):
 
     def test_admin_skips_the_confirmation_dialog_for_jobs_without_a_phrase(self):
         script = (self.static_dir / "admin.js").read_text(encoding="utf-8")
-        self.assertIn("if(!def.confirmation) { void startDefinition(def); return; }", script)
+        self.assertIn("if(!def.paid) { void startDefinition(def); return; }", script)
         self.assertIn('$("confirm-form").addEventListener("submit"', script)
         self.assertIn('$("confirm-dialog").close("confirm")', script)
 
@@ -97,6 +98,40 @@ class StaticAssetTests(unittest.TestCase):
         html = (self.static_dir / "admin.html").read_text(encoding="utf-8")
         self.assertIn('/admin/assets/admin.css?v=', html)
         self.assertIn('/admin/assets/admin.js?v=', html)
+
+    def test_admin_has_a_current_audit_diagnostics_region(self):
+        html = (self.static_dir / "admin.html").read_text(encoding="utf-8")
+        script = (self.static_dir / "admin.js").read_text(encoding="utf-8")
+        self.assertIn('id="audit-diagnostics" aria-live="polite"', html)
+        self.assertIn('$("audit-diagnostics")', script)
+        self.assertIn("failure.message", script)
+        self.assertIn("failure.action", script)
+        self.assertIn("gate.available", script)
+
+    def test_admin_explains_missing_sources_in_old_and_new_failure_logs(self):
+        if shutil.which("node") is None:
+            self.skipTest("node is not installed")
+        script = (self.static_dir / "admin.js").read_text(encoding="utf-8")
+        functions = script[script.index("function legacyMissingFileMessages"):
+                           script.index("async function showFailure")]
+        old_log = ("Redirect location: 'file:///library/storage/ATT12345/Example%20Book.pdf'\n"
+                   "RuntimeError: Eligible attachment ATT12345 has no readable local file\n")
+        cases = [old_log, old_log.replace("Example%20Book.pdf", "%INVALID"),
+                 "[停止] Example Book\n[必要な作業] Zoteroで添付を開いてください。\n",
+                 "unrelated error\n"]
+        result = subprocess.run(
+            ["node", "-e", functions +
+             "console.log(JSON.stringify(JSON.parse(process.argv[1]).map(failureMessages)));",
+             json.dumps(cases)], capture_output=True, text=True, check=True,
+        )
+        messages = json.loads(result.stdout)
+        self.assertIn("Example Book.pdf", messages[0][0])
+        self.assertIn("ATT12345", messages[0][0])
+        self.assertIn("ダウンロード・同期", messages[0][1])
+        self.assertIn("再実行", messages[0][1])
+        self.assertIn("ATT12345", messages[1][0])
+        self.assertEqual(messages[2], ["[停止] Example Book", "[必要な作業] Zoteroで添付を開いてください。"])
+        self.assertEqual(messages[3], [])
 
     def test_admin_shows_remote_mistral_batch_progress(self):
         script = (self.static_dir / "admin.js").read_text(encoding="utf-8")

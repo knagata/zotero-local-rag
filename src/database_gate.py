@@ -56,9 +56,11 @@ def database_state_fingerprint(
     chroma_rows: Iterable[Mapping[str, Any]],
     lexical_ids: Iterable[str],
     structure_rows: Iterable[tuple[Any, ...]],
+    lexical_content_fingerprint: str = "",
 ) -> str:
     """Fingerprint every deterministic input that hierarchical summaries read."""
     digest = hashlib.sha256()
+    digest.update(lexical_content_fingerprint.encode())
     for label, path in (
         ("manifest", manifest_path),
         ("pipeline_config", pipeline_config_path),
@@ -95,6 +97,7 @@ def live_database_state_fingerprint(
     from .chunk_store import get_collection_chunks
     from .db_relations import get_db_connection
     from .lexical_index import list_chunk_ids as list_lexical_chunk_ids
+    from .lexical_index import audit_content
 
     connection = get_db_connection()
     try:
@@ -133,6 +136,7 @@ def live_database_state_fingerprint(
         chroma_rows=get_collection_chunks(collection_name=collection_name),
         lexical_ids=list_lexical_chunk_ids(path=lexical_db_path),
         structure_rows=structure_rows,
+        lexical_content_fingerprint=audit_content([], path=lexical_db_path)[0],
     )
 
 

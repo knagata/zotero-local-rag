@@ -1858,8 +1858,8 @@ async def _discover_attachments(
         pdf_cache_dir=str(paths().pdf_cache_dir),
         collection_key=args.collection,
         require_complete=bool(args.rebuild),
+        allow_missing_files=not args.rebuild,
     )
-    attachments = [a for a in attachments if getattr(a, "pdf_path", None)]
     inventory_attachments = list(attachments)
     attachments, excluded_attachments, preferred_pdf_attachments = (
         _apply_rag_tag_policy(attachments)
@@ -1923,6 +1923,7 @@ async def _discover_attachments(
             )
         ]
     _validate_ai_toc_refresh_targets(args, attachments)
+    attachments = _ready_source_attachments(attachments, rebuild=args.rebuild)
     return DiscoveryResult(
         attachments=attachments,
         preflight_notes=preflight_notes,
@@ -2114,8 +2115,40 @@ def _print_quality_warnings(warnings: list[QualityWarning]) -> None:
     print("=" * 80 + "\n", file=sys.__stderr__)
 
 
+def _ready_source_attachments(attachments, *, rebuild):
+    """Defer unavailable sources without removing them from the live inventory."""
+    ready = []
+    for attachment in attachments:
+        try:
+            source = _resolve_attachment_source(attachment)
+        except OSError:
+            source = None
+        if source is not None and source.size > 0:
+            ready.append(attachment)
+            continue
+        if rebuild:
+            raise RuntimeError(
+                f"Rebuild requires a nonempty readable source: {attachment.attachmentKey}"
+            )
+        label = " ".join(str(attachment.title or attachment.attachmentKey).split())
+        print(
+            f"[同期待ち] 『{label}』（添付 {attachment.attachmentKey}）の原本が未取得・空・"
+            "読取不能のため保留します。他の取得済み資料は処理を続けます。",
+            file=sys.stderr, flush=True,
+        )
+    if len(ready) != len(attachments):
+        print(
+            "[必要な作業] 自動同期・ダウンロード完了後にクイック実行を再実行してください。"
+            "保留資料は未処理です。全DB監査の合格には全資料の処理が必要です。",
+            file=sys.stderr, flush=True,
+        )
+    return ready
+
+
 def _resolve_attachment_source(attachment: ZoteroAttachment) -> ResolvedAttachmentSource | None:
     """Resolve a Zotero attachment to one stable file and source classification."""
+    if not attachment.pdf_path:
+        return None
     file_path = resolve_attachment_file(attachment.pdf_path)
     if not file_path.is_file():
         return None
@@ -3560,8 +3593,14 @@ def _source_verdict(
         except OSError:
             signature = None
 
+    moved_without_signature = bool(
+        previous and previous.get("pdf_path")
+        and str(previous["pdf_path"]) != str(file_path)
+        and not previous.get("content_signature")
+    )
     unchanged = (
-        _source_content_unchanged(previous, mtime=mtime, size=size, signature=signature)
+        not moved_without_signature
+        and _source_content_unchanged(previous, mtime=mtime, size=size, signature=signature)
         and entry_pipeline_matches
         and attachment_key not in inflight
         and not args.retry_failed
@@ -3575,6 +3614,16 @@ def _source_verdict(
     if args.check_quality or not has_quality:
         return SourceVerdict("quality_only", signature)
     return SourceVerdict("skip", signature)
+
+
+def _sync_unchanged_source_path(previous: dict[str, Any] | None, file_path: Path,
+                                verdict: SourceVerdict, manifest: dict[str, Any]) -> str | None:
+    """Persist Zotero's current location when extraction can safely be skipped."""
+    if (previous is not None and verdict.action != "index" and verdict.signature
+            and previous.get("pdf_path") != str(file_path)):
+        previous["pdf_path"] = str(file_path)
+        save_manifest(paths().manifest_path, manifest)
+    return verdict.signature
 
 
 def _start_optional_tracing() -> None:
@@ -3989,15 +4038,10 @@ async def _index_library(
 
     for idx, a in enumerate(attachments, start=1):
         assert_code_unchanged(RUN_CODE_PATHS, run_code_fingerprint)
-        original_path = Path(a.pdf_path).expanduser()
+        if not _ready_source_attachments([a], rebuild=args.rebuild):
+            continue
         source = _resolve_attachment_source(a)
-        if source is None:
-            if original_path.is_dir():
-                print(
-                    f"[WARN] Web snapshot directory has no index.html: "
-                    f"attachment={a.attachmentKey} dir={original_path}",
-                    file=sys.__stderr__,
-                )
+        if source is None or source.size <= 0:
             continue
         file_path = source.path
         stype = source.source_type
@@ -4062,7 +4106,7 @@ async def _index_library(
             inflight=inflight_attachments,
             reparse=reparse,
         )
-        current_signature = verdict.signature
+        current_signature = _sync_unchanged_source_path(prev, file_path, verdict, manifest)
         quality_check_only = verdict.action == "quality_only"
         if verdict.action == "skip":
             if stype == "html":

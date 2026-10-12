@@ -118,3 +118,31 @@ def test_the_hash_is_not_taken_when_the_row_carries_none():
     # Nothing to compare it against, so the stat match is the whole answer and
     # the file is not read at all -- which is why a missing file is fine here.
     assert _verdict(previous=_indexed()).signature is None
+
+
+def test_renamed_unsigned_source_is_reindexed():
+    assert _verdict(previous=_indexed(pdf_path="/old.pdf")).action == "index"
+
+
+def test_verified_rename_synchronizes_and_saves(tmp_path, monkeypatch):
+    import index_from_zotero as indexer
+    from manifest import content_signature
+    path = tmp_path / "new.pdf"
+    path.write_bytes(b"verified contents")
+    stat = path.stat()
+    previous = _indexed(pdf_path=str(tmp_path / "old.pdf"), mtime=stat.st_mtime,
+                        size=stat.st_size, content_signature=content_signature(path, stat.st_size))
+    verdict = indexer._source_verdict(
+        _args(), attachment_key="ATT", previous=previous, file_path=path,
+        mtime=stat.st_mtime, size=stat.st_size, pipeline_fingerprint=FINGERPRINT,
+        inflight=set(), reparse=ReparseDecision(),
+    )
+    saved = []
+    monkeypatch.setattr(indexer, "save_manifest", lambda p, m: saved.append(m))
+    manifest = {"files": {"ATT": previous}}
+    assert verdict.action == "skip"
+    assert indexer._sync_unchanged_source_path(previous, path, verdict, manifest) == verdict.signature
+    assert previous["pdf_path"] == str(path)
+    assert saved == [manifest]
+    indexer._sync_unchanged_source_path(previous, path, verdict, manifest)
+    assert len(saved) == 1

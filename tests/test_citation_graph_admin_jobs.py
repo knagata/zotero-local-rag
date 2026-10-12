@@ -21,6 +21,22 @@ def project(tmp_path: Path) -> Path:
     return root
 
 
+@pytest.mark.parametrize("error, expected", [(None, "running"), (ProcessLookupError(), "interrupted"), (PermissionError(), "running")])
+def test_audit_status_handles_terminated_and_unverifiable_process(tmp_path, error, expected):
+    path = tmp_path / "data/quality/server_database_audit_status.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"status": "running", "pid": 123, "message": "auditing"}))
+    with patch("os.kill", side_effect=error):
+        assert admin_jobs._audit_run_status(tmp_path)["status"] == expected
+
+
+def test_audit_status_rejects_nonobject_json(tmp_path):
+    path = tmp_path / "data/quality/server_database_audit_status.json"
+    path.parent.mkdir(parents=True)
+    path.write_text("[]")
+    assert admin_jobs._audit_run_status(tmp_path) is None
+
+
 def test_job_catalog_contains_only_fixed_argv_and_no_destructive_rebuild(tmp_path):
     definitions = admin_jobs.job_definitions(project(tmp_path))
     assert set(definitions) == {
@@ -33,9 +49,9 @@ def test_job_catalog_contains_only_fixed_argv_and_no_destructive_rebuild(tmp_pat
             assert command[0].endswith("/.venv/bin/python")
             assert "--rebuild" not in command
             assert "--force" not in command
-    assert definitions["summary_batch"].confirmation == "SUMMARIZE"
+    assert definitions["summary_batch"].confirmation is None
     assert definitions["summary_batch"].paid is True
-    assert definitions["mistral_ocr"].confirmation == "MISTRAL"
+    assert definitions["mistral_ocr"].confirmation is None
     assert definitions["mistral_ocr"].paid is True
     assert all(
         definition.confirmation is None
@@ -64,14 +80,14 @@ def test_quick_update_runs_the_bounded_daily_sequence(tmp_path):
     assert definition.steps[0][1] == definition.steps[2][1]
 
 
-def test_start_requires_exact_confirmation_and_redacts_runner_token(tmp_path, monkeypatch):
+def test_start_requires_paid_consent_and_redacts_runner_token(tmp_path, monkeypatch):
     root = project(tmp_path)
     monkeypatch.setattr(admin_jobs, "active_job", lambda root: None)
     fake = SimpleNamespace(pid=4321)
-    with pytest.raises(ValueError, match="SUMMARIZE"):
+    with pytest.raises(ValueError, match="同意"):
         admin_jobs.start_job("summary_batch", "yes", "user@example.com", root)
     with patch.object(admin_jobs.subprocess, "Popen", return_value=fake):
-        record = admin_jobs.start_job("summary_batch", "SUMMARIZE", "user@example.com", root)
+        record = admin_jobs.start_job("summary_batch", "", "user@example.com", root, paid_consent=True)
     assert record["pid"] == 4321
     assert record["actor"] == "user@example.com"
     assert "token" not in admin_jobs.public_record(record)
@@ -209,6 +225,8 @@ def test_system_status_reports_manifest_gate_and_artifacts(tmp_path):
     result = admin_jobs.system_status(root)
     assert result["manifest"]["attachments"] == 1
     assert result["database_gate"]["passed"] is True
+    assert result["database_gate"]["available"] is True
+    assert result["database_gate"]["failures"] == []
     assert result["artifacts"]["unresolved"] == 2
     assert result["mistral_batch"] == {
         "phase": "running", "candidate_count": 2, "total_requests": 2,
@@ -217,6 +235,21 @@ def test_system_status_reports_manifest_gate_and_artifacts(tmp_path):
     }
     assert result["update_status"]["index"]["pending"] == 2
     assert result["update_status"]["stale"] is False
+
+
+def test_system_status_exposes_item_failure_reason_and_action(tmp_path):
+    root = project(tmp_path)
+    quality = root / "data" / "quality"
+    quality.mkdir(parents=True)
+    (quality / "server_database_gate.json").write_text(json.dumps({
+        "gate": {"passed": False, "failed_items": 1, "global_failures": []},
+        "items": [{"item_key": "A", "title": "Book",
+                   "failures": ["stale_structure_fingerprint"]}],
+    }))
+    gate = admin_jobs.system_status(root)["database_gate"]
+    assert gate["failed_items"] == 1
+    assert gate["failures"][0]["title"] == "Book"
+    assert "文書構造" in gate["failures"][0]["action"]
 
 
 def test_system_status_excludes_update_checks_from_visible_history(tmp_path, monkeypatch):
@@ -326,3 +359,15 @@ def test_read_only_jobs_do_not_invalidate_or_schedule_freshness(tmp_path, monkey
     admin_jobs.mark_update_status_recheck_pending("database_audit", root)
     assert not (root / "data" / "admin_update_status.json").exists()
     assert admin_jobs.schedule_followup_update_check("update_check", root) is None
+
+
+def test_native_crash_logs_reason_and_recovery():
+    import io
+    log = io.BytesIO()
+    admin_jobs._log_step_failure(log, "library", -10)
+    output = log.getvalue().decode()
+    assert "シグナル 10" in output
+    assert "DB監査" in output and "バックアップ" in output
+    log = io.BytesIO()
+    admin_jobs._log_step_failure(log, "library", 7)
+    assert "終了コード 7" in log.getvalue().decode()

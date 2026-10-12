@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from src import db_relations
 from src.build_structure_summaries import build_structure_summaries
-from src.document_structure import build_document_structure, source_fingerprint
+from src.document_structure import attach_structure_metadata, build_document_structure, source_fingerprint
 
 
 def _chunk(chunk_id: str, text: str, **metadata: str):
@@ -15,6 +15,21 @@ def _chunk(chunk_id: str, text: str, **metadata: str):
 
 
 class DocumentStructureTests(unittest.TestCase):
+    def test_reclaimed_zone_fingerprint_matches_persisted_chunks(self):
+        for zone in ("toc", "index", "bibliography", "colophon", "other_paratext"):
+            chunks = [_chunk("ABCD1234:p1", "source text", attachmentKey="ABCD1234",
+                             structure_path=["Contents"], zone=zone)]
+            built = build_document_structure("ITEM", chunks)
+            persisted = attach_structure_metadata(chunks, built["nodes"])
+            self.assertEqual(built["diagnostics"]["reclaimed_fully_excluded_zone"], zone)
+            self.assertEqual(persisted[0]["metadata"]["zone"], "body")
+            self.assertEqual(built["source_fingerprint"], source_fingerprint(persisted))
+            self.assertEqual(chunks[0]["metadata"]["zone"], zone)
+            self.assertEqual(build_document_structure("ITEM", persisted)["source_fingerprint"],
+                             built["source_fingerprint"])
+            changed = [{**persisted[0], "text": "changed source text"}]
+            self.assertNotEqual(source_fingerprint(changed), built["source_fingerprint"])
+
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
         self.db_patch = patch.object(db_relations, "DB_PATH", str(Path(self.tempdir.name) / "relations.db"))

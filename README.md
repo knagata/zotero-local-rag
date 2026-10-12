@@ -59,11 +59,11 @@ macOSでは [Maintenance-Widget.command](Maintenance-Widget.command) をダブ�
 `MAINTENANCE_AUTO_APPROVE=1`でも、有料API処理は自動実行せず毎回明示許可を求めます。
 
 1. Zoteroライブラリの差分更新（＋文書構造の更新）
-2. DBの監査（Zotero本体・原本との突き合わせ。非破壊。要約の実行に必要で、gateが最新なら既定でskip）
+2. DBの監査（Zotero本体・原本との突き合わせ。必要時はバックアップ後に限定修復。要約の実行に必要で、gateが最新なら既定でskip）
 3. 要約の差分更新（DeepSeekによるAI要約。DB監査合格後のみ、既定off）
 4. 全件要約の一括生成（DeepSeek課金・選択時の`SUMMARIZE`入力確認・DB監査合格後のみ、既定off）
 5. Citation Networkの更新
-7. Mistral OCR Batchの送信、または完了済み結果の回収・品質確認・採用（任意）
+6. Mistral OCR Batchの送信、または完了済み結果の回収・品質確認・採用（任意）
 
 不要項目は`n`で除外でき、終了時に未解決状態を表示します。DBのゼロ再構築は[Setup.command](Setup.command)から行います。
 
@@ -76,7 +76,9 @@ macOSでは [Maintenance-Widget.command](Maintenance-Widget.command) をダブ�
 この画面は保存済みデータを表示するものです。先に `Maintenance-Widget.command` でCitation Networkを更新してください。詳しい見方は [Show Citation Networkガイド](docs/show-citation-network.md) にまとめています。
 
 ローカルは`http://localhost:7234`、外部はTailscale Funnel＋Google OAuthで利用できます。公開URLの
-`/admin/`ではDB・目次・階層要約の状態確認と限定更新ができます。設定・安全制限・自動起動は
+`/admin/`ではDB・目次・階層要約の状態確認と更新ができます。
+処理する工程をチェックして実行すると、依存関係に沿って順番に進みます。API課金の可能性が
+ある工程は、確認画面の同意チェック後に開始します。設定・安全制限・自動起動は
 [Show Citation Networkガイド](docs/show-citation-network.md#外部コンピュータからgoogleログインで開く)を参照してください。
 
 ## プライバシー

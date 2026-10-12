@@ -45,6 +45,10 @@ class CutoverAuditTests(unittest.TestCase):
         self.assertIsNone(result["delta"]["character_ratio"])
         self.assertFalse(result["delta"]["character_ratio_outlier"])
 
+    def test_comparison_retains_source_title_for_failure_display(self):
+        rows = [{"id": "a", "text": "body", "metadata": {"title": "Book"}}]
+        self.assertEqual(compare_item("ITEM", [], rows)["title"], "Book")
+
     def test_notes_are_excluded_from_canonical_coverage(self):
         rows = [
             {"id": "source", "text": "body", "metadata": {"source_type": "pdf", "node_id": "n"}},

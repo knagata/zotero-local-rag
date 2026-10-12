@@ -112,6 +112,9 @@ def main() -> int:
     state = _load()
     phase = str(state.get("phase") or "").casefold()
     if phase in {"", "prepared", "uploaded"}:
+        if phase == "prepared" and not state.get("candidate_count") and not _queued_candidate_count():
+            print("[情報] Mistral OCRの待機資料はありません。外部送信は行いません。", flush=True)
+            return 0
         _run(str(BATCH), "--submit", "--state", str(STATE))
         print("[案内] Batchを送信しました。完了後にこの処理を再実行してください。", flush=True)
         return 0

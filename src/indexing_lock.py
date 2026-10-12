@@ -117,10 +117,14 @@ def acquire(lock_path: Path) -> dict:
                 # publisher/releaser takes the same stable-inode flock.
                 try:
                     existing = json.loads(lock_path.read_text(encoding="utf-8"))
-                except Exception:
-                    existing = {}
+                except Exception as exc:
+                    raise SystemExit(
+                        "ロック情報を読み取れません。安全のため削除せず停止します。"
+                    ) from exc
+                if not isinstance(existing, dict):
+                    raise SystemExit("ロック情報の形式が不正です。削除せず停止します。")
                 existing_pid = existing.get("pid")
-                if existing_pid is not None:
+                if isinstance(existing_pid, int) and not isinstance(existing_pid, bool) and existing_pid > 0:
                     try:
                         os.kill(existing_pid, 0)  # signal 0 = existence check
                         raise SystemExit(
@@ -130,16 +134,18 @@ def acquire(lock_path: Path) -> dict:
                             "（プロセスが存在しないはずなのにロックが残っている場合は、"
                             "手動で削除してください）"
                         )
-                    except OSError:
+                    except ProcessLookupError:
                         print(
                             f"[WARN] 古いロックファイルを削除します（PID={existing_pid} は存在しません）",
                             file=sys.__stderr__,
                         )
+                    except OSError as exc:
+                        raise SystemExit(
+                            f"ロック所有者を確認できません (PID={existing_pid}): {exc}。"
+                            "安全のためロックを保持し、処理を停止します。"
+                        ) from exc
                 else:
-                    print(
-                        "[WARN] PID情報のない古いロックファイルを削除します",
-                        file=sys.__stderr__,
-                    )
+                    raise SystemExit("ロック所有者のPIDが不明です。安全のため削除せず停止します。")
                 try:
                     lock_path.unlink()
                 except OSError as exc:

@@ -4,12 +4,65 @@ import json
 from pathlib import Path
 
 import fitz
+import pytest
 
 from src.mistral_ocr_batch import (
     build_batch_request, evaluate_ocr_result, parse_batch_output,
     retryable_batch_status, source_matches,
 )
 from scripts.run_mistral_ocr_batch import select_input_batch, split_input_batches
+
+
+@pytest.mark.parametrize("count", [0, 2])
+def test_submit_refreshes_empty_prepared_state_without_sending_empty_batch(monkeypatch, tmp_path, count):
+    from scripts import run_mistral_ocr_batch as batch
+    calls = []
+    monkeypatch.setattr(batch, "load_state", lambda path: {"phase": "prepared", "candidate_count": 0})
+    refreshed = {"phase": "prepared", "candidate_count": count}
+    def prepare(args):
+        calls.append("prepare")
+        return refreshed
+    def submit(args, state):
+        assert state is refreshed
+        calls.append("submit")
+        return {**state, "phase": "submitted"}
+    monkeypatch.setattr(batch, "prepare", prepare)
+    monkeypatch.setattr(batch, "submit", submit)
+    assert batch.main(["--submit", "--state", str(tmp_path / "state.json")]) == 0
+    assert calls == (["prepare", "submit"] if count else ["prepare"])
+
+
+@pytest.mark.parametrize("phase", ["uploaded", "submitting"])
+def test_potentially_sent_state_is_never_reprepared(monkeypatch, tmp_path, phase):
+    from scripts import run_mistral_ocr_batch as batch
+    state = {"phase": phase, "candidate_count": 2}
+    monkeypatch.setattr(batch, "load_state", lambda path: state)
+    def prepare(args):
+        pytest.fail("must not replace a potentially sent batch")
+    def submit(args, current):
+        assert current is state
+        return current
+    monkeypatch.setattr(batch, "prepare", prepare)
+    monkeypatch.setattr(batch, "submit", submit)
+    assert batch.main(["--submit", "--state", str(tmp_path / "state.json")]) == 0
+
+
+@pytest.mark.parametrize("count", [0, 2])
+def test_every_prepared_state_refreshes_queue_before_submit(monkeypatch, tmp_path, count):
+    from scripts import run_mistral_ocr_batch as batch
+    calls = []
+    monkeypatch.setattr(batch, "load_state", lambda path: {"phase": "prepared", "candidate_count": 8})
+    refreshed = {"phase": "prepared", "candidate_count": count}
+    def prepare(args):
+        calls.append("prepare")
+        return refreshed
+    def submit(args, state):
+        calls.append("submit")
+        return {**state, "phase": "submitted"}
+    monkeypatch.setattr(batch, "prepare", prepare)
+    monkeypatch.setattr(batch, "submit", submit)
+    assert batch.main(["--submit", "--state", str(tmp_path / "state.json")]) == 0
+    assert calls == (["prepare", "submit"] if count else ["prepare"])
 
 
 def make_pdf(path: Path, pages: int = 2) -> None:

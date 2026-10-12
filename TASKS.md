@@ -73,6 +73,112 @@
 - 次は取込終了・全DB監査再実行・必要時backup済み安全修復・サービス復帰・表示状態確認。
   今回の復旧後全DB合格はまだ未確認。一次ログと比較証明はdata/quality/sigbus-*。
 
+## 2026-10-08 差分更新のネイティブ異常終了
+
+- 最新クイック実行は原本列挙と2添付の抽出を通過し、12,219チャンクの書込み中にexit -10。
+  macOS crash reportのEXC_BAD_ACCESS/SIGBUSとfaulting threadのChroma Rust bindingを確認。
+  原本同期待ちの停止とは別原因。ネイティブ障害の詳細原因は未確定で、GPU障害とは断定しない。
+- manifestはhnsw_validated=false、inflight 2添付。書込み途中のため正常完了とは扱わない。
+  実DBの削除・修復・再取込・有料処理は行っていない。バックアップ後の状態監査が次の作業。
+- runnerは非ゼロ終了にも日本語の理由と対応をログへ記録し、管理画面は旧履歴の負の終了コードにも
+  シグナル名と監査・バックアップ案内を表示する。今回のChromaクラッシュ自体の修復ではない。
+- 関連44合格/Node依存2skip、Node runtimeでSIGBUS旧履歴の表示を直接確認。
+  fatal Ruff・function/lint ratchet・diff check合格。実ブラウザ表示・実DB監査は未確認。
+
+## 2026-10-08 同期待ち添付の保留と取得済み資料の先行更新
+
+- 差分取込は未取得・空・原本解決時のOSエラーを添付単位で保留し、取得済み資料を続行する。
+  全inventoryは維持し、保留添付を削除扱いにしない。既存本文・manifestを上書きせず、
+  次回実行で再判定する。列挙自体の失敗と全rebuildの原本不足は引き続き停止する。
+- 同期待ちの対象・未処理・同期完了後の再実行をログへ表示。管理画面の監査失敗説明にも表示する。
+  全DB監査は既存基準を維持。照合の未索引添付dictを正しく表示し、同期後の再実行を案内する。
+- 先行更新・inventory保持・空path・空file・同期後の再判定・OSエラー・rebuild拒否を合成fixtureで検証。
+  最終関連134合格/Node依存2skip。slowはAPI接続不可で5skip。
+  fatal Ruff・compileall・function/lint ratchet・diff check合格。関数サイズ上限を1087→1082へ縮小。
+- 有料OCR/LLM・実DB更新は実行していない。Herdr socket拒否で通常runner使用、tab/pane作成不可。
+  実Zotero再実行とブラウザ描画は現在の権限制限により未確認。変更は既存作業とともに未コミット。
+  下記の「原本欠落で停止する条件は維持」は初期修正の履歴で、この差分取込方針へ変更した。
+
+## 2026-10-08 原本取得失敗の対処法表示
+
+- 原本取得失敗時に資料名・添付IDと日本語の停止理由、Zoteroでのダウンロード・同期・保存場所確認、
+  原本の再配置・再添付、添付を開ける状態でクイック実行を再実行する案内をログへ出す。
+  原本欠落で停止する条件は維持し、本文抽出・DB更新・有料処理の動作は変更しない。
+- 管理画面は旧ログの原本取得失敗も認識し、URIのファイル名を復号して理由・対処法を表示する。
+  不正なURI文字列は添付IDへfallback。新しい明示メッセージを優先し、HTMLとして解釈しない。
+- 関連33テスト合格・Node依存2件skip。Node runtimeで保存済み実ログと不正URI、新メッセージ、
+  無関係なエラーを直接検証。fatal Ruff・function/lint ratchet・diff check合格。
+  Herdr socket拒否のため通常runner使用。予算は変更していない。
+- 管理画面JavaScriptはno-storeで配信されるため、ページ再読込で旧失敗履歴への案内が反映される。
+  原本取得処理は毎回新しいindexer子プロセスで読み込まれ、次回実行から適用される。
+  サービス再起動の試行は拒否されたが、この変更の適用には不要。実ブラウザ描画は未確認。
+
+## 2026-10-03 修正版の反映と全DB監査合格
+
+- [x] 既存未コミット変更を保持し、Zotero Local API HTTP 200を確認。管理画面サービスを再起動し、
+  local/public health正常を確認した。
+- [x] `scripts/run_db_audit.py`全件監査はexit 0。Zotero照合658/658添付、原本539,031 chunkの
+  欠落頁・原本読取不能・orphan・dangling・unretrievableは0、cutover633/633資料の失敗0。
+  基準は変更せず、自動修復不要。有料OCR/LLM実行なし。世代合格証明を更新し、writer lock解除を確認。
+- [x] 管理画面用状態はgate合格・audit completed・失敗0。内蔵ブラウザが利用不能のため、
+  実ブラウザ描画の目視確認は未実施。一次結果はdata/qualityの監査レポートと
+  full-db-audit-20261003.log、admin-audit-display-20261003.json。
+
+- [x] 監査・限定修復・診断・原本パス・管理画面の関連回帰テスト127件合格、Node依存1件skip。
+  差分の空白検査も合格。既存変更と今回の記録は未コミットのまま保持。
+
+## 2026-10-02 DB監査の限定自動修復と処理フロー点検
+
+- [x] 共有writer lock下で監査・修復・全監査再実行を行う。既知の構造不整合とFTS欠落・内容不一致だけを
+  dry-run検証、SQLite・元chunk metadataバックアップ後に限定修復する。修復は1回、上限20資料/10,000行。
+  本文再抽出、外部有料処理、coverage承認、処理中記録の削除、HNSWフラグ変更は行わない。
+- [x] 原本欠落・抽出不足・途中取込・未知原因は日本語の対象・理由・必要な作業を表示。
+  gate未生成時も独立した監査状態を管理画面上部に表示し、終了済みPIDなら中断を示す。
+  構造・ライブラリ更新後の監査を追加し、子の異常終了後に合格gateが残る経路を遮断した。
+- [x] 点検で発見した原本PDF欠落のskip、lock確認PermissionErrorの死亡扱い、不正lock自動削除を修正。
+  FTSはIDだけでなく本文・書誌・重複を検査し、全内容を世代fingerprintへ含める。監査条件は緩めない。
+  範囲・限界・復旧点を`developer/database-audit-repair.md`に記録。
+- [x] 最終関連237テスト合格・Node依存1件skip。新規診断/修復moduleは100% coverage、予算0を登録。
+  compileall・致命的Ruff・CLI import・function/lint ratchet・差分検査に合格。
+  全件coverageはMPS empty_cacheでsegfault。無効化して1883合格/2失敗/7skip/5deselected、workerの失敗は
+  通常設定の単独検証で合格。既存maintenance transcript空の1件は再現継続。
+  coverageは無効化したindexerの未到達8行で不合格。監査対象moduleの悪化はなし、予算は緩めない。
+- [x] サービス反映・実DB全監査は2026-10-03に完了し合格（同日節参照）。自動修復は不要だった。
+  前回のlocalhost/Herdr socket・git index.lock制限は今回解消。既存未コミット作業は保持した。
+
+## 2026-10-01 目次全体補正後の構造監査不一致
+
+- [x] 全文が目次等の除外zoneとなった際の本文回復後も、fingerprintが補正前のまま残る不具合を修正。
+  canonical leaf metadataから算出し、保存済みchunkとの照合を維持する。監査条件は緩めない。
+- [x] 実資料1590chunkで、原本からの構造refresh後の算出値と保存済み本文の算出値が一致することを
+  読み取り専用で確認。実DB修復・監査再実行・有料OCRは行っていない。
+- [x] 管理画面上部に直近gateの資料単位の理由・対象ID・対応を表示。新規レポートは資料名も保持。
+  構造不一致を再OCR不足と混同せず、構造差分更新と監査再実行を案内する。
+- [x] 関連196テストとUI関連31テスト合格（Node依存1件skip）、slow取込5件は環境条件でskip。
+  compileall・致命的Ruff・CLI import・function/lint予算に合格。全件coverageはMPS cacheで異常終了し、
+  TORCH_EMPTY_CACHE=0で1843合格・2失敗。再検証でGPU設定由来のworkerテストは合格、既存maintenance
+  transcriptが空になる1件は再現継続。coverage予算は無効化したGPU処理のindexer未到達8行で不合格。
+  無関係な予算は緩めず、全件合格とは扱わない。
+
+## 2026-10-01 空のMistral準備状態からの再開
+
+- [x] 候補0件の未送信prepared状態だけを最新候補から再準備する。候補なしなら送信せず終了し、
+  maintenanceも送信済みとは表示しない。uploaded/submittingや候補ありpreparedは再準備しない。
+- [x] 空状態の更新・送信なし・既存状態保持の回帰テストを追加。実Batchの送信は実行していない。
+- [x] 追確認で、候補数が0以外でも未送信preparedの候補一覧が古くなり得ると判明。
+  preparedは毎回現待機列から再作成し、uploaded/submittingは固定して重複送信を避ける。
+  候補0件なら送信せず正常終了する。
+
+## 2026-10-01 DB監査失敗の理由・対応表示
+
+- [x] 監査子プロセス失敗時に、その実行で更新されたレポートだけから資料名・添付・欠落頁、
+  未索引添付、整合性検査の理由を日本語でログへ出す。古いレポートや壊れたJSONは原因として扱わず、
+  終了コードとログ確認を案内する。本文欠落時は取込状態確認とOCR待ちの場合の回収・採用を案内する。
+- [x] 管理画面の失敗履歴に理由・必要な作業・展開できるログを表示する。旧ログの失敗集計も表示し、
+  定期更新でログの展開状態を失わない。実DB監査や有料OCRは実行しない。
+- [x] 対象・静的asset・文書参照・選択規則・function/lint予算の82テスト合格、Node依存1件skip。
+  compileall、致命的Ruff、CLI import、JavaScript構文検査、差分検査に合格。
+
 ## 2026-09-30 DB監査の出力先保護
 
 - [x] `run_db_audit.py`の3出力を削除・mkdir・子プロセス起動前に検証する。manifest、
@@ -2211,6 +2317,17 @@ A（PDF構造化）・B（課金LLM）は独立、C（構造抽出エンジン�
 - [x] **完全一致を上書き不能にする。** DOI・ISBN等のidentifier一致、または取得元URL一致は
   `allow_duplicate=true`でも拒否する。許可可能なのは類似タイトルの別資料だけとする。
 
+# 2026-10-03 添付ファイル名変更への追従
+
+- [x] 内容一致で差分取込をskipする場合も現在の原本パスを保存する。
+- [x] 原本監査は添付ID内の唯一の署名一致候補へ追従し、通常のページ監査を維持する。
+- [x] 曖昧な移動・内容変更・照合情報欠落を明示的に失敗させ、関連33テストを確認する。
+- [ ] 実行中サービスへの反映と全DB監査の再実行（この環境では未実施）。
+
+- 2026-10-03 再実行：service restartはlaunchctl権限で拒否、全DB監査はZotero接続で停止。
+  添付限定原本監査はwriter lock内で実行して合格（欠落・読取不能・孤立・参照切れ0）。
+  service反映と全DB監査合格は引き続き未完了。
+
 
 ### 2026-10-08: 未処理PDFの後回しと検索再開
 
@@ -2231,6 +2348,23 @@ A（PDF構造化）・B（課金LLM）は独立、C（構造抽出エンジン�
 - 関連170テスト合格・2skip。search_snapshotは81文すべて到達。fatal lint・compileall・関数サイズ・文書参照検査も合格。MCP/OAuth/Graphの各statusはok。管理画面は検索件数・保存時刻を表示する実装を反映したが、ブラウザ目視は未実施。
 - Python SQLiteのChroma FTS5 NUL文書に対するquick_check不一致は新規native controlでも再現。コピー検証のみ全FTS本文一致と再現を必須条件に区別し、原本・監査基準は変更しない。
 - 復旧用バックアップと旧検索コピーは保持。設計・検証手順はdeveloper/search-snapshots.md。検索コピー公開はHerdr w1:tX/w1:pZ exit0、並行検索検証はw1:t0/w1:p12成功。現在の埋め込みと後続監査はw1:tX/w1:pZで継続中。
+
+### 2026-10-10: 管理画面の工程選択と課金同意
+
+- 処理カードを工程チェックボックスと一括実行へ置換。既定は従来クイック実行の4工程、監査直前の差分再確認を維持する。文書構造はライブラリ、階層要約は構造と監査を前提として、未選択時は依存工程を未選択・グレーアウトする。
+- サーバーが選択IDを検証して所定順へ組立て、選択工程と同意をジョブ記録へ保存。既存runnerの単一実行・失敗時停止を使用する。任意commandの受付や有料処理の実実行は行っていない。
+- ブラウザ確認語入力を廃止。課金可能性のある工程では毎回初期offの同意チェックを要求し、APIでも厳密booleanで検証する。停止は通常の確認ボタン。CLIの確認方法は維持。
+- 関連71passed/3skip、admin_planの24文すべて到達。DOMハーネスを別途実行し、既定選択・依存解除・polling時保持・同意なし拒否・取消を確認。fatal Ruff、compileall、function/lint ratchet、文書参照、diff検査合格。実ブラウザは利用可能backendなし。
+- Herdr socketとlaunchctl kickstartは現在のsandbox権限で拒否。通常runnerで検証済みだがサービス反映は未完了。権限制限のない端末で `.venv/bin/python scripts/manage_citation_graph_service.py restart` が必要。既存未コミット変更とstaged修復ファイルを保持。DBや埋め込み処理は今回変更しない。
+
+### 2026-10-10: 工程一覧が空になる旧サービス混在への案内
+
+- 新JSと旧稼働サービスが混在するとstatusにstagesがなく、工程選択が空になる。工程一覧欠落時に何もない実行欄を表示せず、サービス再起動・再読込の具体的な案内を表示する。選択実行は一覧取得まで出さない。
+- 旧statusでの案内と新status復帰をDOMハーネスへ追加。launchctl再起動は再試行も権限制限で失敗、稼働サービス反映は未完了。実API応答の直接確認はこの環境から未実施。
+
+### 2026-10-10: 管理画面サービス反映
+
+- 利用者が権限制限を解除後、manage_citation_graph_service.py restartはexit0。起動完了後のstatusでlocal Graph、local/public OAuth proxyすべてokを確認。工程定義は7項目、既定4工程を確認。管理画面HTTP302は未認証の正常redirect。認証済み実画面の目視確認は未実施。前項のサービス反映未完了は解消した。
 
 ### 2026-10-10: 簡易更新確認の高速化と工程リスト
 
@@ -2337,3 +2471,10 @@ A（PDF構造化）・B（課金LLM）は独立、C（構造抽出エンジン�
 - 取込記録器の存在しないscope列参照とSQLエラーの隠蔽を修正。PDF cacheも一時領域へ隔離。失敗工程・空本文・空manifestの基準採用を拒否する検査を追加。安全性・function/lint ratchet・文書検査19件とfatal Ruff合格。
 - ローカルbaselineはtests/baselines/、確認証跡はdata/quality/baselines-20261012/へ保存しGit対象外。有料API・本番への取込なし。既存未コミット作業とstaged修復ファイルを保持。手順はdeveloper/development.md。
 - slow/corpus比較は10passed/0skip/2,104deselected（381.66秒）。Herdr w1:t11/w1:p13はexit0、安全検査w1:t12/w1:p14もexit0。前回未検証の9件を補完し、成功/見送り必須の1件を追加した。依存ライブラリの非推奨警告のみ。
+
+### 2026-10-12: 未コミット変更の最終確認と公開準備
+
+- 監査の限定修復・工程選択UI・同期待ち保留・原本名追従・OCR Batch候補更新の残存差分を確認し、関連実装/テスト/契約/運用文書をまとめてコミット。別プロジェクト用WORKSPACE_MCP_IMPLEMENTATION_HANDOFF.mdは対象外で保持。
+- READMEと導入・設定・日常操作の「監査は読み取り専用」という旧説明を、バックアップ後の限定修復と全再監査へ更新。管理画面の工程選択・同意欄の案内と手順の欠番を修正。監査scriptの旧docstringも訂正。
+- CI相当の計測付き全テスト2,099passed/5skip/10deselected（87.47秒）、coverage budget合格。Node依存検査は同梱runtimeで別途実行し、工程依存・polling・初期選択・同意・取消・旧service案内のDOM検証合格。fatal Ruff・compileall・公開entrypoint import・文書7テスト・diff検査も合格。直前のslow/corpus10件合格結果も保持。
+- 証跡はdata/quality/pre-push-tests-20261012.log。Herdr w1:t11/w1:p13の全検証exit0。有料処理・実データ更新なし。SSHでorigin/mainへ公開後、GitHub Actionsの結果を確認する。

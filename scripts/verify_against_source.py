@@ -34,6 +34,7 @@ load_dotenv_native(ROOT)
 from src.chunk_store import active_collection_name  # noqa: E402
 from src.db_relations import get_db_connection  # noqa: E402
 from src.manifest import load_manifest  # noqa: E402
+from src.source_location import resolve_source_path  # noqa: E402
 from src.source_verification import (  # noqa: E402
     chunks_without_item, compare_document, dangling_node_ids, indexed_page_chars,
     source_page_chars, unretrievable_documents,
@@ -130,13 +131,15 @@ def main() -> int:
             if not isinstance(entry, dict):
                 continue
             path = Path(str(entry.get("pdf_path") or ""))
-            if path.suffix.lower() != ".pdf" or not path.exists():
+            if path.suffix.lower() != ".pdf":
                 continue
             try:
+                path = resolve_source_path(attachment_key, entry)
                 source = source_page_chars(path)
             except Exception as exc:  # noqa: BLE001 - an unreadable source is a finding
                 report["documents"].append({
-                    "attachment_key": attachment_key, "error": f"{type(exc).__name__}: {exc}",
+                    "attachment_key": attachment_key, "title": entry.get("title"),
+                    "error": f"{type(exc).__name__}: {exc}",
                 })
                 continue
             verdict = compare_document(

@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
+import io
+from dataclasses import replace
+from unittest.mock import AsyncMock, patch
 import sys
 import tempfile
 import unittest
@@ -48,6 +52,54 @@ class AttachmentSourceResolverTests(unittest.TestCase):
             (root / "image.png").write_bytes(b"png")
             self.assertIsNone(module._resolve_attachment_source(attachment(root)))
             self.assertIsNone(module._resolve_attachment_source(attachment(root / "missing.pdf")))
+
+
+class AwaitingSourceSyncTests(unittest.TestCase):
+    def test_ready_sources_continue_and_inventory_is_preserved(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "ready.pdf"
+            path.write_bytes(b"%PDF-ready")
+            ready = attachment(path)
+            missing = replace(attachment(path), attachmentKey="MISSING", pdf_path="")
+            empty_path = Path(directory) / "empty.pdf"
+            empty_path.touch()
+            empty = replace(attachment(empty_path), attachmentKey="EMPTY")
+            rows = [missing, ready, empty]
+            with patch.object(sys, "argv", ["index_from_zotero"]):
+                args = module.parse_args()
+            api = AsyncMock()
+            api.list_normalized_attachments.return_value = rows
+            with patch("sys.stderr", new_callable=io.StringIO) as log:
+                result = asyncio.run(module._discover_attachments(
+                    args, api=api, manifest={}, files_manifest={},
+                    reocr_routes={}, show_progress=False,
+                ))
+            self.assertEqual(result.attachments, [ready])
+            self.assertEqual(result.inventory_attachments, rows)
+            self.assertIn("MISSING", log.getvalue())
+            self.assertIn("EMPTY", log.getvalue())
+            self.assertIn("再実行", log.getvalue())
+            self.assertTrue(api.list_normalized_attachments.call_args.kwargs["allow_missing_files"])
+            empty_path.write_bytes(b"%PDF-now-synced")
+            self.assertEqual(module._ready_source_attachments([empty], rebuild=False), [empty])
+
+    def test_unreadable_source_is_deferred_without_aborting_ready_sources(self):
+        rows = [attachment(Path("unreadable.pdf"))]
+        with patch.object(module, "_resolve_attachment_source", side_effect=PermissionError()), \
+                patch("sys.stderr", new_callable=io.StringIO) as log:
+            self.assertEqual(module._ready_source_attachments(rows, rebuild=False), [])
+        self.assertIn("同期待ち", log.getvalue())
+
+    def test_rebuild_rejects_empty_sources_before_index_writes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "empty.pdf"
+            path.touch()
+            with self.assertRaisesRegex(RuntimeError, "A1"):
+                module._ready_source_attachments([attachment(path)], rebuild=True)
+
+    def test_missing_path_does_not_resolve_to_working_directory(self):
+        row = replace(attachment(Path("unused")), pdf_path="")
+        self.assertIsNone(module._resolve_attachment_source(row))
 
 
 class ReparseDecisionTests(unittest.TestCase):

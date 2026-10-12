@@ -25,6 +25,7 @@ from src.db_relations import get_document_nodes, get_document_structure
 from src.source_verification import dangling_node_ids, unretrievable_documents
 from src.document_structure import STRUCTURE_VERSION, source_fingerprint
 from src.lexical_index import list_chunk_ids as list_lexical_chunk_ids
+from src.lexical_index import audit_content
 from src.manifest import load_manifest
 from src.source_coverage import coverage_gap_is_adoptable, validate_source_coverage
 from src.database_gate import database_state_fingerprint, external_audit_attestation
@@ -94,7 +95,10 @@ def compare_item(
     if unretrievable_documents({item_key: new_source_rows}):
         failures.append("no_retrievable_chunks")
     return {
-        "item_key": item_key, "old": old, "new": new,
+        "item_key": item_key,
+        "title": next((str((row.get("metadata") or {}).get("title"))
+                       for row in new_source_rows if (row.get("metadata") or {}).get("title")), ""),
+        "old": old, "new": new,
         "delta": {
             "chunks": int(new["chunks"]) - int(old["chunks"]),
             "characters": int(new["characters"]) - int(old["characters"]),
@@ -249,7 +253,7 @@ def global_gate_failures(
     return failures
 
 
-def main() -> None:
+def _parse_args() -> tuple[argparse.ArgumentParser, argparse.Namespace]:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--old-collection", default="zotero_paragraphs")
     parser.add_argument("--new-collection", default="zotero_paragraphs_v3")
@@ -289,6 +293,11 @@ def main() -> None:
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    return parser, args
+
+
+def main() -> None:
+    parser, args = _parse_args()
     chroma_dir = args.chroma_dir or resolve_chroma_dir(ROOT)
     if args.new_collection != V3_COLLECTION:
         parser.error(
@@ -420,6 +429,9 @@ def main() -> None:
         chunks_without_item_count=len(orphaned_chunk_ids),
         chunks_without_attachment_count=len(attachmentless_chunk_ids),
     )
+    lexical_fingerprint, lexical_mismatches = audit_content(attested_chroma_rows, path=args.lexical_db)
+    if lexical_mismatches:
+        global_failures.append("lexical_content_mismatch")
     failed = [row for row in comparisons if not row["passed"]]
     outliers = [row for row in comparisons if row["delta"]["character_ratio_outlier"]]
     adopted_coverage = partial_coverage_adoptions(manifest)
@@ -447,6 +459,7 @@ def main() -> None:
         "v3_zones": dict(sorted(zones.items())),
         "items": comparisons,
         "external_audits": external_audits,
+        "lexical_content_mismatches": lexical_mismatches[:20],
         "database_state": {
             "fingerprint": database_state_fingerprint(
                 manifest_path=args.manifest,
@@ -454,6 +467,7 @@ def main() -> None:
                 chroma_rows=attested_chroma_rows,
                 lexical_ids=lexical_ids,
                 structure_rows=structure_rows,
+                lexical_content_fingerprint=lexical_fingerprint,
             ),
             "manifest_path": str(args.manifest.resolve()),
             "lexical_db_path": str(args.lexical_db.resolve()),

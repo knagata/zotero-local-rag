@@ -174,7 +174,7 @@ uv run scripts/setup_wizard.py --server
 （真の初回は確認なしで進められ、既存DBがある場合は設定変更の有無にかかわらず常に
 再構築の案内が出ます。プロファイル変更時は`REBUILD`の入力が必須、それ以外の設定
 変更時は任意でEnterによりスキップできます）。構築後は続けてDB監査（Zotero対象・原本coverage・DB整合性、
-非破壊）の実行も案内されます。ここをスキップした場合は、後で
+必要時はバックアップ後に限定修復）の実行も案内されます。ここをスキップした場合は、後で
 `Maintenance-Widget.command`から監査だけ実行できます。
 
 有料の階層AI要約は、DB監査に合格した世代に対してのみ`Maintenance-Widget.command`から

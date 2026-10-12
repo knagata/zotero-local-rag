@@ -26,7 +26,7 @@ UPDATE_STATUS_REPORT = ROOT / "data" / "admin_update_status.json"
 UPDATE_STATUS_MAX_AGE_SECONDS = 45 * 60
 FRESHNESS_AFFECTING_JOBS = frozenset({
     "quick_update", "library_update", "structure_update", "summary_batch", "citation_update",
-    "mistral_ocr",
+    "mistral_ocr", "selected_steps",
 })
 
 
@@ -89,8 +89,8 @@ def job_definitions(root: Path = ROOT) -> dict[str, JobDefinition]:
         ),
         "library_update": JobDefinition(
             "library_update", "ライブラリ差分更新",
-            "Zotero差分を索引へ反映し、文書構造・目次も差分更新します。",
-            (library_step, structure_step),
+            "Zotero差分と文書構造・目次を更新し、DB監査で整合性を確認します。",
+            (library_step, structure_step, audit_step),
         ),
         "database_audit": JobDefinition(
             "database_audit", "DB監査",
@@ -99,8 +99,8 @@ def job_definitions(root: Path = ROOT) -> dict[str, JobDefinition]:
         ),
         "structure_update": JobDefinition(
             "structure_update", "文書構造・目次の差分更新",
-            "原本の目次と見出しを再確認し、変更資料だけを更新します。再埋め込みはしません。",
-            (structure_step,),
+            "原本の目次と見出しを再確認し、変更資料を更新後、DB監査で整合性を確認します。",
+            (structure_step, audit_step),
         ),
         "summary_batch": JobDefinition(
             "summary_batch", "階層要約の差分更新（全件）",
@@ -114,7 +114,6 @@ def job_definitions(root: Path = ROOT) -> dict[str, JobDefinition]:
                     "--embed", "--database-gate", gate,
                 )),
             ),
-            confirmation="SUMMARIZE",
             paid=True,
         ),
         "citation_update": JobDefinition(
@@ -128,7 +127,6 @@ def job_definitions(root: Path = ROOT) -> dict[str, JobDefinition]:
             (("Mistral OCR Batch処理", (
                 python, str(root / "scripts" / "run_mistral_ocr_maintenance.py"),
             )),),
-            confirmation="MISTRAL",
             paid=True,
         ),
     }
@@ -288,13 +286,18 @@ def reconcile_stale_jobs(root: Path = ROOT) -> None:
 
 def start_job(
     job_type: str, confirmation: str, actor: str, root: Path = ROOT,
+    *, selected_steps: list[str] | None = None, paid_consent: bool = False,
 ) -> dict[str, Any]:
     definitions = job_definitions(root)
+    if job_type == "selected_steps":
+        from citation_graph.admin_plan import build_plan
+        definitions[job_type] = build_plan(selected_steps, definitions)
     if job_type not in definitions:
         raise ValueError("unknown maintenance job")
     definition = definitions[job_type]
-    if definition.confirmation and confirmation != definition.confirmation:
-        raise ValueError(f"confirmation must be {definition.confirmation}")
+    requires_consent = definition.paid or job_type in {"quick_update", "library_update", "structure_update", "citation_update"}
+    if requires_consent and paid_consent is not True:
+        raise ValueError("API課金が行われることへの同意が必要です。")
     jobs_dir = root / "data" / "admin_jobs"
     jobs_dir.mkdir(parents=True, exist_ok=True)
     lock_fd = os.open(jobs_dir / ".start.lock", os.O_RDWR | os.O_CREAT, 0o600)
@@ -316,6 +319,8 @@ def start_job(
             "current_step": None,
             "step_index": 0,
             "step_total": len(definition.steps),
+            "selected_steps": selected_steps,
+            "paid_consent": paid_consent,
             "pid": None,
             "exit_code": None,
             "actor": actor,
@@ -415,14 +420,37 @@ def _mistral_batch_status(root: Path) -> dict[str, Any] | None:
     }
 
 
+def _audit_run_status(root: Path) -> dict | None:
+    try:
+        value = json.loads((root / "data/quality/server_database_audit_status.json").read_text(encoding="utf-8"))
+        if not isinstance(value, dict):
+            return None
+    except (OSError, ValueError):
+        return None
+    if value.get("status") in {"running", "repairing"}:
+        pid = value.get("pid")
+        if isinstance(pid, int) and pid > 0:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                value = {**value, "status": "interrupted", "message": "DB監査・修復が途中で停止しました。ログと修復前バックアップを確認し、DB監査を再実行してください。"}
+            except OSError:
+                value = {**value, "message": "DB監査プロセスの稼働を確認できません。実行ログを確認してください。"}
+    return value
+
+
 def system_status(root: Path = ROOT) -> dict[str, Any]:
     from src.search_snapshot import public_status
+    from citation_graph.admin_plan import public_stages
+    from src.audit_diagnostics import item_failure_details, reason_detail
+
     reconcile_stale_jobs(root)
     manifest_path = root / "data" / "manifest_v3.json"
     gate_path = root / "data" / "quality" / "server_database_gate.json"
     lock_path = root / "data" / "indexing.lock"
     manifest: dict[str, Any] = {}
     gate: dict[str, Any] = {}
+    audit_status = _audit_run_status(root)
     lock: dict[str, Any] | None = None
     update_status: dict[str, Any] | None = None
     try:
@@ -496,6 +524,12 @@ def system_status(root: Path = ROOT) -> dict[str, Any]:
         },
         "database_gate": {
             "passed": (gate.get("gate") or {}).get("passed") is True,
+            "available": bool(gate),
+            "failed_items": (gate.get("gate") or {}).get("failed_items", 0),
+            "global_failures": (gate.get("gate") or {}).get("global_failures", []),
+            "failures": item_failure_details(gate),
+            "global_details": [reason_detail(reason) for reason in (gate.get("gate") or {}).get("global_failures", [])],
+            "audit_status": audit_status,
             "modified_at": datetime.fromtimestamp(
                 gate_path.stat().st_mtime, timezone.utc
             ).isoformat() if gate_path.exists() else None,
@@ -508,12 +542,24 @@ def system_status(root: Path = ROOT) -> dict[str, Any]:
         "active_job": public_record(active_job(root)),
         "jobs": [public_record(record) for record in visible_history_records(root, limit=20)],
         "definitions": public_job_definitions(root),
+        "stages": public_stages(job_definitions(root)),
     }
+
+
+def _log_step_failure(log, label: str, exit_code: int) -> None:
+    if exit_code < 0:
+        message = f"[停止] 「{label}」の処理がOSシグナル {-exit_code}で異常終了しました。"
+        action = ("[必要な作業] 書込み途中の可能性があります。DB監査を実行して状態を確認してください。"
+                  "修復・再実行の前にDB一式をバックアップし、原本と途中取込の記録は保持してください。")
+    else:
+        message = f"[停止] 「{label}」が終了コード {exit_code}で停止しました。"
+        action = "[必要な作業] 直前のログにある理由と対処法を確認してください。"
+    log.write(f"\n{message}\n{action}\n".encode())
 
 
 def run_job(job_id: str, job_type: str, token: str, root: Path = ROOT) -> int:
     definition = job_definitions(root).get(job_type)
-    if definition is None:
+    if definition is None and job_type != "selected_steps":
         return 2
     deadline = time.monotonic() + 5
     while True:
@@ -525,6 +571,11 @@ def run_job(job_id: str, job_type: str, token: str, root: Path = ROOT) -> int:
         time.sleep(0.01)
     if record.get("token") != token or record.get("type") != job_type:
         return 2
+    if job_type == "selected_steps":
+        from citation_graph.admin_plan import build_plan
+        definition = build_plan(record.get("selected_steps"), job_definitions(root))
+        if definition.paid and record.get("paid_consent") is not True:
+            return 2
     jobs_dir = root / "data" / "admin_jobs"
     jobs_dir.mkdir(parents=True, exist_ok=True)
     lock_fd = os.open(jobs_dir / ".active.lock", os.O_RDWR | os.O_CREAT, 0o600)
@@ -575,6 +626,7 @@ def run_job(job_id: str, job_type: str, token: str, root: Path = ROOT) -> int:
                 if cancelled:
                     break
                 if exit_code != 0:
+                    _log_step_failure(log, label, exit_code)
                     record.update({
                         "status": "failed", "finished_at": _now(), "exit_code": exit_code,
                     })

@@ -41,6 +41,20 @@ class IndexingLockTests(unittest.TestCase):
         with self.assertRaisesRegex(SystemExit, "別のインデクサー"):
             module._acquire_indexing_lock()
 
+    def test_unverifiable_owner_is_never_removed(self):
+        self.path.write_text(json.dumps({"pid": 12345, "token": "owner"}))
+        with patch("os.kill", side_effect=PermissionError("denied")):
+            with self.assertRaisesRegex(SystemExit, "確認できません"):
+                module._acquire_indexing_lock()
+        self.assertEqual(json.loads(self.path.read_text())["token"], "owner")
+
+    def test_corrupt_or_ownerless_lock_is_never_removed(self):
+        for payload in ('not json', '[]', '{}', '{"pid": -1}', '{"pid": true}'):
+            self.path.write_text(payload)
+            with self.assertRaisesRegex(SystemExit, "停止"):
+                module._acquire_indexing_lock()
+            self.assertEqual(self.path.read_text(), payload)
+
     def test_release_does_not_delete_another_owners_lock(self):
         first = module._acquire_indexing_lock()
         replacement = {**first, "token": "replacement-owner"}

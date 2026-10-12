@@ -96,6 +96,8 @@
     "src/work_identity.py": 7,
     "src/yomitoku_extract.py": 157,
     "src/zotero_import.py": 31,
-    "src/zotero_source_localapi.py": 136
+    "src/zotero_source_localapi.py": 136,
+    "src/audit_diagnostics.py": 0,
+    "src/audit_repair.py": 0
   }
 }

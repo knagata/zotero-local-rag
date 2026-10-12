@@ -88,3 +88,15 @@ def test_cli_fails_when_a_source_pdf_cannot_be_read():
             ),
         ):
             assert MODULE.main() == 2
+
+
+def test_missing_pdf_is_a_failure_instead_of_skipped(tmp_path):
+    with (
+        patch.object(MODULE, "_collection_rows", return_value=[]),
+        patch.object(MODULE, "load_manifest", return_value={
+            "files": {"ATT": {"pdf_path": str(tmp_path / "missing.pdf"), "title": "Missing"}},
+        }),
+        patch.object(MODULE, "get_db_connection", return_value=_connection()),
+        patch.object(sys, "argv", ["verify_against_source.py", "--collection", "zotero_paragraphs_v3"]),
+    ):
+        assert MODULE.main() == 2

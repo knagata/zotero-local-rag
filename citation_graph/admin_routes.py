@@ -7,7 +7,7 @@ from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, StrictBool
 
 from citation_graph.admin_jobs import (
     log_tail,
@@ -25,6 +25,8 @@ STATIC_DIR = ROOT / "citation_graph" / "static"
 class StartJobRequest(BaseModel):
     job_type: str
     confirmation: str = ""
+    selected_steps: list[str] | None = None
+    paid_consent: StrictBool = False
 
 
 class StopJobRequest(BaseModel):
@@ -114,7 +116,8 @@ def register_admin_routes(app: FastAPI, settings: Any, authenticated_email) -> N
             return wrong_origin
         email = authenticated_email(request, settings.allowed_google_emails)
         try:
-            record = start_job(body.job_type, body.confirmation, str(email), ROOT)
+            record = start_job(body.job_type, body.confirmation, str(email), ROOT,
+                               selected_steps=body.selected_steps, paid_consent=body.paid_consent)
         except ValueError as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)
         except RuntimeError as exc:

@@ -451,8 +451,16 @@ def main(argv: list[str] | None = None) -> int:
         state = collect(args, state)
     elif args.submit:
         terminal_phases = {value.casefold() for value in TERMINAL}
-        if not state or state.get("phase") in terminal_phases or state.get("phase") == "collected":
+        # A prepared state has not uploaded or submitted anything yet. Its
+        # candidate list can become stale as the OCR queue changes, so always
+        # resolve the current queue immediately before preparing a submission.
+        # Uploaded/submitting states remain pinned to their original payloads:
+        # retrying those must never create a second paid batch for newer work.
+        if not state or state.get("phase") in terminal_phases or state.get("phase") in {"collected", "prepared"}:
             state = prepare(args)
+        if state.get("phase") == "prepared" and not state.get("candidate_count"):
+            print("[情報] Mistral OCRの待機資料はありません。外部送信は行いません。", flush=True)
+            return 0
         state = submit(args, state)
     else:
         state = prepare(args)

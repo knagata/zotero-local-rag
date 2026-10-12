@@ -21,6 +21,21 @@ LOCAL_API_BASE_DEFAULT = "http://127.0.0.1:23119/api"
 LOCAL_API_PREFIX_DEFAULT = "users/0"
 
 
+def _report_unreadable_attachment(key, parent, title, filename):
+    label = " ".join(str(title or filename or key).split())
+    print(
+        f"[停止] 『{label}』の原本ファイルを取得できないため、更新を停止しました。"
+        f"（資料 {parent or '不明'}／添付 {key}）",
+        file=sys.stderr, flush=True,
+    )
+    print(
+        "[必要な作業] Zoteroで対象資料の添付を開き、ファイルのダウンロード・同期を完了してください。"
+        "見つからない場合は保存場所を確認し、元ファイルを再配置・再添付してください。"
+        "Zoteroで添付を開けるようになってから、クイック実行を再実行してください。",
+        file=sys.stderr, flush=True,
+    )
+
+
 def local_api_base() -> str:
     return (os.environ.get("ZOTERO_LOCAL_API_BASE") or LOCAL_API_BASE_DEFAULT).rstrip("/")
 
@@ -435,9 +450,8 @@ class ZoteroLocalAPI:
                     if allow_missing_files:
                         resolved = ""
                     else:
-                        raise RuntimeError(
-                            f"Eligible attachment {att_key} has no readable local file"
-                        ) from e
+                        _report_unreadable_attachment(att_key, parent_key, parent_title, ad.get("filename"))
+                        raise RuntimeError(f"Eligible attachment {att_key} has no readable local file") from e
 
             yield ZoteroAttachment(
                 attachmentKey=att_key,

@@ -26,6 +26,7 @@
     <section>
       <div class="section-title"><h2>現在の状態</h2><span id="updated"></span></div>
       <div class="metrics" id="metrics"></div>
+      <div id="audit-diagnostics" aria-live="polite"></div>
     </section>
     <section id="active-section" hidden>
       <div class="section-title"><h2>実行中</h2><span class="pulse">LIVE</span></div>
@@ -34,6 +35,7 @@
     </section>
     <section>
       <div class="section-title"><h2>処理を実行</h2><span>同時に1件まで</span></div>
+      <p>選択した工程を上から順に実行します。失敗した場合は後続の工程を停止します。</p>
       <div class="actions" id="actions"></div>
     </section>
     <section>
@@ -45,9 +47,7 @@
     <form method="dialog" id="confirm-form">
       <h2 id="confirm-title">実行確認</h2>
       <p id="confirm-description"></p>
-      <label id="confirm-label">確認語を入力
-        <input id="confirm-input" autocomplete="off" spellcheck="false">
-      </label>
+      <label id="confirm-label"><input type="checkbox" id="confirm-consent"> API課金が行われることに同意します</label>
       <div class="dialog-actions">
         <button type="button" id="confirm-cancel" class="secondary">キャンセル</button>
         <button type="submit" id="confirm-button">実行</button>

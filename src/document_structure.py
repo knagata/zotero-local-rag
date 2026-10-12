@@ -657,6 +657,9 @@ def build_document_structure(item_key: str, chunks: Sequence[Dict[str, Any]]) ->
     reclaimed = _reclaim_fully_excluded_document(nodes)
     if reclaimed:
         diagnostics["reclaimed_fully_excluded_zone"] = reclaimed
+        # The persisted chunks receive the reclaimed leaf zone, not the
+        # extractor's excluded zone. Hash exactly that canonical metadata.
+        fingerprint = source_fingerprint(attach_structure_metadata(ordered_chunks, nodes))
     if explicit_runs and not fallback_runs:
         status, confidence = "exact", 0.85
     elif explicit_runs:

@@ -143,6 +143,7 @@ def test_authenticated_admin_can_read_status_and_request_fixed_job():
     assert "token" not in response.json()
     start.assert_called_once_with(
         "database_audit", "", "allowed@example.com", Path(__file__).resolve().parents[1],
+        selected_steps=None, paid_consent=False,
     )
 
 

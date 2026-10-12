@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import os
 import sqlite3
 import uuid
@@ -15,6 +17,38 @@ except ImportError:
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DB_PATH = PROJECT_ROOT / "data" / "lexical_v3.sqlite3"
+
+
+def canonical_row(chunk_id: str, body: str, metadata: dict[str, Any]) -> tuple:
+    md = metadata if isinstance(metadata, dict) else {}
+    return (chunk_id, md.get("itemKey") or "", md.get("lang") or "other",
+            md.get("source_type") or "", md.get("attachmentKey") or "",
+            md.get("noteKey") or "", body or "", md.get("title") or "",
+            md.get("creators") or "")
+
+
+def audit_content(rows: Iterable[dict], *, path: Path) -> tuple[str, list[str]]:
+    """Attest FTS content, including duplicates, and compare matching Chroma IDs."""
+    expected = {row["id"]: canonical_row(row["id"], row["text"], row["metadata"]) for row in rows}
+    digest = hashlib.sha256()
+    mismatches = []
+    if not path.exists():
+        return "missing", mismatches
+    connection = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True, timeout=30)
+    try:
+        seen = set()
+        for row in connection.execute(
+            "SELECT chunk_id, item_key, lang, source_type, attachment_key, note_key, "
+            "body, title, creators FROM chunks_fts ORDER BY chunk_id, rowid"
+        ):
+            digest.update(json.dumps(tuple(row), ensure_ascii=False).encode())
+            digest.update(b"\n")
+            if row[0] in seen or (row[0] in expected and tuple(row) != expected[row[0]]):
+                mismatches.append(str(row[0]))
+            seen.add(row[0])
+    finally:
+        connection.close()
+    return f"sha256:{digest.hexdigest()}", mismatches
 
 
 def _path(path: Path | None = None) -> Path:
@@ -58,18 +92,7 @@ def upsert_chunks(
         )
     rows = []
     for chunk_id, body, metadata in zip(ids, documents, metadatas, strict=True):
-        md = metadata if isinstance(metadata, dict) else {}
-        rows.append((
-            chunk_id,
-            md.get("itemKey") or "",
-            md.get("lang") or "other",
-            md.get("source_type") or "",
-            md.get("attachmentKey") or "",
-            md.get("noteKey") or "",
-            body or "",
-            md.get("title") or "",
-            md.get("creators") or "",
-        ))
+        rows.append(canonical_row(chunk_id, body, metadata))
     if not rows:
         return
     connection = _connect(path)

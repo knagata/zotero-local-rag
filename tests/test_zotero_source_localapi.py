@@ -10,6 +10,7 @@ absent from the manifest with no record anywhere of why (2026-07-28).
 from __future__ import annotations
 
 import asyncio
+import io
 import sys
 import unittest
 from pathlib import Path
@@ -20,7 +21,7 @@ import httpx
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from zotero_source_localapi import ZoteroLocalAPI  # noqa: E402
+from zotero_source_localapi import ZoteroLocalAPI, _report_unreadable_attachment  # noqa: E402
 
 
 def _attachment(key, *, link_mode="imported_file", content_type="application/pdf",
@@ -36,6 +37,20 @@ def _attachment(key, *, link_mode="imported_file", content_type="application/pdf
 
 
 class LinkedUrlSkipTests(unittest.TestCase):
+    def test_unreadable_attachment_reports_target_and_recovery_before_stopping(self):
+        for title, filename, expected in (("Example\nBook", "doc.pdf", "Example Book"),
+                                          (None, "doc.pdf", "doc.pdf"),
+                                          (None, None, "ATT12345")):
+            output = io.StringIO()
+            with patch("sys.stderr", output):
+                _report_unreadable_attachment("ATT12345", "ITEM1234", title, filename)
+            self.assertIn(f"[停止] 『{expected}』", output.getvalue())
+            self.assertIn("ITEM1234／添付 ATT12345", output.getvalue())
+            self.assertIn("[必要な作業] Zotero", output.getvalue())
+            self.assertIn("ダウンロード・同期", output.getvalue())
+            self.assertIn("再配置・再添付", output.getvalue())
+            self.assertIn("クイック実行を再実行", output.getvalue())
+
     def _run(self, raw_attachments, *, resolve_returns=None, download_side_effect=None):
         api = ZoteroLocalAPI()
         yielded = []
