@@ -731,3 +731,8 @@ active V3はM5 clean rebuildと後続の対象修復を完了した監査済み�
 - 起動中ZoteroのSQLiteへのnolock読取りがunable to open database file、通常ro読取りもdatabase is lockedとなることを実測。コレクションと所属資料をLocal APIのページング取得へ変更し、階層path・空collection・循環parentの終了を維持した。接続失敗時はZotero起動とローカル通信設定を案内する。
 - 関連28テスト合格、新規module34文すべて到達。function/lint ratchet・文書参照・fatal Ruff・compileall・src.cli import・diff検査合格。広い例外を減らしlint予算を縮小。DB原本変更・有料処理なし。
 - Graph再起動後、実/api/collectionsはHTTP200、7コレクション・所属84件。Graph/local/public OAuth正常。Browser skillで確認を試みたが利用可能browserなしのため実画面目視は未実施。証明はdata/quality/zotero-collections-verification.json。Herdr w1:t11/w1:p13の検証、w1:t12/w1:p14の再起動はexit0。既存未コミット変更とstaged修復ファイルを保持。
+
+### 2026-10-12: 本文のない退役資料を要約更新待ちから除外
+
+- 簡易要約freshnessが空のdocument_structuresと旧stale状態を数え、処理対象外2件を永続的な更新待ちとして表示していた。現inventoryかつdocument_nodesを持つ資料へ待機集合と旧summary指紋照合を限定。親のない添付もcanonical item keyでinventoryへ含める。古い状態/本文の削除や要約の再生成は行わない。
+- 空構造・退役資料・旧summary指紋・現本文のstaleを区別する真偽テストを追加。関連24テストとfunction/lint ratchet・文書参照合格。Herdr w1:t11/w1:p13の検証、w1:t12/w1:p14の実更新確認を実施。実再集計でsummary pending/attentionは0。有料OCR/LLMなし。

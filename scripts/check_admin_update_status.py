@@ -242,7 +242,7 @@ async def inspect(*, detailed: bool = False) -> dict[str, Any]:
     local_inputs.extend(sorted((ROOT / "src").glob("*.py")))
     local_inputs.extend(sorted((ROOT / "scripts").glob("*.py")))
     local_inputs.extend([ROOT / ".env", ROOT / ".env.policy", chroma / "embedder_config_v3.json"])
-    expected_items = {str(row.parentItemKey) for row in included if row.parentItemKey}
+    expected_items = {str(row.parentItemKey or row.attachmentKey) for row in included}
     import hashlib
     inventory_digest = hashlib.sha256(json.dumps(sorted(expected_items)).encode()).hexdigest()
     local_inputs.append(ROOT / (".inventory-" + inventory_digest))

@@ -38,12 +38,14 @@ def lightweight_checks(database, expected_items):
             'SELECT item_key, source_fingerprint, status FROM document_structures')}
         statuses = {(str(k), str(kind)): str(status or '') for k, kind, status in connection.execute(
             'SELECT item_key, artifact_type, status FROM artifact_processing_status')}
+        summary_items = expected & {str(k) for k, in connection.execute(
+            'SELECT DISTINCT item_key FROM document_nodes')}
         stale = {str(k) for k, fingerprint in connection.execute(
             'SELECT DISTINCT item_key, source_fingerprint FROM document_node_summaries')
-                 if str(k) in structures and str(fingerprint or '') != structures[str(k)][0]}
+                 if str(k) in summary_items and str(k) in structures and str(fingerprint or '') != structures[str(k)][0]}
     bad = {'running', 'stale', 'failed', 'blocked', 'degraded'}
     structure_status = classify_structure_status(expected, structures, statuses)
-    summary_pending = {k for k in structures if statuses.get((k, 'summary'), '') not in {'success', 'completed', 'skipped', 'empty'}} | stale
+    summary_pending = {k for k in summary_items if k in structures and statuses.get((k, 'summary'), '') not in {'success', 'completed', 'skipped', 'empty'}} | stale
     def status(keys, kind):
         failures = sum(statuses.get((key, kind)) in {"failed", "blocked", "degraded"} for key in keys)
         return dict(pending=len(keys), failed=failures, attention=failures, source_refresh_failed=0,

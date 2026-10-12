@@ -42,6 +42,8 @@ def test_lightweight_reports_missing_failed_and_stale_without_chroma(tmp_path):
     from scripts.update_status_cache import lightweight_checks
     database = tmp_path / 'relations.db'
     with sqlite3.connect(database) as c:
+        c.execute('CREATE TABLE document_nodes(item_key)')
+        c.executemany('INSERT INTO document_nodes VALUES (?)', [('GOOD',), ('STALE',)])
         c.execute('CREATE TABLE document_structures(item_key, source_fingerprint, status)')
         c.execute('CREATE TABLE artifact_processing_status(item_key, artifact_type, status)')
         c.execute('CREATE TABLE document_node_summaries(item_key, source_fingerprint)')
@@ -53,3 +55,25 @@ def test_lightweight_reports_missing_failed_and_stale_without_chroma(tmp_path):
     assert summary['sample_keys'] == ['STALE']
     assert summary['failed'] == 1
     assert 'audit_passed' not in summary
+
+
+def test_empty_retired_and_excluded_items_are_not_summary_work(tmp_path):
+    import sqlite3
+    from scripts.update_status_cache import lightweight_checks
+    database = tmp_path / 'relations.db'
+    with sqlite3.connect(database) as c:
+        c.execute('CREATE TABLE document_structures(item_key, source_fingerprint, status)')
+        c.execute('CREATE TABLE document_nodes(item_key)')
+        c.execute('CREATE TABLE artifact_processing_status(item_key, artifact_type, status)')
+        c.execute('CREATE TABLE document_node_summaries(item_key, source_fingerprint)')
+        c.executemany('INSERT INTO document_structures VALUES (?,?,?)', [
+            ('EMPTY', 'empty', 'unavailable'), ('RETIRED', 'new', 'ok'), ('LIVE', 'new', 'ok')])
+        c.executemany('INSERT INTO document_nodes VALUES (?)', [('RETIRED',), ('LIVE',)])
+        c.executemany('INSERT INTO artifact_processing_status VALUES (?,?,?)', [
+            ('EMPTY', 'summary', 'stale'), ('RETIRED', 'summary', 'failed'), ('LIVE', 'summary', 'success')])
+        c.executemany('INSERT INTO document_node_summaries VALUES (?,?)', [
+            ('EMPTY', 'old'), ('RETIRED', 'old'), ('LIVE', 'old')])
+    structure, summary = lightweight_checks(database, {'LIVE'})
+    assert summary['sample_keys'] == ['LIVE']
+    assert summary['pending'] == 1
+    assert summary['attention'] == 0
