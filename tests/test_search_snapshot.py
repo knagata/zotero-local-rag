@@ -157,6 +157,7 @@ def test_failed_refresh_keeps_previous_copy_and_requires_ready_source(tmp_path, 
     (gate / 'server_database_gate.json').write_text(json.dumps({'gate': {'passed': True}}))
     def fail(*_):
         raise ValueError('native verification failed')
+    monkeypatch.setattr(publisher, 'validate_database_gate', lambda path: {})
     monkeypatch.setattr(publisher, 'verify_native_copy', fail)
     with pytest.raises(ValueError, match='native verification'):
         publisher.publish(tmp_path)
@@ -287,6 +288,7 @@ def test_failed_sqlite_copy_removes_unpublished_stage(tmp_path, monkeypatch):
     (gate / 'server_database_gate.json').write_text(json.dumps({'gate': {'passed': True}}))
     def fail(*args, **kwargs):
         raise sqlite3.OperationalError('database or disk is full')
+    monkeypatch.setattr(publisher, 'validate_database_gate', lambda path: {})
     monkeypatch.setattr(publisher, 'sqlite_copy', fail)
     with pytest.raises(sqlite3.OperationalError, match='disk is full'):
         publisher.publish(tmp_path)
@@ -344,3 +346,47 @@ def test_pruning_does_not_delete_when_open_file_inspection_fails(tmp_path, monke
     with pytest.raises(subprocess.CalledProcessError):
         publisher.prune_unused_copies(tmp_path)
     assert unused.exists()
+
+
+@pytest.mark.parametrize("changed", [False, True])
+def test_refresh_revalidates_generation_under_writer_lock(tmp_path, monkeypatch, changed):
+    from src import database_gate
+    native_source(tmp_path, monkeypatch)
+    old = publisher.publish(tmp_path, initialize=True)
+    prior_pointer = snapshots.pointer_path(tmp_path).read_bytes()
+    report = tmp_path / "custom-gate.json"
+    monkeypatch.setenv("SERVER_DB_GATE_PATH", "custom-gate.json")
+    external = tmp_path / "source-audit.json"
+    external.write_text('{"passed": true}')
+    report.write_text(json.dumps({
+        "new_only": True, "new_collection": "zotero_paragraphs_v3",
+        "gate": {"passed": True},
+        "external_audits": {
+            key: database_gate.external_audit_attestation(external)
+            for key in ("zotero_reconciliation", "source_verification")
+        },
+        "database_state": {
+            "fingerprint": "audited", "manifest_path": "manifest.json",
+            "lexical_db_path": "lexical.sqlite3", "pipeline_config_path": "pipeline.json",
+        },
+    }))
+    checks = []
+    def fingerprint(**kwargs):
+        assert indexing_lock.default_path(tmp_path).exists()
+        checks.append("validate")
+        return "changed" if changed else "audited"
+    def copy(*args):
+        assert checks == ["validate"]
+        checks.append("copy")
+        return old
+    monkeypatch.setattr(database_gate, "live_database_state_fingerprint", fingerprint)
+    monkeypatch.setattr(publisher, "build_copy", copy)
+    if changed:
+        with pytest.raises(RuntimeError, match="changed after its audit"):
+            publisher.publish(tmp_path)
+        assert checks == ["validate"]
+        assert snapshots.pointer_path(tmp_path).read_bytes() == prior_pointer
+    else:
+        assert publisher.publish(tmp_path)["generation"] == old["generation"]
+        assert checks == ["validate", "copy"]
+    assert not indexing_lock.default_path(tmp_path).exists()

@@ -736,3 +736,11 @@ active V3はM5 clean rebuildと後続の対象修復を完了した監査済み�
 
 - 簡易要約freshnessが空のdocument_structuresと旧stale状態を数え、処理対象外2件を永続的な更新待ちとして表示していた。現inventoryかつdocument_nodesを持つ資料へ待機集合と旧summary指紋照合を限定。親のない添付もcanonical item keyでinventoryへ含める。古い状態/本文の削除や要約の再生成は行わない。
 - 空構造・退役資料・旧summary指紋・現本文のstaleを区別する真偽テストを追加。関連24テストとfunction/lint ratchet・文書参照合格。Herdr w1:t11/w1:p13の検証、w1:t12/w1:p14の実更新確認を実施。実再集計でsummary pending/attentionは0。有料OCR/LLMなし。
+
+### 2026-10-12: プロジェクト全体検証と潜在障害の修正
+
+- 管理・OCR・保存/監査を3サブエージェントで分担レビューし、親が修正を統合・再検証した。空/非通常原本の同期待ち表示、HTML保存フォルダの共通ファイル解決、工程起動OSErrorの理由付きfailed保存、古いロック削除失敗時の無限再試行停止、破損した置換ロックの安全なreleaseを修正。
+- 検索公開はwriter lock内で監査fingerprintを再検証し、監査終了から公開までの別writer更新を拒否。テスト収集時の実検索snapshot環境混入を隔離し、取込用fixtureのAPI引数を現実装へ追従。既存の実データ書込みguardを維持。契約詳細はdeveloper/search-snapshots.mdとdeveloper/development.md。
+- CIと同じ非slow/corpusの計測付き全テストは2,100passed/2skip/9deselected（97.63秒）。coverage予算check・function/lint ratchet・文書参照・fatal Ruff・compileall・src.cli import合格。Nodeで管理UIの依存選択・polling保持・課金同意・取消・旧service案内を検証した。slow/corpusも明示実行したが、比較baseline未生成で9skip。実画面の目視と実コーパスbaseline比較は未検証。
+- 全DB監査は728添付・703資料で合格、自動修復なし。検索コピーは本文661,436・要約8,680のnative検索/close/reopen検証後に公開。Graph/MCP/local/public OAuthとcollections HTTP200正常。有料OCR/LLM・原本変更なし。既存正常backup・旧検索世代を保持した。
+- 一次証明はdata/quality/full-verification-20261012.jsonと同日のfull-tests/full-coverage/full-db-audit/corpus-testsログ。Herdr全テストw1:t11/w1:p13・監査/サービスw1:t12/w1:p14はexit0、分担確認はw1:t13/w1:p15・w1:t14/w1:p16。開始時の作業差分は/tmp/zotero-full-check-before-20261012へ保存。今回差分だけをコミットし、既存作業とstaged修復ファイルを保持。

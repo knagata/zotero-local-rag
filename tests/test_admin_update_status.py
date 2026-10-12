@@ -54,6 +54,29 @@ def test_index_freshness_reports_an_unresolved_attachment_as_missing_source():
     assert result["sample_keys"] == ["MISSING"]
 
 
+def test_index_freshness_keeps_empty_and_non_file_sources_waiting_for_sync(tmp_path):
+    empty = tmp_path / "empty.pdf"
+    empty.touch()
+    directory = tmp_path / "directory.pdf"
+    directory.mkdir()
+    sources = {"EMPTY": empty, "DIRECTORY": directory}
+    manifest = {"pipeline_fingerprint": "pipeline", "files": {
+        key: {"mtime": path.stat().st_mtime, "size": path.stat().st_size,
+              "pipeline_fingerprint": "pipeline"}
+        for key, path in sources.items()
+    }}
+    rows = [attachment(key, path) for key, path in sources.items()]
+    result = _index_freshness(rows, manifest, excluded_keys=set())
+    assert result["missing_source"] == 2
+    assert result["pending"] == 0
+    assert result["retired"] == 0
+    assert result["sample_keys"] == ["DIRECTORY", "EMPTY"]
+    empty.write_bytes(b"synchronized PDF")
+    result = _index_freshness(rows, manifest, excluded_keys=set())
+    assert result["missing_source"] == 1
+    assert result["new_or_changed"] == 1
+
+
 def test_citation_freshness_treats_only_terminal_statuses_as_current(tmp_path):
     database = tmp_path / "relations.db"
     with sqlite3.connect(database) as connection:
@@ -153,3 +176,14 @@ def test_parent_metadata_is_shared_without_per_item_api_calls():
     _prime_parent_metadata([item], attachment_api, note_api)
     assert asyncio.run(attachment_api.get_item("PARENT")) is item
     assert asyncio.run(note_api.get_item("PARENT")) is item
+
+
+def test_html_snapshot_directory_uses_same_file_as_indexer(tmp_path):
+    from types import SimpleNamespace
+    from scripts.check_admin_update_status import _index_freshness
+    source = tmp_path / 'index.html'
+    source.write_text('<p>Searchable text</p>')
+    row = SimpleNamespace(attachmentKey='HTML', pdf_path=str(tmp_path))
+    manifest = {'files': {'HTML': {'mtime': source.stat().st_mtime, 'size': source.stat().st_size}}}
+    assert _index_freshness([row], manifest, excluded_keys=set())['pending'] == 0
+    assert _index_freshness([row], manifest, excluded_keys=set())['missing_source'] == 0

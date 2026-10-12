@@ -52,6 +52,36 @@ class IndexingLockTests(unittest.TestCase):
             "replacement-owner",
         )
 
+    def test_stale_lock_removal_failure_stops_without_retry(self):
+        self.path.write_text(json.dumps({"pid": 12345, "token": "stale"}))
+        original_unlink = Path.unlink
+        attempts = []
+
+        def refuse_stale(path, *args, **kwargs):
+            if path == self.path:
+                attempts.append(path)
+                if len(attempts) > 1:
+                    raise AssertionError("lock deletion must not retry indefinitely")
+                raise PermissionError("denied")
+            return original_unlink(path, *args, **kwargs)
+
+        with patch("os.kill", side_effect=ProcessLookupError()), \
+             patch.object(Path, "unlink", refuse_stale):
+            with self.assertRaisesRegex(SystemExit, "削除できません"):
+                module._acquire_indexing_lock()
+        self.assertEqual(len(attempts), 1)
+        self.assertEqual(json.loads(self.path.read_text())["token"], "stale")
+        self.assertEqual(list(self.path.parent.glob("*.tmp")), [])
+
+    def test_release_preserves_unrecognizable_replacement(self):
+        for payload in ("[]", "null", '"replacement"'):
+            if self.path.exists():
+                self.path.unlink()
+            lock = module._acquire_indexing_lock()
+            self.path.write_text(payload)
+            module._release_indexing_lock(lock)
+            self.assertEqual(self.path.read_text(), payload)
+
     def test_lock_file_contains_private_owner_token(self):
         lock = module._acquire_indexing_lock()
         self.addCleanup(module._release_indexing_lock, lock)

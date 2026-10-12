@@ -29,6 +29,7 @@ from pdf_extract import (
 )
 from docling_worker import DoclingWorker
 from granite_worker import GraniteWorker
+from attachment_files import resolve_attachment_file
 from mistral_send_policy import attachment_ocr_complete
 from ndlocr_extract import extract_chunks_from_pdf_with_ndlocr
 from rapidocr_extract import extract_chunks_from_pdf_with_rapidocr
@@ -232,7 +233,7 @@ RUN_CODE_PATHS = tuple(
         "pdf_extract.py", "docling_extract.py", "docling_worker.py", "extraction_engine.py",
         "local_ocr_pipeline.py", "rapidocr_extract.py", "ndlocr_extract.py", "epub_fallback.py",
         "pdf_toc_recovery.py", "document_structure.py", "v3_migration.py", "v3_runtime.py",
-        "pdf_provenance.py", "ocr_layer_audit.py", "source_coverage.py", "mistral_send_policy.py",
+        "pdf_provenance.py", "ocr_layer_audit.py", "source_coverage.py", "mistral_send_policy.py", "attachment_files.py",
     )
 )
 
@@ -2115,20 +2116,8 @@ def _print_quality_warnings(warnings: list[QualityWarning]) -> None:
 
 def _resolve_attachment_source(attachment: ZoteroAttachment) -> ResolvedAttachmentSource | None:
     """Resolve a Zotero attachment to one stable file and source classification."""
-    file_path = Path(attachment.pdf_path).expanduser()
-    if file_path.is_dir():
-        preferred = [file_path / name for name in ("index.html", "index.htm")]
-        selected = next((path for path in preferred if path.is_file()), None)
-        if selected is None:
-            html_files = sorted(
-                path for path in file_path.iterdir()
-                if path.is_file() and path.suffix.casefold() in {".html", ".htm"}
-            )
-            selected = html_files[0] if html_files else None
-        if selected is None:
-            return None
-        file_path = selected
-    if not file_path.exists():
+    file_path = resolve_attachment_file(attachment.pdf_path)
+    if not file_path.is_file():
         return None
 
     content_type = getattr(attachment, "contentType", None)

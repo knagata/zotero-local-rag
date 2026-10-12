@@ -557,10 +557,17 @@ def run_job(job_id: str, job_type: str, token: str, root: Path = ROOT) -> int:
                 record.update({"current_step": label, "step_index": index})
                 write_record(record, root)
                 log.write(f"\n[{_now()}] STEP {index}/{len(definition.steps)}: {label}\n".encode())
-                child = subprocess.Popen(
-                    command, cwd=root, env=environment, stdin=subprocess.DEVNULL,
-                    stdout=log, stderr=subprocess.STDOUT,
-                )
+                try:
+                    child = subprocess.Popen(
+                        command, cwd=root, env=environment, stdin=subprocess.DEVNULL,
+                        stdout=log, stderr=subprocess.STDOUT,
+                    )
+                except OSError as exc:
+                    log.write((f"[停止] 「{label}」を起動できませんでした: {exc}\n"
+                               "[必要な作業] 実行ファイルの存在・権限と空き容量を確認して再実行してください。\n").encode())
+                    record.update({"status": "failed", "finished_at": _now(), "exit_code": 127})
+                    write_record(record, root)
+                    return 127
                 record["child_pid"] = child.pid
                 write_record(record, root)
                 exit_code = child.wait()

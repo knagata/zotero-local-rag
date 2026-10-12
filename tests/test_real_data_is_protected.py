@@ -178,3 +178,15 @@ def test_the_confirming_bulk_command_can_still_purge():
             f"purge_removed_items at line {call.lineno} runs without force, so "
             "the guard refuses it and the script reports an empty result as success"
         )
+
+
+def test_query_import_cannot_replace_scratch_paths_with_real_snapshot(monkeypatch):
+    from src import search_snapshot
+
+    before = os.environ['RELATIONS_DB_PATH']
+    def refuse_real_pointer(root):
+        raise AssertionError('tests must not inspect the real search pointer')
+    monkeypatch.setattr(search_snapshot, 'pointer_path', refuse_real_pointer)
+    monkeypatch.delenv(search_snapshot.ACTIVE_ROOT, raising=False)
+    assert search_snapshot.apply_search_snapshot(ROOT) is None
+    assert os.environ['RELATIONS_DB_PATH'] == before

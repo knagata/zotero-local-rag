@@ -65,3 +65,10 @@ outputs, correction evidence and the active model. Do not treat backup age or a
 folder name alone as evidence that its contents are redundant. Query publication
 pruning does not delete recovery backups; this review is required after recovery
 work so full copies do not accumulate indefinitely.
+
+Publication revalidates the full audit's database fingerprint inside the writer
+lock, using SERVER_DB_GATE_PATH when configured. This closes the interval between
+the audit releasing its lock and the publisher acquiring it. A boolean passing
+flag alone cannot authorize publication after another writer changes the corpus.
+The extra verification reads SQLite/FTS/structure data and does not open native
+HNSW clients. Tests exercise both unchanged and changed generations under lock.

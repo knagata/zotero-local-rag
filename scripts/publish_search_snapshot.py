@@ -17,6 +17,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from src.env_utils import environment_with_saved_dotenv
+from src.database_gate import validate_database_gate
 from src.indexing_lock import default_path, held
 from src.search_snapshot import load_snapshot, pointer_path
 from src.v3_data_plane import chroma_dir, lexical_path, manifest_path, resolve_configured_path
@@ -135,11 +136,17 @@ def publish(root: Path, *, initialize: bool = False, restart_services: bool = Fa
         if (data.get("hnsw_validated") is not True or data.get("inflight_attachments")
                 or data.get("post_index_pending")):
             raise ValueError("Cannot publish an incomplete indexing generation")
-        gate_path = root / "data" / "quality" / "server_database_gate.json"
+        gate_path = resolve_configured_path(root, os.environ.get(
+            "SERVER_DB_GATE_PATH", root / "data" / "quality" / "server_database_gate.json"))
         gate = json.loads(gate_path.read_text()) if gate_path.exists() else {}
         audit_passed = gate.get("gate", {}).get("passed") is True
         if not initialize and not audit_passed:
             raise ValueError("Refresh requires the unchanged full DB audit to pass")
+        if not initialize:
+            # The audit releases its lock before launching this publisher. A
+            # writer may have changed the corpus in between; bind publication
+            # to the current generation while this lock prevents more writes.
+            validate_database_gate(gate_path)
         source = chroma_dir(root).resolve()
         home = (root / "data" / "search_snapshots").resolve()
         if source == home or home in source.parents or source in home.parents:

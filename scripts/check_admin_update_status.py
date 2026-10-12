@@ -7,6 +7,7 @@ import argparse
 import time
 import json
 import sqlite3
+import stat
 import subprocess
 import sys
 import tempfile
@@ -32,6 +33,7 @@ from index_from_zotero import (  # noqa: E402
 from zotero_source_localapi import ZoteroLocalAPI  # noqa: E402
 from update_citations import _unwrap_item, get_all_items  # noqa: E402
 from scripts.audit_structure_summaries import build_report as build_summary_audit  # noqa: E402
+from src.attachment_files import resolve_attachment_file
 from scripts.update_status_cache import cached_checks, lightweight_checks
 from src.v3_data_plane import V3_COLLECTION  # noqa: E402
 
@@ -58,13 +60,16 @@ def _index_freshness(
             missing_source.append(key)
             continue
         try:
-            stat = Path(str(row.pdf_path)).stat()
+            source_stat = resolve_attachment_file(str(row.pdf_path)).stat()
         except OSError:
             missing_source.append(key)
             continue
+        if not stat.S_ISREG(source_stat.st_mode) or source_stat.st_size == 0:
+            missing_source.append(key)
+            continue
         if not previous or (
-            float(previous.get("mtime", -1)) != float(stat.st_mtime)
-            or int(previous.get("size", -1)) != int(stat.st_size)
+            float(previous.get("mtime", -1)) != float(source_stat.st_mtime)
+            or int(previous.get("size", -1)) != int(source_stat.st_size)
             or str(previous.get("pipeline_fingerprint") or "") != pipeline
         ):
             pending.append(key)

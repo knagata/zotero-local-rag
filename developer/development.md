@@ -297,3 +297,12 @@ uv run python scripts/eval_retrieval.py data/quality/gold_qa.jsonl --k 10 --incl
 - 詳細は目的別の `docs/*.md` に置く
 - 同じ設定説明を複数文書へコピーせず、リンクする
 - CLIやファイル名を変更したら関連リンクを検索・更新する
+
+Query entrypoint imports can pin paths to a published search snapshot. The test
+harness blocks the real repository's snapshot loader before test collection and
+shares that boundary across package/direct imports; temporary snapshot fixtures
+still exercise the real loader. Keep this isolation in tests/conftest.py: an
+autouse fixture runs too late for imports. The existing real-data write guard
+remains active. Synthetic Zotero adapters must accept the current source API's
+optional arguments so end-to-end tests exercise ingestion instead of failing at
+the fixture boundary.

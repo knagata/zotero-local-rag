@@ -142,8 +142,11 @@ def acquire(lock_path: Path) -> dict:
                     )
                 try:
                     lock_path.unlink()
-                except OSError:
-                    continue
+                except OSError as exc:
+                    raise SystemExit(
+                        f"古いロックファイルを削除できません: {exc}。"
+                        "保存先のアクセス権・空き容量を確認して再実行してください。"
+                    ) from exc
     finally:
         try:
             candidate_path.unlink()
@@ -182,7 +185,7 @@ def release(lock_data: dict[str, Any] | None = None, *, lock_path: Path | None =
                     current = json.loads(held_at.read_text(encoding="utf-8"))
                 except (OSError, ValueError):
                     return
-                if current.get("token") != lock_data.get("token"):
+                if not isinstance(current, dict) or current.get("token") != lock_data.get("token"):
                     return
             held_at.unlink()
     except FileNotFoundError:

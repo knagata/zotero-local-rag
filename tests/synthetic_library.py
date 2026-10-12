@@ -155,6 +155,7 @@ class SyntheticZoteroSource:
         pdf_cache_dir: str,
         collection_key: Optional[str] = None,
         require_complete: bool = False,
+        allow_missing_files: bool = False,
     ) -> list[ZoteroAttachment]:
         self.calls.append("list_normalized_attachments")
         return list(self.attachments)

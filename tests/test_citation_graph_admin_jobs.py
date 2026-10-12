@@ -154,6 +154,31 @@ def test_failed_step_stops_the_sequence(tmp_path, monkeypatch):
     assert "must not run" not in admin_jobs.log_tail(job_id, root)
 
 
+def test_unlaunchable_step_records_reason_and_never_runs_following_step(tmp_path, monkeypatch):
+    root = project(tmp_path)
+    job_id = "20261012-120000-1234abcd"
+    admin_jobs.write_record({
+        "id": job_id, "type": "test", "status": "queued", "token": "token",
+        "pid": os.getpid(), "step_index": 0,
+    }, root)
+    marker = tmp_path / "must-not-exist"
+    definition = admin_jobs.JobDefinition("test", "test", "test", (
+        ("missing executable", (str(tmp_path / "missing-python"),)),
+        ("never", (sys.executable, "-c", f"from pathlib import Path; Path({str(marker)!r}).touch()")),
+    ))
+    monkeypatch.setattr(admin_jobs, "job_definitions", lambda root: {"test": definition})
+    assert admin_jobs.run_job(job_id, "test", "token", root) == 127
+    finished = admin_jobs.read_record(job_id, root)
+    assert finished["status"] == "failed"
+    assert finished["finished_at"]
+    assert finished["step_index"] == 1
+    log = admin_jobs.log_tail(job_id, root)
+    assert "起動できませんでした" in log
+    assert "missing-python" in log
+    assert "権限と空き容量" in log
+    assert not marker.exists()
+
+
 def test_system_status_reports_manifest_gate_and_artifacts(tmp_path):
     root = project(tmp_path)
     data = root / "data"

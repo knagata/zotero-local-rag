@@ -166,3 +166,8 @@ store; recovery uses a V3 backup or a clean rebuild from source files.
 ## Citation Networkのコレクション選択
 
 - コレクション一覧と所属資料はZotero Local APIからページング取得し、Zotero SQLiteを直接開かない。親コレクションの階層pathと空コレクションを返し、API障害は起動・通信設定の案内付き503とする。
+
+## 公開前の世代照合と処理失敗の表示
+
+- 検索世代の通常公開はwriter lock内で全DB監査のfingerprintを現世代へ再照合する。監査後の別writer更新は公開を拒否する。
+- 原本の同期待ち判定と取込でHTML保存フォルダの解決を共用する。工程の子プロセス起動失敗は理由と対処をログへ残し、failedで後工程を止める。

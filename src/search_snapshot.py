@@ -91,11 +91,13 @@ def apply_search_snapshot(root: Path) -> dict | None:
 def read_lock_path(root: Path) -> Path:
     try:
         from .indexing_lock import default_path
+        from .v3_data_plane import chroma_dir
     except ImportError:  # pragma: no cover - direct src/ entrypoints
         from indexing_lock import default_path
+        from v3_data_plane import chroma_dir
     directory = os.environ.get(ACTIVE_ROOT)
     if directory:
-        configured = Path(os.environ.get("CHROMA_DIR", "")).resolve()
+        configured = chroma_dir(root).resolve()
         if configured != (Path(directory) / "chroma").resolve():
             raise ValueError("Search snapshot paths changed after initialization")
         return Path(directory) / default_path(root).name

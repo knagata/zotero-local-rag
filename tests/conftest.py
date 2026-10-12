@@ -127,3 +127,23 @@ def _default_relations_database_to_a_scratch_file() -> None:
 
 
 _default_relations_database_to_a_scratch_file()
+
+
+def _isolate_query_snapshot_imports() -> None:
+    """Query entrypoint imports must never pin tests to the real library.
+
+    This runs before collection: an autouse fixture would be too late for
+    server modules that initialize their reader environment during import.
+    Temporary snapshot fixtures still use the real loader and validation.
+    """
+    from src import search_snapshot
+
+    original = search_snapshot.load_snapshot
+    def load_test_snapshot(root):
+        return None if Path(root).resolve() == ROOT else original(root)
+    search_snapshot.load_snapshot = load_test_snapshot
+    # Direct src entrypoints and package imports must share the same boundary.
+    sys.modules.setdefault("search_snapshot", search_snapshot)
+
+
+_isolate_query_snapshot_imports()
