@@ -1,6 +1,6 @@
 # Current development handoff
 
-Updated: 2026-10-14
+Updated: 2026-10-15
 
 現在の検証済み状態: 734添付・709資料・全DB監査合格・検索世代公開済み。外部OCR差替えを取込済み、残り索引/OCR待ち0。完全backup1世代・空き約92GiB。原画像確認済み94件の校訂補助は保持。全文校訂は未完了。最新結果と証明は末尾参照。
 
@@ -963,3 +963,10 @@ active V3はM5 clean rebuildと後続の対象修復を完了した監査済み�
 - 反映は固定管理job→共通writer lock→現gate/原本/索引/下書き版検証→対象差分journal1世代（未圧縮上限128MiB）→ローカル再埋め込み/構造/FTS更新→全監査。失敗時補償復旧、階層要約はstale。強制再取込後の自動再適用は行わず履歴から人間が確認。本番資料の校訂をテストとして実行していない。有料OCR/LLMなし。
 - 全体2,135passed/6skip/5deselected（103.52秒）、新規7module535文100%到達。native rollback、履歴追記/復元/競合、認証/Origin/原本変更拒否、固定jobとNode DOMの非同期保存競合を検証。文書/function/lint12件、fatal Ruff/compileall/src.cli import/diff検査合格。coverage改善を採択、Linux差の既知4moduleは従来上限維持。
 - 実読取りPDF一覧472件、既知差替え資料106頁/753チャンク・指定頁6チャンクを取得。writer未実行を確認して管理サービス再起動、Graph/local/public OAuth正常、新API/ページの未認証401を確認。Browserに利用可能backendがなく実画面目視は未実施。Herdr w1:t17/w1:p19、証跡data/quality/document-review-20261015/。別用途のWORKSPACE_MCP_IMPLEMENTATION_HANDOFF.mdは保持しコミット対象外。
+
+### 2026-10-15: 固定画面・直接目次編集・注/参考文献修正へ更新
+
+- /admin/debug/の画面全体をviewport固定とし、PDFは初期縦横fit。左右hover矢印/入力中を除く左右キー/物理ページ入力/倍率指定に対応。本文・目次・注/参考文献・差分・履歴をタブで切替え、PDFと保存操作を常時表示する。詳細はdocs/document-review.md。
+- 目次は紙面の目次ページに依存せず、名称/階層/開始ページ/ページ内位置を直接編集。未抽出位置は下書き保存のみ許可。注/参考文献は文字起こしと既存zoneのページ範囲/チャンク分類を編集でき、分類前後も追記型履歴/復元へ保存する。分類が既存構造保護検査と不一致なら黙って変更せず反映前に拒否する。
+- 注/参考文献に関係する本文・実効zone変更はreferences stale/Citation pendingへ戻す。同台帳も対象item限定journalに含めて復旧する。外部再処理は自動起動しない。原本/抽出・復元規則は変更せず、本番校訂・有料処理なし。
+- 最終全体2,141passed/6skip/5deselected（95.40秒）、8module601文100%到達、coverage悪化なし。Node DOMで3サイズfit/拡大領域/タブとページ/直接目次と分類/編集保持/保存競合、追加でitem限定台帳復旧を検証。文書/function/lint・fatal Ruff/compileall/src.cli import/diff検査合格。writer未実行確認後service再起動、Graph/local/public OAuth正常、新API未認証401。Browser backendなしで実画面目視は未実施。Herdr w1:t18/w1:p1A、証跡data/quality/review-ui-20261015/。

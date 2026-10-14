@@ -16,7 +16,7 @@ class FakeRuntime:
                   {'id':'NOTE','text':'Note','metadata':{'itemKey':'ITEM1234','noteKey':'N','source_type':'note'}}]
         self.current=copy.deepcopy(self.old);self.saved=[];self.fail=fail;self.restored=False
         self.build=build_document_structure;self.attach=attach_structure_metadata
-        self.close=Mock();self.verify_source=Mock()
+        self.close=Mock();self.verify_source=Mock();self.invalidate_references=Mock()
     def rows(self,item):return self.current
     def manifest(self):return {'files':{'ABCD1234':{}},'hnsw_validated':True}
     def snapshot(self,item):return {}
@@ -81,6 +81,7 @@ def runtime(tmp_path,monkeypatch):
     monkeypatch.setattr(db_relations,'get_db_connection',lambda:sqlite3.connect(db))
     monkeypatch.setattr(db_relations,'replace_document_structure',Mock())
     monkeypatch.setattr(db_relations,'mark_artifact_status',Mock())
+    monkeypatch.setattr(db_relations,'update_item_citation_status',Mock())
     monkeypatch.setattr(lexical_index,'upsert_chunks',Mock())
     value=Runtime(tmp_path)
     monkeypatch.setattr(value,'verify',Mock())
@@ -108,6 +109,8 @@ def test_runtime_updates_metadata_without_reembedding_unchanged_chunks(runtime,m
     (value.root/'data/quality').mkdir(parents=True)
     gate=value.root/'data/quality/server_database_gate.json';gate.write_text('success')
     value.invalidate();assert not gate.exists()
+    value.invalidate_references('ITEM1234')
+    value.db.update_item_citation_status.assert_called_once_with('ITEM1234','pending')
     value.close();col._chroma_client.close.assert_called_once()
     pipeline.write_text('{"pipeline_fingerprint":"WRONG"}')
     with pytest.raises(RuntimeError):Runtime(value.root)
@@ -175,3 +178,35 @@ def test_native_rollback_restores_text_vectors_and_removes_added_metadata(tmp_pa
         with sqlite3.connect(lexical) as c:
             assert c.execute('SELECT body FROM chunks_fts').fetchone()[0]=='Original'
     finally:runtime.close()
+
+
+def test_zone_only_correction_updates_structure_and_invalidates_references(tmp_path):
+    runtime=FakeRuntime();document,draft=data(runtime)
+    draft['edits']={};draft['zones']={'A1':'footnote'}
+    apply_with_runtime(runtime,document,draft,tmp_path)
+    assert runtime.current[0]['metadata']['zone']=='footnote'
+    assert runtime.current[0]['text']=='Original'
+    runtime.invalidate_references.assert_called_once_with('ITEM1234')
+    runtime=FakeRuntime('verify');document,draft=data(runtime)
+    runtime.old[0]['metadata']['zone']='endnote';runtime.current[0]['metadata']['zone']='endnote'
+    with pytest.raises(RuntimeError):apply_with_runtime(runtime,document,draft,tmp_path)
+    runtime.invalidate_references.assert_called_once_with('ITEM1234')
+    assert runtime.current==runtime.old and runtime.restored
+
+
+def test_manual_zone_is_never_silently_overwritten_by_structure_guard(tmp_path):
+    runtime=FakeRuntime();document,draft=data(runtime)
+    draft['edits']={};draft['zones']={'A1':'bibliography'}
+    with pytest.raises(ValueError,match='分類'):apply_with_runtime(runtime,document,draft,tmp_path)
+    assert runtime.current==runtime.old and not runtime.saved
+
+
+def test_reference_refresh_uses_text_and_effective_zone_changes():
+    from citation_graph.debug_apply import references_changed
+    body=[{'id':'A','metadata':{'zone':'body'}}]
+    bibliography=[{'id':'A','metadata':{'zone':'bibliography'}}]
+    assert references_changed(body,bibliography,{})
+    assert references_changed(bibliography,body,{})
+    assert references_changed(bibliography,bibliography,{'A':'corrected'})
+    assert not references_changed(body,body,{'A':'corrected'})
+    assert not references_changed(bibliography,bibliography,{})

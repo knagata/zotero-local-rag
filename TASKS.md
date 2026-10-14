@@ -2516,3 +2516,11 @@ A（PDF構造化）・B（課金LLM）は独立、C（構造抽出エンジン�
 - 反映前に対象itemだけの復旧journal（未圧縮128MiB上限、1世代）を検証保存。共有writer lock内で本文変更分のみローカル再埋め込み、構造/FTS更新、要約stale化を行い、失敗時は追加metadataも含め補償復旧する。後続で全DB監査を実行し、検索公開の全gate条件は維持。強制再取込後の手動修正の自動再適用は行わず、履歴から再確認する契約とした。
 - 計測付き全体2,135passed/6skip/5deselected（103.52秒）。新規7module535文すべて到達。native隔離Chromaで本文/ベクトル/追加metadata/FTSのrollbackを確認。Node DOMで履歴・差分・反映・非同期保存競合を別途検証。文書/function/lint ratchet12件、fatal Ruff/compileall/src.cli import/diff検査合格。coverage予算は改善を採択し、Linuxとの差が既知の4moduleは従来上限を維持。
 - 本番読取りでPDF一覧472件、対象106頁/753チャンクと指定頁6チャンクの対応を確認。本番修正・有料処理なし。処理実行中でないことを確認後サービス再起動、Graph/local/public OAuth正常、新debug API/ページは未認証401。Browser backend unavailableのため実ブラウザ目視は未実施。Herdr w1:t17/w1:p19で全検証/再起動を実施し最終正常、証跡はdata/quality/document-review-20261015/。
+
+### 2026-10-15: 資料デバッグの固定作業画面と注・参考文献の修正
+
+- 画面全体のスクロールを廃止し、本文/目次/注・参考文献/差分/履歴をタブへ分離。資料選択は開閉パネル、PDF/保存操作は常時表示。PDFの初期表示は縦横fit、倍率/幅指定時のみviewer内スクロール。左右端hover矢印、タッチ時常時矢印、直接ページ入力、入力欄を除く左右キーを実装。
+- 目次を見出し名/階層/開始物理ページ/任意のページ内位置で直接編集可能にした。目次ページ不要。未抽出の開始位置は下書きとして保持し、反映前に理由付きで拒否する。ページとanchorの食い違い、重複・階層飛越・範囲外は拒否。
+- 注/参考文献の文字起こしと既存zone分類をチャンク単位またはページ範囲で編集し、分類の前後も編集履歴・復元に含めた。構造保護規則が明示分類を書き換える場合は書込み前に拒否。注/参考文献に関係する本文・実効zone変更はreferences stale/Citation pending化し、同台帳もitem限定journal復旧対象とした。外部再処理は起動しない。
+- 最終の計測付き全体2,141passed/6skip/5deselected（95.40秒）。デバッグ8module601文すべて到達、coverage予算悪化なし・新module0を登録。Node DOMで3サイズfit、倍率変更時の領域確保、タブ/ページ移動、編集保持、直接目次/分類編集、保存競合を検証。追加で台帳のitem限定復旧を確認。文書/function/lint、fatal Ruff/compileall/src.cli import/diff検査合格。抽出・構造復元の既存規則は未変更。
+- 本番への校訂・有料OCR/LLMなし。writer未実行を確認して管理サービス再起動、Graph/local/public OAuth正常、新API未認証401。Browserの利用可能backendがなく実画面目視は未実施。Herdr w1:t18/w1:p1Aで全検証/再起動、証跡data/quality/review-ui-20261015/。利用者向け手順/契約/実装注意を同時更新。

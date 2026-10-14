@@ -140,3 +140,43 @@ def test_debug_worker_persists_exact_revision_and_runs_apply_then_audit(tmp_path
     assert commands[1][-4:]==('--attachment','ABCD1234','--revision','3')
     assert commands[2][1].endswith('run_db_audit.py')
     assert jobs.read_record(record['id'],tmp_path)['status']=='completed'
+
+
+def test_zone_history_restore_and_unresolved_toc_blocks_apply(debug_client,monkeypatch):
+    client,rows=debug_client
+    base='/admin/debug/api/documents/ABCD1234'
+    headers={'Authorization':'test','Origin':'https://review.test'}
+    version=client.get(base+'/pages/1',headers=headers).json()['version']
+    body={'revision':0,'version':version,'zones':{'C1':'bibliography'}}
+    response=client.post(base+'/draft',json=body,headers=headers)
+    assert response.status_code==200
+    diff=client.get(base+'/diff?revision=1',headers=headers).json()
+    assert diff['zone_changes']==[{'chunk_id':'C1','before':'body','after':'bibliography'}]
+    undo=client.post(base+'/history/1/restore',json={**body,'revision':1},headers=headers).json()
+    assert undo['zones']=={'C1':'body'} and undo['revision']==2
+    redo=client.post(base+'/history/1/restore?before=false',json={**body,'revision':2},headers=headers).json()
+    assert redo['zones']=={'C1':'bibliography'}
+    assert client.get(base+'/history',headers=headers).json()[0]['zone_changes']==1
+    rows[0]['metadata']['page']=None
+    data=client.get(base+'/pages/1',headers=headers).json()
+    body={'revision':3,'version':data['version'],'toc':[{'page':1,'level':1,'title':'Chapter'}],'toc_changed':True}
+    saved=client.post(base+'/draft',json=body,headers=headers)
+    assert saved.status_code==200 and 'chunk_id' not in saved.json()['toc'][0]
+    from citation_graph import admin_jobs
+    start=Mock();monkeypatch.setattr(admin_jobs,'start_job',start)
+    applied=client.post(base+'/apply',json={**body,'revision':4},headers=headers)
+    assert applied.status_code==400 and 'チャンク' in applied.json()['error']
+    start.assert_not_called()
+
+
+def test_empty_saved_draft_never_starts_a_worker(debug_client,monkeypatch):
+    client,_=debug_client
+    base='/admin/debug/api/documents/ABCD1234'
+    headers={'Authorization':'test','Origin':'https://review.test'}
+    version=client.get(base+'/pages/1',headers=headers).json()['version']
+    client.post(base+'/draft',json={'revision':0,'version':version},headers=headers)
+    from citation_graph import admin_jobs
+    start=Mock();monkeypatch.setattr(admin_jobs,'start_job',start)
+    response=client.post(base+'/apply',json={'revision':1,'version':version},headers=headers)
+    assert response.status_code==400 and '修正がありません' in response.json()['error']
+    start.assert_not_called()

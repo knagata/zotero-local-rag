@@ -9,7 +9,7 @@ from pathlib import Path
 
 MAX_JOURNAL_BYTES = 128 * 1024**2
 
-TABLES = ('document_structures','document_nodes','document_node_chunks','document_node_summaries',
+TABLES = ('item_citation_status','document_structures','document_nodes','document_node_chunks','document_node_summaries',
           'document_node_summary_parts','document_node_summary_reuse_cache',
           'artifact_processing_status','artifact_processing_events')
 

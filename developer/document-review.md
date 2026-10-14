@@ -24,3 +24,19 @@ journalだけを根拠に監査なしで検索を公開しない。
 `tests/test_debug_apply.py`。native Chromaの小さい隔離DBで、反映途中の失敗時に
 本文・ベクトル・追加metadata・FTSが正確に戻ることを確認する。
 本番DBへの校訂をテストとして実行せず、有料機能を起動しない。
+
+## 画面と分類編集
+
+画面全体はviewport固定とし、本文・目次・注/参考文献・差分・履歴をタブで切替える。
+紙面は初期fit、拡大時のみviewer内部をスクロールする。左右端のoverlay矢印は
+スクロール領域の外へ固定し、入力中の左右キーをページ移動に使用しない。
+`tests/debug_review_dom.cjs` は3サイズのfit計算・拡大時の全領域到達・タブ/ページ移動・
+直接目次追加・注分類・保存競合を検証する。実ブラウザ目視とは区別する。
+
+`citation_graph/debug_annotations.py` がページ指定を既存チャンクへ解決する。
+未抽出ページの目次下書きは許可するが、反映時は拒否する。既存anchorとpageの食い違いも拒否。
+分類は既存ZONE_POLICIESのみ許可し、上限500チャンク、前後分類も履歴へ保存する。
+構造builderが明示分類を変更する場合は書込み前に拒否し、保護規則を迂回しない。
+参考文献/注に関係する本文・実効zoneの変更ではreferencesをstale、
+item_citation_statusをpendingへ戻す。同台帳もrollback journalのitem限定snapshotに含める。
+Citation Networkの再処理は自動起動せず、従来の明示操作・課金同意を維持する。

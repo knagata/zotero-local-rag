@@ -6,6 +6,7 @@
     "citation_graph/admin_jobs.py": 52,
     "citation_graph/admin_plan.py": 0,
     "citation_graph/admin_routes.py": 30,
+    "citation_graph/debug_annotations.py": 0,
     "citation_graph/debug_apply.py": 0,
     "citation_graph/debug_changes.py": 0,
     "citation_graph/debug_jobs.py": 0,

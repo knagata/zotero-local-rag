@@ -20,6 +20,12 @@ class DraftRequest(BaseModel):
     edits: dict[str, str] = Field(default_factory=dict, max_length=500)
     toc: list[dict] = Field(default_factory=list, max_length=500)
     toc_changed: StrictBool = False
+    zones: dict[str, str] = Field(default_factory=dict, max_length=500)
+
+
+def failure(exc):
+    code = 409 if isinstance(exc, ReviewConflict) else 404 if isinstance(exc, FileNotFoundError) else 400
+    return JSONResponse({'error':str(exc)}, status_code=code, headers={'Cache-Control':'no-store'})
 
 
 def register_debug_routes(app, root: Path, require_admin, require_same_origin, actor):
@@ -29,10 +35,6 @@ def register_debug_routes(app, root: Path, require_admin, require_same_origin, a
     async def document(key, page):
         path, item = await reader.resolve(key)
         return await asyncio.to_thread(reader.inspect, key, path, item, page), path
-
-    def failure(exc):
-        code = 409 if isinstance(exc, ReviewConflict) else 404 if isinstance(exc, FileNotFoundError) else 400
-        return JSONResponse({'error':str(exc)}, status_code=code, headers={'Cache-Control':'no-store'})
 
     @app.get('/admin/debug/')
     async def debug_page(request: Request):
@@ -86,7 +88,7 @@ def register_debug_routes(app, root: Path, require_admin, require_same_origin, a
             return denied
         try:
             data, _ = await document(key, 1)
-            saved = await asyncio.to_thread(reader.save, data, body.revision, body.version, body.edits, body.toc, actor(request), body.toc_changed)
+            saved = await asyncio.to_thread(reader.save, data, body.revision, body.version, body.edits, body.toc, actor(request), body.toc_changed, body.zones)
             return JSONResponse(saved, headers={'Cache-Control':'no-store'})
         except (ValueError, OSError, RuntimeError) as exc:
             return failure(exc)
@@ -114,6 +116,10 @@ def register_debug_routes(app, root: Path, require_admin, require_same_origin, a
             if (saved['revision'] != body.revision or data['version'] != body.version
                     or saved.get('version') != body.version):
                 raise ReviewConflict('原本・索引・保存済み下書きが変わっています。差分を再確認してください。')
+            if not saved['edits'] and not saved['toc'] and not saved.get('toc_changed') and not saved.get('zones'):
+                raise ValueError('反映する修正がありません。本文・目次・分類を編集してください。')
+            from citation_graph.debug_changes import corrected_rows
+            corrected_rows(data['all_chunks'],saved['edits'],saved['toc'],zones=saved.get('zones'))
             from citation_graph.admin_jobs import start_job, public_record
             record = start_job('debug_apply', '', actor(request), root,
                                debug_selection={'attachment_key':key,'revision':body.revision})
@@ -134,6 +140,7 @@ def register_debug_routes(app, root: Path, require_admin, require_same_origin, a
             indexed = {row['id']:row['text'] for row in data['all_chunks']}
             return JSONResponse({'revision':revision,'version':data['version'],
                 'text_changes':[{'chunk_id':key,'before':indexed[key],'after':text} for key,text in draft['edits'].items()],
+                'zone_changes':[{'chunk_id':key,'before':next(row['metadata'].get('zone') or 'body' for row in data['all_chunks'] if row['id']==key),'after':zone} for key,zone in draft.get('zones',{}).items()],
                 'toc_before':data['current_toc'],'toc_after':draft['toc'] if draft.get('toc_changed') or draft['toc'] else data['current_toc']}, headers={'Cache-Control':'no-store'})
         except (ValueError, OSError, RuntimeError) as exc:
             return failure(exc)
@@ -167,7 +174,7 @@ def register_debug_routes(app, root: Path, require_admin, require_same_origin, a
                 raise ReviewConflict('原本が異なる版の修正は自動復元できません。紙面と履歴を確認してください。')
             edits = historical.get('originals',{}) if before else historical['edits']
             toc = historical.get('toc_before',[]) if before else historical['toc']
-            saved = await asyncio.to_thread(reader.save,data,body.revision,body.version,edits,toc,actor(request),historical.get("toc_changed",bool(historical["toc"])))
+            saved = await asyncio.to_thread(reader.save,data,body.revision,body.version,edits,toc,actor(request),historical.get("toc_changed",bool(historical["toc"])),historical.get("zones_before" if before else "zones",{}))
             return JSONResponse(saved,headers={'Cache-Control':'no-store'})
         except (ValueError,OSError,RuntimeError) as exc:
             return failure(exc)

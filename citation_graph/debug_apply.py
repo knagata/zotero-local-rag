@@ -12,13 +12,21 @@ from citation_graph.debug_reader import DebugReader
 from citation_graph.debug_store import ReviewConflict
 
 
+def references_changed(old: list[dict], candidate: list[dict], edited: dict) -> bool:
+    from src.document_structure import CITATION_EXTRACT_ZONES
+    indexed = {row['id']:row['metadata'].get('zone') for row in old}
+    return any((row['id'] in edited or indexed.get(row['id']) != row['metadata'].get('zone'))
+               and (indexed.get(row['id']) in CITATION_EXTRACT_ZONES
+                    or row['metadata'].get('zone') in CITATION_EXTRACT_ZONES) for row in candidate)
+
+
 def apply_with_runtime(runtime, document: dict, draft: dict, root: Path) -> None:
     """All writes occur under the caller's canonical writer lock."""
     item, key = document['item_key'], document['attachment_key']
     old = runtime.rows(item)
     if len(old) > 50000 or not document['all_chunks']:
         raise ValueError('索引済みの資料を選び、対象が大きい場合は添付を分けてください。')
-    changed = corrected_rows(document['all_chunks'], draft['edits'], draft['toc'], toc_changed=draft.get('toc_changed',False))
+    changed = corrected_rows(document['all_chunks'], draft['edits'], draft['toc'], toc_changed=draft.get('toc_changed',False), zones=draft.get('zones'))
     by_id = {row['id']:row for row in changed}
     candidate = [by_id.get(row['id'], copy.deepcopy(row)) for row in old]
     source = [row for row in candidate if row['metadata'].get('source_type') != 'note']
@@ -26,6 +34,9 @@ def apply_with_runtime(runtime, document: dict, draft: dict, root: Path) -> None
     if not built['diagnostics'].get('valid'):
         raise ValueError('修正後の文書構造が不正です。下書きを確認してください。')
     candidate = runtime.attach(source, built['nodes'])
+    effective = {row['id']:row['metadata'].get('zone') for row in candidate}
+    if any(effective.get(key) != zone for key,zone in draft.get('zones',{}).items()):
+        raise ValueError('指定した分類が文書構造の検査と一致しません。資料全体を参考文献等にしていないか、範囲と見出しを確認してください。')
     manifest = runtime.manifest()
     journal = {'item_key':item,'attachment_key':key,'revision':draft['revision'],
                'rows':old,'manifest':manifest,'relations':runtime.snapshot(item),
@@ -41,6 +52,8 @@ def apply_with_runtime(runtime, document: dict, draft: dict, root: Path) -> None
         runtime.save_manifest(pending)
         runtime.write(candidate, set(draft['edits']))
         runtime.structure(item, built)
+        if references_changed(old,candidate,draft['edits']):
+            runtime.invalidate_references(item)
         runtime.verify(candidate[0]['id'])
         runtime.verify_source()
         pending['inflight_attachments'] = [value for value in pending['inflight_attachments'] if value != key]
@@ -122,6 +135,10 @@ class Runtime:
         for artifact in ('summary','summary_index'):
             self.db.mark_artifact_status(item,artifact,'stale',reason_code='manual_review_applied')
 
+    def invalidate_references(self, item):
+        self.db.mark_artifact_status(item,'references','stale',reason_code='manual_review_applied')
+        self.db.update_item_citation_status(item,'pending')
+
     def verify(self, sample):
         from src.index_from_zotero import _flush_and_verify_hnsw
         _flush_and_verify_hnsw(self.collection,sample)
@@ -160,7 +177,7 @@ def apply_review(root: Path, key: str, revision: int) -> None:
         draft=reader.store.read(key)
         if draft['revision'] != revision or draft.get('version') != document['version']:
             raise ReviewConflict('下書き・原本・索引が変更されました。差分を再確認してください。')
-        if not draft['edits'] and not draft['toc'] and not draft.get('toc_changed'):
+        if not draft['edits'] and not draft['toc'] and not draft.get('toc_changed') and not draft.get('zones'):
             raise ValueError('反映する修正がありません。')
         from scripts.run_db_audit import _validated_report_paths
         validate_database_gate(_validated_report_paths(root)[0],allow_pending_ocr=True)

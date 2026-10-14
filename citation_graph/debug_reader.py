@@ -15,6 +15,7 @@ from src.db_relations import get_artifact_processing_statuses, get_chunk_quality
 from src.manifest import load_manifest
 from src.v3_data_plane import chroma_dir, manifest_path
 from src.zotero_source_localapi import ZoteroLocalAPI
+from citation_graph.debug_annotations import resolve_toc, validate_zones
 from citation_graph.debug_store import DraftStore, ReviewConflict, validate_draft
 
 
@@ -123,13 +124,18 @@ class DebugReader:
                 'source_sha256':digest,'draft':draft,'draft_applied':applied,'current_toc':current_toc(rows),
                 'draft_stale':bool(not applied and draft.get('version') and draft['version'] != version),
                 'chunks':[row for row in rows if str(row['metadata'].get('page')) == str(page)],
+                'anchors':[{'id':row['id'],'page':row['metadata'].get('page'),'zone':row['metadata'].get('zone') or 'body'} for row in rows],
                 'all_chunks':rows}
 
-    def save(self, document: dict, revision: int, version: str, edits: dict, toc: list, actor: str, toc_changed: bool = False) -> dict:
+    def save(self, document: dict, revision: int, version: str, edits: dict, toc: list, actor: str, toc_changed: bool = False, zones: dict | None = None) -> dict:
         if document['version'] != version:
             raise ReviewConflict('原本または索引が変更されました。再読込して修正内容を確認してください。')
-        validate_draft(document['all_chunks'], edits, toc)
+        toc = resolve_toc(document['all_chunks'], toc, allow_unresolved=True, total_pages=document['total_pages'])
+        zones = zones or {}
+        validate_draft(document['all_chunks'], edits, toc, allow_unresolved=True)
+        validate_zones(document['all_chunks'], zones)
         return self.store.save(document['attachment_key'], revision,
                                {'version':version,'source_sha256':document['source_sha256'],'edits':edits,'toc':toc,'toc_changed':toc_changed,
                                 'originals':{row['id']:row['text'] for row in document['all_chunks'] if row['id'] in edits},
+                                'zones':zones,'zones_before':{row['id']:row['metadata'].get('zone') or 'body' for row in document['all_chunks'] if row['id'] in zones},
                                 'toc_before':current_toc(document['all_chunks'])}, actor)

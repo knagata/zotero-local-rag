@@ -46,7 +46,7 @@ class DraftStore:
                 return []
             rows = connection.execute('SELECT revision,actor,created_at,payload FROM revisions WHERE attachment=? AND revision<? ORDER BY revision DESC LIMIT 50', (attachment,before)).fetchall()
         return [{'revision':revision,'actor':actor,'created_at':created,
-                 'text_changes':len(json.loads(payload)['edits']),'headings':len(json.loads(payload)['toc'])}
+                 'text_changes':len(json.loads(payload)['edits']),'headings':len(json.loads(payload)['toc']),'zone_changes':len(json.loads(payload).get('zones',{}))}
                 for revision,actor,created,payload in rows]
 
     def revision(self, attachment: str, revision: int) -> dict:
@@ -61,7 +61,7 @@ class DraftStore:
         return {'revision':revision,'actor':row[1],'created_at':row[2],**json.loads(row[0])}
 
 
-def validate_draft(rows: list[dict], edits: dict, toc: list[dict]) -> None:
+def validate_draft(rows: list[dict], edits: dict, toc: list[dict], *, allow_unresolved: bool = False) -> None:
     indexed = {row['id']: row for row in rows}
     if len(edits) > 500 or len(toc) > 500:
         raise ValueError('一度に保存できる修正・見出しは500件までです。')
@@ -69,11 +69,19 @@ def validate_draft(rows: list[dict], edits: dict, toc: list[dict]) -> None:
         if key not in indexed or not isinstance(text, str) or not text.strip() or len(text) > 30000:
             raise ValueError('修正対象のチャンク、または修正本文が不正です。')
     order = {row['id']: n for n, row in enumerate(rows)}
-    last, level = -1, 0
+    last, level, last_page = -1, 0, 0
     for entry in toc:
         anchor, depth, title = entry.get('chunk_id'), entry.get('level'), entry.get('title')
-        if (anchor not in indexed or order[anchor] <= last or isinstance(depth, bool)
+        unresolved = allow_unresolved and not anchor and isinstance(entry.get('page'), int) and not isinstance(entry.get('page'), bool) and entry['page'] > 0
+        if ((not unresolved and (anchor not in indexed or order[anchor] <= last)) or isinstance(depth, bool)
                 or not isinstance(depth, int) or not 1 <= depth <= min(8, level+1)
                 or not isinstance(title, str) or not title.strip() or len(title) > 300):
             raise ValueError('目次は本文順・重複なしで指定し、階層は1段ずつ深くしてください。')
-        last, level = order[anchor], depth
+        page = entry.get('page')
+        if isinstance(page, int):
+            if page < last_page:
+                raise ValueError('目次の開始ページは本文順にしてください。')
+            last_page = page
+        if not unresolved:
+            last = order[anchor]
+        level = depth

@@ -112,9 +112,13 @@ def test_small_journal_restores_only_selected_item(tmp_path):
     c.execute('CREATE TABLE document_node_chunks(node_id,chunk_id)')
     c.executemany('INSERT INTO document_nodes VALUES(?,?)',[('N','ITEM'),('OTHER','OTHER')])
     c.execute("INSERT INTO document_node_chunks VALUES('N','CHUNK')");c.commit()
+    c.execute('CREATE TABLE item_citation_status(item_key PRIMARY KEY,s2_status)')
+    c.executemany('INSERT INTO item_citation_status VALUES(?,?)',[('ITEM','mapped'),('OTHER','mapped')]);c.commit()
     snapshot=snapshot_relations(c,'ITEM')
     c.execute("UPDATE document_node_chunks SET chunk_id='BROKEN'");c.commit()
+    c.execute("UPDATE item_citation_status SET s2_status='pending'");c.commit()
     restore_relations(c,'ITEM',snapshot)
+    assert dict(c.execute('SELECT * FROM item_citation_status'))=={'ITEM':'mapped','OTHER':'pending'}
     assert c.execute('SELECT chunk_id FROM document_node_chunks').fetchone()[0]=='CHUNK'
     assert c.execute('SELECT count(*) FROM document_nodes').fetchone()[0]==2
     path=tmp_path/'journal/current.json.gz';write_journal(path,{'relations':snapshot})
@@ -202,3 +206,31 @@ def test_debug_review_browser_interactions():
     if node is None:
         pytest.skip('Node unavailable; DOM harness also runs with the supplied Node runtime')
     subprocess.run([node,'tests/debug_review_dom.cjs'],check=True)
+
+
+def test_direct_toc_pages_and_unresolved_drafts(review):
+    from citation_graph.debug_annotations import resolve_toc,validate_zones
+    reader,path,rows,_=review
+    doc=reader.inspect('ABCD1234',path,'ITEM1234',1)
+    toc=[{'page':1,'level':1,'title':'Chapter'},{'page':2,'level':2,'title':'Section'}]
+    saved=reader.save(doc,0,doc['version'],{},toc,'reviewer',True,{'ATT_2':'endnote'})
+    assert saved['toc'][0]['chunk_id']=='ATT_1'
+    assert saved['zones_before']=={'ATT_2':'body'}
+    changed=corrected_rows(rows,{},saved['toc'],zones=saved['zones'])
+    assert changed[1]['metadata']['zone']=='endnote'
+    assert 'zone' not in rows[1]['metadata']
+    with pytest.raises(ValueError):validate_zones(rows,{'ATT_1':'unknown'})
+    with pytest.raises(ValueError):validate_zones(rows,{'MISSING':'footnote'})
+    with pytest.raises(ValueError):validate_zones(rows,{str(n):'body' for n in range(501)})
+    empty_rows=[rows[0]]
+    unresolved=resolve_toc(empty_rows,toc,allow_unresolved=True,total_pages=2)
+    validate_draft(empty_rows,{},unresolved,allow_unresolved=True)
+    assert 'chunk_id' not in unresolved[1]
+    with pytest.raises(ValueError,match='チャンク'):corrected_rows(empty_rows,{},unresolved)
+    for page in [0,-1,3,True,'1']:
+        with pytest.raises(ValueError):resolve_toc(rows,[{'page':page,'level':1,'title':'x'}],total_pages=2)
+    with pytest.raises(ValueError):resolve_toc(rows,[{'chunk_id':'MISSING','level':1,'title':'x'}])
+    with pytest.raises(ValueError):resolve_toc(rows,[{'chunk_id':'ATT_1','page':2,'level':1,'title':'x'}])
+    with pytest.raises(ValueError):resolve_toc(rows,[{'level':1,'title':'x'}],allow_unresolved=True)
+    with pytest.raises(ValueError):validate_draft(rows,{},[{'page':2,'level':1,'title':'x'},{'page':1,'level':1,'title':'y'}],allow_unresolved=True)
+    assert doc['anchors'][0]=={'id':'ATT_1','page':1,'zone':'body'}
