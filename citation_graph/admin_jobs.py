@@ -26,7 +26,7 @@ UPDATE_STATUS_REPORT = ROOT / "data" / "admin_update_status.json"
 UPDATE_STATUS_MAX_AGE_SECONDS = 45 * 60
 FRESHNESS_AFFECTING_JOBS = frozenset({
     "quick_update", "library_update", "structure_update", "summary_batch", "citation_update",
-    "mistral_ocr", "selected_steps",
+    "mistral_ocr", "selected_steps", "debug_apply",
 })
 
 
@@ -285,11 +285,15 @@ def reconcile_stale_jobs(root: Path = ROOT) -> None:
 def start_job(
     job_type: str, confirmation: str, actor: str, root: Path = ROOT,
     *, selected_steps: list[str] | None = None, paid_consent: bool = False,
+    debug_selection: dict | None = None,
 ) -> dict[str, Any]:
     definitions = job_definitions(root)
     if job_type == "selected_steps":
         from citation_graph.admin_plan import build_plan
         definitions[job_type] = build_plan(selected_steps, definitions)
+    if job_type == "debug_apply":
+        from citation_graph.debug_jobs import build_debug_job
+        definitions[job_type] = build_debug_job(root, definitions, debug_selection)
     if job_type not in definitions:
         raise ValueError("unknown maintenance job")
     definition = definitions[job_type]
@@ -318,6 +322,7 @@ def start_job(
             "step_index": 0,
             "step_total": len(definition.steps),
             "selected_steps": selected_steps,
+            "debug_selection": debug_selection,
             "paid_consent": paid_consent,
             "pid": None,
             "exit_code": None,
@@ -558,7 +563,7 @@ def _log_step_failure(log, label: str, exit_code: int) -> None:
 
 def run_job(job_id: str, job_type: str, token: str, root: Path = ROOT) -> int:
     definition = job_definitions(root).get(job_type)
-    if definition is None and job_type != "selected_steps":
+    if definition is None and job_type not in {"selected_steps", "debug_apply"}:
         return 2
     deadline = time.monotonic() + 5
     while True:
@@ -575,6 +580,9 @@ def run_job(job_id: str, job_type: str, token: str, root: Path = ROOT) -> int:
         definition = build_plan(record.get("selected_steps"), job_definitions(root))
         if definition.paid and record.get("paid_consent") is not True:
             return 2
+    if job_type == "debug_apply":
+        from citation_graph.debug_jobs import build_debug_job
+        definition = build_debug_job(root, job_definitions(root), record.get("debug_selection"))
     jobs_dir = root / "data" / "admin_jobs"
     jobs_dir.mkdir(parents=True, exist_ok=True)
     lock_fd = os.open(jobs_dir / ".active.lock", os.O_RDWR | os.O_CREAT, 0o600)

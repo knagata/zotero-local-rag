@@ -2508,3 +2508,11 @@ A（PDF構造化）・B（課金LLM）は独立、C（構造抽出エンジン�
 - 734添付・709資料の全gate合格、原本欠落頁/孤立本文/構造参照不整合/検索不能0。本文673,626・要約8,683の検索コピーをnative検索/close/reopen検証後に公開（20261014T055307Z-92c79162）。更新状況再確認は残り索引0・OCR待ち0。Graph/local/public OAuth正常。今回の有料OCR/LLM呼出しなし。
 - 追加backupの本文/要約native実検索・close/reopenも合格。監査・検索公開後、writer lock下で現gate世代を再検証し、旧完全backupにopen handleがないことを確認。旧pre-rice-mistral-20261010（論理10,579,505,563byte）を整理し、小さい旧manifest/証明だけ保存。完全backupはpre-ocr-complete-import-20261014の1世代（約10GiB）に戻した。空き約92GiB。原本・raw OCR・校訂証跡は保持。
 - 証跡/運用スクリプトはdata/quality/ocr-complete-import-20261014/。Herdr w1:t15/w1:p17で取込/全再監査/整理、w1:t16/w1:p18でbackup検索/更新状況を検証し最終exit0。初回監査は退役整理前に中断、整理後の全監査/公開は完了。
+
+### 2026-10-15: 資料デバッグ別ページと追記型編集履歴
+
+- 管理画面に「資料デバッグ」を追加。問題記録を持つPDF一覧、物理紙面/チャンク並列表示、ページ移動、本文・目次下書き、差分確認、固定jobによる明示反映を実装。原本を変更せず、有料OCR/LLMは呼ばない。利用手順はdocs/document-review.md、安全性はdeveloper/document-review.md。
+- 下書き保存ごとに日時・保存者・修正前後本文/目次を独立SQLiteへ追記。履歴の更新/削除APIは作らず、復元も新revisionを作る。版競合・原本差替え・索引更新を検出して拒否。保存中の追記・資料切替で編集が失われるUI競合も検証。
+- 反映前に対象itemだけの復旧journal（未圧縮128MiB上限、1世代）を検証保存。共有writer lock内で本文変更分のみローカル再埋め込み、構造/FTS更新、要約stale化を行い、失敗時は追加metadataも含め補償復旧する。後続で全DB監査を実行し、検索公開の全gate条件は維持。強制再取込後の手動修正の自動再適用は行わず、履歴から再確認する契約とした。
+- 計測付き全体2,135passed/6skip/5deselected（103.52秒）。新規7module535文すべて到達。native隔離Chromaで本文/ベクトル/追加metadata/FTSのrollbackを確認。Node DOMで履歴・差分・反映・非同期保存競合を別途検証。文書/function/lint ratchet12件、fatal Ruff/compileall/src.cli import/diff検査合格。coverage予算は改善を採択し、Linuxとの差が既知の4moduleは従来上限を維持。
+- 本番読取りでPDF一覧472件、対象106頁/753チャンクと指定頁6チャンクの対応を確認。本番修正・有料処理なし。処理実行中でないことを確認後サービス再起動、Graph/local/public OAuth正常、新debug API/ページは未認証401。Browser backend unavailableのため実ブラウザ目視は未実施。Herdr w1:t17/w1:p19で全検証/再起動を実施し最終正常、証跡はdata/quality/document-review-20261015/。

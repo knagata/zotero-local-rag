@@ -956,3 +956,10 @@ active V3はM5 clean rebuildと後続の対象修復を完了した監査済み�
 - 734添付・709資料の全gate合格、原本欠落頁/孤立本文/構造参照不整合/検索不能0。本文673,626・要約8,683の検索コピーをnative検索/close/reopen検証後に公開（20261014T055307Z-92c79162）。更新状況再確認は残り索引0・OCR待ち0。Graph/local/public OAuth正常。今回の有料OCR/LLM呼出しなし。
 - 追加backupの本文/要約native実検索・close/reopenも合格。監査・検索公開後、writer lock下で現gate世代を再検証し、旧完全backupにopen handleがないことを確認。旧pre-rice-mistral-20261010（論理10,579,505,563byte）を整理し、小さい旧manifest/証明だけ保存。完全backupはpre-ocr-complete-import-20261014の1世代（約10GiB）に戻した。空き約92GiB。原本・raw OCR・校訂証跡は保持。
 - 証跡/運用スクリプトはdata/quality/ocr-complete-import-20261014/。Herdr w1:t15/w1:p17で取込/全再監査/整理、w1:t16/w1:p18でbackup検索/更新状況を検証し最終exit0。初回監査は退役整理前に中断、整理後の全監査/公開は完了。
+
+### 2026-10-15: 資料デバッグ・編集履歴を実装しサービスへ反映
+
+- 別ページ/admin/debug/を管理画面から開く。問題PDF一覧、紙面/チャンク比較、本文・目次修正、下書き/差分/明示DB反映を実装。保存日時・保存者・前後内容を追記型履歴へ保存し、復元も新しい版にする。原本や履歴を上書きしない。利用手順docs/document-review.md、契約SPEC.md、実装安全性developer/document-review.md。
+- 反映は固定管理job→共通writer lock→現gate/原本/索引/下書き版検証→対象差分journal1世代（未圧縮上限128MiB）→ローカル再埋め込み/構造/FTS更新→全監査。失敗時補償復旧、階層要約はstale。強制再取込後の自動再適用は行わず履歴から人間が確認。本番資料の校訂をテストとして実行していない。有料OCR/LLMなし。
+- 全体2,135passed/6skip/5deselected（103.52秒）、新規7module535文100%到達。native rollback、履歴追記/復元/競合、認証/Origin/原本変更拒否、固定jobとNode DOMの非同期保存競合を検証。文書/function/lint12件、fatal Ruff/compileall/src.cli import/diff検査合格。coverage改善を採択、Linux差の既知4moduleは従来上限維持。
+- 実読取りPDF一覧472件、既知差替え資料106頁/753チャンク・指定頁6チャンクを取得。writer未実行を確認して管理サービス再起動、Graph/local/public OAuth正常、新API/ページの未認証401を確認。Browserに利用可能backendがなく実画面目視は未実施。Herdr w1:t17/w1:p19、証跡data/quality/document-review-20261015/。別用途のWORKSPACE_MCP_IMPLEMENTATION_HANDOFF.mdは保持しコミット対象外。

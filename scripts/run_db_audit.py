@@ -126,30 +126,32 @@ def _explain_failure(output: Path | None, previous: int | None, exit_code: int) 
         print(f"[必要な作業] {action}", flush=True)
 
 
-def _validated_report_paths() -> tuple[Path, Path, Path, Path]:
+def _validated_report_paths(root: Path | None = None) -> tuple[Path, Path, Path, Path]:
     """Validate all outputs before invalidating a gate or starting a writer.
 
     Read raw settings here so even an invalid V3 environment cannot turn gate
     invalidation into deletion of a configured input. Resolve aliases once and
     pass these same absolute paths to the children.
     """
-    def configured(name: str, default: Path) -> Path:
-        return resolve_configured_path(ROOT, os.environ.get(name, default)).resolve()
+    root = root or ROOT
 
-    chroma = configured("CHROMA_DIR", ROOT / "data" / "chroma")
+    def configured(name: str, default: Path) -> Path:
+        return resolve_configured_path(root, os.environ.get(name, default)).resolve()
+
+    chroma = configured("CHROMA_DIR", root / "data" / "chroma")
     protected = [
-        configured("MANIFEST_PATH", ROOT / "data" / "manifest_v3.json"),
+        configured("MANIFEST_PATH", root / "data" / "manifest_v3.json"),
         configured("PIPELINE_CONFIG_PATH", chroma / "embedder_config_v3.json"),
     ]
     for name, default in (
-        ("LEXICAL_DB_PATH", ROOT / "data" / "lexical_v3.sqlite3"),
-        ("RELATIONS_DB_PATH", ROOT / "data" / "relations.db"),
+        ("LEXICAL_DB_PATH", root / "data" / "lexical_v3.sqlite3"),
+        ("RELATIONS_DB_PATH", root / "data" / "relations.db"),
     ):
         database = configured(name, default)
         protected.extend(Path(str(database) + suffix).resolve()
                          for suffix in ("", "-wal", "-shm", "-journal"))
 
-    outputs = tuple(configured(name, ROOT / "data" / "quality" / default) for name, default in (
+    outputs = tuple(configured(name, root / "data" / "quality" / default) for name, default in (
         ("SERVER_DB_GATE_PATH", "server_database_gate.json"),
         ("SERVER_ZOTERO_AUDIT_PATH", "server_zotero_reconciliation.json"),
         ("SERVER_SOURCE_AUDIT_PATH", "server_source_verification.json"),

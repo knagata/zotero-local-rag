@@ -44,6 +44,10 @@ def register_admin_routes(app: FastAPI, settings: Any, authenticated_email) -> N
             return None
         return JSONResponse({"error": "request origin is not authorized"}, status_code=403)
 
+    from citation_graph.debug_routes import register_debug_routes
+    register_debug_routes(app, ROOT, require_admin, require_same_origin,
+                          lambda request: str(authenticated_email(request, settings.allowed_google_emails)))
+
     @app.get("/admin")
     @app.get("/admin/")
     async def admin_page(request: Request) -> Response:
@@ -69,7 +73,7 @@ def register_admin_routes(app: FastAPI, settings: Any, authenticated_email) -> N
         unauthorized = require_admin(request)
         if unauthorized:
             return unauthorized
-        if name not in {"admin.css", "admin.js"}:
+        if name not in {"admin.css", "admin.js", "debug.css", "debug.js"}:
             return JSONResponse({"error": "not found"}, status_code=404)
         media_type = "text/css" if name.endswith(".css") else "text/javascript"
         return FileResponse(
