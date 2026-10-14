@@ -2494,3 +2494,9 @@ A（PDF構造化）・B（課金LLM）は独立、C（構造抽出エンジン�
 - 管理監査は部分通過時に後続へ進むが、全件合格とせず検索snapshotも公開しない。異常終了した監査の部分証明は破棄。CLIの全gate要求は既定で保持し、部分利用は--allow-pending-ocrを明示。要約の検証から書込み/埋め込みまで共通writer lockを保持する。実装契約はSPEC.md、開発手順はdeveloper/database-audit-repair.md。
 - 最終の計測付き全回帰2,107passed/5skip/10deselected（86.70秒）、coverage budget合格。新規indexed_gate24文すべて到達。database_gateの未到達予算を24から12へ縮小。追加のUI/文書/ratchet30passed/2skip、Node DOMで単独選択・未OCR一覧・部分通過の未完了表示・同意等を検証。fatal Ruff/compileall/diff検査合格。
 - 利用者の索引作成中という指定に従い、実DBの読取り監査/修復/取込・有料API・サービス再起動は行わない。indexerの変更検知対象21ファイルのHEAD一致を確認。実データでの動作と画面反映は索引終了後の監査/サービス再起動が必要。稼働中の工程は変更しない。Herdr w1:t15/w1:p17の全テストexit0、証跡はdata/quality/partial-processing-20261014/。
+
+### 2026-10-14: 管理サービス再起動と差替えPDF確認
+
+- 索引/監査/要約プロセスとindexing lockがないことを確認し、依頼どおり管理サービスを再起動。Graph HTTP200、Graph/local/public OAuthと定期確認Agent正常。未OCR残件・単独要約の実装を新serviceへ反映した。Herdr w1:t15/w1:p17の再起動exit0。
+- Zotero Local APIの対象資料の子添付が新IDへ変更されたことを確認。差替えPDFは106頁/11,703,190byte、文字層149,621文字・104頁で非空。文字層の存在確認でありOCRの全文精度保証ではない。新添付はmanifest未登録・対象本文0件、旧添付記録は残存。新添付のocr-completeタグ未設定。
+- 今回は確認と再起動だけ行い、タグ変更・DB取込・監査・有料OCR/LLMは実行していない。再OCR防止には取込前に親または新添付へocr-completeが必要。証跡はdata/quality/restart-pdf-check-20261014/。
