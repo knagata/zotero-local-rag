@@ -47,6 +47,7 @@ def _brief(keys: list[str], limit: int = 20) -> list[str]:
 
 def _index_freshness(
     attachments: list[Any], manifest: dict[str, Any], *, excluded_keys: set[str],
+    extraction_statuses: list[dict] = (),
 ) -> dict[str, Any]:
     files = manifest.get("files") if isinstance(manifest.get("files"), dict) else {}
     expected = {str(row.attachmentKey) for row in attachments}
@@ -75,10 +76,16 @@ def _index_freshness(
             pending.append(key)
     retired = set(str(key) for key in files) - expected - excluded_keys
     excluded_tracked = set(str(key) for key in files).intersection(excluded_keys)
-    all_pending = pending + list(retired) + list(excluded_tracked)
+    waiting = sorted({str(row.get("attachment_key")) for row in extraction_statuses
+                      if row.get("status") == "blocked" and row.get("reason_code") == "awaiting_mistral_ocr_batch"
+                      and row.get("attachment_key") in expected})
+    all_pending = sorted(set(pending).union(retired, excluded_tracked, waiting))
     return {
         "pending": len(all_pending),
         "new_or_changed": len(pending),
+        "ocr_waiting": len(waiting),
+        "ocr_waiting_items": [{"attachment_key": key, "title": (files.get(key) or {}).get("title") or key}
+                              for key in waiting],
         "retired": len(retired),
         "excluded_tracked": len(excluded_tracked),
         "missing_source": len(missing_source),
@@ -227,7 +234,9 @@ async def inspect(*, detailed: bool = False) -> dict[str, Any]:
     ready_keys = {str(row.attachmentKey) for row in ready}
     included = [row for row in included if str(row.attachmentKey) not in ready_keys]
     excluded_keys = {str(row.attachmentKey) for row in excluded}.union(ready_keys)
-    attachment_status = _index_freshness(included, manifest, excluded_keys=excluded_keys)
+    from src.db_relations import get_artifact_processing_statuses
+    attachment_status = _index_freshness(included, manifest, excluded_keys=excluded_keys,
+                                        extraction_statuses=get_artifact_processing_statuses(artifact_type="extraction"))
     note_status = _note_freshness(notes, manifest)
     index_status = {
         **attachment_status,

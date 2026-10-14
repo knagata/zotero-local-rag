@@ -296,10 +296,13 @@ def _parse_args() -> tuple[argparse.ArgumentParser, argparse.Namespace]:
     return parser, args
 
 
-def _attachment_failures(files: dict, indexed: set[str]) -> list[dict]:
+def _inventory_reports(files: dict, indexed: set[str], comparisons: list[dict], failures: list[str]) -> dict:
     from src.audit_diagnostics import attachment_failure_details
     from src.db_relations import get_artifact_processing_statuses
-    return attachment_failure_details(files, indexed, get_artifact_processing_statuses(artifact_type="extraction"))
+    from src.indexed_gate import indexed_gate
+    statuses = get_artifact_processing_statuses(artifact_type="extraction")
+    return {"attachment_failures": attachment_failure_details(files, indexed, statuses),
+            "indexed_gate": indexed_gate(files, indexed, statuses, comparisons, failures)}
 
 
 def main() -> None:
@@ -465,7 +468,7 @@ def main() -> None:
         "items": comparisons,
         "external_audits": external_audits,
         "lexical_content_mismatches": lexical_mismatches[:20],
-        "attachment_failures": _attachment_failures(manifest_files, indexed_attachments),
+        **_inventory_reports(manifest_files, indexed_attachments, comparisons, global_failures),
         "database_state": {
             "fingerprint": database_state_fingerprint(
                 manifest_path=args.manifest,

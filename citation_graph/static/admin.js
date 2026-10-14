@@ -27,7 +27,7 @@ function metric(label, value, detail="") {
 function renderMetrics(data) {
   const m=data.manifest, a=data.artifacts, gate=data.database_gate, batch=data.mistral_batch; const target=$("metrics"); target.replaceChildren(
     metric("索引済み添付",m.attachments,`ノート ${m.notes}`), metric("HNSW検証",m.hnsw_validated?"正常":"要確認",`inflight ${m.inflight}`),
-    metric("DB監査gate",gate.passed?"合格":gate.available?"不合格":"結果なし",localTime(gate.modified_at)), metric("未解決artifact",a.unresolved ?? "—",a.error || "failed + blocked"),
+    metric("DB監査gate",gate.passed?"全体整合性は合格":gate.indexed_gate?.passed?"監査通過分は利用可（未完了）":gate.available?"不合格":"結果なし",localTime(gate.modified_at)), metric("未解決artifact",a.unresolved ?? "—",a.error || "failed + blocked"),
     metric("索引書き込み",data.indexing_lock?"実行中":"停止中",data.indexing_lock?.started_at || "ロックなし"),
     metric("検索用の添付",data.search_snapshot?.available ? data.search_snapshot.attachments : "未分離",data.search_snapshot?.available ? `更新中も検索可能 · ${localTime(data.search_snapshot.published_at)}時点（新しい資料は監査後に反映）` : "検索と更新は同じDBを使用"),
     metric("Mistral Batch",batch?statusLabel(batch.phase):"未実行",batch?`${batch.completed_requests}/${batch.total_requests || batch.candidate_count}件 · 確認 ${localTime(batch.last_checked_at)}`:"")
@@ -69,11 +69,15 @@ function renderFreshness(data) {
   else if(report.recheck_pending) target.append(node("p","freshness-warning","更新処理後の再確認を待っています。表示値は前回確認時点です。"));
   else if(report.stale) target.append(node("p","freshness-warning","確認結果が古くなっています。定期確認の状態を確認してください。"));
   target.append(
-    freshnessCard("索引",`${text(index.pending)}件`,index.attention?`原本欠落 ${index.attention}件`:index.pending?`添付・ノートの差分（ノート ${index.notes?.pending||0}件）`:"差分なし",index.sample_keys||[],index.attention||0),
+    freshnessCard("残り索引",`${text(index.pending)}件`,index.attention?`原本欠落 ${index.attention}件`:index.pending?`添付・ノートの差分（ノート ${index.notes?.pending||0}件）`:"差分なし",index.sample_keys||[],index.attention||0),
     freshnessCard("文書構造・目次",`${text(structure.pending)}件`,structureFreshnessDetail(structure),structure.sample_keys||[],structure.attention||0),
     freshnessCard("階層要約",`${text(summaries.pending)}件`,summaries.attention?`要確認 ${summaries.attention}項目・索引不整合 ${summaries.index_issues||0}件`:summaries.lightweight?"簡易確認（要約索引の整合性は未検査）":`要約索引 ${summaries.actual_index_rows||0}件・整合`,summaries.sample_keys||[],summaries.attention||0),
     freshnessCard("Citation Network",`${text(citations.pending)}件`,citations.attention?`うちエラー ${citations.attention}件`:citations.metadata_changed?`書誌情報変更 ${citations.metadata_changed}件`:"未処理・再試行対象",citations.sample_keys||[],citations.attention||0)
   );
+  if(index.ocr_waiting) {
+    target.append(node("p","freshness-warning",`未OCR資料が${index.ocr_waiting}件あります。残り索引に含まれます。索引済みで監査通過した資料は個別に処理できます。`));
+    for(const item of index.ocr_waiting_items||[]) target.append(node("p","",`${item.title}（${item.attachment_key}）`));
+  }
   $("freshness-updated").textContent=report.recheck_pending?"再確認待ち":report.stale?"期限切れ":`確認 ${localTime(report.generated_at)}`;
 }
 function renderActions(data) {

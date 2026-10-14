@@ -187,3 +187,18 @@ def test_html_snapshot_directory_uses_same_file_as_indexer(tmp_path):
     manifest = {'files': {'HTML': {'mtime': source.stat().st_mtime, 'size': source.stat().st_size}}}
     assert _index_freshness([row], manifest, excluded_keys=set())['pending'] == 0
     assert _index_freshness([row], manifest, excluded_keys=set())['missing_source'] == 0
+
+
+def test_ocr_waiting_is_pending_even_when_manifest_stat_matches(tmp_path):
+    path = tmp_path / 'source.pdf'
+    path.write_bytes(b'pdf')
+    row = attachment('WAIT', path)
+    manifest = {'files': {'WAIT': {'mtime': path.stat().st_mtime, 'size': path.stat().st_size,
+                                 'title': 'Waiting book'}}}
+    statuses = [{'attachment_key': 'WAIT', 'status': 'blocked', 'reason_code': 'awaiting_mistral_ocr_batch'},
+                {'attachment_key': 'RETIRED', 'status': 'blocked', 'reason_code': 'awaiting_mistral_ocr_batch'}]
+    result = _index_freshness([row], manifest, excluded_keys=set(), extraction_statuses=statuses)
+    assert result['pending'] == 1 and result['new_or_changed'] == 0
+    assert result['ocr_waiting'] == 1 and result['ocr_waiting_items'][0]['title'] == 'Waiting book'
+    manifest['files']['WAIT']['mtime'] = -1
+    assert _index_freshness([row], manifest, excluded_keys=set(), extraction_statuses=statuses)['pending'] == 1

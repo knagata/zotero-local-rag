@@ -24,7 +24,7 @@ def test_default_plan_matches_quick_and_server_orders_reverse_selection(tmp_path
     assert plan.paid
 
 
-@pytest.mark.parametrize('selected', [None, [], ['unknown'], ['database_audit'] * 2, [42], ['structure_update'], ['summary_batch'], ['library_update', 'summary_batch', 'database_audit']])
+@pytest.mark.parametrize('selected', [None, [], ['unknown'], ['database_audit'] * 2, [42], ['structure_update']])
 def test_invalid_selection_rejected(tmp_path, selected):
     with pytest.raises(ValueError):
         build_plan(selected, definitions(tmp_path))
@@ -95,3 +95,14 @@ def test_browser_checkbox_and_consent_interactions():
     if node is None:
         pytest.skip('Node unavailable; DOM interaction harness also runs in browser runtime')
     subprocess.run([node, 'tests/admin_plan_dom.cjs'], check=True)
+
+
+def test_summary_and_citations_can_run_without_reindexing(tmp_path):
+    defs = definitions(tmp_path)
+    stages = {row['key']: row for row in public_stages(defs)}
+    assert stages['summary_batch']['requires'] == []
+    for key in ['summary_batch', 'citation_update']:
+        plan = build_plan([key], defs)
+        assert len(plan.steps) == 1
+        assert 'run_searchable_index.py' not in str(plan.steps)
+    assert '--allow-pending-ocr' in build_plan(['summary_batch'], defs).steps[0][1]

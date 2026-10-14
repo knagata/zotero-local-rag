@@ -173,17 +173,29 @@ def main() -> None:
              "independent unit). Each worker opens its own DB connection. Default 1 "
              "(sequential, unchanged behavior).",
     )
+    parser.add_argument("--allow-pending-ocr", action="store_true", help="Use only items approved by the indexed-data audit")
     args = parser.parse_args()
+    if args.dry_run:
+        _run_selected_summaries(args, parser)
+    else:
+        from src.indexing_lock import held, default_path
+        with held(default_path(ROOT)):
+            _run_selected_summaries(args, parser)
+
+
+def _run_selected_summaries(args, parser) -> None:
+    database_report = None
     if args.collection != V3_COLLECTION:
         parser.error(f"--collection must be {V3_COLLECTION!r}; the legacy data plane is retired")
     if args.workers < 1:
         parser.error("--workers must be at least 1")
-    if args.mode == "llm" and not args.dry_run:
+    if (args.mode == "llm" and not args.dry_run) or args.allow_pending_ocr:
         if not args.database_gate:
             parser.error("--mode llm requires --database-gate from audit_v3_cutover.py --new-only")
         try:
             database_report = validate_database_gate(
                 args.database_gate, collection_name=args.collection,
+                **({"allow_pending_ocr": True} if args.allow_pending_ocr else {}),
             )
         except RuntimeError as exc:
             parser.error(str(exc))
@@ -192,6 +204,9 @@ def main() -> None:
             # to be active in this shell, owns both summary inputs and index.
             args.collection = str(database_report["new_collection"])
     keys = list(dict.fromkeys(args.item or list_item_keys(collection_name=args.collection)))
+    if database_report is not None:
+        from src.indexed_gate import summary_scope
+        keys = summary_scope(database_report, keys)
     if args.retry_failed:
         keys = [
             key for key in keys

@@ -246,7 +246,10 @@ def _discard_passing_gate(path: Path) -> None:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return  # unreadable or invalid reports cannot authorize summaries
-    if isinstance(value, dict) and isinstance(value.get("gate"), dict) and value["gate"].get("passed") is True:
+    if isinstance(value, dict) and any(
+        isinstance(value.get(key), dict) and value[key].get("passed") is True
+        for key in ("gate", "indexed_gate")
+    ):
         path.unlink()
 
 
@@ -260,7 +263,11 @@ def _refresh_search_snapshot() -> None:
         ], cwd=ROOT, env=environment_with_saved_dotenv(ROOT), check=True)
 
 
-def main() -> None:
+def main(argv: list[str] | None = ()) -> None:
+    import argparse
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--allow-pending-ocr", action="store_true")
+    args = parser.parse_args(argv)
     from src.audit_repair import repair_derived_data
     try:
         paths = _validated_report_paths()
@@ -280,6 +287,10 @@ def main() -> None:
                 findings = report_failure_details(failure.report or {})
                 if not failure.report:
                     raise
+                if failure.code == 2 and args.allow_pending_ocr and failure.report.get("indexed_gate", {}).get("passed") is True:
+                    _write_status(status_path, "completed_partial", "索引済みの監査通過資料を利用できます。未処理・要確認資料は対象外です。",
+                                  pending_ocr_attachments=failure.report["indexed_gate"]["pending_ocr_attachments"])
+                    return  # full-library gate remains failed; do not publish it as complete
                 _write_status(status_path, "repairing", "監査不合格の原因を確認し、安全な自動修復を検査しています。")
                 repair = repair_derived_data(failure.report, ROOT)
                 if not repair["repaired"]:
@@ -303,4 +314,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1:])

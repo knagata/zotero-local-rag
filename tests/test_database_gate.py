@@ -130,3 +130,23 @@ def test_database_gate_rejects_retired_collection_even_when_report_passed():
         }), encoding="utf-8")
         with pytest.raises(RuntimeError, match="retired/unsupported"):
             validate_database_gate(path)
+
+
+def test_partial_gate_keeps_generation_and_external_attestation_checks(tmp_path, monkeypatch):
+    import src.database_gate as module
+    for name in ['zotero', 'source']:
+        (tmp_path / f'{name}.json').write_text('{"passed":true}')
+    report = {'new_only': True, 'new_collection': 'zotero_paragraphs_v3', 'gate': {'passed': False},
+              'indexed_gate': {'passed': True, 'eligible_item_keys': ['GOOD']},
+              'database_state': dict(fingerprint='current', manifest_path='m', lexical_db_path='l', pipeline_config_path='p'),
+              'external_audits': {name: external_audit_attestation(tmp_path / f'{file}.json')
+                                  for name, file in [('zotero_reconciliation','zotero'),('source_verification','source')]}}
+    path = tmp_path / 'gate.json'
+    path.write_text(json.dumps(report))
+    monkeypatch.setattr(module, 'live_database_state_fingerprint', lambda **kwargs: 'current')
+    with pytest.raises(RuntimeError, match='did not pass'):
+        validate_database_gate(path)
+    assert validate_database_gate(path, allow_pending_ocr=True)['indexed_gate']['eligible_item_keys'] == ['GOOD']
+    monkeypatch.setattr(module, 'live_database_state_fingerprint', lambda **kwargs: 'changed')
+    with pytest.raises(RuntimeError, match='changed after'):
+        validate_database_gate(path, allow_pending_ocr=True)

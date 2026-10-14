@@ -68,7 +68,7 @@ def job_definitions(root: Path = ROOT) -> dict[str, JobDefinition]:
     )
     audit_step = (
         "DB監査",
-        (python, str(root / "scripts" / "run_db_audit.py")),
+        (python, str(root / "scripts" / "run_db_audit.py"), "--allow-pending-ocr"),
     )
     citation_step = (
         "Citation Network更新",
@@ -104,14 +104,12 @@ def job_definitions(root: Path = ROOT) -> dict[str, JobDefinition]:
         ),
         "summary_batch": JobDefinition(
             "summary_batch", "階層要約の差分更新（全件）",
-            "構造更新とDB監査後、未処理・変更資料すべてを対象に、10並列でDeepSeek要約します。",
+            "既存の監査済み本文・構造から差分すべてをDeepSeekで要約します。OCR待ち資料は対象外です。",
             (
-                ("文書構造・目次の差分確認", structure_step[1]),
-                audit_step,
                 ("階層要約の全差分更新", (
                     python, str(root / "scripts" / "build_structure_summaries.py"),
                     "--all", "--mode", "llm", "--workers", "10",
-                    "--embed", "--database-gate", gate,
+                    "--embed", "--database-gate", gate, "--allow-pending-ocr",
                 )),
             ),
             paid=True,
@@ -525,6 +523,7 @@ def system_status(root: Path = ROOT) -> dict[str, Any]:
         "database_gate": {
             "passed": (gate.get("gate") or {}).get("passed") is True,
             "available": bool(gate),
+            "indexed_gate": gate.get("indexed_gate", {}),
             "failed_items": (gate.get("gate") or {}).get("failed_items", 0),
             "global_failures": (gate.get("gate") or {}).get("global_failures", []),
             "failures": item_failure_details(gate) + gate.get("attachment_failures", []),

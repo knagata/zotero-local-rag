@@ -7,7 +7,7 @@ STAGES = (
     ("library_update", "ライブラリ差分更新", (), True),
     ("structure_update", "文書構造・目次の差分更新", ("library_update",), True),
     ("database_audit", "DB監査", (), True),
-    ("summary_batch", "階層要約の差分更新（全件）", ("structure_update", "database_audit"), False),
+    ("summary_batch", "階層要約の差分更新（全件）", (), False),
     ("citation_update", "Citation Network更新", (), True),
 )
 

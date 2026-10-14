@@ -140,7 +140,8 @@ def live_database_state_fingerprint(
     )
 
 
-def validate_database_gate(report_path: Path, *, collection_name: str | None = None) -> dict[str, Any]:
+def validate_database_gate(report_path: Path, *, collection_name: str | None = None,
+                           allow_pending_ocr: bool = False) -> dict[str, Any]:
     """Fail closed unless a passing audit describes the current DB generation."""
     try:
         report = json.loads(report_path.read_text(encoding="utf-8"))
@@ -149,7 +150,10 @@ def validate_database_gate(report_path: Path, *, collection_name: str | None = N
     gate = report.get("gate") if isinstance(report.get("gate"), Mapping) else {}
     state = report.get("database_state") if isinstance(report.get("database_state"), Mapping) else {}
     if gate.get("passed") is not True:
-        raise RuntimeError("Database audit did not pass; hierarchical summaries are blocked.")
+        from src.indexed_gate import summary_scope
+        if not allow_pending_ocr:
+            raise RuntimeError("Database audit did not pass; hierarchical summaries are blocked.")
+        summary_scope(report, [])
     if report.get("new_only") is not True:
         raise RuntimeError("Database audit is not a server rebuild gate (--new-only required).")
     audited_collection = str(report.get("new_collection") or "")

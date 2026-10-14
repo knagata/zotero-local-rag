@@ -2486,3 +2486,11 @@ A（PDF構造化）・B（課金LLM）は独立、C（構造抽出エンジン�
 - 全回帰2,100passed/5skip/10deselected（100.84秒）、coverage予算・fatal Ruff・compileall・関連121テスト・UI/文書21テスト合格。Node DOMで添付ID/資料名/OCR待ち表示とundefined未表示も検証。
 - 全監査を再実行し、Zotero照合734添付・原本照合は合格、全gateは同じ未索引1件でexit2。管理状態データで対象名とOCR待機理由を確認。サービス再起動exit0・Graph HTTP200。Herdr全テスト/再起動w1:t11/w1:p13、監査w1:t12/w1:p14。証跡はdata/quality/attachment-mismatch-20261014/。
 - 利用者からOCR済みPDFへ差替え済みとの連絡があったが、Local APIの参照添付は依然旧ファイル（106頁/9,531,967byte/全文文字層0文字）。所在/同期反映を質問して再取込を保留。実データ修復・有料APIなし。旧監査報告を退避済み。差替え反映後に変更前DBをbackupして対象取込・全再監査へ進む。
+
+### 2026-10-14: 未OCR残件と監査通過資料の単独処理
+
+- OCR待機台帳を索引freshnessへ加え、stat一致でも残り索引へ重複なく計上。更新状況下へ件数と資料名/添付IDを表示。階層要約の選択依存を外し、要約とCitationを索引更新なしで単独実行可能にした。要約の全差分・10並列・課金同意は保持。
+- 全gate条件を維持し、indexed_gateを別途生成。本文0件の管理記録のみOCR待機添付とそのcoverage不足だけを分離し、個別passedかつ待機添付を持たない資料の許可集合を記録する。原因不明の欠落・余分本文・FTS不整合・HNSW未検証・inflight等は拒否する。要約CLIは許可集合、外部監査証跡、現世代fingerprintを厳密に適用する。旧報告/世代変更は独立したDB監査を要求。
+- 管理監査は部分通過時に後続へ進むが、全件合格とせず検索snapshotも公開しない。異常終了した監査の部分証明は破棄。CLIの全gate要求は既定で保持し、部分利用は--allow-pending-ocrを明示。要約の検証から書込み/埋め込みまで共通writer lockを保持する。実装契約はSPEC.md、開発手順はdeveloper/database-audit-repair.md。
+- 最終の計測付き全回帰2,107passed/5skip/10deselected（86.70秒）、coverage budget合格。新規indexed_gate24文すべて到達。database_gateの未到達予算を24から12へ縮小。追加のUI/文書/ratchet30passed/2skip、Node DOMで単独選択・未OCR一覧・部分通過の未完了表示・同意等を検証。fatal Ruff/compileall/diff検査合格。
+- 利用者の索引作成中という指定に従い、実DBの読取り監査/修復/取込・有料API・サービス再起動は行わない。indexerの変更検知対象21ファイルのHEAD一致を確認。実データでの動作と画面反映は索引終了後の監査/サービス再起動が必要。稼働中の工程は変更しない。Herdr w1:t15/w1:p17の全テストexit0、証跡はdata/quality/partial-processing-20261014/。

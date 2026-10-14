@@ -24,7 +24,7 @@
     "src/cli.py": 9,
     "src/codex_quota.py": 57,
     "src/crossref_client.py": 48,
-    "src/database_gate.py": 24,
+    "src/database_gate.py": 12,
     "src/db_lifecycle.py": 1,
     "src/db_relations.py": 220,
     "src/db_schema.py": 0,
@@ -98,6 +98,7 @@
     "src/zotero_import.py": 31,
     "src/zotero_source_localapi.py": 136,
     "src/audit_diagnostics.py": 0,
-    "src/audit_repair.py": 0
+    "src/audit_repair.py": 0,
+    "src/indexed_gate.py": 0
   }
 }
