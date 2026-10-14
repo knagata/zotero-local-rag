@@ -2,7 +2,7 @@
 
 Updated: 2026-10-14
 
-索引プロセス停止を確認し、管理サービスへ最新実装を反映済み。差替えPDFの文字層確認済み・新添付の取込と全再監査は未実施。直前の監査状態: 対象734添付のうちOCR待ちの未索引1添付で全DB監査は未合格。既存の検索公開世代は保持。原画像確認済み94件の校訂補助を反映。全文校訂は未完了。以下の古い日付の進行中記録は履歴であり、最新結果は末尾と上記完了証明を参照。
+現在の検証済み状態: 734添付・709資料・全DB監査合格・検索世代公開済み。外部OCR差替えを取込済み、残り索引/OCR待ち0。完全backup1世代・空き約92GiB。原画像確認済み94件の校訂補助は保持。全文校訂は未完了。最新結果と証明は末尾参照。
 
 ## 2026-10-08 隔離検索索引の検証と排他
 
@@ -948,3 +948,11 @@ active V3はM5 clean rebuildと後続の対象修復を完了した監査済み�
 - 索引/監査/要約プロセスとindexing lockがないことを確認し、依頼どおり管理サービスを再起動。Graph HTTP200、Graph/local/public OAuthと定期確認Agent正常。未OCR残件・単独要約の実装を新serviceへ反映した。Herdr w1:t15/w1:p17の再起動exit0。
 - Zotero Local APIの対象資料の子添付が新IDへ変更されたことを確認。差替えPDFは106頁/11,703,190byte、文字層149,621文字・104頁で非空。文字層の存在確認でありOCRの全文精度保証ではない。新添付はmanifest未登録・対象本文0件、旧添付記録は残存。新添付のocr-completeタグ未設定。
 - 今回は確認と再起動だけ行い、タグ変更・DB取込・監査・有料OCR/LLMは実行していない。再OCR防止には取込前に親または新添付へocr-completeが必要。証跡はdata/quality/restart-pdf-check-20261014/。
+
+### 2026-10-14: 外部OCR差替えの取込・全監査・バックアップ世代整理を完了
+
+- 親資料のocr-completeタグをLocal APIで確認。変更前完全backupをwriter lock下で作成しSQLite quick_check/Chroma読取りを検証。有料機能offで差替え1添付をforce-reparseし、既存文字層から753チャンクを取込。全文索引とのID一致を確認。白紙の物理2/106頁は画像で確認し、既存coverage不足/quality-uncertainの記録は変更しない。再OCRなし。
+- 対象限定更新が退役掃除を行わないため旧添付のmanifestのみ残存。Zotero deleted=true、旧本文/FTS0件、完全backupと元manifest/台帳の保存を確認後、writer lock下で退役記録・旧OCR待機台帳だけを整理。取込済み本文は削除せず、全監査を最初から再実行した。
+- 734添付・709資料の全gate合格、原本欠落頁/孤立本文/構造参照不整合/検索不能0。本文673,626・要約8,683の検索コピーをnative検索/close/reopen検証後に公開（20261014T055307Z-92c79162）。更新状況再確認は残り索引0・OCR待ち0。Graph/local/public OAuth正常。今回の有料OCR/LLM呼出しなし。
+- 追加backupの本文/要約native実検索・close/reopenも合格。監査・検索公開後、writer lock下で現gate世代を再検証し、旧完全backupにopen handleがないことを確認。旧pre-rice-mistral-20261010（論理10,579,505,563byte）を整理し、小さい旧manifest/証明だけ保存。完全backupはpre-ocr-complete-import-20261014の1世代（約10GiB）に戻した。空き約92GiB。原本・raw OCR・校訂証跡は保持。
+- 証跡/運用スクリプトはdata/quality/ocr-complete-import-20261014/。Herdr w1:t15/w1:p17で取込/全再監査/整理、w1:t16/w1:p18でbackup検索/更新状況を検証し最終exit0。初回監査は退役整理前に中断、整理後の全監査/公開は完了。
