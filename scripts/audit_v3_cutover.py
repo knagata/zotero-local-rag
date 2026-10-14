@@ -296,6 +296,12 @@ def _parse_args() -> tuple[argparse.ArgumentParser, argparse.Namespace]:
     return parser, args
 
 
+def _attachment_failures(files: dict, indexed: set[str]) -> list[dict]:
+    from src.audit_diagnostics import attachment_failure_details
+    from src.db_relations import get_artifact_processing_statuses
+    return attachment_failure_details(files, indexed, get_artifact_processing_statuses(artifact_type="extraction"))
+
+
 def main() -> None:
     parser, args = _parse_args()
     chroma_dir = args.chroma_dir or resolve_chroma_dir(ROOT)
@@ -417,12 +423,11 @@ def main() -> None:
     )
     chroma_ids = set(list_chunk_ids(chroma_dir=chroma_dir, collection_name=args.new_collection))
     lexical_ids = set(list_lexical_chunk_ids(path=args.lexical_db))
+    indexed_attachments = set(list_attachment_keys(chroma_dir=chroma_dir, collection_name=args.new_collection))
     global_failures = global_gate_failures(
         manifest=manifest,
         manifest_attachment_keys=set(str(value) for value in manifest_files),
-        chroma_attachment_keys=set(
-            list_attachment_keys(chroma_dir=chroma_dir, collection_name=args.new_collection)
-        ),
+        chroma_attachment_keys=indexed_attachments,
         chroma_ids=chroma_ids,
         lexical_ids=lexical_ids,
         pipeline_config_exists=args.pipeline_config.exists(),
@@ -460,6 +465,7 @@ def main() -> None:
         "items": comparisons,
         "external_audits": external_audits,
         "lexical_content_mismatches": lexical_mismatches[:20],
+        "attachment_failures": _attachment_failures(manifest_files, indexed_attachments),
         "database_state": {
             "fingerprint": database_state_fingerprint(
                 manifest_path=args.manifest,

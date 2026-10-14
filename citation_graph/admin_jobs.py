@@ -527,7 +527,7 @@ def system_status(root: Path = ROOT) -> dict[str, Any]:
             "available": bool(gate),
             "failed_items": (gate.get("gate") or {}).get("failed_items", 0),
             "global_failures": (gate.get("gate") or {}).get("global_failures", []),
-            "failures": item_failure_details(gate),
+            "failures": item_failure_details(gate) + gate.get("attachment_failures", []),
             "global_details": [reason_detail(reason) for reason in (gate.get("gate") or {}).get("global_failures", [])],
             "audit_status": audit_status,
             "modified_at": datetime.fromtimestamp(

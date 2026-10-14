@@ -106,9 +106,9 @@ def _explain_failure(output: Path | None, previous: int | None, exit_code: int) 
     }
     gate = report.get("gate", {})
     from src.audit_diagnostics import item_failure_details
-    details = item_failure_details(report)
+    details = item_failure_details(report) + report.get("attachment_failures", [])
     for detail in details:
-        messages.append(f"『{detail['title']}』（{detail['item_key']}）：{detail['message']}")
+        messages.append(f"『{detail['title']}』（{detail.get('item_key') or detail.get('attachment_key')}）：{detail['message']}")
     messages.extend(labels.get(reason, f"整合性検査：{reason}")
                     for reason in gate.get("global_failures", []))
     if gate.get("failed_items"):

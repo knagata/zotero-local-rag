@@ -2478,3 +2478,11 @@ A（PDF構造化）・B（課金LLM）は独立、C（構造抽出エンジン�
 - READMEと導入・設定・日常操作の「監査は読み取り専用」という旧説明を、バックアップ後の限定修復と全再監査へ更新。管理画面の工程選択・同意欄の案内と手順の欠番を修正。監査scriptの旧docstringも訂正。
 - CI相当の計測付き全テスト2,099passed/5skip/10deselected（87.47秒）、coverage budget合格。Node依存検査は同梱runtimeで別途実行し、工程依存・polling・初期選択・同意・取消・旧service案内のDOM検証合格。fatal Ruff・compileall・公開entrypoint import・文書7テスト・diff検査も合格。直前のslow/corpus10件合格結果も保持。
 - 証跡はdata/quality/pre-push-tests-20261012.log。Herdr w1:t11/w1:p13の全検証exit0。有料処理・実データ更新なし。SSHでorigin/mainへ公開後、GitHub Actionsの結果を確認する。
+
+### 2026-10-14: 添付不一致のOCR待機原因を特定・表示を修正
+
+- 実監査で管理記録のみの添付が1件、本文のみの添付は0件と特定。新規106頁の画像PDFをMistralへ保留する経路は原本管理記録を残すため、本文0件との不一致とcoverage不足で全gateが停止していた。既存本文の破損ではない。実処理台帳のblocked/awaiting_mistral_ocr_batchと対象ログを照合した。
+- cutover報告に双方向の添付差分・資料名・処理台帳に基づくOCR待機理由を追加し、CLI・監査status・管理UIへ表示。台帳根拠なしの欠落と記録なし本文は別の理由で案内する。課金同意と外部OCR済みPDF/ocr-completeの対応を明示し、監査条件と自動修復範囲は変更しない。JS cache版と利用者向け障害案内も更新。
+- 全回帰2,100passed/5skip/10deselected（100.84秒）、coverage予算・fatal Ruff・compileall・関連121テスト・UI/文書21テスト合格。Node DOMで添付ID/資料名/OCR待ち表示とundefined未表示も検証。
+- 全監査を再実行し、Zotero照合734添付・原本照合は合格、全gateは同じ未索引1件でexit2。管理状態データで対象名とOCR待機理由を確認。サービス再起動exit0・Graph HTTP200。Herdr全テスト/再起動w1:t11/w1:p13、監査w1:t12/w1:p14。証跡はdata/quality/attachment-mismatch-20261014/。
+- 利用者からOCR済みPDFへ差替え済みとの連絡があったが、Local APIの参照添付は依然旧ファイル（106頁/9,531,967byte/全文文字層0文字）。所在/同期反映を質問して再取込を保留。実データ修復・有料APIなし。旧監査報告を退避済み。差替え反映後に変更前DBをbackupして対象取込・全再監査へ進む。

@@ -50,6 +50,7 @@ def item_failure_details(report: dict) -> list[dict]:
 
 def report_failure_details(report: dict) -> list[dict]:
     details = item_failure_details(report)
+    details.extend(report.get("attachment_failures", []))
     details.extend(reason_detail(reason) for reason in report.get("gate", {}).get("global_failures", []))
     for document in report.get("documents", []):
         if document.get("lost_pages") or document.get("error"):
@@ -74,4 +75,25 @@ def report_failure_details(report: dict) -> list[dict]:
         if values:
             details.append({"message": f"{message}：{len(values)}件。対象例：{values[:10]}",
                             "action": "自動修復で解消しなければ対象の本文・構造を調査してください。"})
+    return details
+
+
+def attachment_failure_details(files: dict, indexed: set[str], statuses: list[dict]) -> list[dict]:
+    """Explain inventory differences without treating an OCR queue as indexed text."""
+    queued = {row.get("attachment_key") for row in statuses
+              if row.get("status") == "blocked" and row.get("reason_code") == "awaiting_mistral_ocr_batch"}
+    details = []
+    for key in sorted(set(files) ^ indexed):
+        entry = files.get(key) or {}
+        waiting = key in queued and key not in indexed
+        details.append({
+            "attachment_key": key, "title": entry.get("title") or key,
+            "reason": "manifest_chroma_attachment_mismatch",
+            "message": ("OCR待ちのため本文は未索引です。管理記録だけが存在します。" if waiting else
+                        "管理記録はありますが本文が未索引です。" if key in files else
+                        "本文はありますが管理記録がありません。"),
+            "action": ("OCR待機中の対象です。有料OCRを実行する場合は別途同意が必要です。"
+                       "外部でOCRした場合は文字層付きPDFへ置き換えてocr-completeを付け、差分更新・DB監査を実行してください。"
+                       if waiting else "対象添付の取込ログと原本を確認してください。記録や本文を削除して合格にしないでください。"),
+        })
     return details

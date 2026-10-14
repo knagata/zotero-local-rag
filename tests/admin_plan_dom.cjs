@@ -25,6 +25,13 @@ async function testAdminPlan(source) {
     return {ok:true,status:200,headers:{get(){return 'application/json';}},json:async()=>data};
   }});
   vm.runInContext(source,context);await vm.runInContext('refresh()',context);
+  data.database_gate={available:true,passed:false,failures:[{
+    attachment_key:'WAITING1',title:'Scanned book',message:'OCR待ち',action:'別途同意が必要です'
+  }]};
+  await vm.runInContext('refresh()',context);
+  const diagnosticText=document.getElementById('audit-diagnostics').children.map(x=>x.textContent).join(' ');
+  assert.ok(diagnosticText.includes('Scanned book') && diagnosticText.includes('WAITING1'));
+  assert.ok(diagnosticText.includes('OCR待ち') && !diagnosticText.includes('undefined'));
   const actions=()=>document.getElementById('actions').children;
   const box=key=>actions()[stages.findIndex(s=>s.key===key)].children[0];
   assert.equal(box('library_update').checked,true);

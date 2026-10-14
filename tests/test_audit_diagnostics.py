@@ -39,3 +39,19 @@ def test_reconciliation_attachment_records_show_sync_recovery():
     assert details[1]["attachment_key"] == "OLD"
     assert all("未合格" in row["message"] for row in details)
     assert all("同期" in row["action"] and "再実行" in row["action"] for row in details)
+
+
+def test_inventory_difference_explains_queued_and_unexplained_missing_text():
+    from src.audit_diagnostics import attachment_failure_details
+    files = {"WAIT": {"title": "Scanned book"}, "LOST": {"title": "Lost book"}, "OK": {}}
+    rows = [{"attachment_key": "WAIT", "status": "blocked", "reason_code": "awaiting_mistral_ocr_batch"}]
+    details = attachment_failure_details(files, {"OK", "EXTRA"}, rows)
+    by_key = {row["attachment_key"]: row for row in details}
+    assert set(by_key) == {"WAIT", "LOST", "EXTRA"}
+    assert "OCR待ち" in by_key["WAIT"]["message"]
+    assert "別途同意" in by_key["WAIT"]["action"]
+    assert by_key["WAIT"]["title"] == "Scanned book"
+    assert "OCR待ち" not in by_key["LOST"]["message"]
+    assert "管理記録がありません" in by_key["EXTRA"]["message"]
+    assert report_failure_details({"attachment_failures": details}) == details
+    assert attachment_failure_details({"OK": {}}, {"OK"}, rows) == []

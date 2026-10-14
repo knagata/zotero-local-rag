@@ -43,7 +43,7 @@ function renderMetrics(data) {
   if(!gate.passed && gate.available) {
     diagnostics.append(node("p","freshness-warning",`直近のDB監査：資料単位の不合格 ${gate.failed_items||0}件（${localTime(gate.modified_at)}）。更新状況の確認とは別の検査です。`));
     for(const failure of gate.failures||[]) {
-      diagnostics.append(node("p","freshness-warning",`『${failure.title}』（${failure.item_key}）：${failure.message} ${failure.action}`));
+      diagnostics.append(node("p","freshness-warning",`『${failure.title}』（${failure.item_key||failure.attachment_key}）：${failure.message} ${failure.action}`));
     }
     for(const detail of gate.global_details||[]) diagnostics.append(node("p","freshness-warning",`${detail.message} ${detail.action}`));
   }
