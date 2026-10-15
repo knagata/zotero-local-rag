@@ -2,12 +2,13 @@ const assert=require('node:assert/strict');
 const vm=require('node:vm');
 async function testDebugReview(source){
  class Element{
-  constructor(tag='div'){this.tag=tag;this.children=[];this.handlers={};this.value='';this.checked=false;this.disabled=false;this.hidden=false;this.textContent='';this.style={};this.tagName=tag.toUpperCase();}
+  constructor(tag='div'){this.tag=tag;this.children=[];this.handlers={};this.value='';this.checked=false;this.disabled=false;this.hidden=false;this.textContent='';this.style={setProperty(name,value){this[name]=value;}};this.attributes={};this.tagName=tag.toUpperCase();}
   focus(){}
   append(...items){this.children.push(...items);}
   replaceChildren(...items){this.children=items;}
   addEventListener(event,callback){this.handlers[event]=callback;}
-  setAttribute(){}
+  setAttribute(name,value){this.attributes[name]=value;}
+  querySelector(){for(const child of this.children){if(child.attributes?.['aria-label']==='見出し名')return child;const found=child.querySelector?.();if(found)return found;}return null;}
  }
  const elements=new Map(),posts=[];
  const document={getElementById(id){if(!elements.has(id))elements.set(id,new Element());return elements.get(id);},createElement(tag){return new Element(tag);}};
@@ -64,6 +65,23 @@ async function testDebugReview(source){
  const headingRow=elements.get('toc').children[0];
  const headingTitle=headingRow.children[1].children[0];headingTitle.value='A chapter';headingTitle.handlers.input();
  assert.equal(vm.runInContext('state.toc[0].title',context),'A chapter');
+ // The visible outline moves whole branches, with limits and no numeric level inputs.
+ vm.runInContext("state.toc=[{title:'Root',level:1,page:1},{title:'Branch',level:1,page:1},{title:'Child',level:2,page:2}];state.tocChanged=true;renderToc()",context);
+ let title=elements.get('toc').children[1].children[1].children[0];let intercepted=false;
+ title.handlers.keydown({key:'Tab',preventDefault(){intercepted=true;}});
+ assert.ok(intercepted);assert.equal(vm.runInContext('state.toc.map(x=>x.level).join()',context),'1,2,3');
+ assert.equal(elements.get('toc').children[2].style['--outline-depth'],'2');
+ title=elements.get('toc').children[1].children[1].children[0];title.handlers.keydown({key:'Tab',shiftKey:true,preventDefault(){}});
+ assert.equal(vm.runInContext('state.toc.map(x=>x.level).join()',context),'1,1,2');
+ title=elements.get('toc').children[1].children[1].children[0];title.handlers.keydown({key:'Escape',preventDefault(){}});assert.equal(elements.get('toc').children[1].children[2].open,true);
+ vm.runInContext('moveHeading(0,1)',context);assert.equal(vm.runInContext('state.toc[0].level',context),1);
+ vm.runInContext("state.toc=[{title:'Root',level:1,page:1},{title:'Branch',level:1,page:1},...Array.from({length:7},(_,n)=>({title:'Deep',level:n+2,page:1}))];renderToc();moveHeading(1,1)",context);
+ assert.equal(vm.runInContext('state.toc.at(-1).level',context),8);assert.equal(vm.runInContext('state.toc[1].level',context),1);
+ assert.ok(!html.includes('type="number"'));
+ function numericSpinbox(e){return e.type==='number'||e.children.some(numericSpinbox);}
+ assert.ok(!elements.get('toc').children.some(numericSpinbox));
+ // Revert the outline to a valid compact example for subsequent save tests.
+ vm.runInContext("state.toc=[{title:'Root',level:1,page:1}];renderToc()",context);
  // Fit is bounded in both dimensions across viewport sizes. Zoom enables overflow.
  const image=elements.get('paper'),viewport=elements.get('paper-viewport');image.naturalWidth=1200;image.naturalHeight=1800;
  for(const [width,height] of [[800,900],[500,500],[240,360]]){viewport.clientWidth=width;viewport.clientHeight=height;elements.get('zoom-mode').value='fit';vm.runInContext('fitPaper()',context);assert.ok(parseFloat(image.style.width)<=width);assert.ok(parseFloat(image.style.height)<=height);}

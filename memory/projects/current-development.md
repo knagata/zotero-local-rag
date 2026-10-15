@@ -970,3 +970,9 @@ active V3はM5 clean rebuildと後続の対象修復を完了した監査済み�
 - 目次は紙面の目次ページに依存せず、名称/階層/開始ページ/ページ内位置を直接編集。未抽出位置は下書き保存のみ許可。注/参考文献は文字起こしと既存zoneのページ範囲/チャンク分類を編集でき、分類前後も追記型履歴/復元へ保存する。分類が既存構造保護検査と不一致なら黙って変更せず反映前に拒否する。
 - 注/参考文献に関係する本文・実効zone変更はreferences stale/Citation pendingへ戻す。同台帳も対象item限定journalに含めて復旧する。外部再処理は自動起動しない。原本/抽出・復元規則は変更せず、本番校訂・有料処理なし。
 - 最終全体2,141passed/6skip/5deselected（95.40秒）、8module601文100%到達、coverage悪化なし。Node DOMで3サイズfit/拡大領域/タブとページ/直接目次と分類/編集保持/保存競合、追加でitem限定台帳復旧を検証。文書/function/lint・fatal Ruff/compileall/src.cli import/diff検査合格。writer未実行確認後service再起動、Graph/local/public OAuth正常、新API未認証401。Browser backendなしで実画面目視は未実施。Herdr w1:t18/w1:p1A、証跡data/quality/review-ui-20261015/。
+
+### 2026-10-15: アウトライン目次とホイール誤変更の防止
+
+- 目次の数値階層欄を廃止。字下げ表示、見出し名入力中のTab/Shift+Tab、左右ボタンで子見出しごと移動する。先頭/階層飛越/8段超過を拒否し、Escで開始位置欄へ移動できる。開始位置は行内の開閉欄へまとめる。
+- ページ/倍率/範囲指定はtext+numeric inputmodeとしホイールによる値変更をなくす。通常スクロールは妨げない。保存形式・履歴・本番DB・原本は変更しない。再読込から適用、再起動/有料処理なし。
+- 関連41passed/1skip（3.65秒）とNode DOMでアウトライン/子見出し/制限/数値spinbox不在/既存操作を検証。実ブラウザ目視は未実施。Python実装は未変更で全体再実行なし、直前の全体2,141passedを維持。
