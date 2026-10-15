@@ -40,7 +40,28 @@ function renderChunk(chunk,target=$('chunks'),annotate=false){
  const heading=node('button','この位置を見出しに');heading.type='button';heading.addEventListener('click',()=>addHeading(chunk));tools.append(heading);card.append(tools);target.append(card);
 }
 function initialiseToc(){if(!state.tocChanged&&!state.toc.length)state.toc=state.originalToc.map(x=>({...x}));state.tocChanged=true;}
-function addHeading(chunk=null){if(!state.key||!state.version){notice('先に資料を選択してください。');return;}initialiseToc();if(chunk&&state.toc.some(x=>x.chunk_id===chunk.id)){notice('この位置には既に見出しがあります。目次タブで編集してください。');setTab('toc');return;}state.toc.push({...(chunk?{chunk_id:chunk.id}:{}),page:state.page,level:1,title:''});markDirty();renderToc();draftStatus();setTab('toc');}
+function addHeading(chunk=null){
+ const rows=tocRows();if(chunk&&rows.some(x=>x.chunk_id===chunk.id)){notice('この位置には既に見出しがあります。目次タブで編集してください。');setTab('toc');return;}
+ const position=chunk?state.allAnchors.findIndex(x=>x.id===chunk.id):-1;
+ let index=chunk?rows.findIndex(x=>x.chunk_id?state.allAnchors.findIndex(a=>a.id===x.chunk_id)>position:Number(x.page)>state.page):-1;
+ insertHeading(index<0?rows.length:index,chunk);
+}
+function outlineRows(){return Array.from($('toc').children).filter(row=>row.className==='toc-row');}
+function insertHeading(index,chunk=null){
+ if(!state.key||!state.version){notice('先に資料を選択してください。');return;}
+ const rows=tocRows();if(!Number.isInteger(index)||index<0||index>rows.length)return;
+ const previous=rows[index-1],next=rows[index];
+ const start=Math.max(1,Number(previous?.page)||1),end=Math.max(start,Number(next?.page)||state.totalPages);
+ const page=chunk?state.page:Math.max(start,Math.min(end,state.page));
+ const level=index===0?1:next?.level||previous?.level||1;
+ initialiseToc();state.toc.splice(index,0,{...(chunk?{chunk_id:chunk.id}:{}),page,level,title:''});
+ markDirty();setTab('toc');draftStatus();notice('見出し名を入力し、開始ページ・位置を確認してください。');
+ outlineRows()[index]?.querySelector('input[aria-label="見出し名"]')?.focus();
+}
+function insertionPoint(index,depth){
+ const gap=node('div');gap.className='toc-insert';gap.style.setProperty('--outline-depth',String(Math.max(0,depth-1)));
+ const button=node('button','＋');button.type='button';button.setAttribute('aria-label',index===0?'先頭に見出しを追加':`見出し${index}の後に追加`);button.title='ここに見出しを追加';button.addEventListener('click',()=>insertHeading(index));gap.append(button);return gap;
+}
 function tocRows(){return state.tocChanged||state.toc.length?state.toc:state.originalToc;}
 function moveHeading(index,delta){
  const selectionStart=document.activeElement?.selectionStart,selectionEnd=document.activeElement?.selectionEnd;
@@ -52,13 +73,14 @@ function moveHeading(index,delta){
  }
  initialiseToc();for(let n=index;n<end;n++)state.toc[n].level+=delta;
  markDirty();renderToc();draftStatus();notice('');
- const input=$('toc').children[index]?.querySelector('input[aria-label="見出し名"]');input?.focus();if(Number.isInteger(selectionStart))input?.setSelectionRange?.(selectionStart,selectionEnd);
+ const input=outlineRows()[index]?.querySelector('input[aria-label="見出し名"]');input?.focus();if(Number.isInteger(selectionStart))input?.setSelectionRange?.(selectionStart,selectionEnd);
 }
 function renderToc(){
- const target=$('toc');target.replaceChildren();
- for(const [index,entry] of tocRows().entries()){
+ const target=$('toc');target.replaceChildren();const entries=tocRows();
+ for(const [index,entry] of entries.entries()){
+  target.append(insertionPoint(index,entry.level));
   const row=node('div');row.className='toc-row';row.style.setProperty('--outline-depth',String(Math.max(0,entry.level-1)));row.setAttribute('aria-label',`${entry.level}階層目の見出し`);
-  function edit(){initialiseToc();const n=Array.from(target.children).indexOf(row);return state.toc[n];}
+  function edit(){initialiseToc();return state.toc[index];}
   const controls=node('div');controls.className='outline-controls';
   const outdent=node('button','←'),indent=node('button','→');outdent.type=indent.type='button';
   outdent.setAttribute('aria-label','階層を上げる');indent.setAttribute('aria-label','階層を下げる');
@@ -74,9 +96,10 @@ function renderToc(){
   location.append(pageLabel,anchorLabel,go,remove);const locationDetails=node('details');locationDetails.className='outline-location';locationDetails.append(node('summary',`PDF ${page.value||'?'}頁 · 開始位置を編集`),location);row.append(controls,titleLabel,locationDetails);
   if(!candidates.length&&!entry.chunk_id)row.append(Object.assign(node('p','このページは未抽出です。下書き保存はできますが、反映前に開始位置の確認が必要です。'),{className:'unresolved'}));target.append(row);
  }
- if(!tocRows().length)target.append(node('p','見出しを追加して文書の構成を作成できます。紙面に目次ページは不要です。'));
+ target.append(insertionPoint(entries.length,entries.at(-1)?.level||1));
+ if(!entries.length)target.append(node('p','この上にカーソルを合わせると「＋」が表示されます。クリックして最初の見出しを追加できます。'));
 }
-function orderedToc(){return [...state.toc].sort((a,b)=>(Number(a.page)||0)-(Number(b.page)||0)||(state.allAnchors.findIndex(x=>x.id===a.chunk_id)-state.allAnchors.findIndex(x=>x.id===b.chunk_id)));}
+function orderedToc(){return [...state.toc];}
 async function save(){if(!state.key||!state.version)return;const key=state.key,version=state.version,generation=state.generation;$('save').disabled=true;try{const saved=await api(`/admin/debug/api/documents/${state.key}/draft`,{method:'POST',body:JSON.stringify({revision:state.revision,version:state.version,edits:state.edits,toc:orderedToc(),toc_changed:state.tocChanged,zones:state.zones})});if(key!==state.key||version!==state.version )return;state.revision=saved.revision;state.dirty=state.generation!==generation;state.reviewedRevision=null;draftStatus();$('history').replaceChildren();await loadHistory();notice(state.dirty?'保存中に追加された編集は未保存です。もう一度保存してください。':'下書きを保存しました。検索DBにはまだ反映していません。');}catch(e){notice(e.message);}finally{if(key===state.key&&version===state.version)$('save').disabled=false;}}
 function localDifferences(){const target=$('diff-content');target.replaceChildren();for(const [id,text] of Object.entries(state.edits)){target.append(node('h4',id));const pair=node('div');pair.className='diff-pair';pair.append(node('pre',state.originals.get(id)??'このページ以外の原文は、該当ページで確認してください。'),node('pre',text));target.append(pair);}for(const [id,zone] of Object.entries(state.zones))target.append(node('p',`${id}：分類を${zoneNames[zone]||zone}へ変更`));target.append(node('h4','目次の修正案'),node('pre',orderedToc().map(x=>`${'　'.repeat(Math.max(0,x.level-1))}${x.title}（PDF ${x.page||'?'}頁）`).join('\n')||'変更なし'));setTab('diff');}
 $('filter').addEventListener('input',renderDocuments);$('issues-only').addEventListener('change',renderDocuments);$('previous').addEventListener('click',()=>loadPage(state.page-1));$('next').addEventListener('click',()=>loadPage(state.page+1));$('page').addEventListener('change',()=>loadPage(Number($('page').value)));$('save').addEventListener('click',save);$('diff').addEventListener('click',()=>differences().catch(e=>notice(e.message)));$('paper').addEventListener('error',()=>notice('紙面画像を読み込めません。原本・索引の変更や認証状態を確認し、ページを再読込してください。'));window.addEventListener('beforeunload',event=>{if(state.dirty){event.preventDefault();event.returnValue='';}});
@@ -131,7 +154,7 @@ $('toggle-documents').addEventListener('click',()=>toggleDocuments($('document-p
 const tabNames=['body','toc','notes','diff','history'];
 function setTab(name){state.tab=name;for(const tab of tabNames){$('panel-'+tab).hidden=tab!==name;$('tab-'+tab).setAttribute('aria-selected',String(tab===name));$('tab-'+tab).tabIndex=tab===name?0:-1;}if(name==='body'||name==='notes')renderChunks();if(name==='toc')renderToc();}
 for(const [n,tab] of tabNames.entries()){$('tab-'+tab).addEventListener('click',()=>{setTab(tab);if(tab==='diff')differences().catch(e=>notice(e.message));});$('tab-'+tab).addEventListener('keydown',event=>{if(event.key!=='ArrowLeft'&&event.key!=='ArrowRight')return;event.preventDefault();const next=tabNames[(n+(event.key==='ArrowRight'?1:tabNames.length-1))%tabNames.length];setTab(next);$('tab-'+next).focus();if(next==='diff')differences().catch(e=>notice(e.message));});}
-$('add-heading').addEventListener('click',()=>addHeading());
+
 function renderNotePages(){const pages=[...new Set(state.allAnchors.filter(x=>['footnote','endnote','bibliography'].includes(state.zones[x.id]??x.zone)).map(x=>Number(x.page)).filter(x=>x>0))].sort((a,b)=>a-b);$('note-pages').replaceChildren();for(const page of pages){const go=node('button',`PDF ${page}頁`);go.addEventListener('click',()=>loadPage(page));$('note-pages').append(go);}}
 $('assign-zone').addEventListener('click',()=>{const start=Number($('zone-start').value),end=Number($('zone-end').value),zone=$('zone-kind').value;if(!Number.isInteger(start)||!Number.isInteger(end)||start<1||end<start||end>state.totalPages){notice('開始・終了PDFページを文書の範囲内で指定してください。');return;}const anchors=state.allAnchors.filter(x=>Number(x.page)>=start&&Number(x.page)<=end);const zones={...state.zones};for(const anchor of anchors){if(zone===anchor.zone)delete zones[anchor.id];else zones[anchor.id]=zone;}if(Object.keys(zones).length>500){notice('分類変更は一度に500チャンクまでです。ページ範囲を分けてください。');return;}if(!anchors.length){notice('指定範囲にチャンクがありません。未抽出のページは分類を反映できません。');return;}state.zones=zones;markDirty();draftStatus();renderChunks();renderNotePages();notice(`${anchors.length}チャンクの分類を修正案へ追加しました。`);});
 function fitPaper(){const image=$('paper'),viewport=$('paper-viewport');if(!image.naturalWidth||!viewport.clientWidth)return;const mode=$('zoom-mode').value;const fit=Math.min(viewport.clientWidth/image.naturalWidth,viewport.clientHeight/image.naturalHeight);const requested=Number($('zoom').value);if(mode==='custom')$('zoom').value=Number.isFinite(requested)&&requested>0?Math.max(5,Math.min(400,requested)):100;const scale=mode==='fit'?fit:mode==='width'?viewport.clientWidth/image.naturalWidth:Math.max(.05,Math.min(4,Number($('zoom').value)/100));const width=Math.max(1,Math.floor(image.naturalWidth*scale)),height=Math.max(1,Math.floor(image.naturalHeight*scale));image.style.width=`${width}px`;image.style.height=`${height}px`;$('paper-stage').style.width=`${Math.max(viewport.clientWidth,width)}px`;$('paper-stage').style.height=`${Math.max(viewport.clientHeight,height)}px`;if(mode!=='custom')$('zoom').value=Math.round(scale*100);if(mode==='fit'){viewport.scrollTop=0;viewport.scrollLeft=0;}}

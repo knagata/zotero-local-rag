@@ -3,7 +3,7 @@ const vm=require('node:vm');
 async function testDebugReview(source){
  class Element{
   constructor(tag='div'){this.tag=tag;this.children=[];this.handlers={};this.value='';this.checked=false;this.disabled=false;this.hidden=false;this.textContent='';this.style={setProperty(name,value){this[name]=value;}};this.attributes={};this.tagName=tag.toUpperCase();}
-  focus(){}
+  focus(){document.activeElement=this;}
   append(...items){this.children.push(...items);}
   replaceChildren(...items){this.children=items;}
   addEventListener(event,callback){this.handlers[event]=callback;}
@@ -11,6 +11,8 @@ async function testDebugReview(source){
   querySelector(){for(const child of this.children){if(child.attributes?.['aria-label']==='見出し名')return child;const found=child.querySelector?.();if(found)return found;}return null;}
  }
  const elements=new Map(),posts=[];
+ const tocElements=()=>elements.get('toc').children.filter(x=>x.className==='toc-row');
+ const insertionPoints=()=>elements.get('toc').children.filter(x=>x.className==='toc-insert');
  const document={getElementById(id){if(!elements.has(id))elements.set(id,new Element());return elements.get(id);},createElement(tag){return new Element(tag);}};
  const html=require('node:fs').readFileSync(require.resolve('../citation_graph/static/debug.html'),'utf8');
  for(const match of html.matchAll(/id="([^"]+)"/g))document.getElementById(match[1]);
@@ -60,20 +62,38 @@ async function testDebugReview(source){
  elements.get('assign-zone').handlers.click();
  assert.equal(vm.runInContext('state.zones.C2',context),'footnote');
  // Headings can be added independently of a chunk button.
- elements.get('add-heading').handlers.click();
+ vm.runInContext("setTab('toc')",context);insertionPoints()[0].children[0].handlers.click();
  assert.equal(vm.runInContext('state.tab',context),'toc');
- const headingRow=elements.get('toc').children[0];
+ const headingRow=tocElements()[0];
  const headingTitle=headingRow.children[1].children[0];headingTitle.value='A chapter';headingTitle.handlers.input();
  assert.equal(vm.runInContext('state.toc[0].title',context),'A chapter');
+ // Insertion slots preserve their position and focus the new title, including original TOCs.
+ vm.runInContext("state.toc=[];state.tocChanged=false;state.originalToc=[{title:'First',level:1,page:1},{title:'Last',level:1,page:2}];renderToc()",context);
+ assert.equal(insertionPoints().length,3);
+ insertionPoints()[1].children[0].handlers.click();
+ assert.equal(vm.runInContext('state.toc.map(x=>x.title).join()',context),'First,,Last');
+ assert.equal(vm.runInContext('state.originalToc.length',context),2);
+ assert.equal(document.activeElement,tocElements()[1].children[1].children[0]);
+ let insertedTitle=document.activeElement;insertedTitle.value='Middle';insertedTitle.handlers.input();
+ assert.equal(vm.runInContext('orderedToc().map(x=>x.title).join()',context),'First,Middle,Last');
+ await vm.runInContext('save()',context);assert.equal(posts.at(-1).toc.map(x=>x.title).join(),'First,Middle,Last');
+ insertionPoints()[0].children[0].handlers.click();assert.equal(vm.runInContext('state.toc[0].title',context),'');
+ insertionPoints().at(-1).children[0].handlers.click();assert.equal(vm.runInContext('state.toc.at(-1).title',context),'');
+ assert.equal(vm.runInContext('state.toc.length',context),5);
+ // Data fields still target the correct outline row after slots are inserted.
+ insertedTitle=tocElements()[2].children[1].children[0];insertedTitle.value='Changed middle';insertedTitle.handlers.input();
+ assert.equal(vm.runInContext('state.toc[2].title',context),'Changed middle');
+ assert.equal(vm.runInContext('state.toc[1].title',context),'First');
+ assert.ok(!html.includes('id="add-heading"'));
  // The visible outline moves whole branches, with limits and no numeric level inputs.
  vm.runInContext("state.toc=[{title:'Root',level:1,page:1},{title:'Branch',level:1,page:1},{title:'Child',level:2,page:2}];state.tocChanged=true;renderToc()",context);
- let title=elements.get('toc').children[1].children[1].children[0];let intercepted=false;
+ let title=tocElements()[1].children[1].children[0];let intercepted=false;
  title.handlers.keydown({key:'Tab',preventDefault(){intercepted=true;}});
  assert.ok(intercepted);assert.equal(vm.runInContext('state.toc.map(x=>x.level).join()',context),'1,2,3');
- assert.equal(elements.get('toc').children[2].style['--outline-depth'],'2');
- title=elements.get('toc').children[1].children[1].children[0];title.handlers.keydown({key:'Tab',shiftKey:true,preventDefault(){}});
+ assert.equal(tocElements()[2].style['--outline-depth'],'2');
+ title=tocElements()[1].children[1].children[0];title.handlers.keydown({key:'Tab',shiftKey:true,preventDefault(){}});
  assert.equal(vm.runInContext('state.toc.map(x=>x.level).join()',context),'1,1,2');
- title=elements.get('toc').children[1].children[1].children[0];title.handlers.keydown({key:'Escape',preventDefault(){}});assert.equal(elements.get('toc').children[1].children[2].open,true);
+ title=tocElements()[1].children[1].children[0];title.handlers.keydown({key:'Escape',preventDefault(){}});assert.equal(tocElements()[1].children[2].open,true);
  vm.runInContext('moveHeading(0,1)',context);assert.equal(vm.runInContext('state.toc[0].level',context),1);
  vm.runInContext("state.toc=[{title:'Root',level:1,page:1},{title:'Branch',level:1,page:1},...Array.from({length:7},(_,n)=>({title:'Deep',level:n+2,page:1}))];renderToc();moveHeading(1,1)",context);
  assert.equal(vm.runInContext('state.toc.at(-1).level',context),8);assert.equal(vm.runInContext('state.toc[1].level',context),1);
