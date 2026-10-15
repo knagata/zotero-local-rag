@@ -981,3 +981,11 @@ active V3はM5 clean rebuildと後続の対象修復を完了した監査済み�
 
 - 追加メニューボタンを外し、一覧先頭/見出し間/末尾の挿入位置でhover/focus時に＋を表示する。タッチでは常時表示。指定位置へ追加し、見出し名にフォーカスする。挿入欄を行indexから分離し、編集/階層移動先を維持。保存は自動ソートせず挿入順で送信し、本文順の検査は従来どおり要求する。
 - 関連41passed/1skip（3.00秒）とNode DOMで挿入/フォーカス/既存目次保持/編集先/挿入順送信/階層操作等を確認。文書/function/lint/diff検査合格。backend/DB/履歴/原本未変更、再読込で適用、再起動・有料処理なし。実画面目視とPython全体再実行は未実施。
+
+### 2026-10-15: PDF直接表示・文字選択・先読みを実装
+
+- /admin/debug/は同梱PDF.jsで原本PDFを開いたままcanvas+TextLayer表示する。前後3ページの紙面/チャンクを先読みし、canvas各400万pixel上限・資料切替え破棄・旧描画の上書き拒否。原本PDF別タブリンクも追加。画像APIは互換用だけで通常のページ送りでは呼ばない。
+- 認証済みGET/HEAD/single Range、同一FDの配信と送信前後変更拒否を実装。Zotero現パス/原本stat/SQLite WAL/manifest世代を最大4資料分保持して軽量照合する。索引時原本fingerprint不一致/inflightは停止し、保存/反映はfresh inspectを維持。PDF差替えは通常次回差分更新で再索引の対象であり即時完了ではない。原本文字層を編集せず、本番校訂・有料処理なし。
+- 公式pdfjs-dist 6.4.299の必要資産204件/約7.2MBとlicense/hash/update scriptを同梱。資産情報の正本citation_graph/static/pdfjs/assets.json、実装注意developer/document-review.md、利用手順docs/document-review.md。CSP/worker/font/WASMもsame-originで配信する。
+- 全体2,150passed/7skip/5deselected（88.81秒）、9module739文100%到達・coverage悪化なし。関連/文書/function/lint39passed/2skip、fatal Ruff/compileall/src.cli import/diff合格。Node DOMで再利用/文字layer/先読み上限/倍率/旧描画拒否/編集保持/更新時停止を検証。同梱SDK本体でも合成2頁の文字取得と描画を確認（提供Node環境で成功、独立CLIは署名制約）。実ブラウザ目視はbackendなしで未実施。
+- 実資料106頁/指定頁6チャンクを確認。初回inspect245.8ms、軽量検証3回平均29.3ms、画面描画の計測ではない。writer未実行を確認してserviceへ反映しGraph/local/public OAuth正常、PDF/SDK未認証401。Herdr w1:t19/w1:p1B・w1:t1A/w1:p1C、証跡data/quality/pdf-review-20261015/。

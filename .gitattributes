@@ -1,0 +1,2 @@
+# Keep third-party PDF.js distributions and licenses byte-for-byte for hash verification.
+citation_graph/static/pdfjs/** -whitespace

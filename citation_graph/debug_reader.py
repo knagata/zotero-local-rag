@@ -12,7 +12,7 @@ import fitz
 import httpx
 from src.chunk_store import get_item_chunks
 from src.db_relations import get_artifact_processing_statuses, get_chunk_quality_reports, get_db_connection
-from src.manifest import load_manifest
+from src.manifest import load_manifest, content_signature
 from src.v3_data_plane import chroma_dir, manifest_path
 from src.zotero_source_localapi import ZoteroLocalAPI
 from citation_graph.debug_annotations import resolve_toc, validate_zones
@@ -33,6 +33,22 @@ def source_hash(path: Path, stamp: tuple) -> str:
     if source_stamp(path) != stamp:
         raise ReviewConflict('PDFが変更中です。同期完了後に再読込してください。')
     return digest.hexdigest()
+
+
+@lru_cache(maxsize=32)
+def indexed_signature(path: Path, stamp: tuple) -> str:
+    return content_signature(path, stamp[2])
+
+
+def verify_indexed_source(path: Path, key: str, manifest: dict, rows: list[dict]) -> None:
+    if key in manifest.get('inflight_attachments',[]):
+        raise ReviewConflict('この資料は索引を更新中です。完了後に開き直してください。')
+    entry = (manifest.get('files') or {}).get(key) or {}
+    if rows and 'size' in entry and 'mtime' in entry:
+        stat = path.stat()
+        if (stat.st_size != entry['size'] or stat.st_mtime != entry['mtime']
+                or entry.get('content_signature') and indexed_signature(path,source_stamp(path)) != entry['content_signature']):
+            raise ReviewConflict('PDFが索引作成後に変更されています。再索引の完了後に開き直してください。')
 
 
 def current_toc(rows: list[dict]) -> list[dict]:
@@ -114,10 +130,12 @@ class DebugReader:
             total, label = len(pdf), pdf[page-1].get_label()
         rows = [row for row in get_item_chunks(item, chroma_dir=chroma_dir(self.root))
                 if (row.get('metadata') or {}).get('attachmentKey') == key]
+        manifest = load_manifest(manifest_path(self.root))
+        verify_indexed_source(path,key,manifest,rows)
         digest = source_hash(path, source_stamp(path))
         version = document_version(digest, rows)
         draft = self.store.read(key)
-        manual = ((load_manifest(manifest_path(self.root)).get("files") or {}).get(key) or {}).get("manual_review") or {}
+        manual = ((manifest.get("files") or {}).get(key) or {}).get("manual_review") or {}
         applied = manual.get("revision") == draft["revision"] and manual.get("version") == version
         return {'attachment_key':key,'item_key':item,'title':(rows[0]['metadata'].get('title') if rows else path.stem),
                 'page':page,'page_label':label,'total_pages':total,'version':version,

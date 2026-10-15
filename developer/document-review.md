@@ -40,3 +40,31 @@ journalだけを根拠に監査なしで検索を公開しない。
 参考文献/注に関係する本文・実効zoneの変更ではreferencesをstale、
 item_citation_statusをpendingへ戻す。同台帳もrollback journalのitem限定snapshotに含める。
 Citation Networkの再処理は自動起動せず、従来の明示操作・課金同意を維持する。
+
+## PDF直接表示と先読み
+
+`citation_graph/debug_pdf.py` は認証済みPDFのGET/HEAD/single Rangeを配信する。
+初回inspectの原本stat・canonical SQLite/WAL・manifest statと文書versionを最大4件保持し、
+ページ移動/Range配信ではZotero上の現在パスとstat世代を照合する。検査中の世代変更を拒否する。
+配信は同一FDから読み、読取り前後の原本変更時は中断する。任意パス・multipart Rangeは受けない。
+manifestの索引時mtime/size/content_signatureと現原本が不一致、または対象inflightなら表示を拒否する。
+下書き保存/反映は引き続きfresh inspectを行い、表示キャッシュを更新許可の根拠にしない。
+
+`citation_graph/static/debug-pdf.js` はPDF.jsの文書handleを再利用し、canvasとTextLayerを重ねる。
+前後の3ページを上限に描画を保持し、canvasは各400万pixel以下、source切替えで破棄する。
+PDFは必要部分をRange取得し、全PDF自動先読みは無効化。チャンクも前後3ページのPromiseを保持し、
+表示前のcheap state検査を省略しない。遅い旧描画が新ページへ上書きされないようrequestを検証する。
+
+同梱SDKは `citation_graph/static/pdfjs/assets.json` の版・配布元・integrity・各file hashを正本とする。
+公式npm配布物から必要なlegacy build・worker・viewer CSS・CMaps・標準font・WASM/ICCとlicenseを保存する。
+更新は `uv run python scripts/update_review_pdfjs.py`。版/integrityを変更する場合はSDK APIと
+`tests/test_debug_pdf.py` の固定版検証を同時に更新する。CDNや外部ビューアへ資料を送らない。
+worker/font/CSPと日本語PDFの表示確認を行い、第三者コードを独自修正せず追跡する。
+
+検証は `tests/test_debug_pdf.py`（認証/Range/HEAD/配信中差替え/世代排他/SDK hash）、
+`tests/pdf_review_dom.cjs`（text layer/handle再利用/fit/zoom/描画上限/先読み/遅い描画の拒否）と
+`tests/debug_review_dom.cjs`（チャンク先読みと編集UI）。SDK本体の実PDF解析/描画と
+実ブラウザの文字選択・位置確認は、mock操作テストと分けて記録する。
+
+同梱配布物はbyte-for-byteで保持するため、`.gitattributes`で同梱ディレクトリだけ
+upstream由来のwhitespace検査を除外する。自作コードの検査は維持し、SDKは全file hashで検証する。

@@ -2536,3 +2536,11 @@ A（PDF構造化）・B（課金LLM）は独立、C（構造抽出エンジン�
 - 末尾追加のメニューボタンを廃止し、先頭/各見出し間/末尾へ挿入欄を配置。hover/focusで＋、タッチは常時表示する。クリックした位置に新規行を挿入し、見出し名へフォーカスする。近隣の開始ページと階層を初期値にし、開始位置の確認を案内する。
 - 挿入欄と見出し行のindexを分離し、本文/位置/階層操作が別の行を変更しないようにした。保存時の自動ソートを廃止して挿入順を維持し、本文順の整合は既存backend検査で要求する。原本・本番DB・履歴形式・backendは変更しない。
 - 関連41passed/1skip（3.00秒）、Node DOMで空一覧/先頭/途中/末尾/既存目次のコピー/入力フォーカス/正しい行の編集/挿入順の送信/階層と保存競合の回帰を検証。文書/function/lint/diff検査合格。静的no-store配信の再読込から反映、再起動・有料処理なし。実画面目視は未実施。Python実装未変更で全体再実行なし。
+
+### 2026-10-15: デバッグ紙面をPDF直接表示と近隣ページ先読みに変更
+
+- PDF.jsの文書handleを再利用し、canvasとTextLayerで文字選択できる1頁表示を実装。JPEG生成をページ送りから外し、前後3ページの紙面/チャンクだけを先読み・保持する。canvasは各400万pixel以下、古い描画の上書きを拒否し、原本PDFを別タブで開くリンクも追加。
+- 原本PDFは認証済みGET/HEAD/single Rangeで同一FDから配信。現在のZoteroパス・原本stat・canonical SQLite/WAL・manifest世代を軽量照合し、配信中変更も拒否する。索引時mtime/size/content_signature不一致や対象inflightは再索引待ちとして停止し、保存/反映時のfresh検証も維持する。旧画像APIは互換用に保持。
+- 公式pdfjs-dist 6.4.299の必要資産204件/約7.2MBをlicense・SHA512配布検証・各SHA256付きで同梱。固定版更新scriptを追加し、外部ビューア/CDNへ原本を送らない。関連CSP/worker/font/WASM配信を更新。原本文字層・本番DB・取込規則は変更せず、有料OCR/LLMなし。
+- 計測付き全体2,150passed/7skip/5deselected（88.81秒）、デバッグ9module739文すべて到達、coverage悪化なし。追加の関連/文書/function/lint39passed/2skip、fatal Ruff/compileall/src.cli import/diff合格。Node DOMで文字layer/handle再利用/3ページ上限/倍率/旧描画拒否/チャンク先読み/更新時停止/既存編集を検証。Node環境で同梱SDK本体による合成2頁の文字取得・描画を確認し紙面PNGを確認した（独立Node CLIは署名制約で不可、提供Node環境では成功）。Browser backendがなく実ブラウザ文字選択/位置の目視は未実施。
+- 実資料106頁・指定頁6チャンクで原本/索引一致を確認。初回inspect245.8ms、軽量世代検証3回平均29.3ms（ブラウザ描画時間ではない）。writer未実行を確認しサービス反映、Graph/local/public OAuth正常、PDF/SDK API未認証401。Herdr全検証/反映w1:t19/w1:p1B、PDF検証w1:t1A/w1:p1C。証跡data/quality/pdf-review-20261015/。手順/契約/引継ぎを同時更新。

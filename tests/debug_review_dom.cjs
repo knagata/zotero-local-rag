@@ -10,7 +10,7 @@ async function testDebugReview(source){
   setAttribute(name,value){this.attributes[name]=value;}
   querySelector(){for(const child of this.children){if(child.attributes?.['aria-label']==='見出し名')return child;const found=child.querySelector?.();if(found)return found;}return null;}
  }
- const elements=new Map(),posts=[];
+ const elements=new Map(),posts=[],fetches=[];
  const tocElements=()=>elements.get('toc').children.filter(x=>x.className==='toc-row');
  const insertionPoints=()=>elements.get('toc').children.filter(x=>x.className==='toc-insert');
  const document={getElementById(id){if(!elements.has(id))elements.set(id,new Element());return elements.get(id);},createElement(tag){return new Element(tag);}};
@@ -19,9 +19,10 @@ async function testDebugReview(source){
  for(const match of source.matchAll(/\$\('([^']+)'\)/g))assert.ok(html.includes(`id="${match[1]}"`),`missing control ${match[1]}`);
  const windowHandlers={};const version='a'.repeat(64);
  const page={attachment_key:'ABCD1234',version,page:1,total_pages:2,title:'Book',anchors:[{id:'C1',page:1,zone:'body'},{id:'C2',page:2,zone:'endnote'}],current_toc:[],draft:{revision:0,edits:{},toc:[]},chunks:[{id:'C1',text:'Original',metadata:{page:1}}]};
- let revision=0,edits={},originals={},pendingSave=null,deferSave=false;
- const context=vm.createContext({document,window:{addEventListener(type,handler){windowHandlers[type]=handler;}},confirm:()=>true,console,fetch:async(path,options={})=>{
-  let data;
+ let revision=0,edits={},originals={},pendingSave=null,deferSave=false,failState=false;
+ class PdfMock{constructor(stage,viewport){this.stage=stage;this.viewport=viewport;this.pdf=null;}clear(){this.pdf=null;}async open(url){this.url=url;this.pdf={numPages:2};}async show(){return 100;}prefetch(){}}
+ const context=vm.createContext({document,window:{ReviewPdf:PdfMock,addEventListener(type,handler){windowHandlers[type]=handler;}},confirm:()=>true,console,fetch:async(path,options={})=>{
+  fetches.push(path);if(failState&&path.includes('/state?'))return {ok:false,status:409,json:async()=>({error:'原本更新後の再索引待ち'})};let data;
   if(path.endsWith('/documents'))data=[{attachment_key:'ABCD1234',title:'Book',issues:['OCR']}];
   else if(path.includes('/pages/'))data={...page,page:Number(path.split('/').at(-1))};
   else if(path.endsWith('/draft')){
@@ -102,13 +103,13 @@ async function testDebugReview(source){
  assert.ok(!elements.get('toc').children.some(numericSpinbox));
  // Revert the outline to a valid compact example for subsequent save tests.
  vm.runInContext("state.toc=[{title:'Root',level:1,page:1}];renderToc()",context);
- // Fit is bounded in both dimensions across viewport sizes. Zoom enables overflow.
- const image=elements.get('paper'),viewport=elements.get('paper-viewport');image.naturalWidth=1200;image.naturalHeight=1800;
- for(const [width,height] of [[800,900],[500,500],[240,360]]){viewport.clientWidth=width;viewport.clientHeight=height;elements.get('zoom-mode').value='fit';vm.runInContext('fitPaper()',context);assert.ok(parseFloat(image.style.width)<=width);assert.ok(parseFloat(image.style.height)<=height);}
- elements.get('zoom').value=100;elements.get('zoom-mode').value='custom';vm.runInContext('fitPaper()',context);
- assert.equal(image.style.width,'1200px');assert.equal(elements.get('paper-stage').style.width,'1200px');
+ // One reusable PDF handle replaces image URLs; prefetched chunks avoid another page request.
+ assert.ok(vm.runInContext('pdfViewer.url',context).includes('/pdf?version='));
+ assert.ok(!fetches.some(path=>path.includes('/image?')));
+ assert.equal(elements.get('paper-stage').hidden,false);
+ const preloaded=fetches.filter(path=>path.endsWith('/pages/2')).length;
  assert.equal(elements.get('previous').disabled,true);assert.equal(elements.get('next').disabled,false);
- await elements.get('next').handlers.click();assert.equal(vm.runInContext('state.page',context),2);
+ await elements.get('next').handlers.click();assert.equal(vm.runInContext('state.page',context),2);assert.equal(fetches.filter(path=>path.endsWith('/pages/2')).length,preloaded);assert.ok(fetches.some(path=>path.includes('/state?version=')));
  assert.equal(elements.get('next').disabled,true);assert.equal(elements.get('previous').disabled,false);
  // Cursor keys must not change pages while editing text.
  windowHandlers.keydown({key:'ArrowLeft',target:{tagName:'TEXTAREA'}});
@@ -125,6 +126,7 @@ async function testDebugReview(source){
  vm.runInContext("state.key='OTHER123';state.revision=0;state.request++",context);
  pendingSave();await oldSave;
  assert.equal(vm.runInContext('state.revision',context),0);
+ assert.ok(vm.runInContext('pageCache.size',context)<=3);failState=true;vm.runInContext("state.key='ABCD1234'",context);await vm.runInContext('loadPage(1)',context);assert.equal(elements.get('paper-stage').hidden,true);assert.equal(elements.get('save').disabled,true);assert.equal(elements.get('apply').disabled,true);assert.ok(elements.get('notice').textContent.includes('再索引'));
  console.log('debug review DOM: history, diff, apply and asynchronous save guards passed');
 }
 module.exports={testDebugReview};

@@ -11,6 +11,7 @@
     "citation_graph/debug_changes.py": 0,
     "citation_graph/debug_jobs.py": 0,
     "citation_graph/debug_journal.py": 0,
+    "citation_graph/debug_pdf.py": 0,
     "citation_graph/debug_reader.py": 0,
     "citation_graph/debug_routes.py": 0,
     "citation_graph/debug_store.py": 0,

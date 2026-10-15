@@ -5,12 +5,12 @@ import asyncio
 from pathlib import Path
 
 from fastapi import Request
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictBool
 
 from citation_graph.debug_reader import DebugReader
 from citation_graph.debug_store import ReviewConflict
-from src.source_page import render_source_page
+from citation_graph.debug_pdf import register_pdf_routes
 
 
 class DraftRequest(BaseModel):
@@ -32,9 +32,8 @@ def register_debug_routes(app, root: Path, require_admin, require_same_origin, a
     reader = DebugReader(root)
     static = root / 'citation_graph/static'
 
-    async def document(key, page):
-        path, item = await reader.resolve(key)
-        return await asyncio.to_thread(reader.inspect, key, path, item, page), path
+    documents = register_pdf_routes(app,root,reader,require_admin,failure)
+    document = documents.inspect
 
     @app.get('/admin/debug/')
     async def debug_page(request: Request):
@@ -42,7 +41,7 @@ def register_debug_routes(app, root: Path, require_admin, require_same_origin, a
         if denied:
             return denied
         return FileResponse(static/'debug.html', headers={'Cache-Control':'no-store',
-            'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+            'Content-Security-Policy': "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' blob:; connect-src 'self'; img-src 'self' blob: data:; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
             'X-Content-Type-Options':'nosniff', 'X-Frame-Options':'DENY'})
 
     @app.get('/admin/debug/api/documents')
@@ -61,23 +60,6 @@ def register_debug_routes(app, root: Path, require_admin, require_same_origin, a
             data, _ = await document(key, page)
             data.pop('all_chunks')
             return JSONResponse(data, headers={'Cache-Control':'no-store'})
-        except (ValueError, OSError, RuntimeError) as exc:
-            return failure(exc)
-
-    @app.get('/admin/debug/api/documents/{key}/pages/{page}/image')
-    async def page_image(request: Request, key: str, page: int, version: str):
-        denied = require_admin(request)
-        if denied:
-            return denied
-        try:
-            data, path = await document(key, page)
-            if version != data['version']:
-                raise ReviewConflict('原本・索引が変更されました。ページを再読込してください。')
-            _, jpeg = await asyncio.to_thread(render_source_page, path, page)
-            latest, _ = await document(key, page)
-            if latest["version"] != version:
-                raise ReviewConflict("画像の生成中に原本・索引が変更されました。再読込してください。")
-            return Response(jpeg, media_type='image/jpeg', headers={'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'})
         except (ValueError, OSError, RuntimeError) as exc:
             return failure(exc)
 

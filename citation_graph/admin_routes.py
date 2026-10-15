@@ -73,7 +73,7 @@ def register_admin_routes(app: FastAPI, settings: Any, authenticated_email) -> N
         unauthorized = require_admin(request)
         if unauthorized:
             return unauthorized
-        if name not in {"admin.css", "admin.js", "debug.css", "debug.js"}:
+        if name not in {"admin.css", "admin.js", "debug.css", "debug.js", "debug-pdf.js"}:
             return JSONResponse({"error": "not found"}, status_code=404)
         media_type = "text/css" if name.endswith(".css") else "text/javascript"
         return FileResponse(
