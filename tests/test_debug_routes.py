@@ -180,3 +180,49 @@ def test_empty_saved_draft_never_starts_a_worker(debug_client,monkeypatch):
     response=client.post(base+'/apply',json={'revision':1,'version':version},headers=headers)
     assert response.status_code==400 and '修正がありません' in response.json()['error']
     start.assert_not_called()
+
+
+def test_split_draft_diff_apply_and_history_rebase_after_db_changes(debug_client,monkeypatch):
+    from citation_graph.debug_changes import corrected_rows
+    client,rows=debug_client
+    rows[0]['text']='Before.\nInaugurations\nText.'
+    original=rows[0]['text']
+    base='/admin/debug/api/documents/ABCD1234';headers={'Authorization':'test','Origin':'https://review.test'}
+    version=client.get(base+'/pages/1',headers=headers).json()['version']
+    heading={'chunk_id':'C1','page':1,'level':1,'title':'Inaugurations','offset':8,'anchor_text':original}
+    body={'revision':0,'version':version,'toc':[heading],'toc_changed':True}
+    saved=client.post(base+'/draft',headers=headers,json=body)
+    assert saved.status_code==200,saved.text
+    first=saved.json()
+    diff=client.get(base+'/diff?revision=1',headers=headers).json()
+    assert diff['split_changes'][0]['parts']==['Before.\n','Inaugurations\nText.']
+    assert first['originals']=={'C1':original}
+    import citation_graph.admin_jobs as jobs
+    monkeypatch.setattr(jobs,'start_job',Mock(return_value={'id':'JOB','status':'queued'}))
+    assert client.post(base+'/apply',headers=headers,json={**body,'revision':1}).status_code==202
+    # Simulate completion of the real split without touching a canonical DB.
+    rows[:]=corrected_rows(rows,{},[heading],toc_changed=True)
+    current=client.get(base+'/pages/1',headers=headers).json()
+    undo=client.post(base+'/history/1/restore?before=true',headers=headers,json={'revision':1,'version':current['version']})
+    assert undo.status_code==200,undo.text
+    assert undo.json()['merges']==first['split_groups']
+    assert undo.json()['edits']=={'C1':original}
+    assert client.post(base+'/apply',headers=headers,json={'revision':2,'version':current['version']}).status_code==202
+    # Merge, then redo the first split and undo that merge via its own history.
+    inverse=undo.json()
+    rows[:]=corrected_rows(rows,inverse['edits'],inverse['toc'],merges=inverse['merges'],toc_changed=True)
+    version=client.get(base+'/pages/1',headers=headers).json()['version']
+    redo=client.post(base+'/history/1/restore?before=false',headers=headers,json={'revision':2,'version':version})
+    assert redo.status_code==200,redo.text
+    assert redo.json()['toc'][0]['offset']==8
+    again=client.post(base+'/history/2/restore?before=true',headers=headers,json={'revision':3,'version':version})
+    assert again.status_code==200,again.text
+    assert again.json()['cuts']=={'C1':[8]}
+    assert again.json()['toc'][0]['offset']==8
+    assert len(client.get(base+'/history',headers=headers).json())==4
+    # Invalid/stale character positions never make a new saved revision.
+    for offset in [True,-1,999,'8']:
+        bad=client.post(base+'/draft',headers=headers,json={'revision':4,'version':version,'toc':[{**heading,'offset':offset}]})
+        assert bad.status_code==400
+    bad=client.post(base+'/draft',headers=headers,json={'revision':4,'version':version,'edits':{'C1':'Changed '+original},'toc':[heading]})
+    assert bad.status_code==400 and '再指定' in bad.json()['error']

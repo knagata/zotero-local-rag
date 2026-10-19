@@ -68,3 +68,25 @@ worker/font/CSPと日本語PDFの表示確認を行い、第三者コードを�
 
 同梱配布物はbyte-for-byteで保持するため、`.gitattributes`で同梱ディレクトリだけ
 upstream由来のwhitespace検査を除外する。自作コードの検査は維持し、SDKは全file hashで検証する。
+
+## チャンク内の節開始位置と分割
+
+本文textareaのselectionStartをUnicodeコードポイントへ変換し、見出しのoffsetと
+指定時本文anchor_textを下書きへ保持する。編集後の本文が一致しなければ再指定を要求する。
+`citation_graph/debug_segments.py` が文字列を削らず分割し、元IDを前半へ保持する。
+後半は元IDに順序を保証したsuffixを付与し、通常のnatural_chunk_keyによる読取り/構造順序を維持する。
+候補全体の順序/一意性を検査し、確定できなければ書込み前に拒否する。
+
+保存時のsplit_groups/merge_beforeは履歴復元の根拠。merges/cutsで現在の連続した同じ分割元を
+結合してから必要位置で再分割し、Undo/Redoも新revisionへ保存する。未解決の後続再分割は拒否する。
+既存の500件/2MiBの下書き上限、128MiBのjournal上限、writer lockと世代検査を維持する。
+本文/新規IDだけを再埋め込みし、削除するIDのvectorも書込み前にjournalへ保存する。
+rollbackでは作成IDをChroma/FTSから除去し、元vectorを明示upsertしてからmetadata/構造/台帳を戻す。
+
+`tests/test_debug_segments.py` は文字列完全保存・複数境界・Unicode・順序/欠損/再分割の拒否を検査し、
+`tests/test_debug_split_apply.py` は隔離native DBで分割/結合・兄弟添付/ノート保持・途中失敗時の
+本文/全vector/FTS/manifest完全復旧を確認する。実資料の校訂はテストとして実行しない。
+
+MCPの前後参照は手動suffix付きIDを元の段落へ対応づけ、PDFはattachment/page/para_indexで
+実在する全partを取得する。metadataがない旧索引はID指定へfallbackする。
+`get_chunk_context` は指定チャンク自身も含め、自然順で返す。通常検索のcontextは自身を重複させない。

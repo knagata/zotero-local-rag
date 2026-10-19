@@ -17,6 +17,7 @@ from src.v3_data_plane import chroma_dir, manifest_path
 from src.zotero_source_localapi import ZoteroLocalAPI
 from citation_graph.debug_annotations import resolve_toc, validate_zones
 from citation_graph.debug_store import DraftStore, ReviewConflict, validate_draft
+from citation_graph.debug_segments import merge_rows, split_rows
 
 
 def source_stamp(path: Path) -> tuple:
@@ -146,15 +147,20 @@ class DebugReader:
                             'preview':re.sub(r'\s+', ' ', row['text']).strip()[:160]} for row in rows],
                 'all_chunks':rows}
 
-    def save(self, document: dict, revision: int, version: str, edits: dict, toc: list, actor: str, toc_changed: bool = False, zones: dict | None = None) -> dict:
+    def save(self, document: dict, revision: int, version: str, edits: dict, toc: list, actor: str, toc_changed: bool = False, zones: dict | None = None, merges: list | None = None, cuts: dict | None = None) -> dict:
         if document['version'] != version:
             raise ReviewConflict('原本または索引が変更されました。再読込して修正内容を確認してください。')
-        toc = resolve_toc(document['all_chunks'], toc, allow_unresolved=True, total_pages=document['total_pages'])
+        rows = merge_rows(document['all_chunks'], merges)
+        toc = resolve_toc(rows, toc, allow_unresolved=True, total_pages=document['total_pages'])
         zones = zones or {}
-        validate_draft(document['all_chunks'], edits, toc, allow_unresolved=True)
-        validate_zones(document['all_chunks'], zones)
+        validate_draft(rows, edits, toc, allow_unresolved=True)
+        validate_zones(rows, zones)
+        _, _, groups = split_rows(rows, edits, toc, cuts)
         return self.store.save(document['attachment_key'], revision,
                                {'version':version,'source_sha256':document['source_sha256'],'edits':edits,'toc':toc,'toc_changed':toc_changed,
-                                'originals':{row['id']:row['text'] for row in document['all_chunks'] if row['id'] in edits},
+                                'originals':{row['id']:row['text'] for row in rows if row['id'] in edits or any(row['id']==group[0] for group in groups)},
+                                'existing_children':{row['id']:[child['id'] for child in document['all_chunks'] if child['metadata'].get('review_parent')==row['id']] for row in rows if row['id'] in edits or any(row['id']==group[0] for group in groups)},
+                                'split_groups':groups,'merges':merges or [],'cuts':cuts or {},
+                                'merge_before':[[row for row in document['all_chunks'] if row['id'] in group] for group in merges or []],
                                 'zones':zones,'zones_before':{row['id']:row['metadata'].get('zone') or 'body' for row in document['all_chunks'] if row['id'] in zones},
                                 'toc_before':current_toc(document['all_chunks'])}, actor)

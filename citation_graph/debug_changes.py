@@ -1,26 +1,27 @@
 """Pure, reviewable transformation of one attachment's canonical chunks."""
 from __future__ import annotations
 
-import copy
 import json
 
 from citation_graph.debug_store import validate_draft
 from citation_graph.debug_annotations import resolve_toc, validate_zones
+from citation_graph.debug_segments import merge_rows, split_rows
 
 
-def corrected_rows(rows: list[dict], edits: dict, toc: list[dict], *, toc_changed: bool = False, zones: dict | None = None) -> list[dict]:
+def corrected_rows(rows: list[dict], edits: dict, toc: list[dict], *, toc_changed: bool = False, zones: dict | None = None, merges: list | None = None, cuts: dict | None = None) -> list[dict]:
+    rows = merge_rows(rows, merges)
     toc = resolve_toc(rows, toc)
     zones = zones or {}
     validate_draft(rows, edits, toc)
     validate_zones(rows, zones)
-    result = copy.deepcopy(rows)
+    result, toc, _ = split_rows(rows, edits, toc, cuts)
+    original_ids = {row['id'] for row in rows}
     boundaries = {entry['chunk_id']: entry for entry in toc}
     path: list[str] = []
     for row in result:
-        if row['id'] in edits:
-            row['text'] = edits[row['id']]
-        if row['id'] in zones:
-            row['metadata']['zone'] = zones[row['id']]
+        origin = row['id'] if row['id'] in zones else (row['metadata'].get('review_parent') if row['id'] not in original_ids else None)
+        if origin in zones:
+            row['metadata']['zone'] = zones[origin]
         heading = boundaries.get(row['id'])
         if heading:
             path = path[:heading['level']-1] + [heading['title'].strip()]

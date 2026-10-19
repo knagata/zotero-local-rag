@@ -15,7 +15,8 @@ from citation_graph.debug_store import ReviewConflict
 def references_changed(old: list[dict], candidate: list[dict], edited: dict) -> bool:
     from src.document_structure import CITATION_EXTRACT_ZONES
     indexed = {row['id']:row['metadata'].get('zone') for row in old}
-    return any((row['id'] in edited or indexed.get(row['id']) != row['metadata'].get('zone'))
+    removed = set(indexed)-{row['id'] for row in candidate}
+    return any(indexed[key] in CITATION_EXTRACT_ZONES for key in removed) or any((row['id'] in edited or indexed.get(row['id']) != row['metadata'].get('zone'))
                and (indexed.get(row['id']) in CITATION_EXTRACT_ZONES
                     or row['metadata'].get('zone') in CITATION_EXTRACT_ZONES) for row in candidate)
 
@@ -26,9 +27,16 @@ def apply_with_runtime(runtime, document: dict, draft: dict, root: Path) -> None
     old = runtime.rows(item)
     if len(old) > 50000 or not document['all_chunks']:
         raise ValueError('索引済みの資料を選び、対象が大きい場合は添付を分けてください。')
-    changed = corrected_rows(document['all_chunks'], draft['edits'], draft['toc'], toc_changed=draft.get('toc_changed',False), zones=draft.get('zones'))
-    by_id = {row['id']:row for row in changed}
-    candidate = [by_id.get(row['id'], copy.deepcopy(row)) for row in old]
+    changed = corrected_rows(document['all_chunks'], draft['edits'], draft['toc'], toc_changed=draft.get('toc_changed',False), zones=draft.get('zones'), merges=draft.get('merges'), cuts=draft.get('cuts'))
+    from src.chunk_store import natural_chunk_key
+    candidate = sorted([copy.deepcopy(row) for row in old if row['metadata'].get('attachmentKey') != key]+changed,
+                       key=lambda row:natural_chunk_key(row['id']))
+    old_by_id = {row['id']:row for row in old}
+    new_ids = {row['id'] for row in candidate}
+    created, removed = new_ids-set(old_by_id), set(old_by_id)-new_ids
+    edited = {row['id'] for row in candidate if row['id'] not in old_by_id or row['text'] != old_by_id[row['id']]['text']}
+    if created:
+        runtime.check_new_ids(created)
     source = [row for row in candidate if row['metadata'].get('source_type') != 'note']
     built = runtime.build(item, source)
     if not built['diagnostics'].get('valid'):
@@ -40,7 +48,8 @@ def apply_with_runtime(runtime, document: dict, draft: dict, root: Path) -> None
     manifest = runtime.manifest()
     journal = {'item_key':item,'attachment_key':key,'revision':draft['revision'],
                'rows':old,'manifest':manifest,'relations':runtime.snapshot(item),
-               'vectors':runtime.vectors(list(draft['edits']))}
+               'vectors':runtime.vectors(sorted((edited | removed) & set(old_by_id))),
+               'created_ids':sorted(created),'removed_ids':sorted(removed)}
     write_journal(root/'data/debug_rollback/current.json.gz', journal)
     print('[修正反映] 復旧用の差分を保存・検証しました。', flush=True)
     committed = False
@@ -50,9 +59,12 @@ def apply_with_runtime(runtime, document: dict, draft: dict, root: Path) -> None
         pending['hnsw_validated'] = False
         pending['inflight_attachments'] = sorted(set(pending.get('inflight_attachments',[])) | {key})
         runtime.save_manifest(pending)
-        runtime.write(candidate, set(draft['edits']))
+        if created or removed:
+            runtime.write(candidate, edited, created=created, removed=removed)
+        else:
+            runtime.write(candidate, edited)
         runtime.structure(item, built)
-        if references_changed(old,candidate,draft['edits']):
+        if references_changed(old,candidate,{key:True for key in edited | removed}):
             runtime.invalidate_references(item)
         runtime.verify(candidate[0]['id'])
         runtime.verify_source()
@@ -116,14 +128,30 @@ class Runtime:
     def invalidate(self):
         self.gate_path.unlink(missing_ok=True)
 
-    def write(self, rows, edited):
+    def check_new_ids(self, ids):
+        if self.collection.get(ids=sorted(ids),include=[])['ids']:
+            raise ReviewConflict('分割後の識別子が既に存在します。再読込してください。')
+
+    def write(self, rows, edited, *, created=None, removed=None):
+        created = created or set()
+        removed = removed or set()
         for start in range(0,len(rows),128):
             batch=rows[start:start+128]
-            self.collection.update(ids=[row['id'] for row in batch],metadatas=[row['metadata'] for row in batch])
-            texts=[row for row in batch if row['id'] in edited]
+            existing = [row for row in batch if row['id'] not in created]
+            additions = [row for row in batch if row['id'] in created]
+            if additions:
+                self.collection.add(ids=[row['id'] for row in additions],documents=[row['text'] for row in additions],
+                                    metadatas=[row['metadata'] for row in additions])
+            if existing:
+                self.collection.update(ids=[row['id'] for row in existing],metadatas=[row['metadata'] for row in existing])
+            texts=[row for row in existing if row['id'] in edited]
             if texts:
                 self.collection.update(ids=[row['id'] for row in texts], documents=[row['text'] for row in texts])
             self.lexical.upsert_chunks([row['id'] for row in batch],[row['text'] for row in batch],[row['metadata'] for row in batch])
+
+        if removed:
+            self.collection.delete(ids=sorted(removed))
+            self.lexical.delete_by_chunk_ids(removed)
 
     def structure(self, item, built):
         self.db.replace_document_structure(item, source_fingerprint=built['source_fingerprint'],
@@ -145,6 +173,13 @@ class Runtime:
 
     def restore(self, journal):
         old=journal['rows']
+        if journal.get('created_ids'):
+            self.collection.delete(ids=journal['created_ids'])
+            self.lexical.delete_by_chunk_ids(journal['created_ids'])
+        indexed = {row['id']:row for row in old}
+        for key,vector in journal['vectors'].items():
+            row = indexed[key]
+            self.collection.upsert(ids=[key],documents=[row['text']],metadatas=[row['metadata']],embeddings=[vector])
         self.write(old,set())
         for start in range(0,len(old),128):
             batch=old[start:start+128]
@@ -153,9 +188,6 @@ class Runtime:
             restored=[{**{key:None for key in current.get(row['id'],{}) if key not in row['metadata']},
                        **row['metadata']} for row in batch]
             self.collection.update(ids=[row['id'] for row in batch],metadatas=restored)
-        for key,vector in journal['vectors'].items():
-            row=next(row for row in old if row['id']==key)
-            self.collection.update(ids=[key],documents=[row['text']],embeddings=[vector])
         with closing(self.db.get_db_connection()) as connection:
             restore_relations(connection,journal['item_key'],journal['relations'])
         self.verify(old[0]['id'])
@@ -177,7 +209,7 @@ def apply_review(root: Path, key: str, revision: int) -> None:
         draft=reader.store.read(key)
         if draft['revision'] != revision or draft.get('version') != document['version']:
             raise ReviewConflict('下書き・原本・索引が変更されました。差分を再確認してください。')
-        if not draft['edits'] and not draft['toc'] and not draft.get('toc_changed') and not draft.get('zones'):
+        if not draft['edits'] and not draft['toc'] and not draft.get('toc_changed') and not draft.get('zones') and not draft.get('merges') and not draft.get('cuts'):
             raise ValueError('反映する修正がありません。')
         from scripts.run_db_audit import _validated_report_paths
         validate_database_gate(_validated_report_paths(root)[0],allow_pending_ocr=True)

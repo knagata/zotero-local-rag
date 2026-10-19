@@ -69,11 +69,17 @@ def validate_draft(rows: list[dict], edits: dict, toc: list[dict], *, allow_unre
         if key not in indexed or not isinstance(text, str) or not text.strip() or len(text) > 30000:
             raise ValueError('修正対象のチャンク、または修正本文が不正です。')
     order = {row['id']: n for n, row in enumerate(rows)}
-    last, level, last_page = -1, 0, 0
+    last, level, last_page = (-1, -1), 0, 0
     for entry in toc:
         anchor, depth, title = entry.get('chunk_id'), entry.get('level'), entry.get('title')
+        offset = entry.get('offset',0)
+        text = edits.get(anchor, indexed.get(anchor,{}).get('text',''))
+        if (isinstance(offset,bool) or not isinstance(offset,int) or offset < 0
+                or offset and (anchor not in indexed or offset >= len(text)
+                               or entry.get('anchor_text') != text)):
+            raise ValueError('本文が変わったか分割位置が不正です。本文欄で節の開始位置を再指定してください。')
         unresolved = allow_unresolved and not anchor and isinstance(entry.get('page'), int) and not isinstance(entry.get('page'), bool) and entry['page'] > 0
-        if ((not unresolved and (anchor not in indexed or order[anchor] <= last)) or isinstance(depth, bool)
+        if ((not unresolved and (anchor not in indexed or (order[anchor],offset) <= last)) or isinstance(depth, bool)
                 or not isinstance(depth, int) or not 1 <= depth <= min(8, level+1)
                 or not isinstance(title, str) or not title.strip() or len(title) > 300):
             raise ValueError('目次は本文順・重複なしで指定し、階層は1段ずつ深くしてください。')
@@ -83,5 +89,5 @@ def validate_draft(rows: list[dict], edits: dict, toc: list[dict], *, allow_unre
                 raise ValueError('目次の開始ページは本文順にしてください。')
             last_page = page
         if not unresolved:
-            last = order[anchor]
+            last = (order[anchor],offset)
         level = depth

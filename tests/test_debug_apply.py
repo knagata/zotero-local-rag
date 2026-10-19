@@ -210,3 +210,4 @@ def test_reference_refresh_uses_text_and_effective_zone_changes():
     assert references_changed(bibliography,bibliography,{'A':'corrected'})
     assert not references_changed(body,body,{'A':'corrected'})
     assert not references_changed(bibliography,bibliography,{})
+    assert references_changed(bibliography,[],{})

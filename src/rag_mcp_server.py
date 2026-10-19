@@ -40,6 +40,7 @@ import chromadb
 from fastmcp import FastMCP
 from zotero_source_localapi import ZoteroLocalAPI
 from manifest import load_manifest
+from chunk_store import natural_chunk_key
 from chapter_detect import get_pdf_toc, get_epub_chapter_index_to_title
 from query_expansion import expand_queries
 from search_fusion import language_balanced_order
@@ -683,7 +684,7 @@ _Z_API = None
 
 def parse_id(chunk_id: str):
     try:
-        a0, seg1, perseg, partseg = chunk_id.split(":")
+        a0, seg1, perseg, partseg = chunk_id.partition("!")[0].split(":")
         if seg1.startswith("p"):
             source_type = "pdf"
             page = int(seg1[1:])
@@ -731,6 +732,23 @@ def neighbor_ids(chunk_id: str, w: int) -> List[str]:
             if cid != chunk_id:
                 out_ids.append(cid)
     return out_ids
+
+
+def _context_chunks(col: Any, chunk_id: str, window: int) -> Dict[str, Any]:
+    """Fetch actual paragraph parts, including manually split suffixes."""
+    parsed = parse_id(chunk_id)
+    if not parsed or window <= 0:
+        return {"ids": [], "documents": [], "metadatas": []}
+    attachment, kind, page, paragraph, _ = parsed
+    if kind == "pdf":
+        response = col.get(where={"$and": [
+            {"attachmentKey": attachment}, {"page": page},
+            {"para_index": {"$gte": max(0, paragraph-window)}},
+            {"para_index": {"$lte": paragraph+window}},
+        ]}, include=["documents", "metadatas"])
+        if response.get("ids"):
+            return response
+    return col.get(ids=[chunk_id, *neighbor_ids(chunk_id, window)], include=["documents", "metadatas"])
 
 
 RRF_K = 60
@@ -1222,7 +1240,7 @@ def _neighbor_context(col: Any, chunk_id: str, context_window: int) -> List[RagC
     if not nids:
         return []
     try:
-        got = col.get(ids=nids, include=["documents", "metadatas"])
+        got = _context_chunks(col, chunk_id, context_window)
     except Exception:
         got = {"ids": [], "documents": [], "metadatas": []}
 
@@ -1231,6 +1249,8 @@ def _neighbor_context(col: Any, chunk_id: str, context_window: int) -> List[RagC
     got_metas = got.get("metadatas", [])
     ordered = []
     for idx, neighbor_id in enumerate(got_ids):
+        if neighbor_id == chunk_id:
+            continue
         document = got_docs[idx] if idx < len(got_docs) else ""
         metadata = got_metas[idx] if idx < len(got_metas) and isinstance(got_metas[idx], dict) else {}
         parsed = parse_id(neighbor_id)
@@ -1241,7 +1261,7 @@ def _neighbor_context(col: Any, chunk_id: str, context_window: int) -> List[RagC
             "citation": _make_citation(metadata),
             "text": document,
         }))
-    ordered.sort(key=lambda item: (item[0] is None, item[0]))
+    ordered.sort(key=lambda item: (item[0] is None, item[0], natural_chunk_key(item[1]["id"])))
     return [
         item[1] for item in ordered
         if isinstance(item[1].get("text", ""), str) and item[1]["text"].strip()
@@ -2190,16 +2210,16 @@ def get_chunk_context(chunk_id: str, window: int = 2) -> Dict[str, Any]:
     if not nids:
         return {"error": "Invalid chunk_id format or window <= 0"}
     
-    res = col.get(ids=nids, include=["documents", "metadatas"])
+    res = _context_chunks(col, chunk_id, window)
     found_ids = res.get("ids") or []
     
     if not found_ids:
         return {"error": "Chunk ID not found in database"}
 
     # Sort results by the chunk index so they read chronologically
-    def _para_idx(cid: str) -> int:
+    def _para_idx(cid: str):
         parsed = parse_id(cid)
-        return parsed[3] if parsed else 0
+        return (parsed[3] if parsed else 0, natural_chunk_key(cid))
 
     combined = []
     docs = res.get("documents") or []

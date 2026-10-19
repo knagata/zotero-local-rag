@@ -117,6 +117,30 @@ async function testDebugReview(source){
  assert.ok(!html.includes('type="number"'));
  function numericSpinbox(e){return e.type==='number'||e.children.some(numericSpinbox);}
  assert.ok(!elements.get('toc').children.some(numericSpinbox));
+ // A caret/selection inside a chunk creates an exact Unicode-aware split boundary.
+ vm.runInContext("state.toc=[];state.tocChanged=true;state.edits={};setTab('body')",context);
+ let splitInput=elements.get('chunks').children[0].children.find(e=>e.tag==='textarea');
+ splitInput.value='😀前文\nInaugurations\n本文';splitInput.handlers.input();
+ splitInput.selectionStart=splitInput.value.indexOf('Inaugurations');splitInput.selectionEnd=splitInput.selectionStart+'Inaugurations'.length;
+ const headingButton=elements.get('chunks').children[0].children.find(e=>e.className==='chunk-tools').children.at(-1);
+ headingButton.handlers.click();
+ assert.equal(vm.runInContext('state.toc[0].offset',context),4);
+ assert.equal(vm.runInContext('state.toc[0].title',context),'Inaugurations');
+ assert.equal(vm.runInContext('state.toc[0].anchor_text',context),splitInput.value);
+ const splitLabel=tocElements()[0].children[2].children[1].children[1];
+ assert.ok(splitLabel.children[1].textContent.includes('Inaugurations'));
+ vm.runInContext("setTab('body')",context);
+ const splitPreview=elements.get('chunks').children[0].children.find(e=>e.children[0]?.textContent==='分割プレビュー（2チャンク）');
+ assert.deepEqual(splitPreview.children.slice(1).map(e=>e.textContent),['😀前文\n','Inaugurations\n本文']);
+ await vm.runInContext('save()',context);
+ assert.equal(posts.at(-1).toc[0].offset,4);
+ // Reposition the same heading instead of adding a duplicate.
+ await vm.runInContext('chooseHeadingPosition(0)',context);
+ splitInput=elements.get('chunks').children[0].children.find(e=>e.tag==='textarea');
+ splitInput.selectionStart=0;splitInput.selectionEnd=0;
+ elements.get('chunks').children[0].children.find(e=>e.className==='chunk-tools').children.at(-1).handlers.click();
+ assert.equal(vm.runInContext('state.toc.length',context),1);
+ assert.equal(vm.runInContext('state.toc[0].offset',context),undefined);
  // Revert the outline to a valid compact example for subsequent save tests.
  vm.runInContext("state.toc=[{title:'Root',level:1,page:1}];renderToc()",context);
  // One reusable PDF handle replaces image URLs; prefetched chunks avoid another page request.
