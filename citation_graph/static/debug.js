@@ -94,7 +94,12 @@ function renderToc(){
   const location=node('div');location.className='toc-location';const pageLabel=node('label','開始PDF頁'),page=node('input');page.type='text';page.inputMode='numeric';page.min='1';page.max=state.totalPages;page.value=entry.page||state.anchors.get(entry.chunk_id)||'';page.setAttribute('aria-label','見出し開始PDFページ');
   page.addEventListener('change',()=>{const value=edit();value.page=Number(page.value);delete value.chunk_id;markDirty();renderToc();draftStatus();});pageLabel.append(page);
   const anchorLabel=node('label','ページ内の開始位置'),anchor=node('select');anchor.setAttribute('aria-label','見出しのページ内開始位置');const first=node('option','ページの最初');first.value='';anchor.append(first);
-  const candidates=state.allAnchors.filter(x=>Number(x.page)===Number(page.value));for(const [n,candidate] of candidates.entries()){const option=node('option',`位置 ${n+1}`);option.value=candidate.id;anchor.append(option);}anchor.value=entry.chunk_id||'';anchor.addEventListener('change',()=>{const value=edit();if(anchor.value)value.chunk_id=anchor.value;else delete value.chunk_id;markDirty();draftStatus();});anchorLabel.append(anchor);
+  const candidates=state.allAnchors.filter(x=>Number(x.page)===Number(page.value));
+  for(const [n,candidate] of candidates.entries()){const option=node('option',`位置 ${n+1}：${candidate.preview||'（本文なし）'}`);option.value=candidate.id;anchor.append(option);}
+  const preview=node('p');preview.className='anchor-preview';preview.setAttribute('aria-live','polite');
+  function showAnchorPreview(){const selected=candidates.find(x=>x.id===anchor.value);const start=selected||(!anchor.value&&candidates[0]);preview.textContent=start?`書き出し：${start.preview||'（本文なし）'}`:'この位置の本文を確認できません。';}
+  anchor.value=entry.chunk_id||'';showAnchorPreview();
+  anchor.addEventListener('change',()=>{const value=edit();if(anchor.value)value.chunk_id=anchor.value;else delete value.chunk_id;showAnchorPreview();markDirty();draftStatus();});anchorLabel.append(anchor,preview);
   const go=node('button','紙面へ');go.type='button';go.addEventListener('click',()=>loadPage(Number(page.value)));
   const remove=node('button','削除');remove.type='button';remove.addEventListener('click',()=>{const value=edit();state.toc=state.toc.filter(x=>x!==value);markDirty();renderToc();draftStatus();});
   location.append(pageLabel,anchorLabel,go,remove);const locationDetails=node('details');locationDetails.className='outline-location';locationDetails.append(node('summary',`PDF ${page.value||'?'}頁 · 開始位置を編集`),location);row.append(controls,titleLabel,locationDetails);

@@ -233,4 +233,15 @@ def test_direct_toc_pages_and_unresolved_drafts(review):
     with pytest.raises(ValueError):resolve_toc(rows,[{'chunk_id':'ATT_1','page':2,'level':1,'title':'x'}])
     with pytest.raises(ValueError):resolve_toc(rows,[{'level':1,'title':'x'}],allow_unresolved=True)
     with pytest.raises(ValueError):validate_draft(rows,{},[{'page':2,'level':1,'title':'x'},{'page':1,'level':1,'title':'y'}],allow_unresolved=True)
-    assert doc['anchors'][0]=={'id':'ATT_1','page':1,'zone':'body'}
+    assert doc['anchors'][0]=={'id':'ATT_1','page':1,'zone':'body','preview':'Original text'}
+
+
+def test_anchor_previews_are_bounded_readable_and_not_saved(review):
+    reader,path,rows,_=review
+    rows[0]['text']='  日本語\n\t書き出し  '+ 'あ'*200
+    rows[1]['text']=' \n\t '
+    doc=reader.inspect('ABCD1234',path,'ITEM1234',1)
+    assert doc['anchors'][0]['preview']==('日本語 書き出し '+'あ'*200)[:160]
+    assert doc['anchors'][1]['preview']==''
+    assert doc['all_chunks'][0]['text']==rows[0]['text']
+    assert 'preview' not in rows[0]

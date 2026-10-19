@@ -2544,3 +2544,11 @@ A（PDF構造化）・B（課金LLM）は独立、C（構造抽出エンジン�
 - 公式pdfjs-dist 6.4.299の必要資産204件/約7.2MBをlicense・SHA512配布検証・各SHA256付きで同梱。固定版更新scriptを追加し、外部ビューア/CDNへ原本を送らない。関連CSP/worker/font/WASM配信を更新。原本文字層・本番DB・取込規則は変更せず、有料OCR/LLMなし。
 - 計測付き全体2,150passed/7skip/5deselected（88.81秒）、デバッグ9module739文すべて到達、coverage悪化なし。追加の関連/文書/function/lint39passed/2skip、fatal Ruff/compileall/src.cli import/diff合格。Node DOMで文字layer/handle再利用/3ページ上限/倍率/旧描画拒否/チャンク先読み/更新時停止/既存編集を検証。Node環境で同梱SDK本体による合成2頁の文字取得・描画を確認し紙面PNGを確認した（独立Node CLIは署名制約で不可、提供Node環境では成功）。Browser backendがなく実ブラウザ文字選択/位置の目視は未実施。
 - 実資料106頁・指定頁6チャンクで原本/索引一致を確認。初回inspect245.8ms、軽量世代検証3回平均29.3ms（ブラウザ描画時間ではない）。writer未実行を確認しサービス反映、Graph/local/public OAuth正常、PDF/SDK API未認証401。Herdr全検証/反映w1:t19/w1:p1B、PDF検証w1:t1A/w1:p1C。証跡data/quality/pdf-review-20261015/。手順/契約/引継ぎを同時更新。
+
+
+### 2026-10-20: 目次の開始位置に本文プレビューを表示
+
+- 位置番号だけだった候補へ、空白/改行を整えた本文先頭160文字を表示。選択中の書き出しも欄の下へ表示し、選択変更/ページ先頭への戻しに追従する。空本文・未抽出位置は理由を表示。文字列はtextContentで表示しHTMLとして解釈しない。原本や索引、下書き/履歴形式を変更せず、有料処理なし。
+- 紙面座標との確実な対応が索引にないため、紙面クリック/ハイライトは今回追加せず、書き出しによる識別へ対応。利用手順docs/document-review.mdと契約SPEC.mdを更新。
+- 全体2,151passed/7skip/5deselected（101.47秒）、coverage予算・fatal Ruff・compileall・src.cli import合格。関連22passed/1skip、文書/function/lint12passed。Node DOMで候補の書き出し/選択変更/先頭への戻し/文字列の安全表示と既存編集・保存を検証、PDF表示DOMも合格。実ブラウザの目視は未実施。
+- writer未実行を確認して管理サービスを再起動。起動待ち後にGraph/local/public OAuthすべて正常、debug APIの未認証401確認。Herdr w1:t1B/w1:p1Dで全体検証exit0、再起動直後のstatusは未起動だったが後続statusはexit0。既存の無関係な未追跡ファイルは保持。全テストログ/tmp/zotero-anchor-tests-20261020.log。

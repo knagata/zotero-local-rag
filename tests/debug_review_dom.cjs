@@ -18,7 +18,7 @@ async function testDebugReview(source){
  for(const match of html.matchAll(/id="([^"]+)"/g))document.getElementById(match[1]);
  for(const match of source.matchAll(/\$\('([^']+)'\)/g))assert.ok(html.includes(`id="${match[1]}"`),`missing control ${match[1]}`);
  const windowHandlers={};const version='a'.repeat(64);
- const page={attachment_key:'ABCD1234',version,page:1,total_pages:2,title:'Book',anchors:[{id:'C1',page:1,zone:'body'},{id:'C2',page:2,zone:'endnote'}],current_toc:[],draft:{revision:0,edits:{},toc:[]},chunks:[{id:'C1',text:'Original',metadata:{page:1}}]};
+ const page={attachment_key:'ABCD1234',version,page:1,total_pages:2,title:'Book',anchors:[{id:'C1',page:1,zone:'body',preview:'Original <text>'},{id:'C2',page:2,zone:'endnote'}],current_toc:[],draft:{revision:0,edits:{},toc:[]},chunks:[{id:'C1',text:'Original',metadata:{page:1}}]};
  let revision=0,edits={},originals={},pendingSave=null,deferSave=false,failState=false;
  class PdfMock{constructor(stage,viewport){this.stage=stage;this.viewport=viewport;this.pdf=null;}clear(){this.pdf=null;}async open(url){this.url=url;this.pdf={numPages:2};}async show(){return 100;}prefetch(){}}
  const context=vm.createContext({document,window:{ReviewPdf:PdfMock,addEventListener(type,handler){windowHandlers[type]=handler;}},confirm:()=>true,console,fetch:async(path,options={})=>{
@@ -66,6 +66,22 @@ async function testDebugReview(source){
  vm.runInContext("setTab('toc')",context);insertionPoints()[0].children[0].handlers.click();
  assert.equal(vm.runInContext('state.tab',context),'toc');
  const headingRow=tocElements()[0];
+ const anchorLabel=headingRow.children[2].children[1].children[1];
+ const anchorSelect=anchorLabel.children[0];
+ assert.equal(anchorSelect.children[1].textContent,'位置 1：Original <text>');
+ assert.equal(anchorLabel.children[1].textContent,'書き出し：Original <text>');
+ anchorSelect.value='C1';anchorSelect.handlers.change();
+ assert.equal(vm.runInContext('state.toc[0].chunk_id',context),'C1');
+ assert.equal(anchorLabel.children[1].textContent,'書き出し：Original <text>');
+ // Selection changes show the chosen opening and page-start reset.
+ vm.runInContext("state.allAnchors.push({id:'C3',page:1,preview:'Second opening'});renderToc()",context);
+ let locationLabel=tocElements()[0].children[2].children[1].children[1];
+ locationLabel.children[0].value='C3';locationLabel.children[0].handlers.change();
+ assert.equal(locationLabel.children[1].textContent,'書き出し：Second opening');
+ locationLabel.children[0].value='';locationLabel.children[0].handlers.change();
+ assert.equal(locationLabel.children[1].textContent,'書き出し：Original <text>');
+ assert.equal(vm.runInContext('state.toc[0].chunk_id',context),undefined);
+ vm.runInContext("state.allAnchors=state.allAnchors.filter(x=>x.id!=='C3');renderToc()",context);
  const headingTitle=headingRow.children[1].children[0];headingTitle.value='A chapter';headingTitle.handlers.input();
  assert.equal(vm.runInContext('state.toc[0].title',context),'A chapter');
  // Insertion slots preserve their position and focus the new title, including original TOCs.

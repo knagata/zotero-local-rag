@@ -142,7 +142,8 @@ class DebugReader:
                 'source_sha256':digest,'draft':draft,'draft_applied':applied,'current_toc':current_toc(rows),
                 'draft_stale':bool(not applied and draft.get('version') and draft['version'] != version),
                 'chunks':[row for row in rows if str(row['metadata'].get('page')) == str(page)],
-                'anchors':[{'id':row['id'],'page':row['metadata'].get('page'),'zone':row['metadata'].get('zone') or 'body'} for row in rows],
+                'anchors':[{'id':row['id'],'page':row['metadata'].get('page'),'zone':row['metadata'].get('zone') or 'body',
+                            'preview':re.sub(r'\s+', ' ', row['text']).strip()[:160]} for row in rows],
                 'all_chunks':rows}
 
     def save(self, document: dict, revision: int, version: str, edits: dict, toc: list, actor: str, toc_changed: bool = False, zones: dict | None = None) -> dict:

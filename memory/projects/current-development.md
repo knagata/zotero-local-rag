@@ -1,6 +1,6 @@
 # Current development handoff
 
-Updated: 2026-10-15
+Updated: 2026-10-20
 
 現在の検証済み状態: 734添付・709資料・全DB監査合格・検索世代公開済み。外部OCR差替えを取込済み、残り索引/OCR待ち0。完全backup1世代・空き約92GiB。原画像確認済み94件の校訂補助は保持。全文校訂は未完了。最新結果と証明は末尾参照。
 
@@ -989,3 +989,11 @@ active V3はM5 clean rebuildと後続の対象修復を完了した監査済み�
 - 公式pdfjs-dist 6.4.299の必要資産204件/約7.2MBとlicense/hash/update scriptを同梱。資産情報の正本citation_graph/static/pdfjs/assets.json、実装注意developer/document-review.md、利用手順docs/document-review.md。CSP/worker/font/WASMもsame-originで配信する。
 - 全体2,150passed/7skip/5deselected（88.81秒）、9module739文100%到達・coverage悪化なし。関連/文書/function/lint39passed/2skip、fatal Ruff/compileall/src.cli import/diff合格。Node DOMで再利用/文字layer/先読み上限/倍率/旧描画拒否/編集保持/更新時停止を検証。同梱SDK本体でも合成2頁の文字取得と描画を確認（提供Node環境で成功、独立CLIは署名制約）。実ブラウザ目視はbackendなしで未実施。
 - 実資料106頁/指定頁6チャンクを確認。初回inspect245.8ms、軽量検証3回平均29.3ms、画面描画の計測ではない。writer未実行を確認してserviceへ反映しGraph/local/public OAuth正常、PDF/SDK未認証401。Herdr w1:t19/w1:p1B・w1:t1A/w1:p1C、証跡data/quality/pdf-review-20261015/。
+
+
+### 2026-10-20: 目次の開始位置に本文プレビューを表示
+
+- 位置番号だけだった候補へ、空白/改行を整えた本文先頭160文字を表示。選択中の書き出しも欄の下へ表示し、選択変更/ページ先頭への戻しに追従する。空本文・未抽出位置は理由を表示。文字列はtextContentで表示しHTMLとして解釈しない。原本や索引、下書き/履歴形式を変更せず、有料処理なし。
+- 紙面座標との確実な対応が索引にないため、紙面クリック/ハイライトは今回追加せず、書き出しによる識別へ対応。利用手順docs/document-review.mdと契約SPEC.mdを更新。
+- 全体2,151passed/7skip/5deselected（101.47秒）、coverage予算・fatal Ruff・compileall・src.cli import合格。関連22passed/1skip、文書/function/lint12passed。Node DOMで候補の書き出し/選択変更/先頭への戻し/文字列の安全表示と既存編集・保存を検証、PDF表示DOMも合格。実ブラウザの目視は未実施。
+- writer未実行を確認して管理サービスを再起動。起動待ち後にGraph/local/public OAuthすべて正常、debug APIの未認証401確認。Herdr w1:t1B/w1:p1Dで全体検証exit0、再起動直後のstatusは未起動だったが後続statusはexit0。既存の無関係な未追跡ファイルは保持。全テストログ/tmp/zotero-anchor-tests-20261020.log。
