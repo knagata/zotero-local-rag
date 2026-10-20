@@ -6,23 +6,13 @@ from pathlib import Path
 
 from fastapi import Request
 from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictBool
 
 from citation_graph.debug_reader import DebugReader
 from citation_graph.debug_store import ReviewConflict
 from citation_graph.debug_pdf import register_pdf_routes
 
 
-class DraftRequest(BaseModel):
-    model_config = ConfigDict(extra='forbid')
-    revision: StrictInt = Field(ge=0)
-    version: str = Field(min_length=64, max_length=64)
-    edits: dict[str, str] = Field(default_factory=dict, max_length=500)
-    toc: list[dict] = Field(default_factory=list, max_length=500)
-    toc_changed: StrictBool = False
-    zones: dict[str, str] = Field(default_factory=dict, max_length=500)
-    merges: list[list[str]] = Field(default_factory=list, max_length=500)
-    cuts: dict[str,list[StrictInt]] = Field(default_factory=dict, max_length=500)
+from citation_graph.review_routes import DraftRequest, register_preview
 
 
 def failure(exc):
@@ -36,6 +26,7 @@ def register_debug_routes(app, root: Path, require_admin, require_same_origin, a
 
     documents = register_pdf_routes(app,root,reader,require_admin,failure)
     document = documents.inspect
+    register_preview(app,document,require_admin,require_same_origin,failure)
 
     @app.get('/admin/debug/')
     async def debug_page(request: Request):
@@ -72,7 +63,7 @@ def register_debug_routes(app, root: Path, require_admin, require_same_origin, a
             return denied
         try:
             data, _ = await document(key, 1)
-            saved = await asyncio.to_thread(reader.save, data, body.revision, body.version, body.edits, body.toc, actor(request), body.toc_changed, body.zones, body.merges, body.cuts)
+            saved = await asyncio.to_thread(reader.save, data, body.revision, body.version, body.edits, body.toc, actor(request), body.toc_changed, body.zones, body.merges, body.cuts, body.rechunk)
             return JSONResponse(saved, headers={'Cache-Control':'no-store'})
         except (ValueError, OSError, RuntimeError) as exc:
             return failure(exc)
@@ -102,8 +93,8 @@ def register_debug_routes(app, root: Path, require_admin, require_same_origin, a
                 raise ReviewConflict('原本・索引・保存済み下書きが変わっています。差分を再確認してください。')
             if not saved['edits'] and not saved['toc'] and not saved.get('toc_changed') and not saved.get('zones') and not saved.get('merges') and not saved.get('cuts'):
                 raise ValueError('反映する修正がありません。本文・目次・分類を編集してください。')
-            from citation_graph.debug_changes import corrected_rows
-            corrected_rows(data['all_chunks'],saved['edits'],saved['toc'],zones=saved.get('zones'),merges=saved.get('merges'),cuts=saved.get('cuts'))
+            from citation_graph.review_plan import validated_plan
+            validated_plan(data['all_chunks'],saved)
             from citation_graph.admin_jobs import start_job, public_record
             record = start_job('debug_apply', '', actor(request), root,
                                debug_selection={'attachment_key':key,'revision':body.revision})
@@ -125,7 +116,10 @@ def register_debug_routes(app, root: Path, require_admin, require_same_origin, a
             source = merge_rows(data['all_chunks'],draft.get('merges'))
             indexed = {row['id']:row['text'] for row in source}
             preview, _, groups = split_rows(source,draft['edits'],draft['toc'],draft.get('cuts'))
+            from citation_graph.review_plan import build_review_plan,public_plan
+            plan = build_review_plan(data['all_chunks'],draft)
             return JSONResponse({'revision':revision,'version':data['version'],
+                'rechunk_plan':public_plan(plan,data['all_chunks']) if plan['version'] else None,
                 'split_changes':[{'chunk_id':group[0],'parts':[row['text'] for row in preview if row['id'] in group]} for group in groups],
                 'merge_changes':draft.get('merges',[]),
                 'text_changes':[{'chunk_id':key,'before':indexed[key],'after':text} for key,text in draft['edits'].items()],
@@ -161,6 +155,15 @@ def register_debug_routes(app, root: Path, require_admin, require_same_origin, a
             historical = await asyncio.to_thread(reader.store.revision,key,revision)
             if historical['source_sha256'] != data['source_sha256']:
                 raise ReviewConflict('原本が異なる版の修正は自動復元できません。紙面と履歴を確認してください。')
+            from citation_graph.review_plan import layout_generation
+            if historical.get('rechunk_before'):
+                from citation_graph.review_plan import restore_snapshot
+                payload = restore_snapshot(data,historical,before,body.version)
+                saved = await asyncio.to_thread(reader.store.save,key,body.revision,payload,actor(request))
+                return JSONResponse(saved,headers={'Cache-Control':'no-store'})
+            if (any(row['metadata'].get('review_rechunk_version') for row in data['all_chunks'])
+                    and historical.get('layout_generation') != layout_generation(data['all_chunks'])):
+                raise ReviewConflict('再チャンク化前の履歴です。先に元レイアウトを履歴から復元してください。')
             from citation_graph.debug_segments import history_plan
             edits,toc,merges,cuts = history_plan(data['all_chunks'],historical,before)
             saved = await asyncio.to_thread(reader.save,data,body.revision,body.version,edits,toc,actor(request),historical.get("toc_changed",bool(historical["toc"])),historical.get("zones_before" if before else "zones",{}),merges,cuts)

@@ -20,3 +20,5 @@ footer{flex:none;background:white;border-top:1px solid var(--line);padding:7px 1
 .pdf-sheet{--scale-round-x:1px;--scale-round-y:1px;position:relative;flex:none;background:white;box-shadow:0 2px 14px #24334325;overflow:hidden}.pdf-sheet canvas{display:block}.pdf-sheet .textLayer{z-index:1}.pdf-sheet .textLayer ::selection{background:#3b82f655}.page-arrow{width:32px}@media(hover:none){.page-arrow{width:26px}}
 
 .anchor-preview{margin:.4rem 0 0;white-space:normal;overflow-wrap:anywhere;font-size:.85rem;color:var(--muted,#666)}
+
+.range-tools .check{flex-direction:row;align-items:center}.range-tools input[type=checkbox]{width:auto}

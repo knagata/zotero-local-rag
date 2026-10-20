@@ -90,3 +90,34 @@ rollbackでは作成IDをChroma/FTSから除去し、元vectorを明示upsertし
 MCPの前後参照は手動suffix付きIDを元の段落へ対応づけ、PDFはattachment/page/para_indexで
 実在する全partを取得する。metadataがない旧索引はID指定へfallbackする。
 `get_chunk_context` は指定チャンク自身も含め、自然順で返す。通常検索のcontextは自身を重複させない。
+
+## 手動構造を入力とする再チャンク化
+
+`citation_graph/review_rechunk.py` は元のpage/para/partと現在の構造分類を基に段落を復元する。
+固定された生成overlap長に一致する候補から復元し、既存のsplit_long_paragraphと
+merge_short_chunk_recordsを再実行して保存済み全partと完全一致した場合だけ採用する。
+後者のhard_min_charsは0として原文の短片を削除しない。生成overlap以外の反復は除かない。
+本文校訂は復元時に適用し、overlap領域の校訂が矛盾すれば保留する。
+手動headingを復元本文上へ写してから節ごとに同じチャンク化処理へ渡す。
+引用pageは維持し、同一段落内の分類混在/由来不明/順序不明は拒否する。
+既に独自の分割がありpart生成を再現できない場合も、推定で連結しない。
+
+`citation_graph/review_plan.py` はプレビュー/保存/反映の計画を共通化する。
+rechunkフラグ付き新revisionへ計画hashと前後レイアウトを保存し、writer lock内で
+同じ計画へ再計算できる場合だけ書く。方式versionとsource/layout hashをmetadataへ残す。
+既存のembedding方式（本文をローカルで埋め込む）とFTS照合基準は変更しない。
+古い保存版は上書きせず、UIでプレビューと再保存を要求する。
+再編できない中間下書きは理由とともに保存し、反映を拒否する。
+
+POST previewは認証/Origin/原本と索引versionを確認する読取り専用API。
+表示は先頭200件に制限し、全体件数と全計画hashを併記する。
+SQLite履歴の前後レイアウトは既存2MiB上限に含める。完全DBのbackupは追加しない。
+復元は不変の履歴からのみlayout_targetを作り、通常のAPI入力で任意レイアウトを受け付けない。
+復元hash/添付集合/一意性とsource SHAを照合し、復元自体も新revisionにする。
+旧IDの本文履歴を新レイアウトへ直接適用せず、layout_generationが違えば停止する。
+
+生成方式/空白正規化が再現できないPDF、混合言語でoverlapを確定できない段落、
+復元領域での矛盾した校訂は自動再編の対象外。原文と下書きを保持して要確認とする。
+見出し以降の分類が図版等へ継承される問題は別途分類の校訂が必要であり、
+今回の再編が自動的に図/参考文献を再判定するわけではない。
+検証はtests/test_review_rechunk.py、tests/test_review_plan.pyと既存debug/API/DOMの検証を用いる。

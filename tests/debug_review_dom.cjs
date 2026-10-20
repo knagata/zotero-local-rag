@@ -25,6 +25,7 @@ async function testDebugReview(source){
   fetches.push(path);if(failState&&path.includes('/state?'))return {ok:false,status:409,json:async()=>({error:'原本更新後の再索引待ち'})};let data;
   if(path.endsWith('/documents'))data=[{attachment_key:'ABCD1234',title:'Book',issues:['OCR']}];
   else if(path.includes('/pages/'))data={...page,page:Number(path.split('/').at(-1))};
+  else if(path.endsWith('/preview'))data={version:1,plan_hash:'plan',before_count:2,after_count:3,verified_overlap_chars:96,notice:'確認してください',changed_count:1,changes:[{id:'C1',page:1,before:'Old',after:'Rebuilt'}]};
   else if(path.endsWith('/draft')){
    const body=JSON.parse(options.body);posts.push(body);edits=body.edits;originals={C1:'Original'};
    data={revision:++revision,...body};data.revision=revision;
@@ -154,6 +155,13 @@ async function testDebugReview(source){
  // Cursor keys must not change pages while editing text.
  windowHandlers.keydown({key:'ArrowLeft',target:{tagName:'TEXTAREA'}});
  assert.equal(vm.runInContext('state.page',context),2);
+ // Prospective structured preview uses the current unsaved draft and never saves it.
+ elements.get('rechunk').checked=true;elements.get('rechunk').handlers.change();
+ const beforePreview=posts.length;await elements.get('preview-rechunk').handlers.click();
+ assert.equal(posts.length,beforePreview);assert.equal(vm.runInContext('state.tab',context),'diff');
+ assert.ok(elements.get('diff-content').children[0].textContent.includes('2 → 3'));
+ assert.ok(fetches.some(path=>path.endsWith('/preview')));
+ await vm.runInContext('save()',context);assert.equal(posts.at(-1).rechunk,true);
  // Edits made while a save is in flight must remain visibly unsaved.
  deferSave=true;var saving=vm.runInContext('save()',context);
  await new Promise(resolve=>setImmediate(resolve));

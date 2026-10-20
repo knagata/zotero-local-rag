@@ -226,3 +226,56 @@ def test_split_draft_diff_apply_and_history_rebase_after_db_changes(debug_client
         assert bad.status_code==400
     bad=client.post(base+'/draft',headers=headers,json={'revision':4,'version':version,'edits':{'C1':'Changed '+original},'toc':[heading]})
     assert bad.status_code==400 and '再指定' in bad.json()['error']
+
+
+def test_structured_preview_save_guard_and_layout_history(debug_client,monkeypatch):
+    from citation_graph.review_rechunk import digest
+    from citation_graph.review_plan import build_review_plan
+    client,rows=debug_client;rows[0]['text']='Before. New section '+'Body. '*80
+    base='/admin/debug/api/documents/ABCD1234';headers={'Authorization':'test','Origin':'https://review.test'}
+    document=client.get(base+'/pages/1',headers=headers).json();version=document['version']
+    heading={'chunk_id':'C1','offset':8,'anchor_text':rows[0]['text'],'page':1,'level':1,'title':'New section'}
+    body={'revision':0,'version':version,'edits':{},'toc':[heading],'toc_changed':True,'rechunk':True}
+    assert client.post(base+'/preview',json=body).status_code==401
+    assert client.post(base+'/preview',json=body,headers={'Authorization':'test'}).status_code==403
+    assert client.post(base+'/preview',json={**body,'version':'x'*64},headers=headers).status_code==409
+    preview=client.post(base+'/preview',json=body,headers=headers)
+    assert preview.status_code==200,preview.text
+    assert client.get(base+'/draft/export',headers=headers).json()['revision']==0
+    saved=client.post(base+'/draft',json=body,headers=headers).json()
+    assert saved['plan_hash']==preview.json()['plan_hash']
+    assert saved['rechunk_before']==rows
+    diff=client.get(base+'/diff?revision=1',headers=headers).json()
+    assert diff['rechunk_plan']['plan_hash']==saved['plan_hash']
+    rows[:]=build_review_plan(rows,saved)['rows']
+    current=client.get(base+'/pages/1',headers=headers).json()
+    undo=client.post(base+'/history/1/restore?before=true',json={'revision':1,'version':current['version']},headers=headers)
+    assert undo.status_code==200,undo.text
+    assert digest(undo.json()['layout_target'])==undo.json()['layout_hash']
+    assert undo.json()['layout_target']==saved['rechunk_before']
+    # A stale revision/version cannot create a restoration revision.
+    assert client.post(base+'/history/1/restore',json={'revision':2,'version':version},headers=headers).status_code==409
+    import citation_graph.admin_jobs as jobs
+    monkeypatch.setattr(jobs,'start_job',Mock(return_value={'id':'JOB','status':'queued'}))
+    assert client.post(base+'/apply',json={'revision':2,'version':current['version']},headers=headers).status_code==202
+
+
+def test_unresolved_structure_is_saved_as_a_draft_but_not_applied(debug_client):
+    client,_=debug_client;base='/admin/debug/api/documents/ABCD1234';headers={'Authorization':'test','Origin':'https://review.test'}
+    version=client.get(base+'/pages/1',headers=headers).json()['version']
+    body={'revision':0,'version':version,'toc':[{'page':1,'level':1,'title':'First'}], 'toc_changed':True,'rechunk':True}
+    # The page is resolvable, but stale text at the offset must be rejected.
+    bad={**body,'toc':[{'chunk_id':'C1','page':1,'level':1,'title':'First','offset':2,'anchor_text':'stale'}]}
+    assert client.post(base+'/preview',json=bad,headers=headers).status_code==400
+
+
+def test_legacy_text_history_cannot_overwrite_a_rechunked_layout(debug_client):
+    client,rows=debug_client;base='/admin/debug/api/documents/ABCD1234';headers={'Authorization':'test','Origin':'https://review.test'}
+    version=client.get(base+'/pages/1',headers=headers).json()['version']
+    assert client.post(base+'/draft',headers=headers,json={'revision':0,'version':version,'edits':{'C1':'Earlier'}}).status_code==200
+    body={'revision':1,'version':version,'toc':[{'chunk_id':'C1','page':1,'level':1,'title':'Section'}],'toc_changed':True,'rechunk':True}
+    saved=client.post(base+'/draft',headers=headers,json=body).json()
+    rows[:]=saved['rechunk_after']
+    current=client.get(base+'/pages/1',headers=headers).json()['version']
+    restored=client.post(base+'/history/1/restore',headers=headers,json={'revision':2,'version':current})
+    assert restored.status_code==409 and 'レイアウト' in restored.json()['error']

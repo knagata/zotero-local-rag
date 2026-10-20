@@ -132,6 +132,8 @@ def test_history_can_undo_and_redo_a_merge_of_a_previous_split():
 
 
 def test_mcp_context_includes_split_parts_in_document_order(native_review,monkeypatch):
+    from pathlib import Path
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1]/'src'))
     from src import rag_mcp_server as mcp
     runtime,original,_=native_review
     # Use the production ID and paragraph metadata shape for real Chroma filtering.

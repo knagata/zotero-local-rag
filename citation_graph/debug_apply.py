@@ -6,7 +6,7 @@ import copy
 from contextlib import closing
 from pathlib import Path
 
-from citation_graph.debug_changes import corrected_rows
+from citation_graph.review_plan import validated_plan,validate_explicit_zones
 from citation_graph.debug_journal import snapshot_relations, restore_relations, write_journal
 from citation_graph.debug_reader import DebugReader
 from citation_graph.debug_store import ReviewConflict
@@ -27,7 +27,8 @@ def apply_with_runtime(runtime, document: dict, draft: dict, root: Path) -> None
     old = runtime.rows(item)
     if len(old) > 50000 or not document['all_chunks']:
         raise ValueError('索引済みの資料を選び、対象が大きい場合は添付を分けてください。')
-    changed = corrected_rows(document['all_chunks'], draft['edits'], draft['toc'], toc_changed=draft.get('toc_changed',False), zones=draft.get('zones'), merges=draft.get('merges'), cuts=draft.get('cuts'))
+    plan = validated_plan(document['all_chunks'],draft)
+    changed = plan['rows']
     from src.chunk_store import natural_chunk_key
     candidate = sorted([copy.deepcopy(row) for row in old if row['metadata'].get('attachmentKey') != key]+changed,
                        key=lambda row:natural_chunk_key(row['id']))
@@ -42,9 +43,11 @@ def apply_with_runtime(runtime, document: dict, draft: dict, root: Path) -> None
     if not built['diagnostics'].get('valid'):
         raise ValueError('修正後の文書構造が不正です。下書きを確認してください。')
     candidate = runtime.attach(source, built['nodes'])
-    effective = {row['id']:row['metadata'].get('zone') for row in candidate}
-    if any(effective.get(key) != zone for key,zone in draft.get('zones',{}).items()):
-        raise ValueError('指定した分類が文書構造の検査と一致しません。資料全体を参考文献等にしていないか、範囲と見出しを確認してください。')
+    # Chroma merges metadata on update; explicitly remove keys absent in the target layout.
+    for row in candidate:
+        previous_metadata = old_by_id.get(row['id'],{}).get('metadata',{})
+        row['metadata'] = {**{name:None for name in previous_metadata if name not in row['metadata']},**row['metadata']}
+    validate_explicit_zones(candidate,draft.get('zones',{}),plan)
     manifest = runtime.manifest()
     journal = {'item_key':item,'attachment_key':key,'revision':draft['revision'],
                'rows':old,'manifest':manifest,'relations':runtime.snapshot(item),

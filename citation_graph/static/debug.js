@@ -5,7 +5,7 @@ const pageCache=new Map();
 const chunkInputs=new Map();
 function cachedPage(key,page){const cacheKey=`${key}:${page}`;if(!pageCache.has(cacheKey)){const promise=api(`/admin/debug/api/documents/${key}/pages/${page}`).catch(error=>{if(pageCache.get(cacheKey)===promise)pageCache.delete(cacheKey);throw error;});pageCache.set(cacheKey,promise);while(pageCache.size>3)pageCache.delete(pageCache.keys().next().value);}return pageCache.get(cacheKey);}
 function prefetchPages(){const keep=new Set([state.page,state.page-1,state.page+1].map(page=>`${state.key}:${page}`));for(const key of pageCache.keys())if(!keep.has(key))pageCache.delete(key);for(const page of [state.page+1,state.page-1])if(page>=1&&page<=state.totalPages)cachedPage(state.key,page).catch(()=>{});pdfViewer.prefetch(state.page,$('zoom-mode').value,$('zoom').value);}
-const state={documents:[],key:null,page:1,version:null,revision:0,edits:{},toc:[],tocChanged:false,zones:{},pageChunks:[],allAnchors:[],tab:'body',totalPages:0,originals:new Map(),anchors:new Map(),dirty:false,generation:0,request:0,originalToc:[],reviewedRevision:null,merges:[],cuts:{},positionTarget:null};
+const state={documents:[],key:null,page:1,version:null,revision:0,edits:{},toc:[],tocChanged:false,zones:{},pageChunks:[],allAnchors:[],tab:'body',totalPages:0,originals:new Map(),anchors:new Map(),dirty:false,generation:0,request:0,originalToc:[],reviewedRevision:null,merges:[],cuts:{},positionTarget:null,rechunk:true,layoutRestore:false};
 function node(tag,text=''){const e=document.createElement(tag);e.textContent=text;return e;}
 function notice(text){$('notice').textContent=text;}
 function markDirty(){state.dirty=true;state.generation++;state.reviewedRevision=null;}
@@ -14,17 +14,18 @@ function draftStatus(){ $('draft-state').textContent=`下書き 第${state.revis
 function issueLabel(reason){return ({flat_fallback:'目次の階層を復元できません',failed:'抽出・構造処理の失敗',blocked:'処理を保留中',degraded:'抽出・構造の要確認',awaiting_mistral_ocr_batch:'OCR待ち'})[reason]||reason;}
 function renderDocuments(){const q=$('filter').value.trim().toLocaleLowerCase(),only=$('issues-only').checked;const items=state.documents.filter(d=>(!only||d.issues.length)&&`${d.title} ${d.issues.map(issueLabel).join(' ')}`.toLocaleLowerCase().includes(q));$('documents').replaceChildren();$('count').textContent=`${items.length}件`;
  for(const doc of items){const b=node('button');b.className='document';b.type='button';b.setAttribute('aria-current',String(doc.attachment_key===state.key));b.append(node('strong',doc.title),node('small',doc.issues.map(issueLabel).join(' · ')||'問題の記録なし'));b.addEventListener('click',()=>selectDocument(doc.attachment_key).catch(e=>notice(e.message)));$('documents').append(b);}}
-async function selectDocument(key){if(state.dirty&&!confirm('未保存の修正があります。破棄して別の資料を開きますか？'))return;state.key=key;state.merges=[];state.cuts={};state.positionTarget=null;state.version=null;state.revision=0;state.edits={};state.toc=[];state.tocChanged=false;state.zones={};state.pageChunks=[];state.allAnchors=[];state.originals.clear();state.anchors.clear();state.dirty=false;state.reviewedRevision=null;$('history').replaceChildren();renderDocuments();toggleDocuments(false);pdfViewer.clear();pageCache.clear();$('paper-stage').hidden=true;$('history-detail').hidden=true;await loadPage(1,true);$('viewer').focus();await loadHistory();}
+async function selectDocument(key){if(state.dirty&&!confirm('未保存の修正があります。破棄して別の資料を開きますか？'))return;state.key=key;state.rechunk=true;state.layoutRestore=false;state.merges=[];state.cuts={};state.positionTarget=null;state.version=null;state.revision=0;state.edits={};state.toc=[];state.tocChanged=false;state.zones={};state.pageChunks=[];state.allAnchors=[];state.originals.clear();state.anchors.clear();state.dirty=false;state.reviewedRevision=null;$('history').replaceChildren();renderDocuments();toggleDocuments(false);pdfViewer.clear();pageCache.clear();$('paper-stage').hidden=true;$('history-detail').hidden=true;await loadPage(1,true);$('viewer').focus();await loadHistory();}
 async function loadPage(page,initial=false){if(!state.key)return;if(!Number.isInteger(page)||page<1||!initial&&page>state.totalPages){notice('PDFページを文書の範囲内の整数で指定してください。');return;}const request=++state.request;notice('ページを読み込んでいます…');$('save').disabled=true;$('apply').disabled=true;try{const key=state.key;const [data]=await Promise.all([cachedPage(key,page),...(initial?[]:[api(`/admin/debug/api/documents/${key}/state?version=${encodeURIComponent(state.version)}`)])]);if(request!==state.request)return;
  if(state.version&&state.version!==data.version)throw new Error('原本または索引が変更されました。修正内容を保持して資料を開き直してください。');
  state.version=data.version;state.page=data.page;state.totalPages=data.total_pages;state.allAnchors=data.anchors||[];state.pageChunks=data.chunks;
- if(initial){state.cuts=data.draft_stale||data.draft_applied?{}:(data.draft.cuts||{});state.merges=data.draft_stale||data.draft_applied?[]:(data.draft.merges||[]);state.revision=data.draft.revision;state.edits=data.draft_stale||data.draft_applied?{}:data.draft.edits;state.toc=data.draft_stale||data.draft_applied?[]:data.draft.toc;state.zones=data.draft_stale||data.draft_applied?{}:(data.draft.zones||{});state.tocChanged=!(data.draft_stale||data.draft_applied)&&Boolean(data.draft.toc_changed);if(data.draft_applied)notice('前回の修正はDBへ反映済みです。監査・検索公開の結果は処理状況で確認してください。');else if(data.draft_stale)notice('保存済み下書きは古い原本・索引のものです。適用せず、新しい原本で確認してください。');else notice('');}else notice('');
+ if(initial){state.rechunk=data.draft_stale||data.draft_applied?true:(data.draft.rechunk??true);state.layoutRestore=Boolean(data.draft.layout_target)&&!data.draft_applied&&!data.draft_stale;$('rechunk').checked=state.rechunk;state.cuts=data.draft_stale||data.draft_applied?{}:(data.draft.cuts||{});state.merges=data.draft_stale||data.draft_applied?[]:(data.draft.merges||[]);state.revision=data.draft.revision;state.edits=data.draft_stale||data.draft_applied?{}:data.draft.edits;state.toc=data.draft_stale||data.draft_applied?[]:data.draft.toc;state.zones=data.draft_stale||data.draft_applied?{}:(data.draft.zones||{});state.tocChanged=!(data.draft_stale||data.draft_applied)&&Boolean(data.draft.toc_changed);if(data.draft_applied)notice('前回の修正はDBへ反映済みです。監査・検索公開の結果は処理状況で確認してください。');else if(data.draft_stale)notice('保存済み下書きは古い原本・索引のものです。適用せず、新しい原本で確認してください。');else notice('');}else notice('');
  state.originalToc=data.current_toc;$('title').textContent=data.title;$('page').value=data.page;$('page').max=data.total_pages;$('page-info').textContent=`/ ${data.total_pages}${data.page_label?` · 紙面 ${data.page_label}`:''}`;$('previous').disabled=data.page<=1;$('next').disabled=data.page>=data.total_pages;
  $('paper-stage').hidden=true;$('paper-placeholder').textContent='紙面を読み込んでいます…';$('paper-placeholder').hidden=false;
  const pdfUrl=`/admin/debug/api/documents/${state.key}/pdf?version=${encodeURIComponent(data.version)}`;$('source-pdf').href=pdfUrl;await pdfViewer.open(pdfUrl);if(request!==state.request)return;await fitPaper();if(request!==state.request)return;$('paper-stage').hidden=false;$('paper-placeholder').hidden=true;$('export').href=`/admin/debug/api/documents/${state.key}/draft/export`;
  for(const chunk of data.chunks){state.originals.set(chunk.id,chunk.text);state.anchors.set(chunk.id,data.page);}
  $('zone-start').value=data.page;$('zone-end').value=data.page;
- renderChunks();renderToc();renderNotePages();draftStatus();$('save').disabled=false;$('apply').disabled=false;prefetchPages();
+ if(initial&&data.draft.revision>0&&data.draft.toc_changed&&data.draft.rechunk===undefined&&!data.draft_applied&&!data.draft_stale){markDirty();notice('下書きを保持しています。新方式の再編プレビューを確認し、下書きを再保存してください。');}
+ renderChunks();renderToc();renderNotePages();draftStatus();$('save').disabled=state.layoutRestore;$('apply').disabled=false;for(const id of ['assign-zone','copy-toc','rechunk','preview-rechunk'])$(id).disabled=state.layoutRestore;prefetchPages();
 
  }catch(e){if(request===state.request){$('paper-stage').hidden=true;notice(`${e.message} 資料を開き直してください。`);}}}
 const zoneNames={body:'本文',bibliography:'参考文献',endnote:'巻末注',footnote:'脚注',toc:'目次ページ',index:'索引',front_matter:'前付',back_matter:'後付',colophon:'奥付',other_paratext:'その他',corrupted:'認識崩れ'};
@@ -32,7 +33,7 @@ function chunkZone(chunk){return state.zones[chunk.id]??chunk.metadata.zone??'bo
 function renderChunks(){
  chunkInputs.clear();
  for(const [target,annotate] of [[$('chunks'),false],[$('notes-chunks'),true]]){
-  target.replaceChildren();const removed=new Set(state.merges.flatMap(group=>group.slice(1)));for(const chunk of state.pageChunks)if(!removed.has(chunk.id))renderChunk(chunk,target,annotate);
+  target.replaceChildren();if(state.layoutRestore){target.append(node('p','レイアウト復元案は保存済みです。「差分」で変更内容を確認して反映してください。'));continue;}const removed=new Set(state.merges.flatMap(group=>group.slice(1)));for(const chunk of state.pageChunks)if(!removed.has(chunk.id))renderChunk(chunk,target,annotate);
   if(!state.pageChunks.length)target.append(node('p','このPDFページに対応するチャンクはありません。白紙・未抽出・ページ情報を確認してください。'));
  }
 }
@@ -50,7 +51,7 @@ function initialiseToc(){if(!state.tocChanged&&!state.toc.length)state.toc=state
 function renderSplitPreview(target,id,text){
  const offsets=[...new Set([...(state.cuts[id]||[]),...tocRows().filter(x=>x.chunk_id===id&&x.offset>0).map(x=>x.offset)])].sort((a,b)=>a-b);
  if(!offsets.length)return;
- const details=node('details');details.append(node('summary',`分割プレビュー（${offsets.length+1}チャンク）`));
+ const details=node('details');details.append(node('summary',`${state.rechunk?'境界指定の確認（再編前）':'分割プレビュー'}（${offsets.length+1}チャンク）`));
  if(tocRows().some(x=>x.chunk_id===id&&x.offset>0&&x.anchor_text!==text)){details.append(node('p','本文が変更されています。節の開始位置を再指定してください。'));target.append(details);return;}
  const chars=Array.from(text),ends=[0,...offsets,chars.length];
  for(let n=0;n<ends.length-1;n++)details.append(node('pre',chars.slice(ends[n],ends[n+1]).join('')));
@@ -109,7 +110,7 @@ function moveHeading(index,delta){
  const input=outlineRows()[index]?.querySelector('input[aria-label="見出し名"]');input?.focus();if(Number.isInteger(selectionStart))input?.setSelectionRange?.(selectionStart,selectionEnd);
 }
 function renderToc(){
- const target=$('toc');target.replaceChildren();const entries=tocRows();
+ const target=$('toc');target.replaceChildren();if(state.layoutRestore){target.append(node('p','保存済みのレイアウト復元案は「差分」で確認してください。'));return;}const entries=tocRows();
  for(const [index,entry] of entries.entries()){
   target.append(insertionPoint(index,entry.level));
   const row=node('div');row.className='toc-row';row.style.setProperty('--outline-depth',String(Math.max(0,entry.level-1)));row.setAttribute('aria-label',`${entry.level}階層目の見出し`);
@@ -139,7 +140,7 @@ function renderToc(){
  if(!entries.length)target.append(node('p','この上にカーソルを合わせると「＋」が表示されます。クリックして最初の見出しを追加できます。'));
 }
 function orderedToc(){return [...state.toc];}
-async function save(){if(!state.key||!state.version)return;const key=state.key,version=state.version,generation=state.generation;$('save').disabled=true;try{const saved=await api(`/admin/debug/api/documents/${state.key}/draft`,{method:'POST',body:JSON.stringify({revision:state.revision,version:state.version,edits:state.edits,toc:orderedToc(),toc_changed:state.tocChanged,zones:state.zones,merges:state.merges,cuts:state.cuts})});if(key!==state.key||version!==state.version )return;state.revision=saved.revision;state.dirty=state.generation!==generation;state.reviewedRevision=null;draftStatus();$('history').replaceChildren();await loadHistory();notice(state.dirty?'保存中に追加された編集は未保存です。もう一度保存してください。':'下書きを保存しました。検索DBにはまだ反映していません。');}catch(e){notice(e.message);}finally{if(key===state.key&&version===state.version)$('save').disabled=false;}}
+async function save(){if(!state.key||!state.version)return;const key=state.key,version=state.version,generation=state.generation;$('save').disabled=true;try{const saved=await api(`/admin/debug/api/documents/${state.key}/draft`,{method:'POST',body:JSON.stringify({revision:state.revision,version:state.version,edits:state.edits,toc:orderedToc(),toc_changed:state.tocChanged,zones:state.zones,merges:state.merges,cuts:state.cuts,rechunk:state.rechunk})});if(key!==state.key||version!==state.version )return;state.revision=saved.revision;state.dirty=state.generation!==generation;state.reviewedRevision=null;draftStatus();$('history').replaceChildren();await loadHistory();notice(saved.rechunk_error?`下書きは保存しましたが、再編は要確認です：${saved.rechunk_error}`:state.dirty?'保存中に追加された編集は未保存です。もう一度保存してください。':'下書きを保存しました。検索DBにはまだ反映していません。');}catch(e){notice(e.message);}finally{if(key===state.key&&version===state.version)$('save').disabled=false;}}
 function localDifferences(){const target=$('diff-content');target.replaceChildren();for(const [id,text] of Object.entries(state.edits)){target.append(node('h4',id));const pair=node('div');pair.className='diff-pair';pair.append(node('pre',state.originals.get(id)??'このページ以外の原文は、該当ページで確認してください。'),node('pre',text));target.append(pair);}for(const id of new Set([...orderedToc().filter(x=>x.offset>0).map(x=>x.chunk_id),...Object.keys(state.cuts)])){const entry=orderedToc().find(x=>x.chunk_id===id&&x.offset>0);renderSplitPreview(target,id,state.edits[id]??entry?.anchor_text??state.originals.get(id)??'');}for(const group of state.merges)target.append(node('p',`${group.length}チャンクを分割前へ復元します。`));for(const [id,zone] of Object.entries(state.zones))target.append(node('p',`${id}：分類を${zoneNames[zone]||zone}へ変更`));target.append(node('h4','目次の修正案'),node('pre',orderedToc().map(x=>`${'　'.repeat(Math.max(0,x.level-1))}${x.title}（PDF ${x.page||'?'}頁${x.offset?`・途中から分割`:''}）`).join('\n')||'変更なし'));setTab('diff');}
 $('filter').addEventListener('input',renderDocuments);$('issues-only').addEventListener('change',renderDocuments);$('previous').addEventListener('click',()=>loadPage(state.page-1));$('next').addEventListener('click',()=>loadPage(state.page+1));$('page').addEventListener('change',()=>loadPage(Number($('page').value)));$('save').addEventListener('click',save);$('diff').addEventListener('click',()=>differences().catch(e=>notice(e.message)));window.addEventListener('beforeunload',event=>{if(state.dirty){event.preventDefault();event.returnValue='';}});
 api('/admin/debug/api/documents').then(items=>{state.documents=items;renderDocuments();}).catch(e=>notice(e.message));
@@ -156,13 +157,14 @@ $('apply').addEventListener('click',async()=>{
 });
 
 async function differences(){
- if(state.dirty||!state.revision){localDifferences();return;}
+ if(state.dirty||!state.revision){if(state.rechunk){await previewRechunk();return;}localDifferences();return;}
  const key=state.key,revision=state.revision;const data=await api(`/admin/debug/api/documents/${key}/diff?revision=${revision}`);if(key!==state.key||revision!==state.revision||state.dirty)return;
  const target=$('diff-content');target.replaceChildren();
  for(const change of data.text_changes){target.append(node('h4',change.chunk_id));const pair=node('div');pair.className='diff-pair';pair.append(node('pre',change.before),node('pre',change.after));target.append(pair);}
  for(const change of data.split_changes||[]){const parts=node('div');for(const [n,text] of change.parts.entries())parts.append(node('h4',`分割後 ${n+1}`),node('pre',text));target.append(node('h4',`${change.chunk_id}の分割`),parts);}
  for(const group of data.merge_changes||[])target.append(node('p',`${group.length}チャンクを分割前の1チャンクへ復元します。`));
  for(const change of data.zone_changes||[])target.append(node('p',`${change.chunk_id}：${zoneNames[change.before]||change.before} → ${zoneNames[change.after]||change.after}`));
+ if(data.rechunk_plan)renderRechunkPlan(data.rechunk_plan,target);
  const pair=node('div');pair.className='diff-pair';
  const format=rows=>rows.map(x=>`${'　'.repeat(Math.max(0,x.level-1))}${x.title}（PDF ${x.page||'?'}頁${x.offset?`・途中から分割`:''}）`).join('\n')||'変更なし';
  pair.append(node('pre',format(data.toc_before)),node('pre',format(data.toc_after)));target.append(node('h4','目次・見出し構造：現在 → 修正案'),pair);setTab('diff');state.reviewedRevision=data.revision;
@@ -186,7 +188,7 @@ async function restoreHistory(key,revision,before){
  if(!confirm('編集中の下書きを、この版の修正箇所で置き換えます。別の箇所への修正は自動で取り消しません。新しい版として保存しますか？'))return;
  const saved=await api(`/admin/debug/api/documents/${key}/history/${revision}/restore?before=${before}`,{method:'POST',body:JSON.stringify({revision:state.revision,version:state.version})});
  if(key!==state.key)return;
- state.revision=saved.revision;state.positionTarget=null;state.merges=saved.merges||[];state.cuts=saved.cuts||{};state.edits=saved.edits;state.zones=saved.zones||{};state.toc=saved.toc;state.tocChanged=Boolean(saved.toc_changed);state.reviewedRevision=null;state.dirty=false;$('history').replaceChildren();pageCache.clear();await loadPage(state.page);await loadHistory();notice('履歴から新しい下書きを作成しました。差分を確認してからDBへ反映してください。');
+ state.revision=saved.revision;state.positionTarget=null;state.rechunk=saved.rechunk??false;state.layoutRestore=Boolean(saved.layout_target);$('rechunk').checked=state.rechunk;state.merges=saved.merges||[];state.cuts=saved.cuts||{};state.edits=saved.edits;state.zones=saved.zones||{};state.toc=saved.toc;state.tocChanged=Boolean(saved.toc_changed);state.reviewedRevision=null;state.dirty=false;$('history').replaceChildren();pageCache.clear();await loadPage(state.page);await loadHistory();notice('履歴から新しい下書きを作成しました。差分を確認してからDBへ反映してください。');
 }
 $('older-history').addEventListener('click',()=>loadHistory(historyBefore).catch(e=>notice(e.message)));
 
@@ -205,3 +207,20 @@ function changeZoom(delta){$('zoom-mode').value='custom';$('zoom').value=Math.ma
 $('zoom-out').addEventListener('click',()=>changeZoom(-25));$('zoom-in').addEventListener('click',()=>changeZoom(25));
 if(typeof ResizeObserver!=='undefined')new ResizeObserver(redrawPaper).observe($('paper-viewport'));
 window.addEventListener('keydown',event=>{if(event.key==='Escape'){toggleDocuments(false);return;}if(event.altKey||event.ctrlKey||event.metaKey||event.shiftKey||!state.key)return;const target=event.target;if(target?.isContentEditable||['INPUT','TEXTAREA','SELECT','BUTTON'].includes(target?.tagName))return;if(event.key==='ArrowRight'&&state.page<state.totalPages){event.preventDefault();loadPage(state.page+1);}if(event.key==='ArrowLeft'&&state.page>1){event.preventDefault();loadPage(state.page-1);}});
+
+function renderRechunkPlan(plan,target){
+ target.append(node('h3',`${plan.version?'構造からの再編':'変更の確認'}：${plan.before_count} → ${plan.after_count}チャンク`));
+ target.append(node('p',`生成時の重なりを${plan.verified_overlap_chars}文字分照合しました。${plan.notice}`));
+ if(plan.changed_count>plan.changes.length)target.append(node('p',`変更${plan.changed_count}件のうち先頭${plan.changes.length}件を表示しています。`));
+ for(const change of plan.changes){const details=node('details');details.append(node('summary',`PDF ${change.page??'?'}頁 · ${change.id}`));const pair=node('div');pair.className='diff-pair';pair.append(node('pre',change.before??'新規チャンク'),node('pre',change.after));details.append(pair);target.append(details);}
+}
+async function previewRechunk(){
+ if(!state.key||!state.version)return;
+ if(state.layoutRestore){notice('保存済みの履歴復元案は「差分」で確認して反映してください。');return;}
+ const key=state.key,generation=state.generation;notice('構造に基づく再チャンク化を試算しています…');
+ const plan=await api(`/admin/debug/api/documents/${key}/preview`,{method:'POST',body:JSON.stringify({revision:state.revision,version:state.version,edits:state.edits,toc:orderedToc(),toc_changed:state.tocChanged,zones:state.zones,rechunk:state.rechunk,merges:state.merges,cuts:state.cuts})});
+ if(key!==state.key||generation!==state.generation)return;
+ const target=$('diff-content');target.replaceChildren();renderRechunkPlan(plan,target);setTab('diff');notice('試算のみです。内容を確認して下書きを保存し、保存済みの差分からDBへ反映してください。');
+}
+$('preview-rechunk').addEventListener('click',()=>previewRechunk().catch(e=>notice(e.message)));
+$('rechunk').addEventListener('change',()=>{state.rechunk=$('rechunk').checked;markDirty();draftStatus();});

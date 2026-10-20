@@ -147,7 +147,7 @@ class DebugReader:
                             'preview':re.sub(r'\s+', ' ', row['text']).strip()[:160]} for row in rows],
                 'all_chunks':rows}
 
-    def save(self, document: dict, revision: int, version: str, edits: dict, toc: list, actor: str, toc_changed: bool = False, zones: dict | None = None, merges: list | None = None, cuts: dict | None = None) -> dict:
+    def save(self, document: dict, revision: int, version: str, edits: dict, toc: list, actor: str, toc_changed: bool = False, zones: dict | None = None, merges: list | None = None, cuts: dict | None = None, rechunk: bool = False) -> dict:
         if document['version'] != version:
             raise ReviewConflict('原本または索引が変更されました。再読込して修正内容を確認してください。')
         rows = merge_rows(document['all_chunks'], merges)
@@ -156,11 +156,20 @@ class DebugReader:
         validate_draft(rows, edits, toc, allow_unresolved=True)
         validate_zones(rows, zones)
         _, _, groups = split_rows(rows, edits, toc, cuts)
-        return self.store.save(document['attachment_key'], revision,
-                               {'version':version,'source_sha256':document['source_sha256'],'edits':edits,'toc':toc,'toc_changed':toc_changed,
+        from citation_graph.review_plan import build_review_plan,layout_generation
+        payload = {'version':version,'source_sha256':document['source_sha256'],'edits':edits,'toc':toc,'toc_changed':toc_changed,
                                 'originals':{row['id']:row['text'] for row in rows if row['id'] in edits or any(row['id']==group[0] for group in groups)},
                                 'existing_children':{row['id']:[child['id'] for child in document['all_chunks'] if child['metadata'].get('review_parent')==row['id']] for row in rows if row['id'] in edits or any(row['id']==group[0] for group in groups)},
                                 'split_groups':groups,'merges':merges or [],'cuts':cuts or {},
                                 'merge_before':[[row for row in document['all_chunks'] if row['id'] in group] for group in merges or []],
                                 'zones':zones,'zones_before':{row['id']:row['metadata'].get('zone') or 'body' for row in document['all_chunks'] if row['id'] in zones},
-                                'toc_before':current_toc(document['all_chunks'])}, actor)
+                                'toc_before':current_toc(document['all_chunks']),
+                                'rechunk':rechunk,'layout_generation':layout_generation(document['all_chunks'])}
+        if rechunk and (toc_changed or toc):
+            try:
+                plan = build_review_plan(document['all_chunks'],payload)
+            except ValueError as exc:
+                payload['rechunk_error'] = str(exc)
+            else:
+                payload.update(plan_hash=plan['plan_hash'],rechunk_before=document['all_chunks'],rechunk_after=plan['rows'])
+        return self.store.save(document['attachment_key'],revision,payload,actor)
