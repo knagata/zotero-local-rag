@@ -2568,3 +2568,10 @@ A（PDF構造化）・B（課金LLM）は独立、C（構造抽出エンジン�
 - 対象論文の見出し直前を読み取りだけで試算し、前文と見出し以降の2部分へ文字列を完全保持して分割できることを確認。本番への校訂は実行せず、原本/DB/履歴はテストとして変更していない。実ブラウザは利用可能backendなしで目視未確認。
 - 最終全体2,175passed/7skip/5deselected（98.95秒）、実取込比較slow5passed（418.17秒）。debug10module884文は未到達0、新規segmentsの上限0を追加。document_structureの未到達予算28→26、rag_mcp_server589→554を採択し、既知のOS依存上限は維持。coverage予算・fatal Ruff・compileall・src.cli import・文書/function/lint12テスト・Nodeの編集/分割/位置再指定/保存とPDF表示DOM検証合格。
 - 索引/監査/要約writer不在（定期update_checkは読取りのみ）を確認し管理/remote MCPサービスへ反映。起動待ち後Graph/local/public OAuthとMCP local/public OAuth正常、debug API未認証401。Herdr w1:t1C/w1:p1Eの最終全検証/再起動とw1:p1Fのslow比較はexit0。ログは/tmp/zotero-split-{full,slow,budget,service}-20261020.log。既存の無関係な未追跡ファイルを保持。
+
+
+### 2026-10-20: 校訂後チャンク再編の設計を検討
+
+- 利用者の依頼により追加実装前に既存チャンク生成/短片結合/構造/検索を調査。対象下書きは未反映のまま保持。既存overlapにより新節の次partへ前節の文脈が残り、単純連結では二重化することを実資料の読取りで確認した。図の説明へ参考文献分類が継承される点も確認。前回の構造合格は検索品質の合格ではない。
+- developer/section-aware-review-plan.mdへ提案を記録。source spanに基づく生成overlapの照合、節/分類/ページ境界内の局所再編、見出し情報の継承と引用位置の分離、分類終端、対象限定の検索比較を提案する。既存短片結合の原文除外規則は校訂へそのまま流用しない。反復表現の自動削除は行わない。
+- 設計文書のみ変更し、実装・サービス再起動・DB反映・有料処理は行っていない。現在の下書きを「反映推奨」とは扱わず、再編案のプレビューと検索品質比較が次の作業。
