@@ -322,7 +322,7 @@ class GrobidGateTests(unittest.TestCase):
 
 class ProviderResourceIsolationTests(unittest.TestCase):
     def test_each_hosted_provider_requires_its_own_resource(self):
-        for provider, key in (("anthropic", "ANTHROPIC_API_KEY"), ("gemini", "GEMINI_API_KEY"),
+        for provider, key in (("deepseek", "DEEPSEEK_API_KEY"), ("anthropic", "ANTHROPIC_API_KEY"), ("gemini", "GEMINI_API_KEY"),
                               ("openai_compat", "LLM_OPENAI_BASE_URL")):
             env, dotenv = _env(LLM_CHEAP=provider + ":model")
             with env, dotenv:
@@ -342,3 +342,17 @@ class ProviderResourceIsolationTests(unittest.TestCase):
                 request.assert_called_once()
         finally:
             fg.reset_grobid_probe()
+
+
+def test_granite_resource_detection_uses_explicit_python_and_adapter(tmp_path):
+    python = tmp_path / "python"
+    python.touch()
+    env, dotenv = _env(GRANITE_VENV_PYTHON=str(python))
+    with env, dotenv:
+        assert fg.granite_configured()
+    python.unlink()
+    with env, dotenv:
+        assert not fg.granite_configured()
+    env, dotenv = _env(GRANITE_VENV_PYTHON="missing-test-environment/python")
+    with env, dotenv:
+        assert not fg.granite_configured()

@@ -2629,4 +2629,4 @@ A（PDF構造化）・B（課金LLM）は独立、C（構造抽出エンジン�
 ## 2026-11-14: push後CIの環境依存coverageを修正
 
 - 88d6b12のCIは2,214テスト合格後、docling_extract/feature_gates/source_structure_refreshの未到達予算で失敗。Docling adapterの3テストはconverterをmock済みなのに任意依存の有無でskipしていたため、ConversionStatusをテスト内stubへ置換してCIでも実行する。
-- LLM provider別resource不足/有効化、GROBID health probeのcache/reset、不正page metadataの安全な0扱いを明示検証。関連107テスト・fatal Ruff・diff検査合格。予算は緩和していない。runtimeコード変更はなく追加service再起動は不要。CI再試行でadapterの依存検出も先行することを確認し、その検出もテストfixture内でstub化。doclingをimport不能にした環境で22テスト合格を確認。
+- LLM provider別resource不足/有効化、GROBID health probeのcache/reset、不正page metadataの安全な0扱いを明示検証。関連107テスト・fatal Ruff・diff検査合格。予算は緩和していない。runtimeコード変更はなく追加service再起動は不要。CI再試行でadapterの依存検出も先行することを確認し、その検出もテストfixture内でstub化。doclingをimport不能にした環境で22テスト合格を確認。CIで残ったGranite検出分岐は一時Pythonファイルの存在/欠落と相対pathで検証し、feature_gates単独33テストで未到達3文（上限5）を確認。
