@@ -2625,3 +2625,8 @@ A（PDF構造化）・B（課金LLM）は独立、C（構造抽出エンジン�
 
 - writerプロセスと実DBのindexing.lock不在を確認し、remote MCP・Citation Graph・OAuth proxy・定期確認Agentを再起動。起動待ち後Graph HTTP200、MCP local/public OAuth、Graph local/public OAuth、各LaunchAgent正常を確認。Herdr w1:t1H / w1:p1N。
 - コード反映の再起動であり実DBの再索引・監査/公開は実行していない。既存の無関係な未追跡ファイルを保持。利用者依頼により未送信コミットをSSH remoteへpushし、CI結果を確認する。
+
+## 2026-11-14: push後CIの環境依存coverageを修正
+
+- 88d6b12のCIは2,214テスト合格後、docling_extract/feature_gates/source_structure_refreshの未到達予算で失敗。Docling adapterの3テストはconverterをmock済みなのに任意依存の有無でskipしていたため、ConversionStatusをテスト内stubへ置換してCIでも実行する。
+- LLM provider別resource不足/有効化、GROBID health probeのcache/reset、不正page metadataの安全な0扱いを明示検証。関連107テスト・fatal Ruff・diff検査合格。予算は緩和していない。runtimeコード変更はなく追加service再起動は不要。

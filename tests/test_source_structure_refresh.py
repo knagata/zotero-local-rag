@@ -962,3 +962,8 @@ def test_a_tree_reports_itself_unusable_before_it_is_stored():
     # 1, 3, 4, 5, 6 -- the extractor lost chapter two, and storing this would
     # assert a six-chapter book has five.
     assert not tree.is_usable(100)
+
+
+def test_invalid_page_metadata_does_not_crash_structure_refresh():
+    from src.source_structure_refresh import _row_page
+    assert _row_page({"metadata": {"page": "not-a-page"}}) == 0

@@ -6,9 +6,21 @@ from pathlib import Path
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
-import importlib.util
+import sys
+import pytest
 
 from src import docling_extract
+
+
+@pytest.fixture(autouse=True)
+def stub_conversion_status(monkeypatch):
+    # Conversion is already mocked: these tests exercise our chunk adapter,
+    # independent of the optional OCR runtime and model downloads.
+    class Status(Enum):
+        SUCCESS = "success"
+        PARTIAL_SUCCESS = "partial_success"
+    monkeypatch.setitem(sys.modules, "docling.datamodel.base_models",
+                        SimpleNamespace(ConversionStatus=Status))
 
 
 class _Label(Enum):
@@ -76,7 +88,6 @@ class DoclingExtractTests(unittest.TestCase):
         self.assertEqual(rows[0]["bbox"]["coord_origin"], "TOPLEFT")
         self.assertEqual(rows[0]["charspan"], [2, 12])
 
-    @unittest.skipUnless(importlib.util.find_spec("docling"), "optional docling dependency not installed")
     def test_extract_preserves_structure_zone_block_type_and_reading_order(self):
         items = [
             (_Item(_Label.TITLE, "A Study"), 0),
@@ -122,7 +133,6 @@ class DoclingExtractTests(unittest.TestCase):
             validate_metadata(md)
         self.assertEqual(quality["parser"], "docling")
 
-    @unittest.skipUnless(importlib.util.find_spec("docling"), "optional docling dependency not installed")
     def test_consecutive_references_stay_one_chunk_per_entry(self):
         # Part D (dev-notes/current/77): reference/footnote items are in
         # _PRESERVE_SHORT_LABELS, so consecutive short references must NOT be
@@ -148,7 +158,6 @@ class DoclingExtractTests(unittest.TestCase):
         self.assertTrue(reference_texts[1].startswith("Bostrom N (2014)"))
         self.assertTrue(reference_texts[2].startswith("Dennett D (2017)"))
 
-    @unittest.skipUnless(importlib.util.find_spec("docling"), "optional docling dependency not installed")
     def test_a_page_of_all_short_text_fragments_is_not_lost_entirely(self):
         # P2-01 (2026-07-29): each fragment below HARD_MIN_CHARS used to be
         # dropped before _merge_docling_chunks ever ran, so a page whose text

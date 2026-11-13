@@ -318,3 +318,27 @@ class GrobidGateTests(unittest.TestCase):
         env, dotenv = _env()
         with env, dotenv, patch("httpx.get", side_effect=OSError("refused")):
             self.assertFalse(fg.grobid_service_available())
+
+
+class ProviderResourceIsolationTests(unittest.TestCase):
+    def test_each_hosted_provider_requires_its_own_resource(self):
+        for provider, key in (("anthropic", "ANTHROPIC_API_KEY"), ("gemini", "GEMINI_API_KEY"),
+                              ("openai_compat", "LLM_OPENAI_BASE_URL")):
+            env, dotenv = _env(LLM_CHEAP=provider + ":model")
+            with env, dotenv:
+                self.assertFalse(fg.llm_configured())
+            env, dotenv = _env(LLM_CHEAP=provider + ":model", **{key: "configured"})
+            with env, dotenv:
+                self.assertTrue(fg.llm_configured())
+
+    def test_grobid_probe_is_cached_and_resettable(self):
+        from types import SimpleNamespace
+        env, dotenv = _env(GROBID_URL="http://localhost:8070/")
+        fg.reset_grobid_probe()
+        try:
+            with env, dotenv, patch("httpx.get", return_value=SimpleNamespace(status_code=200)) as request:
+                self.assertTrue(fg.grobid_service_available())
+                self.assertTrue(fg.grobid_service_available())
+                request.assert_called_once()
+        finally:
+            fg.reset_grobid_probe()
