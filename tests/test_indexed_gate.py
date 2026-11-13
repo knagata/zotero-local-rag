@@ -21,6 +21,7 @@ def test_partial_gate_requires_complete_indexed_coverage(monkeypatch):
                           ['manifest_chroma_attachment_mismatch', 'incomplete_source_coverage'])
     assert result['passed'] and result['eligible_item_keys'] == ['GOOD']
     assert result['pending_ocr_attachments'] == ['WAIT']
+    assert result['excluded_item_keys'] == ['BAD', 'WAIT_ITEM']
     report = {'gate': {'passed': False}, 'indexed_gate': result}
     assert summary_scope(report, ['BAD', 'WAIT_ITEM', 'GOOD']) == ['GOOD']
     assert summary_scope({'gate': {'passed': True}}, ['ALL']) == ['ALL']
@@ -28,6 +29,8 @@ def test_partial_gate_requires_complete_indexed_coverage(monkeypatch):
         assert not indexed_gate(files, {'OK'}, statuses, comparisons, [extra])['passed']
     assert not indexed_gate(files, {'OK', 'EXTRA'}, statuses, comparisons, [])['passed']
     assert not indexed_gate(files, {'OK'}, [], comparisons, [])['passed']
+    statuses[0]['item_key'] = None
+    assert not indexed_gate(files, {'OK'}, statuses, comparisons, [])['passed']
     files['OK']['quality']['source_coverage'] = None
     assert not indexed_gate(files, {'OK'}, statuses, comparisons, [])['passed']
     with pytest.raises(RuntimeError):

@@ -255,20 +255,26 @@ def _discard_passing_gate(path: Path) -> None:
         path.unlink()
 
 
-def _refresh_search_snapshot() -> None:
+def _refresh_search_snapshot(*, partial: bool = False) -> None:
     from src.search_snapshot import pointer_path
-    if pointer_path(ROOT).exists():
-        print("[検索DB更新] 全監査に合格した資料を検索側へ反映します。", flush=True)
-        subprocess.run([
+    if pointer_path(ROOT).exists() or partial:
+        mode = "監査通過資料だけを部分公開" if partial else "全監査合格資料を公開"
+        print(f"[検索DB更新] {mode}します。", flush=True)
+        command = [
             sys.executable, str(ROOT / "scripts" / "publish_search_snapshot.py"),
             "--restart-services",
-        ], cwd=ROOT, env=environment_with_saved_dotenv(ROOT), check=True)
+        ]
+        if partial:
+            command.append("--partial")
+        subprocess.run(command, cwd=ROOT, env=environment_with_saved_dotenv(ROOT), check=True)
 
 
 def main(argv: list[str] | None = ()) -> None:
     import argparse
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--allow-pending-ocr", action="store_true")
+    parser.add_argument("--allow-partial-index", "--allow-pending-ocr", dest="allow_partial_index",
+                        action="store_true",
+                        help="Keep the full audit failed but publish the individually audited searchable subset")
     args = parser.parse_args(argv)
     from src.audit_repair import repair_derived_data
     try:
@@ -277,6 +283,7 @@ def main(argv: list[str] | None = ()) -> None:
         raise SystemExit(f"[停止] {exc}") from exc
     status_path = paths[3]
     # Keep the same generation stable across checks, backup, repair and re-audit.
+    partial_report = None
     with held(default_path(ROOT)):
         _write_status(status_path, "running", "DB監査を実行しています。")
         repair = {}
@@ -289,16 +296,34 @@ def main(argv: list[str] | None = ()) -> None:
                 findings = report_failure_details(failure.report or {})
                 if not failure.report:
                     raise
-                if failure.code == 2 and args.allow_pending_ocr and failure.report.get("indexed_gate", {}).get("passed") is True:
-                    _write_status(status_path, "completed_partial", "索引済みの監査通過資料を利用できます。未処理・要確認資料は対象外です。",
-                                  pending_ocr_attachments=failure.report["indexed_gate"]["pending_ocr_attachments"])
-                    return  # full-library gate remains failed; do not publish it as complete
                 _write_status(status_path, "repairing", "監査不合格の原因を確認し、安全な自動修復を検査しています。")
                 repair = repair_derived_data(failure.report, ROOT)
-                if not repair["repaired"]:
+                if repair["repaired"]:
+                    _write_status(status_path, "running", "自動修復後、同じ基準で全DB監査を再実行しています。", repair=repair)
+                    try:
+                        _audit_once()  # exactly one retry, all three original audits
+                    except AuditFailure as retry:
+                        from src.audit_diagnostics import report_failure_details
+                        findings = report_failure_details(retry.report or {})
+                        if (retry.code != 2 or not args.allow_partial_index
+                                or (retry.report or {}).get("indexed_gate", {}).get("passed") is not True):
+                            raise
+                        partial_report = retry.report
+                        _write_status(status_path, "publishing_partial",
+                                      "自動修復後も全体監査は未合格です。監査通過資料だけを検索用DBへ公開しています。",
+                                      eligible_items=len(partial_report["indexed_gate"].get("eligible_item_keys", [])),
+                                      excluded_items=len(partial_report["indexed_gate"].get("excluded_item_keys", [])),
+                                      pending_ocr_attachments=partial_report["indexed_gate"].get("pending_ocr_attachments", []))
+                elif (failure.code == 2 and args.allow_partial_index
+                      and failure.report.get("indexed_gate", {}).get("passed") is True):
+                    partial_report = failure.report
+                    _write_status(status_path, "publishing_partial",
+                                  "全体監査は未合格です。監査通過資料だけを検索用DBへ公開しています。",
+                                  eligible_items=len(failure.report["indexed_gate"].get("eligible_item_keys", [])),
+                                  excluded_items=len(failure.report["indexed_gate"].get("excluded_item_keys", [])),
+                                  pending_ocr_attachments=failure.report["indexed_gate"].get("pending_ocr_attachments", []))
+                else:
                     raise
-                _write_status(status_path, "running", "自動修復後、同じ基準で全DB監査を再実行しています。", repair=repair)
-                _audit_once()  # exactly one retry, all three original audits
         except (SystemExit, RuntimeError, OSError, ValueError, sqlite3.Error, KeyboardInterrupt) as exc:
             if isinstance(exc, AuditFailure):
                 from src.audit_diagnostics import report_failure_details
@@ -311,7 +336,23 @@ def main(argv: list[str] | None = ()) -> None:
             _write_status(status_path, "failed", message, repair=repair, findings=findings)
             print(f"[必要な作業] {message}", flush=True)
             raise
-        _write_status(status_path, "completed", "DB監査に合格しました。", repair=repair)
+        if partial_report is None:
+            _write_status(status_path, "completed", "DB監査に合格しました。", repair=repair)
+    if partial_report is not None:
+        try:
+            _refresh_search_snapshot(partial=True)
+        except (subprocess.SubprocessError, RuntimeError, OSError, ValueError) as exc:
+            message = f"部分公開に失敗しました。全体監査は未合格のままです：{exc}"
+            _write_status(status_path, "failed", message,
+                          eligible_items=len(partial_report["indexed_gate"].get("eligible_item_keys", [])),
+                          excluded_items=len(partial_report["indexed_gate"].get("excluded_item_keys", [])))
+            raise
+        indexed = partial_report["indexed_gate"]
+        _write_status(status_path, "completed_partial", "全体監査は未合格です。監査通過資料だけを検索側へ反映しました。",
+                      eligible_items=len(indexed.get("eligible_item_keys", [])),
+                      excluded_items=len(indexed.get("excluded_item_keys", [])),
+                      pending_ocr_attachments=indexed.get("pending_ocr_attachments", []))
+        return
     _refresh_search_snapshot()
 
 

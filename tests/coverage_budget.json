@@ -80,6 +80,7 @@
     "src/ndl_client.py": 19,
     "src/ndlocr_extract.py": 47,
     "src/note_extract.py": 5,
+    "src/partial_snapshot.py": 0,
     "src/ocr_bakeoff.py": 24,
     "src/ocr_cache.py": 6,
     "src/ocr_layer_audit.py": 8,

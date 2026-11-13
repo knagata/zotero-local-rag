@@ -9,7 +9,7 @@ let actionSignature = "";
 function text(value) { return value === null || value === undefined ? "—" : String(value); }
 function localTime(value) { return value ? new Date(value).toLocaleString("ja-JP") : "—"; }
 function statusLabel(value) {
-  return {completed:"完了",running:"処理中",in_progress:"処理中",submitted:"送信済み",queued:"開始待ち",success:"処理完了",collected:"回収済み",stopping:"停止中",failed:"失敗",cancelled:"停止済み",rejected:"拒否"}[value] || value;
+  return {completed:"完了",completed_partial:"一部公開",publishing_partial:"一部を公開中",running:"処理中",in_progress:"処理中",submitted:"送信済み",queued:"開始待ち",success:"処理完了",collected:"回収済み",stopping:"停止中",failed:"失敗",cancelled:"停止済み",rejected:"拒否"}[value] || value;
 }
 function node(tag, className, content) {
   const element = document.createElement(tag); if (className) element.className = className;
@@ -25,11 +25,13 @@ function metric(label, value, detail="") {
   const box=node("div","metric"); box.append(node("small","",label),node("b","",text(value))); if(detail) box.append(node("small","",detail)); return box;
 }
 function renderMetrics(data) {
-  const m=data.manifest, a=data.artifacts, gate=data.database_gate, batch=data.mistral_batch; const target=$("metrics"); target.replaceChildren(
+  const m=data.manifest, a=data.artifacts, gate=data.database_gate, batch=data.mistral_batch, snapshot=data.search_snapshot;
+  const snapshotDetail=snapshot?.available?(snapshot.partial?`部分公開 · 合格 ${snapshot.eligible_items}資料 / 除外 ${snapshot.excluded_items}資料・OCR待ち添付 ${snapshot.pending_ocr_attachments}件 · ${localTime(snapshot.published_at)}`:`全件合格世代 · ${localTime(snapshot.published_at)}`):"検索と更新は同じDBを使用";
+  const target=$("metrics"); target.replaceChildren(
     metric("索引済み添付",m.attachments,`ノート ${m.notes}`), metric("HNSW検証",m.hnsw_validated?"正常":"要確認",`inflight ${m.inflight}`),
     metric("DB監査gate",gate.passed?"全体整合性は合格":gate.indexed_gate?.passed?"監査通過分は利用可（未完了）":gate.available?"不合格":"結果なし",localTime(gate.modified_at)), metric("未解決artifact",a.unresolved ?? "—",a.error || "failed + blocked"),
     metric("索引書き込み",data.indexing_lock?"実行中":"停止中",data.indexing_lock?.started_at || "ロックなし"),
-    metric("検索用の添付",data.search_snapshot?.available ? data.search_snapshot.attachments : "未分離",data.search_snapshot?.available ? `更新中も検索可能 · ${localTime(data.search_snapshot.published_at)}時点（新しい資料は監査後に反映）` : "検索と更新は同じDBを使用"),
+    metric("検索用の添付",snapshot?.available ? snapshot.attachments : "未分離",snapshotDetail),
     metric("Mistral Batch",batch?statusLabel(batch.phase):"未実行",batch?`${batch.completed_requests}/${batch.total_requests || batch.candidate_count}件 · 確認 ${localTime(batch.last_checked_at)}`:"")
   ); $("updated").textContent=`更新 ${new Date().toLocaleTimeString("ja-JP")}`;
   const diagnostics=$("audit-diagnostics"); diagnostics.replaceChildren();

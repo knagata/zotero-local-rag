@@ -21,12 +21,16 @@ def indexed_gate(files: dict, indexed: set[str], statuses: list[dict],
     allowed = {'manifest_chroma_attachment_mismatch', 'incomplete_source_coverage'}
     safe = (not (set(global_failures) - allowed) and not (set(files) ^ indexed) - pending
             and not uncovered - pending)
-    excluded_items = {waiting[key] for key in pending}
+    pending_items = {waiting[key] for key in pending}
+    safe = safe and not pending_items.intersection({None, ""})
     eligible = sorted(row['item_key'] for row in comparisons
-                      if row.get('passed') is True and row['item_key'] not in excluded_items)
+                      if row.get('passed') is True and row['item_key'] not in pending_items)
+    excluded_items = ({row['item_key'] for row in comparisons} - set(eligible)) | {
+        key for key in pending_items if key
+    }
     return {'passed': bool(safe and eligible), 'eligible_item_keys': eligible if safe else [],
             'pending_ocr_attachments': sorted(pending),
-            'excluded_item_keys': sorted(row['item_key'] for row in comparisons if row['item_key'] not in eligible)}
+            'excluded_item_keys': sorted(excluded_items)}
 
 
 def summary_scope(report: dict, keys: list[str]) -> list[str]:

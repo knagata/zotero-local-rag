@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -112,14 +113,33 @@ def native_source(root, monkeypatch):
     try:
         col = client.create_collection('zotero_paragraphs_v3', embedding_function=None,
                                       configuration={'hnsw': {'space': 'cosine', 'num_threads': 1}})
-        col.add(ids=['old1', 'old2'], embeddings=[[1., 0., 0.], [0., 1., 0.]], documents=['old first', 'old second'])
+        col.add(ids=['old1', 'old2'], embeddings=[[1., 0., 0.], [0., 1., 0.]], documents=['old first', 'old second'],
+                metadatas=[{'itemKey': 'GOOD', 'attachmentKey': 'ATTGOOD'},
+                           {'itemKey': 'BAD', 'attachmentKey': 'ATTBAD'}])
     finally:
         client.close()
     (directory / 'embedder_config_v3.json').write_text('{}')
-    (root / 'data/manifest_v3.json').write_text(json.dumps({'hnsw_validated': True, 'files': {'old': {}}}))
-    for name in ('lexical_v3.sqlite3', 'relations.db'):
-        with sqlite3.connect(root / 'data' / name) as db:
-            db.execute('create table records(value)'); db.execute("insert into records values('old')")
+    (root / 'data/manifest_v3.json').write_text(json.dumps({'hnsw_validated': True,
+        'files': {'ATTGOOD': {}, 'ATTBAD': {}}}))
+    with sqlite3.connect(root / 'data/lexical_v3.sqlite3') as db:
+        db.execute('''create virtual table chunks_fts using fts5(
+            chunk_id UNINDEXED,item_key UNINDEXED,lang UNINDEXED,source_type UNINDEXED,
+            attachment_key UNINDEXED,note_key UNINDEXED,body,title,creators,tokenize='trigram')''')
+        db.executemany('insert into chunks_fts values(?,?,?,?,?,?,?,?,?)', [
+            ('old1','GOOD','en','pdf','ATTGOOD','','old first','',''),
+            ('old2','BAD','en','pdf','ATTBAD','','old second','','')])
+    with sqlite3.connect(root / 'data/relations.db') as db:
+        db.execute('create table works(zotero_item_key text, title text)')
+        db.executemany('insert into works values(?,?)',[('GOOD','good'),('BAD','bad')])
+        db.execute('create table document_nodes(node_id text, item_key text, attachment_key text)')
+        db.executemany('insert into document_nodes values(?,?,?)',[
+            ('NODEGOOD','GOOD','ATTGOOD'),('NODEBAD','BAD','ATTBAD')])
+        db.execute('create table document_node_chunks(node_id text, chunk_id text)')
+        db.executemany('insert into document_node_chunks values(?,?)',[
+            ('NODEGOOD','old1'),('NODEBAD','old2')])
+        db.execute('create table document_node_summaries(node_id text, summary text)')
+        db.executemany('insert into document_node_summaries values(?,?)',[
+            ('NODEGOOD','good summary'),('NODEBAD','bad summary')])
     monkeypatch.setenv('CHROMA_DIR', str(directory))
     monkeypatch.setenv('MANIFEST_PATH', str(root / 'data/manifest_v3.json'))
     monkeypatch.setenv('LEXICAL_DB_PATH', str(root / 'data/lexical_v3.sqlite3'))
@@ -165,6 +185,78 @@ def test_failed_refresh_keeps_previous_copy_and_requires_ready_source(tmp_path, 
     (tmp_path / 'data/manifest_v3.json').write_text(json.dumps({'hnsw_validated': False}))
     with pytest.raises(ValueError, match='incomplete'):
         publisher.publish(tmp_path)
+
+
+def test_partial_refresh_publishes_only_the_indexed_audit_allowlist(tmp_path, monkeypatch):
+    chromadb, source = native_source(tmp_path, monkeypatch)
+    gate_path = tmp_path / 'data/quality/server_database_gate.json'
+    gate_path.parent.mkdir(parents=True)
+    audit = {'gate': {'passed': False}, 'new_only': True,
+             'indexed_gate': {'passed': True, 'eligible_item_keys': ['GOOD'],
+                              'excluded_item_keys': ['BAD'], 'pending_ocr_attachments': ['WAIT']}}
+    gate_path.write_text(json.dumps(audit))
+    monkeypatch.setattr(publisher, 'validate_database_gate', lambda path, **kwargs: audit)
+    record = publisher.publish(tmp_path, partial=True)
+    assert record['audit_passed'] is False and record['partial'] is True
+    assert record['eligible_items'] == 1 and record['excluded_items'] == 1
+    snapshot = snapshots.load_snapshot(tmp_path)
+    assert snapshot['partial'] is True
+    assert snapshots.public_status(tmp_path)['partial'] is True
+    client = chromadb.PersistentClient(path=str(Path(record['directory']) / 'chroma'))
+    try:
+        collection = client.get_collection('zotero_paragraphs_v3', embedding_function=None)
+        filtered = collection.get(include=['metadatas'])
+        assert filtered['ids'] == ['old1']
+        assert filtered['metadatas'] == [{'itemKey': 'GOOD', 'attachmentKey': 'ATTGOOD'}]
+    finally:
+        client.close()
+    with sqlite3.connect(Path(record['directory']) / 'lexical_v3.sqlite3') as db:
+        assert db.execute('select chunk_id,item_key from chunks_fts').fetchall() == [('old1','GOOD')]
+    with sqlite3.connect(Path(record['directory']) / 'relations.db') as db:
+        assert db.execute('select zotero_item_key from works').fetchall() == [('GOOD',)]
+        assert db.execute('select node_id from document_nodes').fetchall() == [('NODEGOOD',)]
+        assert db.execute('select node_id from document_node_chunks').fetchall() == [('NODEGOOD',)]
+        assert db.execute('select node_id from document_node_summaries').fetchall() == [('NODEGOOD',)]
+    saved_manifest = json.loads((Path(record['directory']) / 'manifest_v3.json').read_text())
+    assert list(saved_manifest['files']) == ['ATTGOOD']
+    live_client = chromadb.PersistentClient(path=str(source))
+    try:
+        assert live_client.get_collection('zotero_paragraphs_v3', embedding_function=None).count() == 2
+    finally:
+        live_client.close()
+
+
+def test_partial_refresh_requires_a_safe_indexed_gate_and_keeps_previous_snapshot(tmp_path, monkeypatch):
+    native_source(tmp_path, monkeypatch)
+    old = publisher.publish(tmp_path, initialize=True)
+    gate_path = tmp_path / 'data/quality'; gate_path.mkdir()
+    (gate_path / 'server_database_gate.json').write_text(json.dumps({'gate': {'passed': False}}))
+    monkeypatch.setattr(publisher, 'validate_database_gate', lambda path, **kwargs: {
+        'gate': {'passed': False}, 'indexed_gate': {'passed': False, 'eligible_item_keys': []}})
+    with pytest.raises(ValueError, match='passing indexed-data audit'):
+        publisher.publish(tmp_path, partial=True)
+    assert snapshots.load_snapshot(tmp_path)['generation'] == old['generation']
+
+
+def test_partial_snapshot_certificate_rejects_incomplete_counts(tmp_path):
+    directory = fake_snapshot(tmp_path)
+    proof = json.loads((directory / 'snapshot.json').read_text())
+    proof.update({'partial': True, 'audit_passed': False})
+    (directory / 'snapshot.json').write_text(json.dumps(proof))
+    snapshots.pointer_path(tmp_path).write_text(json.dumps(proof))
+    with pytest.raises(ValueError, match='partial-publication certificate'):
+        snapshots.load_snapshot(tmp_path)
+
+
+def test_partial_snapshot_certificate_must_match_manifest(tmp_path):
+    directory = fake_snapshot(tmp_path)
+    proof = json.loads((directory / 'snapshot.json').read_text())
+    proof.update({'partial': True, 'audit_passed': False, 'eligible_items': 1,
+                  'excluded_items': 0, 'pending_ocr_attachments': 0})
+    (directory / 'snapshot.json').write_text(json.dumps(proof))
+    snapshots.pointer_path(tmp_path).write_text(json.dumps(proof))
+    with pytest.raises(ValueError, match='certificate disagree'):
+        snapshots.load_snapshot(tmp_path)
 
 
 def test_index_wrapper_does_not_reenable_paid_features_or_write_reader_copy(tmp_path, monkeypatch):

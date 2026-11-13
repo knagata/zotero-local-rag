@@ -20,21 +20,24 @@ def test_summary_cli_filters_unapproved_items_before_selection(tmp_path, monkeyp
     writer.assert_not_called()
 
 
-def test_audit_partial_success_never_publishes_full_snapshot(tmp_path, monkeypatch):
+def test_audit_partial_success_publishes_only_indexed_subset(tmp_path, monkeypatch):
     from contextlib import nullcontext
     from scripts import run_db_audit as cli
     paths = tuple(tmp_path / name for name in ['gate','zotero','source','status'])
-    report = {'gate': {'passed': False}, 'indexed_gate': {'passed': True, 'pending_ocr_attachments': ['WAIT']}}
+    report = {'gate': {'passed': False}, 'indexed_gate': {'passed': True,
+              'eligible_item_keys': ['GOOD'], 'excluded_item_keys': ['BAD'],
+              'pending_ocr_attachments': ['WAIT']}}
     monkeypatch.setattr(cli, '_validated_report_paths', lambda: paths)
     monkeypatch.setattr(cli, 'held', lambda path: nullcontext())
     def audit():
         raise cli.AuditFailure(2, report)
     monkeypatch.setattr(cli, '_audit_once', audit)
+    monkeypatch.setattr('src.audit_repair.repair_derived_data', lambda *a: {'repaired': False})
     publish = Mock()
     monkeypatch.setattr(cli, '_refresh_search_snapshot', publish)
-    cli.main(['--allow-pending-ocr'])
+    cli.main(['--allow-partial-index'])
     assert json.loads(paths[3].read_text())['status'] == 'completed_partial'
-    publish.assert_not_called()
+    publish.assert_called_once_with(partial=True)
     assert report['gate']['passed'] is False
 
 

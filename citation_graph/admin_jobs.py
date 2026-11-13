@@ -68,7 +68,7 @@ def job_definitions(root: Path = ROOT) -> dict[str, JobDefinition]:
     )
     audit_step = (
         "DB監査",
-        (python, str(root / "scripts" / "run_db_audit.py"), "--allow-pending-ocr"),
+        (python, str(root / "scripts" / "run_db_audit.py"), "--allow-partial-index"),
     )
     citation_step = (
         "Citation Network更新",
@@ -430,7 +430,7 @@ def _audit_run_status(root: Path) -> dict | None:
             return None
     except (OSError, ValueError):
         return None
-    if value.get("status") in {"running", "repairing"}:
+    if value.get("status") in {"running", "repairing", "publishing_partial"}:
         pid = value.get("pid")
         if isinstance(pid, int) and pid > 0:
             try:

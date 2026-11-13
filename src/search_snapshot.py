@@ -35,10 +35,22 @@ def load_snapshot(root: Path) -> dict | None:
             or not isinstance(proof.get("published_at"), str)
             or not isinstance(proof.get("audit_passed"), bool)):
         raise ValueError("Search snapshot certificate is incomplete")
+    partial = proof.get("partial", False)
+    if (not isinstance(partial, bool) or (partial and proof.get("audit_passed") is not False)
+            or (partial and (not isinstance(proof.get("eligible_items"), int)
+                             or proof["eligible_items"] <= 0
+                             or not isinstance(proof.get("excluded_items"), int)
+                             or proof["excluded_items"] < 0
+                             or not isinstance(proof.get("pending_ocr_attachments"), int)
+                             or proof["pending_ocr_attachments"] < 0))):
+        raise ValueError("Search snapshot partial-publication certificate is invalid")
     manifest = json.loads((directory / "manifest_v3.json").read_text(encoding="utf-8"))
     if (not isinstance(manifest, dict) or manifest.get("hnsw_validated") is not True or manifest.get("inflight_attachments")
             or manifest.get("post_index_pending")):
         raise ValueError("Search snapshot manifest is not query-ready")
+    manifest_partial = manifest.get("partial_publication", False)
+    if not isinstance(manifest_partial, bool) or manifest_partial != partial:
+        raise ValueError("Search snapshot manifest and publication certificate disagree")
     for name in ("chroma/chroma.sqlite3", "chroma/embedder_config_v3.json", "lexical_v3.sqlite3", "relations.db"):
         path = directory / name
         if not path.is_file() or directory not in path.resolve().parents:
@@ -113,4 +125,8 @@ def public_status(root: Path) -> dict:
         return {"available": False}
     return {"available": True, "generation": snapshot["generation"],
             "attachments": snapshot["attachments"], "published_at": snapshot["published_at"],
-            "audit_passed": snapshot["audit_passed"]}
+            "audit_passed": snapshot["audit_passed"],
+            "partial": snapshot.get("partial", False),
+            "eligible_items": snapshot.get("eligible_items"),
+            "excluded_items": snapshot.get("excluded_items", 0),
+            "pending_ocr_attachments": snapshot.get("pending_ocr_attachments", 0)}

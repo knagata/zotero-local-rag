@@ -20,7 +20,7 @@ from src.env_utils import environment_with_saved_dotenv
 from src.database_gate import validate_database_gate
 from src.indexing_lock import default_path, held
 from src.search_snapshot import load_snapshot, pointer_path
-from src.v3_data_plane import chroma_dir, lexical_path, manifest_path, resolve_configured_path
+from src.v3_data_plane import V3_COLLECTION, chroma_dir, lexical_path, manifest_path, resolve_configured_path
 
 LABELS = ("dev.zotero-local-rag.remote-mcp", "dev.zotero-local-rag.citation-graph")
 
@@ -125,7 +125,10 @@ def restore_services(labels: list[str]) -> None:
         subprocess.run(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(plist)], check=True)
 
 
-def publish(root: Path, *, initialize: bool = False, restart_services: bool = False) -> dict:
+def publish(root: Path, *, initialize: bool = False, restart_services: bool = False,
+            partial: bool = False) -> dict:
+    if initialize and partial:
+        raise ValueError("Initial snapshot setup cannot use partial audit mode")
     with held(default_path(root)):
         previous = load_snapshot(root)
         prune_unused_copies(root)
@@ -140,13 +143,20 @@ def publish(root: Path, *, initialize: bool = False, restart_services: bool = Fa
             "SERVER_DB_GATE_PATH", root / "data" / "quality" / "server_database_gate.json"))
         gate = json.loads(gate_path.read_text()) if gate_path.exists() else {}
         audit_passed = gate.get("gate", {}).get("passed") is True
+        partial_gate = None
         if not initialize and not audit_passed:
-            raise ValueError("Refresh requires the unchanged full DB audit to pass")
+            if not partial:
+                raise ValueError("Refresh requires the unchanged full DB audit to pass")
         if not initialize:
             # The audit releases its lock before launching this publisher. A
             # writer may have changed the corpus in between; bind publication
             # to the current generation while this lock prevents more writes.
-            validate_database_gate(gate_path)
+            gate = (validate_database_gate(gate_path, allow_pending_ocr=True) if partial
+                    else validate_database_gate(gate_path))
+            if partial and not audit_passed:
+                partial_gate = gate.get("indexed_gate") or {}
+                if partial_gate.get("passed") is not True:
+                    raise ValueError("Partial refresh requires a passing indexed-data audit")
         source = chroma_dir(root).resolve()
         home = (root / "data" / "search_snapshots").resolve()
         if source == home or home in source.parents or source in home.parents:
@@ -158,7 +168,7 @@ def publish(root: Path, *, initialize: bool = False, restart_services: bool = Fa
                 for label in services:
                     stop_services([label])
                     stopped.append(label)
-            record = build_copy(root, home, source, manifest, data, audit_passed)
+            record = build_copy(root, home, source, manifest, data, audit_passed, partial_gate)
             temporary = pointer_path(root).with_suffix(f".{uuid.uuid4().hex}.tmp")
             temporary.write_text(json.dumps(record, indent=2) + "\n")
             os.replace(temporary, pointer_path(root))
@@ -212,7 +222,8 @@ def require_copy_space(root: Path, source: Path, destination: Path) -> None:
         raise RuntimeError(f"検索DB公開に必要な空き容量が不足しています（空き {free / 1024**3:.1f} GiB、必要目安 {required / 1024**3:.1f} GiB）。旧検索DBは保持しています。空き容量を確保してから再実行してください。")
 
 
-def build_copy(root: Path, home: Path, source: Path, manifest: Path, data: dict, audit_passed: bool) -> dict:
+def build_copy(root: Path, home: Path, source: Path, manifest: Path, data: dict,
+               audit_passed: bool, partial_gate: dict | None = None) -> dict:
     generation = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ-") + uuid.uuid4().hex[:8]
     home.mkdir(parents=True, exist_ok=True)
     stage = home / f".partial-{generation}"
@@ -231,13 +242,29 @@ def build_copy(root: Path, home: Path, source: Path, manifest: Path, data: dict,
         relations = resolve_configured_path(root, os.environ.get("RELATIONS_DB_PATH", root / "data" / "relations.db"))
         sqlite_copy(relations, stage / "relations.db")
         shutil.copy2(manifest, stage / "manifest_v3.json")
-        counts = expected_counts(source)
+        partial_stats = None
+        if partial_gate is not None:
+            collection_name = os.environ.get("CHROMA_COLLECTION", V3_COLLECTION)
+            if collection_name != V3_COLLECTION:
+                raise ValueError("Partial publication requires the canonical v3 Chroma collection")
+            from src.partial_snapshot import filter_query_copy
+            partial_stats = filter_query_copy(
+                stage / "chroma", collection_name,
+                stage / "lexical_v3.sqlite3", stage / "manifest_v3.json",
+                stage / "relations.db", partial_gate["eligible_item_keys"],
+            )
+        counts = expected_counts(stage / "chroma")
         print(f"[検索用DB] 保存コピーの検索・再オープンを検証します：{counts}", flush=True)
         verify_native_copy(stage / "chroma", counts)
         record = {"generation": generation, "directory": str(destination), "ready": True,
                   "published_at": datetime.now(timezone.utc).isoformat(),
-                  "attachments": len(data.get("files", {})), "collection_counts": counts,
-                  "audit_passed": audit_passed, "previous": None, "sqlite_compatibility": compatibility}
+                  "attachments": partial_stats["attachments"] if partial_stats else len(data.get("files", {})),
+                  "collection_counts": counts, "audit_passed": audit_passed,
+                  "partial": partial_stats is not None,
+                  "eligible_items": partial_stats["eligible_items"] if partial_stats else None,
+                  "excluded_items": len(partial_gate.get("excluded_item_keys", [])) if partial_gate else 0,
+                  "pending_ocr_attachments": len(partial_gate.get("pending_ocr_attachments", [])) if partial_gate else 0,
+                  "previous": None, "sqlite_compatibility": compatibility}
         previous = load_snapshot(root)
         if previous:
             record["previous"] = previous["directory"]
@@ -253,10 +280,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--initialize", action="store_true", help="Pin the current query-ready corpus once")
     parser.add_argument("--restart-services", action="store_true")
+    parser.add_argument("--partial", action="store_true",
+                        help="Publish only items approved by the indexed-data audit")
     args = parser.parse_args()
     os.environ.update(environment_with_saved_dotenv(ROOT))
-    record = publish(ROOT, initialize=args.initialize, restart_services=args.restart_services)
-    print(json.dumps({key: record[key] for key in ("generation", "attachments", "audit_passed")}), flush=True)
+    record = publish(ROOT, initialize=args.initialize, restart_services=args.restart_services, partial=args.partial)
+    print(json.dumps({key: record[key] for key in ("generation", "attachments", "audit_passed", "partial", "eligible_items", "excluded_items")}), flush=True)
 
 
 if __name__ == "__main__":

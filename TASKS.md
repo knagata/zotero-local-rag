@@ -2585,3 +2585,11 @@ A（PDF構造化）・B（課金LLM）は独立、C（構造抽出エンジン�
 - 最終全体2,193passed/7skip/5deselected（96.01秒）、実取込比較slow5passed（408.37秒）、関連39passed。coverage予算・fatal Ruff・compileall・src.cli import・diff検査合格。Nodeの編集/プレビュー/履歴/保存DOMとPDF表示DOMも合格。実ブラウザbackendがなく画面目視は未実施。
 - 実DBへの校訂反映・ユーザー下書きの再保存・原本変更・有料OCR/LLMは行っていない。旧下書きは再読込後に再編プレビューを確認して再保存する。契約SPEC.md、利用手順docs/document-review.md、実装developer/document-review.mdを更新。検証用Herdrはw1:t1D、全体w1:p1G/slow w1:p1H。証跡/tmp/review-structured-{full,slow,budget,service}.log、非追跡の検索比較data/quality/structured-review-20261020/。
 - 管理画面サービスのみ再起動し、起動待ち後Graph/local/public OAuth正常、debug API未認証401を確認。全体・slow検証と再起動完了、既存の無関係な未追跡ファイルを保持。
+
+
+### 2026-11-13: DB監査NG時の通過資料だけの検索公開
+
+- 全体監査の合否は従来どおり厳格に維持し、資料単位監査に合格したitemだけを別世代の検索コピーへ公開する経路を追加。不合格資料・OCR待ち資料はChroma、全文検索、relations、添付manifestから除外し、元DBは変更しない。全体整合性の不明な不一致は部分公開も拒否し、従来の検索世代を維持する。
+- DB監査CLIと管理画面ジョブから部分公開を実行可能にし、監査状態は `completed_partial` と明示。管理画面の検索状態に対象・除外・OCR待ち件数を表示。全監査合格時の公開動作は維持。
+- 対象テスト51件合格。coverage付き全体は2,194 passed / 7 skipped / 5 deselected、実蔵書の構造復元ベースライン1件のみ、NANJA886が再取込後168から163チャンクに変わったため不一致。coverage予算は既存 `src/update_citations.py` が記録263に対し271未到達で差分確認が必要。fatal Ruff、compileall、`src.cli` import、diff検査は合格。新規partial snapshotとsnapshot proofの文はテストで到達。
+- 実DBの監査・公開、有料処理、サービス再起動は未実施。確認時に `data/indexing.lock` が現行PIDで保持されていたため、索引処理を妨げないよう再起動もしなかった。検証はHerdr `w1:t1F` / `w1:p1K`。

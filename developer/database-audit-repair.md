@@ -59,18 +59,22 @@ symlinkでは失敗し、再取込が必要なことを表示する。監査に�
 
 ネイティブ異常終了後の保存・確認は[native-chroma-recovery.md](native-chroma-recovery.md)を参照。
 
-## OCR待機資料がある場合の部分処理
+## 部分監査時の検索公開
 
 全gateの判定は変更せず、`indexed_gate`を別途記録する。管理記録のみ・本文0件の添付が
 抽出台帳でOCR待機と確認でき、その添付以外のcoverage不足や全体不整合がない場合だけ、
 個別監査passedの資料集合を許可する。待機添付を持つ親資料と個別不合格は集合から除く。
 本文だけの添付、原因不明の欠落、全文索引不一致、inflight等は部分許可もしない。
 
-管理画面の監査工程は`--allow-pending-ocr`を使い、部分通過なら後続へ進む。
-この終了コード0は全ライブラリ完了の証明ではない。全gateはfalseのままとし、部分報告では
-検索snapshotを公開しない。異常終了した子の報告は許可せず、部分通過証明も破棄する。
+管理画面の監査工程は`--allow-partial-index`を使う。安全な部分集合があれば、合格資料だけを
+検索用snapshotへ複製する。Chroma、全文索引、manifest、構造・関係DBをコピー内で絞り、
+稼働索引は変更しない。公開直前に監査fingerprintを再確認し、別writerが動いた場合は拒否する。
+全gateはfalseのままとし、監査NG資料・未OCR待機添付を含まない部分公開と画面に明示する。
+異常終了した子の報告は許可せず、部分通過証明も破棄する。次に全gateが合格したら通常の
+全件snapshotへ置き換える。
 
 階層要約は単独選択できる。必要なら索引工程を選ばず監査だけ先に実行する。
 `build_structure_summaries.py --allow-pending-ocr`は同じ外部監査証跡・現DB fingerprint検証を
 行い、許可集合だけを選択する。検証から要約/埋め込みまで共有writer lockを保持する。
-CLIでflagを付けない場合の全gate要求と、検索snapshot公開の全gate要求は維持する。
+`publish_search_snapshot.py`の通常実行は引き続き全gateを要求する。部分公開は監査子プロセスから
+`--partial`を指定した場合だけ許可する。`--allow-pending-ocr`はCLI互換aliasとして残す。
