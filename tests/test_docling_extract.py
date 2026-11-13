@@ -16,6 +16,13 @@ from src import docling_extract
 def stub_conversion_status(monkeypatch):
     # Conversion is already mocked: these tests exercise our chunk adapter,
     # independent of the optional OCR runtime and model downloads.
+    original_find_spec = docling_extract.importlib.util.find_spec
+    monkeypatch.setattr(
+        docling_extract.importlib.util, "find_spec",
+        lambda name, *args, **kwargs: SimpleNamespace(name=name)
+        if name == "docling.document_converter"
+        else original_find_spec(name, *args, **kwargs),
+    )
     class Status(Enum):
         SUCCESS = "success"
         PARTIAL_SUCCESS = "partial_success"
