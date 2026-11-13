@@ -91,3 +91,17 @@ def test_the_adoption_command_holds_the_lock_around_the_adoption():
             f"adopt_prepared_reocr at line {call.lineno} runs without the "
             "indexing lock, so an indexer can overwrite what it writes"
         )
+
+
+def test_isolated_plane_lock_does_not_block_the_live_lock(tmp_path, monkeypatch):
+    live = tmp_path / "data" / "indexing.lock"
+    live.parent.mkdir()
+    isolated = tmp_path / "test-plane" / "indexing.lock"
+    isolated.parent.mkdir()
+    monkeypatch.setenv("ZOTERO_INDEXING_LOCK_PATH", str(isolated))
+    assert indexing_lock.default_path(tmp_path) == isolated
+    with indexing_lock.held(isolated):
+        with indexing_lock.held(live):
+            assert isolated.exists() and live.exists()
+    monkeypatch.setenv("ZOTERO_INDEXING_LOCK_PATH", "relative/indexing.lock")
+    assert indexing_lock.default_path(tmp_path) == tmp_path / "relative/indexing.lock"

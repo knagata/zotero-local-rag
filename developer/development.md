@@ -320,3 +320,10 @@ the fixture boundary.
 資料名・キー・紙面画像・レビュー証跡はGit対象外の `data/quality/` に置く。
 
 検証は `uv run pytest -q -m "slow or corpus" -rs`。資料の更新で差分が出た場合も、自動再採用せず原本と差分を確認する。
+
+
+### 実蔵書取込テストのロック分離
+
+`build_ingestion_baseline.py` はデータストアと `ZOTERO_INDEXING_LOCK_PATH` を同じ一時領域へ向け、稼働DBのwriter lockを取得しない。変数を省略すると従来のプロジェクト `data/indexing.lock` を使用する。相対指定はプロジェクトルート基準。独立したデータ領域の検証にだけ使い、同じDBへアクセスするreader/writerは必ず同じロック設定を共有する。
+
+ロックやキャッシュの単体テストも、一時manifestを使用し稼働中DBの検証状態に依存させない。世代検証の拒否動作は専用テストで維持する。

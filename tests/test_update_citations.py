@@ -110,6 +110,33 @@ class MaintenanceUtilityTests(unittest.TestCase):
         with mock.patch.object(self.module.os.path, "exists", return_value=False):
             self.assertEqual(self.module._get_chunk_count("ITEM"), -1)
 
+    def test_japanese_title_skips_unreliable_openalex_lookup(self):
+        with mock.patch.object(self.module.urllib.request, "urlopen") as request:
+            self.assertIsNone(self.module.query_openalex("日本の社会と歴史", "著者"))
+        request.assert_not_called()
+
+    def test_flat_zotero_item_is_unwrapped_without_losing_fields(self):
+        item = {"key": "ITEM", "title": "A title"}
+        self.assertEqual(self.module._unwrap_item(item), ("ITEM", item))
+
+    def test_chunk_count_uses_item_and_metadata_segment(self):
+        import sqlite3
+        import tempfile
+        from pathlib import Path
+        import citation_mapper
+
+        with tempfile.TemporaryDirectory() as directory:
+            with sqlite3.connect(Path(directory) / "chroma.sqlite3") as db:
+                db.execute("CREATE TABLE embeddings (id INTEGER, segment_id TEXT)")
+                db.execute("CREATE TABLE embedding_metadata (id INTEGER, key TEXT, string_value TEXT)")
+                db.executemany("INSERT INTO embeddings VALUES (?, ?)", [(1, "body"), (2, "summary"), (3, "body")])
+                db.executemany("INSERT INTO embedding_metadata VALUES (?, 'itemKey', ?)", [(1, "ITEM"), (2, "ITEM"), (3, "OTHER")])
+            with mock.patch.object(citation_mapper, "CHROMA_DIR", directory), mock.patch.object(
+                citation_mapper, "_get_segment_meta", return_value={"metadata_segment_id": "body"},
+            ):
+                self.assertEqual(self.module._get_chunk_count("ITEM"), 1)
+                self.assertEqual(self.module._get_chunk_count("MISSING"), 0)
+
     def test_process_item_skip_path_still_runs_epub_step(self):
         with mock.patch.object(self.module, "_run_epub_step") as epub:
             result = self.module.process_item("ITEM", {"title": "T"}, "/tmp", skip_s2=True)

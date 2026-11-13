@@ -13,6 +13,8 @@ import os
 import sys
 import threading
 import unittest
+
+import pytest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -22,6 +24,13 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 import rag_mcp_server  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def isolated_generation_manifest(tmp_path, monkeypatch):
+    manifest = tmp_path / "manifest_v3.json"
+    manifest.write_text('{"hnsw_validated": true}')
+    monkeypatch.setattr(rag_mcp_server, "MANIFEST_PATH", str(manifest))
 
 
 class ColStalenessCorroborationTests(unittest.TestCase):

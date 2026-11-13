@@ -110,7 +110,7 @@ def test_an_unreadable_lock_is_not_read_as_no_lock(tmp_path):
     lock = tmp_path / "indexing.lock"
     lock.write_text("{ this is not json", encoding="utf-8")
     with patch.object(server, "INDEXING_LOCK_PATH", str(lock)):
-        blocked, message = server._check_indexing_lock()
+        blocked, message = server._check_writer_lock()
     assert blocked, "an unreadable lock was treated as an absent one"
     assert str(lock) in (message or "")
 
@@ -126,7 +126,7 @@ def test_an_old_unreadable_lock_is_still_treated_as_stale(tmp_path):
     old = time.time() - (server._LOCK_STALE_HOURS + 1) * 3600
     os.utime(lock, (old, old))
     with patch.object(server, "INDEXING_LOCK_PATH", str(lock)):
-        blocked, _message = server._check_indexing_lock()
+        blocked, _message = server._check_writer_lock()
     assert not blocked
 
 
@@ -141,7 +141,7 @@ def test_a_lock_that_vanishes_mid_check_does_not_block_the_answer(tmp_path):
         patch.object(server, "INDEXING_LOCK_PATH", str(lock)),
         patch("os.path.getmtime", side_effect=OSError("gone")),
     ):
-        blocked, message = server._check_indexing_lock()
+        blocked, message = server._check_writer_lock()
     assert not blocked
     assert message is None
 

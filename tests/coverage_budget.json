@@ -91,7 +91,7 @@
     "src/pdf_toc_recovery.py": 53,
     "src/query_expansion.py": 4,
     "src/rag_mcp_http_server.py": 0,
-    "src/rag_mcp_server.py": 554,
+    "src/rag_mcp_server.py": 541,
     "src/rapidocr_extract.py": 100,
     "src/recommendations.py": 3,
     "src/reference_agent.py": 146,

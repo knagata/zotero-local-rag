@@ -39,6 +39,10 @@ def default_path(project_root: Path) -> Path:
     copy of ``data/indexing.lock`` in either of them is the drift this project
     has already paid for twice with the manifest and Chroma paths.
     """
+    configured = os.environ.get("ZOTERO_INDEXING_LOCK_PATH")
+    if configured:
+        path = Path(configured).expanduser()
+        return path if path.is_absolute() else project_root / path
     return project_root / "data" / "indexing.lock"
 
 

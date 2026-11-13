@@ -177,6 +177,7 @@ def ingest(item_key: str, plane: Path, *, force: bool = True,
         if key not in DERIVED_DATA_PLANE_VARIABLES
     }
     environment.update({
+        "ZOTERO_INDEXING_LOCK_PATH": str(plane / "indexing.lock"),
         "CHROMA_DIR": str(plane / "chroma"),
         "MANIFEST_PATH": str(plane / "manifest_v3.json"),
         "LEXICAL_DB_PATH": str(plane / "lexical_v3.sqlite3"),

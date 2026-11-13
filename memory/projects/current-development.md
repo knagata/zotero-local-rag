@@ -3,6 +3,15 @@
 Updated: 2026-11-14
 
 
+
+## 2026-11-14: 残存回帰失敗と実取込テストの隔離を修正
+
+- 全体テスト8失敗のうち7件は単体テストが稼働manifestの検証状態まで参照していたため。collectionキャッシュ/排他テストを一時manifestへ分離し、writer-lockの単体検証は複合世代gateではなくwriter-lock関数を検査する。実装の世代拒否条件は維持。
+- 残る構造baselineは対象1資料の再取込168→163chunkによる入力差分。旧/現行とも構造復元結果Noneを確認し、旧baselineを/tmp/structure-recovery-before-20261114.jsonへ退避して当該countだけ更新（非追跡のローカル記録）。
+- indexing_lock.default_pathへZOTERO_INDEXING_LOCK_PATHを追加し、取込baseline子の全データstoreとlockを一時planeへ向ける。継承されたlive lock指定も上書き。異なるplane同士の同時lock取得を検証。通常の既定pathは維持。同じDBのreader/writerは同じ設定を共有する。
+- 全体coverage実行2,215passed/7skip/5deselected（99.66秒）。追加テストを含む関連53passed、slow5passed（434.78秒）。引用更新のSQLite item/segment件数照合・日本語titleの外部照会回避を追加してcoverage超過8文を解消。budget check合格、rag_mcp_server上限554→541へ縮小し、既知OS依存4moduleの上限は維持。文書/function/lint ratchet・fatal Ruff・compileall・src.cli import・diff検査合格。
+- Herdr w1:t1H / w1:p1N。ログ/tmp/regression-{full,slow,budget}-20261114.log。実DB再取込・監査/公開・service再起動・有料OCR/LLMは実行せず。slow完了後に実DBのindexing.lock不在と検証子プロセス終了を確認。
+
 ## 2026-11-14: 直近数日のレビューと修正
 
 - 11月13日の3コミット（タイ語・未所蔵候補・部分監査公開）をレビュー。タイ語単語分割時の空白欠落と、部分公開で不合格資料の要約collectionが残る問題を修正した。単語間/文間/overlap境界の空白を保持し、本文以外のChroma collectionにも同一allowlistを適用する。

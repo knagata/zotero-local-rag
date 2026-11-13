@@ -12,6 +12,7 @@ from scripts.build_ingestion_baseline import (
 
 def test_ingestion_baseline_forces_hosted_features_off(tmp_path):
     inherited = {name: "1" for name in HOSTED_INGESTION_FEATURE_FLAGS}
+    inherited["ZOTERO_INDEXING_LOCK_PATH"] = "/live/indexing.lock"
     completed = subprocess.CompletedProcess([], 0, stdout="", stderr="")
 
     with patch.dict("os.environ", inherited), patch(
@@ -21,6 +22,7 @@ def test_ingestion_baseline_forces_hosted_features_off(tmp_path):
         ingest("ITEM", tmp_path)
 
     child = run.call_args.kwargs["env"]
+    assert child["ZOTERO_INDEXING_LOCK_PATH"] == str(tmp_path / "indexing.lock")
     assert child["PDF_CACHE_DIR"] == str(tmp_path / "pdf_cache")
     assert {
         name: child.get(name) for name in HOSTED_INGESTION_FEATURE_FLAGS
