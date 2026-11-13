@@ -2600,3 +2600,10 @@ A（PDF構造化）・B（課金LLM）は独立、C（構造抽出エンジン�
 - `suggest_unowned_works` はCitation NetworkのローカルDBから作る候補であり、Zoteroへの直接照合ではないことをツール説明・応答データに明記。`absence_confirmed=false`、候補ごとの `ownership_verified=false` を返す。索引manifestに同じ正規化題名があれば `possible_owned_title_match` として直接検索を促す。タイトル一致だけで候補から除外する基準は維持。
 - `search_zotero_items` の直接ヒットは所蔵確認に使えるが、空結果だけでは不在の証拠にならないことを案内し、完全題名または `qmode="everything"` での再確認を促す。docs/claude-guide.mdも同内容へ更新。
 - 関連17テスト、fatal Ruff、compileall、`src.cli` import、diff検査合格。remote MCPサービス再起動後、LaunchAgentおよびlocal/public OAuth正常。具体的な誤判定資料のタイトル提供がないため、蔵書データ上の個別ケースは未照合。有料処理・Zotero書込みなし。
+
+### 2026-11-13: タイ語の言語認識と文境界チャンク化
+
+- Unicodeタイ文字とZotero言語ヒント（`th`/`tha`/`Thai`/`ไทย`）を認識し、`lang=th`を付与できるようにした。PyThaiNLPのCRF文分割を使い、長い文は単語境界で分割、overlapも単語境界に揃える。言語backfill集計と検索結果の言語バランスにタイ語を追加。
+- 依存にPyThaiNLPとpython-crfsuiteを追加。SPEC/開発者アーキテクチャを更新。既存チャンクの再生成・DB更新は行わず、今後の抽出/再索引から適用する。
+- 関連26テスト合格。対象3モジュールのcoverage実行では新規タイ語処理行を含め既存未到達数を増やしていない。全体は2,203合格/8失敗/7 skip/5 deselected。失敗はV3世代前提不成立4件、lock判定3件、既存構造ベースライン不一致1件。slow検証は開始したが、資料再解析子プロセスを検知したため中断（子プロセスの出力先はテスト専用一時データ領域）。fatal Ruff、compileall、`src.cli` import、diff検査は合格。
+- ユーザーの実DB監査・再索引・サービス再起動は行っていない。有料OCR/LLMも未実行。slowテストは一時データ領域へ出力する一方、共有 `data/indexing.lock` を作り管理画面を索引中にするため中断。中断後に子プロセスとlockが消えたことを確認。Herdr `w1:t1G` / `w1:p1M`。

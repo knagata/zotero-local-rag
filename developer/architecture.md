@@ -389,7 +389,7 @@ flowchart TD
 | `mistral_ocr_extract.py` | Mistral OCR（クラウド・Batch API）アダプタ |
 | `ndlocr_extract.py` | NDLOCR-Lite（日本語ローカルOCR）アダプタ |
 | `note_extract.py` | Zoteroノート（HTML）のテキスト抽出 |
-| `text_utils.py` | 長文分割・短文結合・繰り返し除去・CJK/欧文判定 |
+| `text_utils.py` | 長文分割・短文結合・繰り返し除去・CJK/欧文/タイ語判定と分割 |
 | `document_structure.py` | canonical tree構築・zone正規化・構造検証 |
 | `build_structure_summaries.py` | bottom-up要約生成・差分スキップ・`__sum_node`索引 |
 | `summary_core.py` | 要約プロンプト・スキーマ・共通ヘルパー |

@@ -67,6 +67,14 @@ corruption is opt-in searchable, and uncertain text remains searchable with
 quality provenance.  U5 is an operational reingest decision, not an implicit
 rewrite of existing sources.
 
+Text language metadata recognizes Japanese, Chinese, English, and Thai. Thai
+script detection uses Unicode block U+0E00–U+0E7F, while Zotero language hints
+`th`, `tha`, `Thai`, `ไทย`, and `ภาษาไทย` take precedence. Paragraphs requiring
+splitting use Thai sentence segmentation; an individual overlong Thai sentence
+is divided at Thai word boundaries, and retrieval overlap remains word-aligned.
+This changes future extraction only; existing chunks are not rewritten
+automatically.
+
 ## Summaries and LLM use
 
 Document summaries are V3 node summaries built bottom-up (leaf, parent, item

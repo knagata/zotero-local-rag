@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 from src.text_utils import (
     HARD_MIN_CHARS, HARD_MIN_CHARS_CJK, analyze_text_quality, detect_lang,
-    merge_short_chunk_records,
+    merge_short_chunk_records, split_long_paragraph, _thai_sentence_segments,
+    _thai_word_segments,
 )
 
 
@@ -17,6 +19,54 @@ class DetectLanguageTests(unittest.TestCase):
 
     def test_english(self):
         self.assertEqual(detect_lang("Gift exchange creates durable social relations."), "en")
+
+    def test_thai_script_and_metadata(self):
+        thai = "ประเทศไทยเป็นประเทศในเอเชียตะวันออกเฉียงใต้ มีวัฒนธรรมที่หลากหลาย"
+        self.assertEqual(detect_lang(thai), "th")
+        self.assertEqual(detect_lang("Thai title", "th"), "th")
+        self.assertEqual(detect_lang("Thai title", "ภาษาไทย"), "th")
+        self.assertEqual(detect_lang("Thai title", "document language: Thai"), "th")
+
+    def test_thai_sentence_segmenter_splits_at_thai_boundaries(self):
+        text = (
+            "ประเทศไทยเป็นประเทศในเอเชียตะวันออกเฉียงใต้ "
+            "มีวัฒนธรรมที่หลากหลาย "
+            "ประชากรส่วนใหญ่นับถือศาสนาพุทธ"
+        )
+        sentences = _thai_sentence_segments(text)
+        self.assertGreaterEqual(len(sentences), 2)
+        self.assertEqual(" ".join(sentences), text)
+
+    def test_long_thai_text_splits_without_exceeding_chunk_limit(self):
+        text = (
+            "ประเทศไทยเป็นประเทศในเอเชียตะวันออกเฉียงใต้ มีวัฒนธรรมที่หลากหลาย "
+            "ประชากรส่วนใหญ่นับถือศาสนาพุทธและมีประวัติศาสตร์ยาวนาน "
+        ) * 8
+        chunks = split_long_paragraph(text, max_chars=300, target_chars=180)
+        self.assertGreater(len(chunks), 1)
+        self.assertTrue(all(len(chunk) <= 300 for chunk in chunks))
+
+    def test_thai_chunker_falls_back_to_original_when_segmenter_returns_no_sentences(self):
+        text = "ประเทศไทยเป็นประเทศในเอเชียตะวันออกเฉียงใต้ มีวัฒนธรรมที่หลากหลาย" * 4
+        with patch("src.text_utils._thai_sentence_segments", return_value=[]):
+            chunks = split_long_paragraph(text, max_chars=200, target_chars=120)
+        self.assertGreater(len(chunks), 1)
+        self.assertTrue(all(len(chunk) <= 200 for chunk in chunks))
+
+    def test_long_thai_sentence_uses_word_boundaries_for_splitting_and_overlap(self):
+        sentence = (
+            "การศึกษานี้พิจารณาความเปลี่ยนแปลงทางสังคมและเศรษฐกิจในชนบทไทย"
+            "ซึ่งมีความสัมพันธ์กับนโยบายของรัฐและตลาดโลก"
+        )
+        original_words = set(_thai_word_segments(sentence))
+        chunks = split_long_paragraph(sentence * 5, max_chars=120, target_chars=75)
+        self.assertGreater(len(chunks), 1)
+        self.assertTrue(all(len(chunk) <= 120 for chunk in chunks))
+        for chunk in chunks:
+            words = _thai_word_segments(chunk)
+            self.assertTrue(set(words).issubset(original_words))
+            self.assertIn(words[0], original_words)
+            self.assertIn(words[-1], original_words)
 
     def test_metadata_hint_wins(self):
         self.assertEqual(detect_lang("Anthropology", "ja-JP"), "ja")

@@ -2,6 +2,12 @@
 
 Updated: 2026-11-13
 
+## 2026-11-13: タイ語認識・文境界分割
+
+- Unicodeタイ文字とZotero言語メタデータを `th` と認識。PyThaiNLP CRFで文境界を切り、長文は単語境界で分割し、overlapも単語単位にする。言語backfillと検索言語バランスも対応。
+- 仕様・開発者アーキテクチャ・TASKSを更新済み。関連26テスト、fatal Ruff、compileall、`src.cli` import、diff検査合格。対象coverageは新規処理の未到達行増加なし。
+- 全体テスト2,203合格/8失敗/7 skip/5 deselected。失敗はV3世代前提4件、lock判定3件、既存構造ベースライン不一致1件。slow検証は資料再解析自体はテスト専用一時領域だが、共有 `data/indexing.lock` が作られ管理画面を索引中にするため中断。子プロセスとlock消滅を確認。実DB監査・再索引・サービス再起動は未実施。有料OCR/LLMなし。Herdr `w1:t1G` / `w1:p1M`。
+
 ## 2026-11-13: 未所蔵候補の確度表示
 
 - `suggest_unowned_works` の結果はCitation Network DB上の候補であり、Zotero不在の確認済み事実ではない。応答に `absence_confirmed=false`、候補に `ownership_verified=false` を返す。同じ正規化題名が索引manifestにある候補は `possible_owned_title_match` とするが、同名異版もあるため候補自体は隠さない。

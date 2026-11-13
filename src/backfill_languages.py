@@ -30,7 +30,7 @@ CHROMA_DIR = chroma_dir(ROOT)
 def annotate_batch(
     documents: list[str], metadatas: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
-    counts: dict[str, int] = {"ja": 0, "zh": 0, "en": 0, "other": 0}
+    counts: dict[str, int] = {"ja": 0, "zh": 0, "en": 0, "th": 0, "other": 0}
     updated: list[dict[str, Any]] = []
     for index, document in enumerate(documents):
         metadata = dict(metadatas[index]) if index < len(metadatas) and isinstance(metadatas[index], dict) else {}
@@ -47,7 +47,7 @@ def backfill_languages(*, batch_size: int = 1000, sync_lexical: bool = True) -> 
         raise RuntimeError("No active paragraph collection was found.")
     client = chromadb.PersistentClient(path=str(CHROMA_DIR))
     collection = client.get_collection(collection_name)
-    totals = {"ja": 0, "zh": 0, "en": 0, "other": 0, "chunks": 0}
+    totals = {"ja": 0, "zh": 0, "en": 0, "th": 0, "other": 0, "chunks": 0}
     try:
         count = collection.count()
         for offset in range(0, count, batch_size):
@@ -61,7 +61,7 @@ def backfill_languages(*, batch_size: int = 1000, sync_lexical: bool = True) -> 
                 # Full metadata dictionaries are supplied so existing fields are preserved.
                 collection.update(ids=ids, metadatas=metadatas)
             totals["chunks"] += len(ids)
-            for lang in ("ja", "zh", "en", "other"):
+            for lang in ("ja", "zh", "en", "th", "other"):
                 totals[lang] += counts[lang]
             print(f"Language metadata: {totals['chunks']:,}/{count:,}", flush=True)
     finally:
@@ -79,7 +79,7 @@ def main() -> None:
         parser.error("--batch-size must be positive")
     totals = backfill_languages(batch_size=args.batch_size)
     print(
-        "Updated {chunks:,} chunks (ja={ja:,}, zh={zh:,}, en={en:,}, other={other:,}).".format(**totals)
+        "Updated {chunks:,} chunks (ja={ja:,}, zh={zh:,}, en={en:,}, th={th:,}, other={other:,}).".format(**totals)
     )
 
 

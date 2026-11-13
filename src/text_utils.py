@@ -200,6 +200,48 @@ def _latin_ratio(text: str) -> float:
     return latin / max(total, 1)
 
 
+def _thai_ratio(text: str) -> float:
+    """Return the proportion of non-whitespace Thai-script characters."""
+    significant = [char for char in text if not char.isspace()]
+    thai = sum(1 for char in significant if 0x0E00 <= ord(char) <= 0x0E7F)
+    return thai / max(len(significant), 1)
+
+
+def _is_thai_text(text: str) -> bool:
+    return _thai_ratio(text) >= 0.15
+
+
+def _thai_sentence_segments(text: str) -> list[str]:
+    """Split Thai running text at learned sentence boundaries."""
+    from pythainlp.tokenize import sent_tokenize
+
+    return [segment.strip() for segment in sent_tokenize(
+        text, engine="crfcut", keep_whitespace=False,
+    ) if segment.strip()]
+
+
+def _thai_word_segments(text: str) -> list[str]:
+    """Split an exceptionally long Thai sentence at Thai word boundaries."""
+    from pythainlp.tokenize import word_tokenize
+
+    return [word for word in word_tokenize(
+        text, engine="newmm", keep_whitespace=False,
+    ) if word]
+
+
+def _thai_overlap_tail(text: str, max_chars: int) -> str:
+    """Return whole Thai words from the end of a chunk for retrieval overlap."""
+    words = _thai_word_segments(text)
+    selected: list[str] = []
+    chars = 0
+    for word in reversed(words):
+        if chars + len(word) > max_chars:
+            break
+        selected.append(word)
+        chars += len(word)
+    return "".join(reversed(selected))
+
+
 def _hangul_ratio(text: str) -> float:
     """Return ratio of Hangul letters and syllables in non-whitespace text."""
     significant = [ch for ch in text if not ch.isspace()]
@@ -215,7 +257,7 @@ def _hangul_ratio(text: str) -> float:
 
 
 def detect_lang(text: str, hint: Optional[str] = None) -> str:
-    """Return ``ja``, ``zh``, ``en``, or ``other`` using metadata then script ratios."""
+    """Return ``ja``, ``zh``, ``en``, ``th``, or ``other`` using metadata then scripts."""
     if hint:
         normalized = unicodedata.normalize("NFKC", hint).strip().casefold()
         primary = re.split(r"[-_\s]", normalized, maxsplit=1)[0]
@@ -223,11 +265,17 @@ def detect_lang(text: str, hint: Optional[str] = None) -> str:
             "ja": "ja", "jpn": "ja", "japanese": "ja", "日本語": "ja",
             "zh": "zh", "zho": "zh", "chi": "zh", "chinese": "zh", "中国語": "zh",
             "en": "en", "eng": "en", "english": "en", "英語": "en",
+            "th": "th", "tha": "th", "thai": "th", "ไทย": "th", "ภาษาไทย": "th",
         }
         if primary in aliases:
             return aliases[primary]
-        for alias, code in aliases.items():
-            if alias in normalized:
+        for alias, code in sorted(aliases.items(), key=lambda pair: len(pair[0]), reverse=True):
+            matches = (
+                re.search(rf"(?<![a-z]){re.escape(alias)}(?![a-z])", normalized)
+                if alias.isascii() and alias.isalpha()
+                else alias in normalized
+            )
+            if matches:
                 return code
 
     sample = (text or "")[:20000]
@@ -250,6 +298,8 @@ def detect_lang(text: str, hint: Optional[str] = None) -> str:
         return "ja"
     if han / significant >= 0.15:
         return "zh"
+    if _thai_ratio(sample) >= 0.15:
+        return "th"
     if _latin_ratio(sample) >= 0.40:
         return "en"
     return "other"
@@ -312,27 +362,45 @@ def split_long_paragraph(p: str, max_chars: int = MAX_CHARS, target_chars: int =
         return [p]
 
     joiner = joiner_for_text(p)
-
-    # Prefer splitting on punctuation followed by whitespace (works well for English).
-    # If that doesn't split (common in Japanese where punctuation may not be followed by whitespace),
-    # fall back to splitting on punctuation regardless of following whitespace.
-    sentences = re.split(r"(?<=[\.\?\!。！？])\s+", p)
-    if len(sentences) <= 1:
-        sentences = re.split(r"(?<=[\.\?\!。！？])\s*", p)
+    thai = _is_thai_text(p)
+    if thai:
+        sentence_segments = _thai_sentence_segments(p)
+        if not sentence_segments:
+            sentence_segments = [p]
+        units: list[tuple[str, str]] = []
+        for sentence_index, sentence in enumerate(sentence_segments):
+            sentence_separator = joiner if sentence_index else ""
+            if len(sentence) <= max(target_chars, 1):
+                units.append((sentence, sentence_separator))
+            else:
+                # Do not fall back to arbitrary character windows through Thai
+                # words when one sentence itself exceeds the target size.
+                words = _thai_word_segments(sentence) or [sentence]
+                units.extend((word, sentence_separator if word_index == 0 else "")
+                             for word_index, word in enumerate(words))
+        joiner = " "
+    else:
+        # Prefer splitting on punctuation followed by whitespace (works well for English).
+        # If that doesn't split (common in Japanese where punctuation may not be followed by whitespace),
+        # fall back to splitting on punctuation regardless of following whitespace.
+        sentences = re.split(r"(?<=[\.\?\!。！？])\s+", p)
+        if len(sentences) <= 1:
+            sentences = re.split(r"(?<=[\.\?\!。！？])\s*", p)
+        units = [(sentence, joiner) for sentence in sentences]
 
     # Build parts up to target_chars (not max_chars) so neighbouring
     # short chunks can be merged in later.
     limit = max(target_chars, 1)
     parts: List[str] = []
     cur = ""
-    for s in sentences:
+    for s, separator in units:
         s = s.strip()
         if not s:
             continue
 
-        add_len = len(joiner) if cur else 0
+        add_len = len(separator) if cur else 0
         if len(cur) + add_len + len(s) <= limit:
-            cur = (cur + joiner + s).strip() if cur else s
+            cur = (cur + separator + s).strip() if cur else s
         else:
             if cur:
                 parts.append(cur)
@@ -348,11 +416,15 @@ def split_long_paragraph(p: str, max_chars: int = MAX_CHARS, target_chars: int =
             cur_part = parts[i]
             if not prev or not cur_part:
                 continue
-            tail = prev[-overlap:]
+            tail = _thai_overlap_tail(prev, overlap) if thai else prev[-overlap:]
+            if not tail:
+                continue
             keep = max(0, max_chars - len(cur_part))
             if keep <= 0:
                 continue
             if len(tail) > keep:
+                if thai:
+                    continue
                 tail = tail[-keep:]
             parts[i] = tail + cur_part
 

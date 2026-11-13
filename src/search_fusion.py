@@ -13,7 +13,7 @@ def language_balanced_order(
     *,
     min_per_language: int = MIN_MINOR_LANG_HITS,
 ) -> list[tuple[str, dict[str, Any]]]:
-    """Ensure both Japanese and English hits appear when both are available.
+    """Ensure Japanese, English, and Thai hits appear when multiple are available.
 
     The caller supplies a relevance-ranked candidate pool. The returned first
     ``k`` entries contain a small quota from each language, while preserving
@@ -23,18 +23,22 @@ def language_balanced_order(
     if k <= 1 or min_per_language <= 0:
         return ranked_hits
 
-    positions: dict[str, list[int]] = {"ja": [], "en": []}
+    positions: dict[str, list[int]] = {"ja": [], "en": [], "th": []}
     for index, (_, hit) in enumerate(ranked_hits):
         metadata = hit.get("metadata") if isinstance(hit, dict) else None
         lang = metadata.get("lang") if isinstance(metadata, dict) else None
         if lang in positions:
             positions[lang].append(index)
 
-    if not positions["ja"] or not positions["en"]:
+    available = sorted(
+        (indexes for indexes in positions.values() if indexes), key=lambda indexes: indexes[0],
+    )
+    if len(available) < 2:
         return ranked_hits
 
-    quota = min(min_per_language, max(1, k // 2))
-    selected = set(positions["ja"][:quota] + positions["en"][:quota])
+    available = available[:k]
+    quota = min(min_per_language, max(1, k // len(available)))
+    selected = {index for indexes in available for index in indexes[:quota]}
     for index in range(len(ranked_hits)):
         if len(selected) >= min(k, len(ranked_hits)):
             break

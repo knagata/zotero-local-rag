@@ -302,7 +302,7 @@ class RagMeta(TypedDict, total=False):
     filename: Optional[str]
     chapter: Optional[str]  # NEW: Level-1 chapter title
     section: Optional[str]  # NEW: Level-2 section title (PDF only)
-    lang: Optional[str]  # "ja" | "zh" | "en" | "other"
+    lang: Optional[str]  # "ja" | "zh" | "en" | "th" | "other"
 
 
 class RagContextChunk(TypedDict, total=False):
@@ -1459,7 +1459,7 @@ def rag_search(
                 - attachmentKey: str (attachments)
                 - noteKey: str (notes)
                 - source_type: "pdf" | "html" | "epub" | "note"
-                - lang: "ja" | "zh" | "en" | "other"
+                - lang: "ja" | "zh" | "en" | "th" | "other"
                 - locator: str (e.g., "p12:para3" / "html:para10" / "note:para2")
                 - chapter: str (Chapter title, e.g., "Chapter 1", "第一章")
                 - section: str (Section title, e.g., "1.1 Introduction")
@@ -1501,8 +1501,8 @@ def rag_search(
             Arbitrary `where` filters temporarily disable lexical fusion because they cannot
             be translated safely to SQL; semantic search still runs normally.
         language_balance:
-            If True, reserve up to two final-result slots each for Japanese and English
-            chunks when both are present in the candidate pool. Requires a reindex that
+            If True, reserve up to two final-result slots each for Japanese, English, and Thai
+            chunks when multiple languages are present in the candidate pool. Requires a reindex that
             includes the `lang` metadata. Default: False.
         include_corrupted:
             If True, also return chunks whose text is known to be unreliable --

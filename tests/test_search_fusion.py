@@ -28,6 +28,15 @@ class LanguageBalanceTests(unittest.TestCase):
         top = language_balanced_order(hits, 2)[:2]
         self.assertEqual({hit[1]["metadata"]["lang"] for hit in top}, {"ja", "en"})
 
+    def test_thai_results_are_not_drowned_out_by_english_and_japanese(self):
+        hits = [_hit(f"en-{i}", "en") for i in range(6)] + [
+            _hit("ja-1", "ja"), _hit("th-1", "th"),
+        ]
+        top = language_balanced_order(hits, 5)[:5]
+        languages = [hit[1]["metadata"]["lang"] for hit in top]
+        self.assertIn("ja", languages)
+        self.assertIn("th", languages)
+
 
 if __name__ == "__main__":
     unittest.main()

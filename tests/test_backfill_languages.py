@@ -16,6 +16,14 @@ class LanguageBackfillTests(unittest.TestCase):
         self.assertEqual(counts["ja"], 1)
         self.assertEqual(counts["en"], 1)
 
+    def test_detects_thai_and_counts_it_separately(self):
+        metadatas, counts = annotate_batch(
+            ["ประเทศไทยเป็นประเทศในเอเชียตะวันออกเฉียงใต้"],
+            [{"language": "th", "itemKey": "TH"}],
+        )
+        self.assertEqual(metadatas[0]["lang"], "th")
+        self.assertEqual(counts["th"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()
