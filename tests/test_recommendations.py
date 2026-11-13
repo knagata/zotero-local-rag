@@ -72,6 +72,13 @@ class RecommendationAggregationTests(unittest.TestCase):
             normalized_owned_titles={db_relations.normalize_work_title("Candidate!")},
         )
         self.assertEqual([row["title"] for row in results], ["Candidate"])
+        self.assertEqual(results[0]["ownership_status"], "possible_owned_title_match")
+        self.assertFalse(results[0]["ownership_verified"])
+
+    def test_unowned_suggestion_is_always_marked_unverified(self):
+        results = db_relations.aggregate_unowned_works(min_citing_items=2)
+        self.assertEqual(results[0]["ownership_status"], "unverified_candidate")
+        self.assertFalse(results[0]["ownership_verified"])
 
     def test_citations_direction_finds_shared_external_citer(self):
         results = db_relations.aggregate_unowned_works(

@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+import db_relations  # noqa: E402
 import rag_mcp_server as server
 
 
@@ -77,6 +78,29 @@ def test_external_discovery_tools_are_read_only_and_check_duplicates(monkeypatch
         assert "must not be empty" in str(exc)
     else:
         raise AssertionError("empty external query must be rejected")
+
+
+def test_unowned_candidates_warn_that_absence_is_unverified(monkeypatch):
+    monkeypatch.setattr(server, "load_manifest", lambda _path: {
+        "files": {"ATT1": {"title": "Candidate title"}},
+    })
+    monkeypatch.setattr(db_relations, "aggregate_unowned_works", lambda *_args, **_kwargs: [{
+        "title": "Candidate title", "adjacent_item_count": 2,
+        "adjacent_item_keys": ["OWN1", "OWN2"],
+        "ownership_status": "possible_owned_title_match", "ownership_verified": False,
+    }])
+    result = server.suggest_unowned_works()
+    assert result["absence_confirmed"] is False
+    assert "Search Zotero directly" in result["ownership_note"]
+    assert result["suggestions"][0]["ownership_status"] == "possible_owned_title_match"
+    assert result["suggestions"][0]["ownership_verified"] is False
+
+
+def test_unowned_tool_description_requires_direct_zotero_verification():
+    tools = asyncio.run(server.mcp.list_tools())
+    description = next(tool.description for tool in tools if tool.name == "suggest_unowned_works")
+    assert "does not verify absence from Zotero" in description
+    assert "search_zotero_items" in description
 
 
 def test_zotero_import_uses_client_confirmation_without_second_phrase(monkeypatch):

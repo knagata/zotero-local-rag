@@ -2853,6 +2853,15 @@ def aggregate_unowned_works(
                 "corroborated_metadata" if row.get("authors") or row.get("year")
                 else "title_only_unverified"
             )
+        title_matches_owned = bool(
+            normalized_owned_titles
+            and normalize_work_title(row.get("title")) in normalized_owned_titles
+        )
+        row["ownership_status"] = (
+            "possible_owned_title_match" if title_matches_owned
+            else "unverified_candidate"
+        )
+        row["ownership_verified"] = False
         keys = [key for key in (row.pop("adjacent_item_keys", "") or "").split(",") if key]
         row["adjacent_item_keys"] = keys[:5]
         results.append(row)

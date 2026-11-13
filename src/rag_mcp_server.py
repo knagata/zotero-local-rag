@@ -1765,9 +1765,10 @@ async def search_zotero_items(
     query: str, limit: int = 20, qmode: str = "titleCreatorYear"
 ) -> List[Dict[str, Any]]:
     """
-    Search the Zotero library directly for items using Zotero's quick search API.
-    This queries the Zotero API directly (without relying on Chroma vector indices)
-    and is perfect for finding items by exact or partial title, author, or year.
+    Search the current Zotero library directly using Zotero's quick search API,
+    without relying on citation or Chroma indexes. A returned item confirms a
+    match. An empty result is not proof of absence: retry with the exact title or
+    qmode="everything" when checking a provisional unowned-work candidate.
 
     Args:
         query: The search term or phrase (e.g. title, author name, or year).
@@ -2762,7 +2763,12 @@ def suggest_unowned_works(
     k: int = 20,
     min_citing_items: int = 2,
 ) -> Dict[str, Any]:
-    """Rank external works adjacent to the library but not already owned.
+    """Return provisional candidates for external works that may not be owned.
+
+    This ranks the citation database; it does not verify absence from Zotero's
+    current library. Before telling the user a work is not owned, verify it with
+    search_zotero_items. A possible_owned_title_match is a warning to search,
+    not proof that the candidate and Zotero item are the same edition.
 
     Args:
         scope_item_keys: Optional Zotero item-key list. If omitted, aggregate the whole library.
@@ -2805,6 +2811,11 @@ def suggest_unowned_works(
             "scope_item_keys": scope,
             "suggestion_count": len(suggestions),
             "suggestions": suggestions,
+            "absence_confirmed": False,
+            "ownership_note": (
+                "These are unverified candidates from the citation database, not confirmed "
+                "absences from Zotero. Search Zotero directly before saying a work is not owned."
+            ),
             "identity_note": "Provisional S2/DOI/title grouping; canonical works IDs are planned.",
         }
     except Exception as exc:

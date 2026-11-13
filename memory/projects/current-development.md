@@ -2,6 +2,11 @@
 
 Updated: 2026-11-13
 
+## 2026-11-13: 未所蔵候補の確度表示
+
+- `suggest_unowned_works` の結果はCitation Network DB上の候補であり、Zotero不在の確認済み事実ではない。応答に `absence_confirmed=false`、候補に `ownership_verified=false` を返す。同じ正規化題名が索引manifestにある候補は `possible_owned_title_match` とするが、同名異版もあるため候補自体は隠さない。
+- MCP descriptionとdocsに「未所蔵と伝える前にsearch_zotero_itemsで直接確認。検索0件も不在の確証ではない」と明示。関連17件と静的検査合格。remote MCPを再起動しlocal/public OAuth正常。具体的な資料名の個別追跡は未実施。記録はTASKS.mdの2026-11-13「未所蔵候補をZotero未確認と明示」を参照。
+
 ## 2026-11-13: DB監査NG時の部分検索公開
 
 - 実装済み。全体DB監査はNGのまま、個別の索引済み監査に合格した資料だけを複製・物理フィルタ済みの検索世代へ公開する。失敗資料とOCR待ちは検索世代から除外する。未知のglobal不整合では公開不可とし、直前の検索世代を保持する。元の検索DBは変更しない。

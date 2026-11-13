@@ -2593,3 +2593,10 @@ A（PDF構造化）・B（課金LLM）は独立、C（構造抽出エンジン�
 - DB監査CLIと管理画面ジョブから部分公開を実行可能にし、監査状態は `completed_partial` と明示。管理画面の検索状態に対象・除外・OCR待ち件数を表示。全監査合格時の公開動作は維持。
 - 対象テスト51件合格。coverage付き全体は2,194 passed / 7 skipped / 5 deselected、実蔵書の構造復元ベースライン1件のみ、NANJA886が再取込後168から163チャンクに変わったため不一致。coverage予算は既存 `src/update_citations.py` が記録263に対し271未到達で差分確認が必要。fatal Ruff、compileall、`src.cli` import、diff検査は合格。新規partial snapshotとsnapshot proofの文はテストで到達。
 - 実DBの監査・公開、有料処理、サービス再起動は未実施。確認時に `data/indexing.lock` が現行PIDで保持されていたため、索引処理を妨げないよう再起動もしなかった。検証はHerdr `w1:t1F` / `w1:p1K`。
+
+
+### 2026-11-13: 未所蔵候補をZotero未確認と明示
+
+- `suggest_unowned_works` はCitation NetworkのローカルDBから作る候補であり、Zoteroへの直接照合ではないことをツール説明・応答データに明記。`absence_confirmed=false`、候補ごとの `ownership_verified=false` を返す。索引manifestに同じ正規化題名があれば `possible_owned_title_match` として直接検索を促す。タイトル一致だけで候補から除外する基準は維持。
+- `search_zotero_items` の直接ヒットは所蔵確認に使えるが、空結果だけでは不在の証拠にならないことを案内し、完全題名または `qmode="everything"` での再確認を促す。docs/claude-guide.mdも同内容へ更新。
+- 関連17テスト、fatal Ruff、compileall、`src.cli` import、diff検査合格。remote MCPサービス再起動後、LaunchAgentおよびlocal/public OAuth正常。具体的な誤判定資料のタイトル提供がないため、蔵書データ上の個別ケースは未照合。有料処理・Zotero書込みなし。
