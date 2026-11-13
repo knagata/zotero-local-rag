@@ -4,6 +4,12 @@ Updated: 2026-11-14
 
 
 
+
+## 2026-11-14: サービス再起動で変更を反映
+
+- writerプロセスと実DBのindexing.lock不在を確認し、remote MCP・Citation Graph・OAuth proxy・定期確認Agentを再起動。起動待ち後Graph HTTP200、MCP local/public OAuth、Graph local/public OAuth、各LaunchAgent正常を確認。Herdr w1:t1H / w1:p1N。
+- コード反映の再起動であり実DBの再索引・監査/公開は実行していない。既存の無関係な未追跡ファイルを保持。利用者依頼により未送信コミットをSSH remoteへpushし、CI結果を確認する。
+
 ## 2026-11-14: 残存回帰失敗と実取込テストの隔離を修正
 
 - 全体テスト8失敗のうち7件は単体テストが稼働manifestの検証状態まで参照していたため。collectionキャッシュ/排他テストを一時manifestへ分離し、writer-lockの単体検証は複合世代gateではなくwriter-lock関数を検査する。実装の世代拒否条件は維持。

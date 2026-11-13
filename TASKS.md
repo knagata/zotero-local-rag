@@ -2620,3 +2620,8 @@ A（PDF構造化）・B（課金LLM）は独立、C（構造抽出エンジン�
 - indexing_lock.default_pathへZOTERO_INDEXING_LOCK_PATHを追加し、取込baseline子の全データstoreとlockを一時planeへ向ける。継承されたlive lock指定も上書き。異なるplane同士の同時lock取得を検証。通常の既定pathは維持。同じDBのreader/writerは同じ設定を共有する。
 - 全体coverage実行2,215passed/7skip/5deselected（99.66秒）。追加テストを含む関連53passed、slow5passed（434.78秒）。引用更新のSQLite item/segment件数照合・日本語titleの外部照会回避を追加してcoverage超過8文を解消。budget check合格、rag_mcp_server上限554→541へ縮小し、既知OS依存4moduleの上限は維持。文書/function/lint ratchet・fatal Ruff・compileall・src.cli import・diff検査合格。
 - Herdr w1:t1H / w1:p1N。ログ/tmp/regression-{full,slow,budget}-20261114.log。実DB再取込・監査/公開・service再起動・有料OCR/LLMは実行せず。slow完了後に実DBのindexing.lock不在と検証子プロセス終了を確認。
+
+## 2026-11-14: サービス再起動で変更を反映
+
+- writerプロセスと実DBのindexing.lock不在を確認し、remote MCP・Citation Graph・OAuth proxy・定期確認Agentを再起動。起動待ち後Graph HTTP200、MCP local/public OAuth、Graph local/public OAuth、各LaunchAgent正常を確認。Herdr w1:t1H / w1:p1N。
+- コード反映の再起動であり実DBの再索引・監査/公開は実行していない。既存の無関係な未追跡ファイルを保持。利用者依頼により未送信コミットをSSH remoteへpushし、CI結果を確認する。
