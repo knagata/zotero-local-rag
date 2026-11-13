@@ -71,7 +71,8 @@ Text language metadata recognizes Japanese, Chinese, English, and Thai. Thai
 script detection uses Unicode block U+0E00–U+0E7F, while Zotero language hints
 `th`, `tha`, `Thai`, `ไทย`, and `ภาษาไทย` take precedence. Paragraphs requiring
 splitting use Thai sentence segmentation; an individual overlong Thai sentence
-is divided at Thai word boundaries, and retrieval overlap remains word-aligned.
+is divided at Thai word boundaries, and retrieval overlap remains word-aligned. Original internal whitespace,
+including spaces in mixed Thai/English text, is retained.
 This changes future extraction only; existing chunks are not rewritten
 automatically.
 

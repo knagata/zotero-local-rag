@@ -68,6 +68,16 @@ class DetectLanguageTests(unittest.TestCase):
             self.assertIn(words[0], original_words)
             self.assertIn(words[-1], original_words)
 
+    def test_mixed_thai_preserves_internal_spaces(self):
+        text = ("การศึกษาสังคมไทยใช้แนวคิด political  economy และ social history เพื่ออธิบายการเปลี่ยนแปลง " * 5).strip()
+        with patch("src.text_utils.overlap_for_text", return_value=0):
+            chunks = split_long_paragraph(text, max_chars=160, target_chars=120)
+        self.assertTrue(all(chunk in text for chunk in chunks))
+        self.assertIn("political  economy", " ".join(chunks))
+        self.assertNotIn("politicaleconomy", " ".join(chunks))
+        overlapped = split_long_paragraph(text, max_chars=160, target_chars=120)
+        self.assertTrue(all(chunk in text for chunk in overlapped))
+
     def test_metadata_hint_wins(self):
         self.assertEqual(detect_lang("Anthropology", "ja-JP"), "ja")
         self.assertEqual(detect_lang("本文", "English"), "en")

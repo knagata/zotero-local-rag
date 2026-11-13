@@ -225,7 +225,7 @@ def _thai_word_segments(text: str) -> list[str]:
     from pythainlp.tokenize import word_tokenize
 
     return [word for word in word_tokenize(
-        text, engine="newmm", keep_whitespace=False,
+        text, engine="newmm", keep_whitespace=True,
     ) if word]
 
 
@@ -368,17 +368,24 @@ def split_long_paragraph(p: str, max_chars: int = MAX_CHARS, target_chars: int =
         if not sentence_segments:
             sentence_segments = [p]
         units: list[tuple[str, str]] = []
-        for sentence_index, sentence in enumerate(sentence_segments):
-            sentence_separator = joiner if sentence_index else ""
+        cursor = 0
+        for sentence in sentence_segments:
+            start = p.index(sentence, cursor)
+            sentence_separator = p[cursor:start]
+            cursor = start + len(sentence)
             if len(sentence) <= max(target_chars, 1):
                 units.append((sentence, sentence_separator))
             else:
                 # Do not fall back to arbitrary character windows through Thai
                 # words when one sentence itself exceeds the target size.
                 words = _thai_word_segments(sentence) or [sentence]
-                units.extend((word, sentence_separator if word_index == 0 else "")
-                             for word_index, word in enumerate(words))
-        joiner = " "
+                separator = sentence_separator
+                for word in words:
+                    if word.isspace():
+                        separator += word
+                    else:
+                        units.append((word, separator))
+                        separator = ""
     else:
         # Prefer splitting on punctuation followed by whitespace (works well for English).
         # If that doesn't split (common in Japanese where punctuation may not be followed by whitespace),
@@ -392,6 +399,8 @@ def split_long_paragraph(p: str, max_chars: int = MAX_CHARS, target_chars: int =
     # short chunks can be merged in later.
     limit = max(target_chars, 1)
     parts: List[str] = []
+    boundaries: list[str] = []
+    cur_boundary = ""
     cur = ""
     for s, separator in units:
         s = s.strip()
@@ -404,9 +413,12 @@ def split_long_paragraph(p: str, max_chars: int = MAX_CHARS, target_chars: int =
         else:
             if cur:
                 parts.append(cur)
+                boundaries.append(cur_boundary)
             cur = s
+            cur_boundary = separator
     if cur:
         parts.append(cur)
+        boundaries.append(cur_boundary)
 
     # Light overlap between adjacent parts to improve retrieval around boundaries.
     overlap = max(0, int(overlap_for_text(p)))
@@ -419,14 +431,15 @@ def split_long_paragraph(p: str, max_chars: int = MAX_CHARS, target_chars: int =
             tail = _thai_overlap_tail(prev, overlap) if thai else prev[-overlap:]
             if not tail:
                 continue
-            keep = max(0, max_chars - len(cur_part))
+            boundary = boundaries[i] if thai else ""
+            keep = max(0, max_chars - len(cur_part) - len(boundary))
             if keep <= 0:
                 continue
             if len(tail) > keep:
                 if thai:
                     continue
                 tail = tail[-keep:]
-            parts[i] = tail + cur_part
+            parts[i] = tail + boundary + cur_part
 
     final_parts: List[str] = []
     for part in parts:

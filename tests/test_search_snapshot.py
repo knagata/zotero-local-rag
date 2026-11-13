@@ -189,6 +189,14 @@ def test_failed_refresh_keeps_previous_copy_and_requires_ready_source(tmp_path, 
 
 def test_partial_refresh_publishes_only_the_indexed_audit_allowlist(tmp_path, monkeypatch):
     chromadb, source = native_source(tmp_path, monkeypatch)
+    source_client = chromadb.PersistentClient(path=str(source))
+    try:
+        summaries = source_client.create_collection('zotero_paragraphs_v3__sum_node', embedding_function=None)
+        summaries.add(ids=['sum-good', 'sum-bad'], embeddings=[[1., 0., 0.], [0., 1., 0.]],
+                      documents=['good summary', 'bad summary'],
+                      metadatas=[{'itemKey': 'GOOD'}, {'itemKey': 'BAD'}])
+    finally:
+        source_client.close()
     gate_path = tmp_path / 'data/quality/server_database_gate.json'
     gate_path.parent.mkdir(parents=True)
     audit = {'gate': {'passed': False}, 'new_only': True,
@@ -205,6 +213,7 @@ def test_partial_refresh_publishes_only_the_indexed_audit_allowlist(tmp_path, mo
     client = chromadb.PersistentClient(path=str(Path(record['directory']) / 'chroma'))
     try:
         collection = client.get_collection('zotero_paragraphs_v3', embedding_function=None)
+        assert client.get_collection('zotero_paragraphs_v3__sum_node', embedding_function=None).get()['ids'] == ['sum-good']
         filtered = collection.get(include=['metadatas'])
         assert filtered['ids'] == ['old1']
         assert filtered['metadatas'] == [{'itemKey': 'GOOD', 'attachmentKey': 'ATTGOOD'}]

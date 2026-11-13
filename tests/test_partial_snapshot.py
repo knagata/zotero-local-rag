@@ -84,3 +84,15 @@ def test_partial_copy_rejects_chroma_lexical_id_difference(tmp_path, monkeypatch
                         lambda *_args: ({'chroma-id'}, {'ATTGOOD'}))
     with pytest.raises(ValueError, match='IDs differ'):
         partial_snapshot.filter_query_copy(None, 'v3', lexical, None, None, ['GOOD'])
+
+
+def test_summary_collections_receive_the_same_allowlist(tmp_path, monkeypatch):
+    calls = []
+    client = SimpleNamespace(
+        list_collections=lambda: [SimpleNamespace(name="body"), SimpleNamespace(name="summaries")],
+        close=lambda: calls.append("closed"),
+    )
+    monkeypatch.setitem(sys.modules, "chromadb", SimpleNamespace(PersistentClient=lambda **kwargs: client))
+    monkeypatch.setattr(partial_snapshot, "_chroma_rows", lambda *args: calls.append(args))
+    partial_snapshot._filter_other_collections(tmp_path, "body", {"GOOD"})
+    assert calls == ["closed", (tmp_path, "summaries", {"GOOD"})]

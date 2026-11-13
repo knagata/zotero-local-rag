@@ -45,6 +45,20 @@ def _chroma_rows(path: Path, collection_name: str, eligible_items: set[str], *, 
         client.close()
 
 
+def _filter_other_collections(path: Path, body_collection: str, eligible_items: set[str]) -> None:
+    """Apply the same allowlist to summaries and any other searchable collections."""
+    import chromadb
+
+    client = chromadb.PersistentClient(path=str(path))
+    try:
+        names = [collection.name for collection in client.list_collections()]
+    finally:
+        client.close()
+    for name in names:
+        if name != body_collection:
+            _chroma_rows(path, name, eligible_items)
+
+
 def _filter_lexical(path: Path, eligible_items: set[str]) -> set[str]:
     connection = sqlite3.connect(path)
     try:
@@ -99,6 +113,7 @@ def filter_query_copy(chroma_path: Path, collection_name: str, lexical_path: Pat
     lexical_ids = _filter_lexical(lexical_path, selected_items)
     if before_ids != lexical_ids:
         raise ValueError("Partial snapshot Chroma and lexical IDs differ after filtering")
+    _filter_other_collections(chroma_path, collection_name, selected_items)
     _filter_relations(relations_path, selected_items, before_attachments)
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     files = manifest.get("files")
