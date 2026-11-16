@@ -1,6 +1,7 @@
 """User-facing explanations shared by logs and browser diagnostics."""
 
 REASONS = {
+    "source_verification_failed": ("原本照合で本文の欠落が見つかった資料があります。", "対象資料は部分公開の対象外です。原本照合の欠落ページを確認し、対象の取込・OCR後にDB監査を再実行してください。"),
     "lexical_content_mismatch": ("全文索引の本文・書誌内容が保存済み本文と一致していません。", "対象本文の内容を比較して修復してください。ID一致だけでは合格にしません。"),
     "missing_v3_structure": ("文書構造が保存されていません。", "保存済み本文から構造を修復し、DB監査を再実行してください。"),
     "stale_structure_version": ("文書構造の形式が旧版です。", "文書構造を更新し、DB監査を再実行してください。"),

@@ -2643,3 +2643,10 @@ A（PDF構造化）・B（課金LLM）は独立、C（構造抽出エンジン�
 - 不合格原本報告のSHA256と除外添付を証明へ固定し、部分利用だけに許可。通常全体gateの利用・報告改変・除外改変・所属不明は拒否。仕様とdeveloper/database-audit-repair.mdを更新。
 - 全体2,223passed/7skip/10deselected（90.74秒）。関連100passed、追加chunk-store5passed、品質制約/部分snapshot55passed（関数分解後ratchet採択）。partial_source_audit35文とindexed_gate27文は未到達0。coverage上限はchunk_store28→21/database_gate12→10、新module0を追加。audit_v3_cutover.main183→166行へ縮小。静的検査合格。Herdr w1:t1J / w1:p1P。
 - 旧コードの利用者ジョブは監査exit2で終了。実DB監査・部分公開はこれから修正版で実行する。追加OCR/LLMは行わない。
+
+## 2026-11-16: 修正版監査と部分検索公開を完了
+
+- 修正版run_db_audit.py --allow-partial-indexがexit0。Zotero required/manifest763/763一致、原本照合は2資料734頁欠落で不合格を維持。孤立本文・dangling・検索不能・原本読取不能0。後続gateでsource不合格を保持し、736資料を許可・2資料を除外して部分公開した。自動修復は不要で、原本/更新DB本文の書換え・OCR/LLM追加実行なし。
+- 新世代20261116T022221Z-e27cbc0bを公開。761添付、本文706,662chunk・要約8,835件のコピーでnative検索・再open検証完了。全gate=false、indexed_gate=true、status=completed_partial。source報告と除外集合のSHA256証明を保存。source失敗の管理UI文言も追加し関連22テスト合格。
+- MCP/Graphを公開処理から再起動し、local/public OAuth・Graph HTTP正常。system_statusで736公開/2除外/partial、lockなしを確認（実ブラウザ目視は未実施）。旧検索世代を直前1世代だけ保持し、未使用のさらに古い1世代を既存公開処理が整理。空き約89GiB。
+- Herdr w1:t1J / w1:p1P、一次ログ/tmp/partial-source-live-20261116.log、data/qualityの各監査報告とdata/search_snapshot.json。10月24日からの検索公開停滞は解消。残る2資料のOCR完了・採用は別工程であり、今回全DB合格とはしない。

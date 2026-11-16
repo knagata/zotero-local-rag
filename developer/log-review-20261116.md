@@ -20,3 +20,8 @@
 利用者ジョブは2026-11-16T01:48:05Z開始、点検中は文書構造・目次の差分更新が進行。共有writer lockの生存プロセスを確認。再起動・DB監査・修復・削除・追加のOCR/LLM呼出しは実行していない。DB本文全走査や検索差分全件検証も未実施。最新ジョブ完了後に監査結果、検索pointer更新、要約/引用の残件を再確認すること。
 
 根拠: data/admin_jobsの期間内JSON/対応log、data/quality/server_database_audit_status.json、data/admin_update_status.json、data/manifest_v3.json、data/search_snapshot.json、各サービスstdout/stderr。一次ログには資料名や認証関連情報があるため公開文書へ転載しない。
+
+
+## 同日の是正結果
+
+原本不合格から部分公開への接続を修正し、全監査再実行後、736資料・761添付を2026-11-16T02:27:19Zに公開した。本文706,662chunkと要約8,835件のコピーの検索/再open検証、サービス正常応答、管理画面用部分公開状態を確認。したがって本書点検時の「10月24日で公開停滞」は解消済み。全体監査の2資料不合格は残し、OCR/LLMを追加実行していない。実装と検証記録はTASKS.mdの同日項を参照。

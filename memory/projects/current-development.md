@@ -8,6 +8,14 @@ Updated: 2026-11-16
 
 
 
+
+## 2026-11-16: 修正版監査と部分検索公開を完了
+
+- 修正版run_db_audit.py --allow-partial-indexがexit0。Zotero required/manifest763/763一致、原本照合は2資料734頁欠落で不合格を維持。孤立本文・dangling・検索不能・原本読取不能0。後続gateでsource不合格を保持し、736資料を許可・2資料を除外して部分公開した。自動修復は不要で、原本/更新DB本文の書換え・OCR/LLM追加実行なし。
+- 新世代20261116T022221Z-e27cbc0bを公開。761添付、本文706,662chunk・要約8,835件のコピーでnative検索・再open検証完了。全gate=false、indexed_gate=true、status=completed_partial。source報告と除外集合のSHA256証明を保存。source失敗の管理UI文言も追加し関連22テスト合格。
+- MCP/Graphを公開処理から再起動し、local/public OAuth・Graph HTTP正常。system_statusで736公開/2除外/partial、lockなしを確認（実ブラウザ目視は未実施）。旧検索世代を直前1世代だけ保持し、未使用のさらに古い1世代を既存公開処理が整理。空き約89GiB。
+- Herdr w1:t1J / w1:p1P、一次ログ/tmp/partial-source-live-20261116.log、data/qualityの各監査報告とdata/search_snapshot.json。10月24日からの検索公開停滞は解消。残る2資料のOCR完了・採用は別工程であり、今回全DB合格とはしない。
+
 ## 2026-11-16: 原本不合格から部分検索公開への接続を修正
 
 - 原本照合のexit2で後続gateへ到達しない問題を修正。資料単位のlost-pageだけを集計整合性付きで認め、全体不合格を残して後続へ渡す。global失敗/未知原因は停止。添付所有者をmetadata/抽出台帳で一意に照合し、その資料全体を部分検索集合から除外する。既存coverage基準と全体合格基準は維持。

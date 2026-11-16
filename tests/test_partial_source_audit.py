@@ -20,6 +20,8 @@ def report():
 
 
 def test_only_document_local_losses_can_continue():
+    from src.audit_diagnostics import reason_detail
+    assert "原本照合" in reason_detail("source_verification_failed")["message"]
     valid = report()
     valid['documents'].append({'attachment_key': 'GOODATT', 'lost_pages': []})
     assert source_exclusions(valid) == {'BADATT'}
