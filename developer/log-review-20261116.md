@@ -1,0 +1,22 @@
+# 運用ログ点検（2026-11-16）
+
+対象: 2026-10-26〜2026-11-16午前の管理ジョブ、および保存済みサービスログ・状態ファイル。読み取りのみ。稼働中の利用者ジョブには介入していない。
+
+## 優先して確認する問題
+
+1. 検索公開が滞留している。data/search_snapshot.jsonのpublished_atは2026-10-24T20:44:17Z、736添付。点検時の更新manifestは763添付。件数差だけでは未反映資料数を確定できないが、10月24日以後の変更の公開は確認できない。管理ジョブは期間内selected_steps 8失敗/1実行中で、正常完了はなかった。監査を通過した最新世代の公開確認が必要。
+2. DB監査で繰返し停止。失敗8件のうち6件はDB監査exit2。直近保存済み監査は2026-11-13T17:00:28Zにfailed、原本の本文が索引にないページを2資料で検出。更新状況でもOCR待ち2添付、階層要約28資料・引用更新29資料がpending。現在実行中ジョブがOCR送信・取込を行い構造更新へ進んでいるため、これらの値は実行前の保存状態。今回の全監査合格は未確認。
+3. OCR採用工程の2失敗は実行中コードの変更を検知した保護停止。v3_runtime.assert_code_unchangedで停止しており、PDFが変更されたという意味ではない。対象を特定できるログに改善余地があり、実行中のRUN_CODE_PATHS編集を避ける運用が必要。どの編集主体による変更かは保存ログだけでは確定できない。
+
+## その他の潜在リスク
+
+- Graph proxy保存ログに上流接続失敗32件とPDF応答中断1件。remote_proxy.pyは上流HTTP例外を捕捉しないため、起動待ちや上流切断がASGI例外/500になる。ログに一貫した時刻がなく、これら全件を対象3週間へ帰属することはできない。現在のGraph/各OAuth healthは正常。推奨は接続失敗の503/502化と対処案内、例外ログの時刻付与。
+- MCP保存ログにresource_trackerのsemaphore警告があるが、警告だけからクラッシュ・DB破損は判断できない。import関連例外には不正入力/重複拒否も含まれる。期間内macOS DiagnosticReportsにPython/Zoteroの該当crash reportは見つからず、直近管理ジョブログにSIGBUS/SIGSEGV/No space left/database malformedの一致はなかった。これは全DB健全性証明ではない。
+- 管理ジョブ1,013件: update_check completed1,004、selected_steps failed8/running1。更新確認の成功は本文更新や監査合格ではない。管理ジョブ記録は約160MiBで、履歴保持上限/ローテーションに改善余地。
+- data約47GiB、完全backup約10GiB、検索snapshot約21GiB（現行と直前の2世代）、OCR batch約297MiB。空き約94GiBで直ちに容量不足ではない。検索2世代とbackupの存在を不要ファイルの重複と断定せず保持した。
+
+## 現在地と制約
+
+利用者ジョブは2026-11-16T01:48:05Z開始、点検中は文書構造・目次の差分更新が進行。共有writer lockの生存プロセスを確認。再起動・DB監査・修復・削除・追加のOCR/LLM呼出しは実行していない。DB本文全走査や検索差分全件検証も未実施。最新ジョブ完了後に監査結果、検索pointer更新、要約/引用の残件を再確認すること。
+
+根拠: data/admin_jobsの期間内JSON/対応log、data/quality/server_database_audit_status.json、data/admin_update_status.json、data/manifest_v3.json、data/search_snapshot.json、各サービスstdout/stderr。一次ログには資料名や認証関連情報があるため公開文書へ転載しない。

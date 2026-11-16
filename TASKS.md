@@ -2630,3 +2630,9 @@ A（PDF構造化）・B（課金LLM）は独立、C（構造抽出エンジン�
 
 - 88d6b12のCIは2,214テスト合格後、docling_extract/feature_gates/source_structure_refreshの未到達予算で失敗。Docling adapterの3テストはconverterをmock済みなのに任意依存の有無でskipしていたため、ConversionStatusをテスト内stubへ置換してCIでも実行する。
 - LLM provider別resource不足/有効化、GROBID health probeのcache/reset、不正page metadataの安全な0扱いを明示検証。関連107テスト・fatal Ruff・diff検査合格。予算は緩和していない。runtimeコード変更はなく追加service再起動は不要。CI再試行でadapterの依存検出も先行することを確認し、その検出もテストfixture内でstub化。doclingをimport不能にした環境で22テスト合格を確認。CIで残ったGranite検出分岐は一時Pythonファイルの存在/欠落と相対pathで検証し、feature_gates単独33テストで未到達3文（上限5）を確認。
+
+## 2026-11-16: 直近3週間の運用ログ点検
+
+- 期間内管理ジョブ1,013件（更新確認1,004完了、工程実行8失敗/1実行中）。6失敗は本文欠落による監査停止、2失敗は実行中コード変更の保護停止。現在の利用者ジョブは構造更新中なので介入しない。
+- 検索公開が10月24日の736添付に留まり、更新側763添付との差と未反映リスクを確認。直近保存監査は2資料で未合格、保存状態の要約28/引用29pending。実行中ジョブ完了後の再確認が必要。
+- 現サービスhealth正常、data約47GiB/空き約94GiB。Graph proxyの上流例外未捕捉、ログ日時不足、履歴保持に改善余地。詳細・根拠・限界はdeveloper/log-review-20261116.md。実DB操作・再起動・削除・有料API追加実行なし。
