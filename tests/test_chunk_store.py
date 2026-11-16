@@ -76,6 +76,11 @@ class ChunkStoreTests(unittest.TestCase):
         connection.commit()
         connection.close()
 
+    def test_attachment_inventory_is_collection_scoped_and_deduplicated(self):
+        from src.chunk_store import list_attachment_keys
+        self.assertEqual(list_attachment_keys(chroma_dir=self.chroma_dir, collection_name="paragraphs"), ["A"])
+        self.assertEqual(list_attachment_keys(chroma_dir=self.chroma_dir, collection_name="other"), [])
+
     def tearDown(self):
         self.tempdir.cleanup()
 

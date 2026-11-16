@@ -78,3 +78,10 @@ symlinkでは失敗し、再取込が必要なことを表示する。監査に�
 行い、許可集合だけを選択する。検証から要約/埋め込みまで共有writer lockを保持する。
 `publish_search_snapshot.py`の通常実行は引き続き全gateを要求する。部分公開は監査子プロセスから
 `--partial`を指定した場合だけ許可する。`--allow-pending-ocr`はCLI互換aliasとして残す。
+
+
+## 原本照合不合格から部分公開への接続
+
+run_db_auditはverify_against_sourceのexit2のうち、集計と対象添付が一致する本文欠落だけを後続へ渡す。孤立・dangling・検索不能・原本読取不能などのglobal失敗は継続しない。後続gateは原本不合格を全体失敗として残し、Chroma metadataまたは抽出台帳から添付のitem所有者を一意に照合し、そのitemを部分集合から外す。coverage不足があっても、明示除外された添付以外の基準は維持する。
+
+原本報告のSHA256と除外添付集合を証明に保存する。通常の全体合格利用では不合格原本報告を拒否し、部分利用でも集合/bytes変更を拒否する。未取得の古い報告や単なる異常終了を部分合格へ変換しない。資料ごとの監査合格とsource除外の接続はtests/test_partial_source_audit.pyで検証する。

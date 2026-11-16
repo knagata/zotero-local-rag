@@ -5,7 +5,8 @@ from src.source_coverage import coverage_gap_is_adoptable, validate_source_cover
 
 
 def indexed_gate(files: dict, indexed: set[str], statuses: list[dict],
-                 comparisons: list[dict], global_failures: list[str]) -> dict:
+                 comparisons: list[dict], global_failures: list[str],
+                 source_excluded: set[str] | None = None) -> dict:
     waiting = {row.get('attachment_key'): row.get('item_key') for row in statuses
                if row.get('artifact_type') == 'extraction'
                and row.get('status') == 'blocked'
@@ -18,9 +19,10 @@ def indexed_gate(files: dict, indexed: set[str], statuses: list[dict],
         if not verdict['passed'] and not (quality.get('source_coverage_adopted')
                                          and coverage_gap_is_adoptable(verdict)):
             uncovered.add(key)
-    allowed = {'manifest_chroma_attachment_mismatch', 'incomplete_source_coverage'}
-    safe = (not (set(global_failures) - allowed) and not (set(files) ^ indexed) - pending
-            and not uncovered - pending)
+    source_excluded = source_excluded or set()
+    allowed = {'manifest_chroma_attachment_mismatch', 'incomplete_source_coverage', 'source_verification_failed'}
+    safe = (not (set(global_failures) - allowed) and not (set(files) ^ indexed) - pending - (source_excluded & set(files))
+            and not uncovered - pending - source_excluded)
     pending_items = {waiting[key] for key in pending}
     safe = safe and not pending_items.intersection({None, ""})
     eligible = sorted(row['item_key'] for row in comparisons

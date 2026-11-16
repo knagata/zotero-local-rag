@@ -211,11 +211,18 @@ def _audit_once() -> None:
         "python", "scripts/verify_zotero_reconciliation.py",
         "--manifest", str(manifest), "--output", str(zotero_audit_path),
     )
-    _run(
-        "python", "scripts/verify_against_source.py",
-        "--collection", collection, "--manifest", str(manifest),
-        "--chroma-dir", str(chroma_directory), "--output", str(source_audit_path),
-    )
+    try:
+        _run(
+            "python", "scripts/verify_against_source.py",
+            "--collection", collection, "--manifest", str(manifest),
+            "--chroma-dir", str(chroma_directory), "--output", str(source_audit_path),
+        )
+    except AuditFailure as failure:
+        if failure.code != 2 or not failure.report:
+            raise
+        from src.partial_source_audit import source_exclusions
+        source_exclusions(failure.report)  # only bounded lost-page failures may continue
+        print("[情報] 原本照合は不合格です。対象資料を除外できるか後続監査で確認します。")
     _run(
         "python", "scripts/audit_v3_cutover.py",
         "--new-only", "--new-collection", collection, "--manifest", str(manifest),

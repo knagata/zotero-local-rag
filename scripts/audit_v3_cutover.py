@@ -296,22 +296,29 @@ def _parse_args() -> tuple[argparse.ArgumentParser, argparse.Namespace]:
     return parser, args
 
 
-def _inventory_reports(files: dict, indexed: set[str], comparisons: list[dict], failures: list[str]) -> dict:
+def _inventory_reports(files: dict, indexed: set[str], comparisons: list[dict], failures: list[str],
+                       source_report: dict | None = None, rows: list | None = None) -> dict:
     from src.audit_diagnostics import attachment_failure_details
     from src.db_relations import get_artifact_processing_statuses
     from src.indexed_gate import indexed_gate
     statuses = get_artifact_processing_statuses(artifact_type="extraction")
+    source_excluded = set()
+    source_items = set()
+    if source_report and source_report.get("passed") is False:
+        from src.partial_source_audit import source_exclusions, exclude_source_items
+        source_excluded = source_exclusions(source_report)
+        if not source_excluded <= set(files):
+            raise RuntimeError("Source audit failures do not belong to this manifest")
+        source_items = exclude_source_items(comparisons, rows or [], statuses, source_excluded)
+        failures.append("source_verification_failed")
+    subset = indexed_gate(files, indexed, statuses, comparisons, failures, source_excluded)
+    subset["excluded_item_keys"] = sorted(set(subset["excluded_item_keys"]) | source_items)
     return {"attachment_failures": attachment_failure_details(files, indexed, statuses),
-            "indexed_gate": indexed_gate(files, indexed, statuses, comparisons, failures)}
+            "indexed_gate": subset}
 
 
-def main() -> None:
-    parser, args = _parse_args()
-    chroma_dir = args.chroma_dir or resolve_chroma_dir(ROOT)
-    if args.new_collection != V3_COLLECTION:
-        parser.error(
-            f"--new-collection must be {V3_COLLECTION!r}; the legacy data plane is retired"
-        )
+def _external_reports(parser, args):
+    source_report = None
     external_audits: dict[str, dict[str, str]] = {}
     if args.new_only:
         if not args.zotero_report or not args.source_report:
@@ -330,10 +337,21 @@ def main() -> None:
                 raise RuntimeError("Source verification report targets a different collection")
             external_audits = {
                 "zotero_reconciliation": external_audit_attestation(args.zotero_report),
-                "source_verification": external_audit_attestation(args.source_report),
+                "source_verification": external_audit_attestation(args.source_report, allow_partial_source=True),
             }
         except (OSError, ValueError, RuntimeError) as exc:
             parser.error(str(exc))
+    return source_report, external_audits
+
+
+def main() -> None:
+    parser, args = _parse_args()
+    chroma_dir = args.chroma_dir or resolve_chroma_dir(ROOT)
+    if args.new_collection != V3_COLLECTION:
+        parser.error(
+            f"--new-collection must be {V3_COLLECTION!r}; the legacy data plane is retired"
+        )
+    source_report, external_audits = _external_reports(parser, args)
     excluded = {str(value) for value in args.exclude_item if value}
     old_keys = [] if args.new_only else [
         key for key in list_item_keys(chroma_dir=chroma_dir, collection_name=args.old_collection)
@@ -440,6 +458,10 @@ def main() -> None:
     lexical_fingerprint, lexical_mismatches = audit_content(attested_chroma_rows, path=args.lexical_db)
     if lexical_mismatches:
         global_failures.append("lexical_content_mismatch")
+    inventory_reports = _inventory_reports(
+        manifest_files, indexed_attachments, comparisons, global_failures,
+        source_report, attested_chroma_rows,
+    )
     failed = [row for row in comparisons if not row["passed"]]
     outliers = [row for row in comparisons if row["delta"]["character_ratio_outlier"]]
     adopted_coverage = partial_coverage_adoptions(manifest)
@@ -468,7 +490,7 @@ def main() -> None:
         "items": comparisons,
         "external_audits": external_audits,
         "lexical_content_mismatches": lexical_mismatches[:20],
-        **_inventory_reports(manifest_files, indexed_attachments, comparisons, global_failures),
+        **inventory_reports,
         "database_state": {
             "fingerprint": database_state_fingerprint(
                 manifest_path=args.manifest,

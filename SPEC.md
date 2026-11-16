@@ -226,3 +226,11 @@ PDFはGET/HEAD/single byte Rangeに対応し、原本とSQLite/WAL/manifest世�
 原本差替え・索引更新中・索引時source fingerprintとの不一致は旧チャンクと混在させず拒否する。
 表示キャッシュを保存/反映の根拠にせず、その時点の完全な原本/索引/下書き版検証を維持する。
 PDFの文字層は書き換えず、画像のみのPDFへの追加OCRも行わない。
+
+
+Source verification with only attributable lost-page failures remains a failed full audit,
+but may proceed to the completeness audit to determine a partial publication scope.
+Source-failed attachments must resolve to unique item owners; every such item is
+excluded from body, summary, lexical, and relation search copies. The failed source
+report and exact exclusion set are bound by SHA256 and revalidated only for partial
+use. Global, unknown, ambiguous, stale, or changed audit evidence blocks publication.

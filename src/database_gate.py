@@ -16,18 +16,22 @@ def _file_digest(path: Path) -> str:
     return digest.hexdigest()
 
 
-def external_audit_attestation(path: Path) -> dict[str, str]:
+def external_audit_attestation(path: Path, *, allow_partial_source: bool = False) -> dict:
     """Require a passing external audit and bind its exact bytes to the DB gate."""
     try:
         report = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         raise RuntimeError(f"External audit report is unreadable: {path}") from exc
+    attestation = {"path": str(path.resolve()), "sha256": _file_digest(path)}
     if not isinstance(report, Mapping) or report.get("passed") is not True:
-        raise RuntimeError(f"External audit did not pass: {path}")
-    return {"path": str(path.resolve()), "sha256": _file_digest(path)}
+        if not allow_partial_source or not isinstance(report, dict):
+            raise RuntimeError(f"External audit did not pass: {path}")
+        from .partial_source_audit import source_exclusions
+        attestation["excluded_attachments"] = sorted(source_exclusions(report))
+    return attestation
 
 
-def _validate_external_audits(value: Any) -> None:
+def _validate_external_audits(value: Any, *, allow_partial_source: bool = False) -> None:
     if not isinstance(value, Mapping):
         raise RuntimeError("Database audit lacks required Zotero/source attestations.")
     for name in ("zotero_reconciliation", "source_verification"):
@@ -44,7 +48,11 @@ def _validate_external_audits(value: Any) -> None:
         except (OSError, ValueError) as exc:
             raise RuntimeError(f"Attested external audit is unreadable: {path}") from exc
         if not isinstance(report, Mapping) or report.get("passed") is not True:
-            raise RuntimeError(f"Attested external audit no longer passes: {path}")
+            if not (allow_partial_source and name == "source_verification" and isinstance(report, dict)):
+                raise RuntimeError(f"Attested external audit no longer passes: {path}")
+            from .partial_source_audit import source_exclusions
+            if sorted(source_exclusions(report)) != attestation.get("excluded_attachments"):
+                raise RuntimeError("Source audit exclusions changed after gate creation")
         if _file_digest(path) != expected_digest:
             raise RuntimeError(f"Attested external audit changed after gate creation: {path}")
 
@@ -166,7 +174,8 @@ def validate_database_gate(report_path: Path, *, collection_name: str | None = N
         raise RuntimeError(
             f"Database audit collection mismatch: audited={audited_collection}, requested={collection_name}"
         )
-    _validate_external_audits(report.get("external_audits"))
+    _validate_external_audits(report.get("external_audits"),
+                              allow_partial_source=allow_pending_ocr and gate.get("passed") is not True)
     required = ("fingerprint", "manifest_path", "lexical_db_path", "pipeline_config_path")
     if any(not state.get(key) for key in required):
         raise RuntimeError("Database audit lacks a complete state attestation.")

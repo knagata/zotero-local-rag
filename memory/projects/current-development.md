@@ -7,6 +7,14 @@ Updated: 2026-11-16
 
 
 
+
+## 2026-11-16: 原本不合格から部分検索公開への接続を修正
+
+- 原本照合のexit2で後続gateへ到達しない問題を修正。資料単位のlost-pageだけを集計整合性付きで認め、全体不合格を残して後続へ渡す。global失敗/未知原因は停止。添付所有者をmetadata/抽出台帳で一意に照合し、その資料全体を部分検索集合から除外する。既存coverage基準と全体合格基準は維持。
+- 不合格原本報告のSHA256と除外添付を証明へ固定し、部分利用だけに許可。通常全体gateの利用・報告改変・除外改変・所属不明は拒否。仕様とdeveloper/database-audit-repair.mdを更新。
+- 全体2,223passed/7skip/10deselected（90.74秒）。関連100passed、追加chunk-store5passed、品質制約/部分snapshot55passed（関数分解後ratchet採択）。partial_source_audit35文とindexed_gate27文は未到達0。coverage上限はchunk_store28→21/database_gate12→10、新module0を追加。audit_v3_cutover.main183→166行へ縮小。静的検査合格。Herdr w1:t1J / w1:p1P。
+- 旧コードの利用者ジョブは監査exit2で終了。実DB監査・部分公開はこれから修正版で実行する。追加OCR/LLMは行わない。
+
 ## 2026-11-16: 直近3週間の運用ログ点検
 
 - 期間内管理ジョブ1,013件（更新確認1,004完了、工程実行8失敗/1実行中）。6失敗は本文欠落による監査停止、2失敗は実行中コード変更の保護停止。現在の利用者ジョブは構造更新中なので介入しない。
