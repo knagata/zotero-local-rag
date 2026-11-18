@@ -180,3 +180,41 @@ class MaintenanceUtilityTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_doi_writeback_requires_credentials(monkeypatch):
+    module = _reload_with_env({})
+    monkeypatch.delenv('ZOTERO_API_KEY', raising=False)
+    monkeypatch.delenv('ZOTERO_USER_ID', raising=False)
+    with mock.patch.object(module.urllib.request, 'urlopen') as request:
+        module._zotero_web_patch_doi('ITEM', '10.1/example', 3)
+    request.assert_not_called()
+
+
+def test_doi_writeback_preserves_optimistic_version_guard(monkeypatch, capsys):
+    import json
+    module = _reload_with_env({})
+    monkeypatch.setenv('ZOTERO_API_KEY', 'test-key')
+    monkeypatch.setenv('ZOTERO_USER_ID', '123')
+    response = mock.MagicMock()
+    response.__enter__.return_value.status = 204
+    with mock.patch.object(module.urllib.request, 'urlopen', return_value=response) as request:
+        module._zotero_web_patch_doi('ITEM', '10.1/example', 3)
+    req = request.call_args.args[0]
+    assert req.method == 'PATCH'
+    assert req.full_url == 'https://api.zotero.org/users/123/items/ITEM'
+    assert req.get_header('If-unmodified-since-version') == '3'
+    assert json.loads(req.data) == {'DOI': '10.1/example'}
+    assert 'DOI saved' in capsys.readouterr().err
+
+
+def test_doi_writeback_reports_conflict_without_unconditional_retry(monkeypatch, capsys):
+    import urllib.error
+    module = _reload_with_env({})
+    monkeypatch.setenv('ZOTERO_API_KEY', 'test-key')
+    monkeypatch.setenv('ZOTERO_USER_ID', '123')
+    conflict = urllib.error.HTTPError('https://example.test', 412, 'Precondition Failed', {}, None)
+    with mock.patch.object(module.urllib.request, 'urlopen', side_effect=conflict) as request:
+        module._zotero_web_patch_doi('ITEM', '10.1/example', 3)
+    request.assert_called_once()
+    assert '412' in capsys.readouterr().err
