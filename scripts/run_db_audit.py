@@ -97,6 +97,7 @@ def _explain_failure(output: Path | None, previous: int | None, exit_code: int) 
         if summary.get(key):
             messages.append(f"{label}：{summary[key]}件")
     labels = {
+        "source_verification_failed": "原本照合で本文の欠落がある資料を検出しました",
         "manifest_chroma_attachment_mismatch": "索引管理記録と本文索引の添付が一致していません",
         "incomplete_source_coverage": "原本の抽出範囲が不足、または確認できません",
         "chroma_lexical_id_mismatch": "全文索引とベクトル索引が一致していません",

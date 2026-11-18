@@ -405,6 +405,28 @@ def _artifact_counts(root: Path) -> dict[str, int | str]:
         return {"error": str(exc)[:200]}
 
 
+def _mistral_batch_issues(state: dict) -> list[dict]:
+    titles = {row.get("attachment_key"): row.get("title") for row in state.get("candidates") or []}
+    issues = []
+    for row in state.get("reports") or []:
+        gate = row.get("gate") or {}
+        if row.get("ok") is True and gate.get("passed") is True:
+            continue
+        issues.append({
+            "attachment_key": row.get("attachment_key"),
+            "title": titles.get(row.get("attachment_key")) or row.get("attachment_key") or "名称不明",
+            "api_error": row.get("ok") is not True,
+            "status_code": row.get("status_code"), "retryable": bool(row.get("retryable")),
+            "reasons": gate.get("reasons") or [],
+        })
+    reported = {row.get("attachment_key") for row in state.get("reports") or []}
+    for key in sorted(set(state.get("review_required_attachments") or []) - reported):
+        issues.append({"attachment_key": key, "title": titles.get(key) or key,
+                       "api_error": False, "status_code": None, "retryable": False,
+                       "reasons": ["以前のOCR不合格・原本確認が必要"]})
+    return issues
+
+
 def _mistral_batch_status(root: Path) -> dict[str, Any] | None:
     path = root / "data" / "mistral_ocr_batch_state.json"
     try:
@@ -420,6 +442,9 @@ def _mistral_batch_status(root: Path) -> dict[str, Any] | None:
         "succeeded_requests": int(job.get("succeeded_requests") or 0),
         "failed_requests": int(job.get("failed_requests") or 0),
         "last_checked_at": state.get("last_checked_at"),
+        "adoption_pending": bool(state.get("adoptable_count") and not state.get("adoption_applied_at")),
+        "adoptable_count": int(state.get("adoptable_count") or 0),
+        "issues": _mistral_batch_issues(state),
     }
 
 

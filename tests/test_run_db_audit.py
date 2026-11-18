@@ -353,3 +353,11 @@ def test_child_crash_after_publishing_success_does_not_leave_passing_gate(tmp_pa
         with pytest.raises(SystemExit):
             run_db_audit.main()
     assert not gate.exists()
+
+
+def test_source_failure_log_names_the_problem_instead_of_internal_reason_code(tmp_path, capsys):
+    import json
+    output = tmp_path / 'gate.json'
+    output.write_text(json.dumps({'gate':{'passed':False,'global_failures':['source_verification_failed']}}))
+    run_db_audit._explain_failure(output, None, 2)
+    assert '原本照合で本文の欠落' in capsys.readouterr().out

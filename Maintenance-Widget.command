@@ -450,7 +450,7 @@ run_mistral_batch_step() {
 }
 
 if [[ "$run_library" == "1" ]]; then
-    run_step "ライブラリ差分更新" uv run src/index_from_zotero.py --progress
+    run_step "ライブラリ差分更新" uv run python scripts/run_searchable_index.py --progress
     run_step "文書構造V3の差分更新" uv run python scripts/rebuild_document_structure.py --all
 fi
 

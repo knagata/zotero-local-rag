@@ -33,10 +33,14 @@ async function testAdminPlan(source) {
   assert.ok(diagnosticText.includes('Scanned book') && diagnosticText.includes('WAITING1'));
   assert.ok(diagnosticText.includes('OCR待ち') && !diagnosticText.includes('undefined'));
   data.database_gate.indexed_gate={passed:true};
+  data.mistral_batch={phase:"collected",completed_requests:3,total_requests:3,succeeded_requests:2,failed_requests:1,adoption_pending:true,adoptable_count:1,issues:[{title:"Scanned book",api_error:true,status_code:504},{title:"Needs review",api_error:false,reasons:["repeated_text"]}]};
   data.update_status={index:{pending:1,ocr_waiting:1,ocr_waiting_items:[{title:'Scanned book',attachment_key:'WAITING1'}]}};
   await vm.runInContext('refresh()',context);
   const metricText=document.getElementById('metrics').children.flatMap(x=>x.children.map(y=>y.textContent)).join(' ');
-  assert.ok(metricText.includes('監査通過分は利用可（未完了）'));
+  assert.ok(metricText.includes('監査通過分は合格（除外資料あり）'));
+  assert.ok(metricText.includes('失敗 1') && metricText.includes('取込待ち 1件'));
+  assert.ok(document.getElementById('audit-diagnostics').children.some(x=>x.textContent.includes('504') && x.textContent.includes('別途同意')));
+  assert.ok(document.getElementById('audit-diagnostics').children.some(x=>x.textContent.includes('OCR品質') && x.textContent.includes('repeated_text')));
   const freshnessText=document.getElementById('freshness').children.map(x=>x.textContent).join(' ');
   assert.ok(freshnessText.includes('未OCR資料が1件') && freshnessText.includes('WAITING1'));
   const actions=()=>document.getElementById('actions').children;

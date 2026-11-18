@@ -232,6 +232,7 @@ def test_system_status_reports_manifest_gate_and_artifacts(tmp_path):
         "phase": "running", "candidate_count": 2, "total_requests": 2,
         "completed_requests": 1, "succeeded_requests": 1, "failed_requests": 0,
         "last_checked_at": "2026-09-25T18:53:27+00:00",
+        "adoption_pending": False, "adoptable_count": 0, "issues": [],
     }
     assert result["update_status"]["index"]["pending"] == 2
     assert result["update_status"]["stale"] is False
@@ -371,3 +372,23 @@ def test_native_crash_logs_reason_and_recovery():
     log = io.BytesIO()
     admin_jobs._log_step_failure(log, "library", 7)
     assert "終了コード 7" in log.getvalue().decode()
+
+
+def test_batch_issues_distinguish_api_failure_from_quality_rejection():
+    state = {"candidates": [{"attachment_key":"A", "title":"API failed"}], "reports":[
+        {"attachment_key":"A", "ok":False, "status_code":504, "retryable":True},
+        {"attachment_key":"B", "ok":True, "gate":{"passed":False,"reasons":["gibberish"]}},
+        {"attachment_key":"C", "ok":True, "gate":{"passed":True}},
+    ]}
+    issues = admin_jobs._mistral_batch_issues(state)
+    assert len(issues) == 2
+    assert issues[0]["api_error"] and issues[0]["status_code"] == 504
+    assert issues[0]["title"] == "API failed"
+    assert not issues[1]["api_error"] and issues[1]["reasons"] == ["gibberish"]
+
+
+def test_prior_batch_quality_rejection_remains_visible_after_new_job():
+    issues = admin_jobs._mistral_batch_issues({"review_required_attachments":["OLD"],
+        "reports":[{"attachment_key":"NEW","ok":True,"gate":{"passed":True}}]})
+    assert len(issues) == 1 and issues[0]["attachment_key"] == "OLD"
+    assert "原本確認" in issues[0]["reasons"][0]

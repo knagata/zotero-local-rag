@@ -234,3 +234,11 @@ Source-failed attachments must resolve to unique item owners; every such item is
 excluded from body, summary, lexical, and relation search copies. The failed source
 report and exact exclusion set are bound by SHA256 and revalidated only for partial
 use. Global, unknown, ambiguous, stale, or changed audit evidence blocks publication.
+
+
+Normal library updates resume existing OCR Batch results before indexing:
+status retrieval, collection, and adoption of quality-passing results send no new
+OCR job and force hosted extraction/LLM features off during adoption. Paid OCR
+submission/retry remains a separate explicit action. A rejected completed result
+is not counted as a new queue entry and cannot cause repeated paid submission.
+A changed Batch identity during adoption must not be marked as applied.

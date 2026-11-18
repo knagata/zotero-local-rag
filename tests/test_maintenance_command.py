@@ -104,7 +104,7 @@ class MaintenanceCommandTests(unittest.TestCase):
         result, calls, _gate, _summary_audit = self.run_command("\n" * 7)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(calls, [
-            "run src/index_from_zotero.py --progress",
+            "run python scripts/run_searchable_index.py --progress",
             "run python scripts/rebuild_document_structure.py --all",
             "run python scripts/run_db_audit.py",
             "run src/update_citations.py --all",
@@ -117,7 +117,7 @@ class MaintenanceCommandTests(unittest.TestCase):
         result, calls, _gate, _summary_audit = self.run_command("\n" * 7, gate_exists=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(calls, [
-            "run src/index_from_zotero.py --progress",
+            "run python scripts/run_searchable_index.py --progress",
             "run python scripts/rebuild_document_structure.py --all",
             "run src/update_citations.py --all",
             "run python scripts/list_artifact_status.py --unresolved-only",
@@ -133,7 +133,7 @@ class MaintenanceCommandTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(calls, [
-            "run src/index_from_zotero.py --progress",
+            "run python scripts/run_searchable_index.py --progress",
             "run python scripts/rebuild_document_structure.py --all",
             "run python scripts/run_db_audit.py",
             "run src/update_citations.py --all",
@@ -157,7 +157,7 @@ class MaintenanceCommandTests(unittest.TestCase):
         result, calls, _gate, _summary_audit = self.run_command("\nn\n\n\n\n\n\n")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(calls, [
-            "run src/index_from_zotero.py --progress",
+            "run python scripts/run_searchable_index.py --progress",
             "run python scripts/rebuild_document_structure.py --all",
             "run src/update_citations.py --all",
             "run python scripts/list_artifact_status.py --unresolved-only",
@@ -313,7 +313,7 @@ class MaintenanceCommandTests(unittest.TestCase):
     def test_failure_stops_later_updates(self):
         result, calls, _gate, _summary_audit = self.run_command("\n" * 7, fail_first=True)
         self.assertEqual(result.returncode, 7)
-        self.assertEqual(calls, ["run src/index_from_zotero.py --progress"])
+        self.assertEqual(calls, ["run python scripts/run_searchable_index.py --progress"])
         self.assertIn("後続処理を実行せず終了", result.stdout)
 
 

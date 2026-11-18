@@ -88,7 +88,7 @@ read -p "既存索引の品質チェックを実行しますか？ [y/N]: " run_
 run_chk=$(echo "$run_chk" | tr '[:upper:]' '[:lower:]')
 if [ "$run_chk" = "y" ]; then
     echo ""
-    uv run src/index_from_zotero.py --check-quality --progress
+    uv run python scripts/run_searchable_index.py --check-quality --progress
 fi
 
 echo ""

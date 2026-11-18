@@ -146,8 +146,21 @@ def client_from_env() -> MistralBatchClient:
     )
 
 
+def review_required_attachments(state: dict[str, Any]) -> set[str]:
+    protected = set(state.get("review_required_attachments") or [])
+    for row in state.get("reports") or []:
+        accepted = row.get("ok") is True and (row.get("gate") or {}).get("passed") is True
+        if row.get("attachment_key") and not accepted and not row.get("retryable"):
+            protected.add(str(row["attachment_key"]))
+    return protected
+
+
 def prepare(args: argparse.Namespace) -> dict[str, Any]:
     resolved = asyncio.run(resolve_candidates(args.item))
+    protected = review_required_attachments(load_state(args.state))
+    protected -= set(getattr(args, "retry_reviewed_attachment", None) or [])
+    excluded = set(getattr(args, "exclude_attachment", None) or []) | protected
+    resolved = [(row, path) for row, path in resolved if row["attachment_key"] not in excluded]
     if not resolved:
         print("[PROGRESS] No candidates to batch.", file=sys.stderr)
     batches = split_input_batches(resolved, args.max_input_bytes)
@@ -177,6 +190,7 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
         "candidate_count": len(resolved),
         "input_batch_count": len(input_files),
         "max_input_bytes": args.max_input_bytes,
+        "review_required_attachments": sorted(protected),
     }
     save_json_atomic(args.state, state)
     return state
@@ -421,6 +435,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--state", type=Path, default=DEFAULT_STATE)
     parser.add_argument("--work-dir", type=Path, default=DEFAULT_WORK)
     parser.add_argument("--item", action="append", help="Limit preparation to itemKey; repeatable.")
+    parser.add_argument("--retry-reviewed-attachment", action="append", help="Explicitly permit resubmission of one reviewed rejection; repeatable.")
+    parser.add_argument("--exclude-attachment", action="append", help="Exclude an already processed attachment from preparation; repeatable.")
     parser.add_argument("--model", default=os.environ.get("MISTRAL_OCR_MODEL") or DEFAULT_MODEL)
     parser.add_argument("--timeout-hours", type=int, default=24)
     parser.add_argument(
