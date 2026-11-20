@@ -232,7 +232,7 @@ def test_system_status_reports_manifest_gate_and_artifacts(tmp_path):
         "phase": "running", "candidate_count": 2, "total_requests": 2,
         "completed_requests": 1, "succeeded_requests": 1, "failed_requests": 0,
         "last_checked_at": "2026-09-25T18:53:27+00:00",
-        "adoption_pending": False, "adoptable_count": 0, "issues": [],
+        "adoption_pending": False, "adoptable_count": 0, "issues": [], "resolved_issues": [],
     }
     assert result["update_status"]["index"]["pending"] == 2
     assert result["update_status"]["stale"] is False

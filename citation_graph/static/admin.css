@@ -104,3 +104,5 @@ input:focus { border-color:var(--node-zotero); outline:none; }
 @media (prefers-reduced-motion:reduce) { .progress-track.estimated .progress-fill { animation:none; } }
 
 .stage{display:flex;flex-direction:row;min-height:0;gap:12px;align-items:flex-start;cursor:pointer;padding:14px 4px;border:0;border-bottom:1px solid var(--outline-variant);border-radius:0;background:transparent}.stage > span{flex:1;min-width:0}.stage input{width:18px;height:18px;flex-shrink:0;margin-top:4px}.stage.unavailable{opacity:.5;cursor:not-allowed}.stage p{margin:8px 0}#confirm-label{display:flex;gap:10px;align-items:center}#confirm-consent{width:20px;height:20px}
+
+.freshness-note { grid-column:1/-1; margin:0 0 2px; padding:8px 10px; border:1px solid var(--outline-variant); border-radius:var(--radius-sm); color:var(--on-surface-variant); font-size:11px; }

@@ -248,3 +248,11 @@ OCR job and force hosted extraction/LLM features off during adoption. Paid OCR
 submission/retry remains a separate explicit action. A rejected completed result
 is not counted as a new queue entry and cannot cause repeated paid submission.
 A changed Batch identity during adoption must not be marked as applied.
+
+Batch failures remain immutable history. Admin status separates unresolved
+issues from resolved history only when an audited published snapshot includes
+the attachment with ocr-complete policy, the live and published source signatures,
+mtime, size and pipeline identity agree, and the current file stat still matches.
+A tag alone, unpublished extraction or an unaudited initial snapshot is insufficient.
+Resolved history must not recommend paid resubmission; this display classification
+never changes audit criteria, Batch reports or the paid-retry review guard.

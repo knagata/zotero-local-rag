@@ -29,18 +29,22 @@ function renderMetrics(data) {
   const snapshotDetail=snapshot?.available?(snapshot.partial?`部分公開 · 合格 ${snapshot.eligible_items}資料 / 除外 ${snapshot.excluded_items}資料・OCR待ち添付 ${snapshot.pending_ocr_attachments}件 · ${localTime(snapshot.published_at)}`:`全件合格世代 · ${localTime(snapshot.published_at)}`):"検索と更新は同じDBを使用";
   const target=$("metrics"); target.replaceChildren(
     metric("索引済み添付",m.attachments,`ノート ${m.notes}`), metric("HNSW検証",m.hnsw_validated?"正常":"要確認",`inflight ${m.inflight}`),
-    metric("DB監査",gate.passed?"全体整合性は合格":gate.indexed_gate?.passed?"監査通過分は合格（除外資料あり）":gate.available?"要対応":"結果なし",gate.indexed_gate?.passed?`全体は未合格 · OCR待ち ${(gate.indexed_gate.pending_ocr_attachments||[]).length}添付 · ${localTime(gate.modified_at)}`:localTime(gate.modified_at)), metric("未解決artifact",a.unresolved ?? "—",a.error || "failed + blocked"),
+    metric("DB監査",gate.passed?"全体整合性は合格":gate.indexed_gate?.passed?"監査通過分は合格（除外資料あり）":gate.available?"要対応":"結果なし",!gate.passed && gate.indexed_gate?.passed?`全体は未合格 · OCR待ち ${(gate.indexed_gate.pending_ocr_attachments||[]).length}添付 · ${localTime(gate.modified_at)}`:localTime(gate.modified_at)), metric("未解決artifact",a.unresolved ?? "—",a.error || "failed + blocked"),
     metric("索引書き込み",data.indexing_lock?"実行中":"停止中",data.indexing_lock?.started_at || "ロックなし"),
     metric("検索用の添付",snapshot?.available ? snapshot.attachments : "未分離",snapshotDetail),
-    metric("Mistral Batch",batch?statusLabel(batch.phase):"未実行",batch?`${batch.completed_requests}/${batch.total_requests || batch.candidate_count}件 · 成功 ${batch.succeeded_requests ?? 0} / 失敗 ${batch.failed_requests ?? 0}${batch.adoption_pending?` · 取込待ち ${batch.adoptable_count}件（通常更新で採用）`:""} · 確認 ${localTime(batch.last_checked_at)}`:"")
+    metric("Mistral Batch",batch?statusLabel(batch.phase):"未実行",batch?`${batch.phase==="collected"?"履歴 · ":""}${batch.completed_requests}/${batch.total_requests || batch.candidate_count}件 · 成功 ${batch.succeeded_requests ?? 0} / 失敗 ${batch.failed_requests ?? 0}${batch.resolved_issues?.length?` · 解決済み ${batch.resolved_issues.length}件`:""}${batch.adoption_pending?` · 取込待ち ${batch.adoptable_count}件（通常更新で採用）`:""} · 確認 ${localTime(batch.last_checked_at)}`:"")
   ); $("updated").textContent=`更新 ${new Date().toLocaleTimeString("ja-JP")}`;
   const diagnostics=$("audit-diagnostics"); diagnostics.replaceChildren();
   for(const issue of batch?.issues || []) {
     const reason=issue.api_error?`OCRサービスの処理失敗（HTTP ${issue.status_code || "不明"}）。有料再送には別途同意が必要です。`:`OCR品質の確認が必要です（${(issue.reasons||[]).join("、")}）。原本を確認してください。`;
     diagnostics.append(node("p","freshness-warning",`直近Batchの結果：${issue.title}：${reason}`));
   }
+  for(const issue of batch?.resolved_issues || []) {
+    const past=issue.api_error?`過去にHTTP ${issue.status_code || "不明"}で失敗`:`過去にOCR品質検査で不合格`;
+    diagnostics.append(node("p","freshness-note",`解決済みのBatch履歴：${issue.title}：${past}。現在は既存OCR本文を取込・監査済みです。再送は不要です。`));
+  }
   if(gate.audit_status) {
-    diagnostics.append(node("p","freshness-warning",`${gate.audit_status.message}（${localTime(gate.audit_status.updated_at)}）`));
+    diagnostics.append(node("p",gate.audit_status.status==="completed"?"freshness-note":"freshness-warning",`${gate.audit_status.message}（${localTime(gate.audit_status.updated_at)}）`));
     if(gate.audit_status.status==="failed") for(const finding of gate.audit_status.findings||[]) {
       diagnostics.append(node("p","freshness-warning",`${finding.title||""} ${finding.item_key||finding.attachment_key||""}：${finding.message} ${finding.action}`));
     }

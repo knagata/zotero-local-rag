@@ -427,6 +427,54 @@ def _mistral_batch_issues(state: dict) -> list[dict]:
     return issues
 
 
+def _resolved_batch_issue_keys(root: Path, issues: list[dict]) -> set[str]:
+    """Recognize explicitly completed OCR only after audited publication.
+
+    This is display state, not an OCR permission or audit exception. Comparing
+    saved source identities and current stat avoids hashing whole PDFs on polls.
+    """
+    if not issues:
+        return set()
+    from src.search_snapshot import load_snapshot
+
+    try:
+        snapshot = load_snapshot(root)
+        if not snapshot or not (snapshot.get("audit_passed") is True or snapshot.get("partial") is True):
+            return set()
+        published = json.loads((Path(snapshot["directory"]) / "manifest_v3.json").read_text())
+        current = json.loads((root / "data/manifest_v3.json").read_text())
+    except (OSError, ValueError, TypeError, KeyError):
+        return set()
+    if not isinstance(current, dict) or not isinstance(published, dict):
+        return set()
+    live_files, published_files = current.get("files"), published.get("files")
+    if not isinstance(live_files, dict) or not isinstance(published_files, dict):
+        return set()
+    resolved = set()
+    for issue in issues:
+        key = issue.get("attachment_key")
+        live, approved = live_files.get(key), published_files.get(key)
+        if not isinstance(live, dict) or not isinstance(approved, dict):
+            continue
+        if any(not isinstance(row.get("quality"), dict) or row["quality"].get("ocr_policy") != "ocr-complete"
+               for row in (live, approved)):
+            continue
+        signature = live.get("content_signature")
+        if not isinstance(signature, str) or not signature.startswith("sha256:"):
+            continue
+        fields = ("content_signature", "mtime", "size", "pipeline_fingerprint")
+        if any(field not in live or field not in approved or live[field] != approved[field] for field in fields):
+            continue
+        try:
+            path = Path(live["pdf_path"]).expanduser()
+            stat = (path if path.is_absolute() else root / path).stat()
+        except (OSError, ValueError, TypeError, KeyError):
+            continue
+        if stat.st_size == live["size"] and stat.st_mtime == live["mtime"]:
+            resolved.add(key)
+    return resolved
+
+
 def _mistral_batch_status(root: Path) -> dict[str, Any] | None:
     path = root / "data" / "mistral_ocr_batch_state.json"
     try:
@@ -434,6 +482,8 @@ def _mistral_batch_status(root: Path) -> dict[str, Any] | None:
     except (OSError, ValueError):
         return None
     job = state.get("job") if isinstance(state.get("job"), dict) else {}
+    issues = _mistral_batch_issues(state)
+    resolved = _resolved_batch_issue_keys(root, issues)
     return {
         "phase": str(state.get("phase") or "unknown"),
         "candidate_count": int(state.get("candidate_count") or 0),
@@ -444,7 +494,8 @@ def _mistral_batch_status(root: Path) -> dict[str, Any] | None:
         "last_checked_at": state.get("last_checked_at"),
         "adoption_pending": bool(state.get("adoptable_count") and not state.get("adoption_applied_at")),
         "adoptable_count": int(state.get("adoptable_count") or 0),
-        "issues": _mistral_batch_issues(state),
+        "issues": [row for row in issues if row.get("attachment_key") not in resolved],
+        "resolved_issues": [row for row in issues if row.get("attachment_key") in resolved],
     }
 
 

@@ -1,5 +1,14 @@
 # Tasks
 
+## 2026-11-21 解決済みBatch失敗の警告表示を修正
+
+- 過去のAPI失敗が、その後の取込・監査・公開と無関係に有料再送の警告として残っていた。管理APIは未解決issuesとresolved_issuesを分離し、Batch件数・reports・paid retryのreview guardは変更しない。旧frontendも次回pollで解決済み警告が消える。
+- 解決判定は、監査済み公開世代（全件/合格部分集合）に当該添付とocr-complete policyが存在し、現在と公開側の保存原本署名/mtime/size/pipelineが一致、現ファイルstatも一致する場合だけ。タグ単独、未公開取込、初期未監査copy、原本変更/欠落/不明な記録は警告を保持する。status pollでPDF全体hash・native DB・外部APIを呼ばない。
+- 解決済みは中立色のBatch履歴と「取込・監査済み、再送不要」に表示し、成功/失敗件数は履歴と明記。全体gate合格でもindexed_gate合格のためdetailが「全体は未合格」になる条件も修正し、監査completedの案内は警告色にしない。
+- 関連46passed、全体2,281passed/7skip/10deselected（116.05秒）、coverage予算・compileall・fatal Ruff・src.cli import合格。Nodeの実DOMハーネスで未解決/解決済み両表示、再送案内抑止、合格/未合格表示を検証。監査や取込・課金ロジックは変更せず、slow再実行は不要。
+- 実状態のBatch未解決0・解決済み履歴1を確認し、raw BatchのSHA256不変を確認。管理画面サービスを再起動、local/public health正常、実行中の利用者階層要約は同一PIDで継続。本文・vector・監査合格証明の書換えや有料処理の追加実行なし。
+- Herdr w1:t1N / w1:p1V。ログはdata/quality/batch-status-ui-20261121/。実ブラウザ目視は未実施、画面の分岐はNode DOMで検証。利用者には画面の再読込を案内する。
+
 ## 2026-11-21 PDF差替え後の全DB監査・検索公開を完了
 
 - 読取不能だった資料は新しい書誌/添付として再登録されていた。208頁の正常PDFと本文/表紙を確認し、新添付だけ855chunkをローカル取込、構造/本文metadataを同期した。新たな除外タグや原本の書換え、有料OCR/LLM実行はない。
