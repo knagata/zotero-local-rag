@@ -27,6 +27,12 @@ failed writer has released its process lock; a partial clean-rebuild generation
 must never become the active retrieval source.  Notes are searchable annotations
 but are not canonical document structure.
 
+FTS upserts replace exactly the supplied chunk IDs in one transaction. Since
+FTS5 does not index equality on the UNINDEXED ID column, deletion must use
+bounded ID sets rather than one whole-corpus scan per ID. Duplicate old rows
+are removed, unrelated rows are preserved, and insertion failure rolls back
+both deletion and insertion.
+
 MCP and Citation Graph can use a separately published V3 search snapshot. It
 contains Chroma, the lexical index, the structure database and the manifest,
 and is pinned per query process by `data/search_snapshot.json`. Snapshot creation

@@ -1,6 +1,19 @@
 # Current development handoff
 
-Updated: 2026-11-19
+Updated: 2026-11-20
+
+## 2026-11-20 外部OCR済みPDFの取込復旧とFTS更新の高速化
+
+- 外部OCR置換済み1資料で、白紙画像17/480頁がscan残率上限に掛かり、本文0件のまま再OCR待ちになっていた。短文/白紙ページと本文サンプルを紙面照合し、PDF SHA256を固定、Zotero Local APIの既存認可とversion条件でocr-completeを付与。原本は変更せず対象1添付だけforce-reparseし、14,902chunkを登録した。有料OCR/LLMの新規実行なし。
+- 実行中だった利用者の要約/Citation更新の正常終了を待って、全世代backupを作成・SQLite/native検索・reopenを検証。取込中の遅さをsampleで診断し、FTS5のUNINDEXED IDに対する1IDごとの全件走査を特定。今回のwriterだけを通常割込みで終了し、無改変backupから排他下でcold restore・再検証してから修正版で再開した。完了済み利用者ジョブの結果は保持。
+- FTS upsertの削除を最大900 IDずつのIN句へ変更。置換/重複除去/無関係行保持/単一transactionを維持し、挿入失敗時のrollbackを検証。2,048既存行・32 IDのfixtureでVM実行量約1,113,000→44,000。旧実装で回帰テストが失敗することも確認。修正版の実取込は443.7秒で完了した（fixture以外の厳密な同条件速度比較ではない）。
+- 初回原本再照合で対象の見出し参照10,685件の同期漏れを検出。既存のbounded derived repairで事前検査・backup後、当該1資料の構造/本文metadataだけを同期。再抽出・再埋め込みなし。修復後の全索引原本照合は本文欠落/孤立本文/dangling/検索不能/原本読取不能すべて0で合格。native検索・reopenも合格。
+- 本文723,370・要約9,320行。対象以外717,788行のID/本文SHA256は修復前後で一致。全vectorのbitwise比較は未実施。更新確認は残り索引1・新規1・OCR待ち0・要確認0。
+- 全DB監査は、途中で同期された別の未索引1添付でZotero照合が停止。実ファイルはPDFヘッダ/obj無しでMuPDF読取不能、記録MD5と現物は一致。原本やタグは変更せず、当該添付だけの一時除外か正しい原本への差替えか利用者確認待ち。検索用公開世代は更新していない。全DB合格・検索反映済みとは扱わない。
+- 全体2,259passed/7skip/10deselected（83.19秒）、slow5passed（393.78秒）、関連38passed。coverage予算・compileall・fatal Ruff・src.cli import・diff検査合格。監査基準/予算は緩和していない。
+- 検証済み取込前backup1世代を保持し、旧世代・途中コピー・今回のderived repair用一時backupを検証後に整理。空き約87GiB。一次証拠はdata/quality/handbook-repair-20261120/。Herdr w1:t1M / w1:p1S・w1:p1T。MCP/Graph再起動後のlocal/public health正常。実ブラウザの目視確認は未実施。
+
+次の開始点：別資料の一時除外/原本差替えへの回答を確認し、解決後に全DB監査と検索公開を再実行する。旧OCR再送の確認は不要（外部OCR採用済み）。一時除外が承認されても、対象添付のMD5/版を再確認し、原本が改善済みなら除外せず取り込む。
 
 ## 2026-11-19 OCR結果回収と部分監査の復旧
 
@@ -11,7 +24,7 @@ Updated: 2026-11-19
 - push後CIはテスト合格後に既存update_citationsの未到達予算で失敗（CIはcorpusも除外）。資格情報なしの書込み禁止、DOI書戻しのversion条件とHTTP412時の無条件再試行禁止をmockで追加検証し、関連17件合格。予算は維持。runtime変更なし。
 - 約11GiBの検証済み新backupを1世代保持し、旧backupを排他下で整理。MCP/管理画面は再起動後local/public正常。一次証拠はdata/quality/ocr-resume-20261119/。Herdr w1:t1K / w1:p1Q・w1:p1R。実ブラウザ目視は未実施。
 
-最新の開始点は上記。残る有料再送への回答は未着。旧11月16日の2資料待ちは1資料待ちへ更新済み。
+11月19日時点では有料再送を保留していた。11月20日に外部OCRを採用したため、この再送確認は不要になった。
 
 
 

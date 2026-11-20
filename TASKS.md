@@ -1,5 +1,16 @@
 # Tasks
 
+## 2026-11-20 外部OCR済みPDFの取込復旧とFTS更新の高速化
+
+- 外部OCR置換済み1資料で、白紙画像17/480頁がscan残率上限に掛かり、本文0件のまま再OCR待ちになっていた。短文/白紙ページと本文サンプルを紙面照合し、PDF SHA256を固定、Zotero Local APIの既存認可とversion条件でocr-completeを付与。原本は変更せず対象1添付だけforce-reparseし、14,902chunkを登録した。有料OCR/LLMの新規実行なし。
+- 実行中だった利用者の要約/Citation更新の正常終了を待って、全世代backupを作成・SQLite/native検索・reopenを検証。取込中の遅さをsampleで診断し、FTS5のUNINDEXED IDに対する1IDごとの全件走査を特定。今回のwriterだけを通常割込みで終了し、無改変backupから排他下でcold restore・再検証してから修正版で再開した。完了済み利用者ジョブの結果は保持。
+- FTS upsertの削除を最大900 IDずつのIN句へ変更。置換/重複除去/無関係行保持/単一transactionを維持し、挿入失敗時のrollbackを検証。2,048既存行・32 IDのfixtureでVM実行量約1,113,000→44,000。旧実装で回帰テストが失敗することも確認。修正版の実取込は443.7秒で完了した（fixture以外の厳密な同条件速度比較ではない）。
+- 初回原本再照合で対象の見出し参照10,685件の同期漏れを検出。既存のbounded derived repairで事前検査・backup後、当該1資料の構造/本文metadataだけを同期。再抽出・再埋め込みなし。修復後の全索引原本照合は本文欠落/孤立本文/dangling/検索不能/原本読取不能すべて0で合格。native検索・reopenも合格。
+- 本文723,370・要約9,320行。対象以外717,788行のID/本文SHA256は修復前後で一致。全vectorのbitwise比較は未実施。更新確認は残り索引1・新規1・OCR待ち0・要確認0。
+- 全DB監査は、途中で同期された別の未索引1添付でZotero照合が停止。実ファイルはPDFヘッダ/obj無しでMuPDF読取不能、記録MD5と現物は一致。原本やタグは変更せず、当該添付だけの一時除外か正しい原本への差替えか利用者確認待ち。検索用公開世代は更新していない。全DB合格・検索反映済みとは扱わない。
+- 全体2,259passed/7skip/10deselected（83.19秒）、slow5passed（393.78秒）、関連38passed。coverage予算・compileall・fatal Ruff・src.cli import・diff検査合格。監査基準/予算は緩和していない。
+- 検証済み取込前backup1世代を保持し、旧世代・途中コピー・今回のderived repair用一時backupを検証後に整理。空き約87GiB。一次証拠はdata/quality/handbook-repair-20261120/。Herdr w1:t1M / w1:p1S・w1:p1T。MCP/Graph再起動後のlocal/public health正常。実ブラウザの目視確認は未実施。
+
 ## 2026-11-19 OCR結果回収と部分監査の復旧
 
 - 未完了の主因は既存Mistral Batchの結果未回収。通常更新・両シェル入口で既送信結果だけを回収し、品質合格分をローカル設定で採用する。照会障害時は通常更新を継続し、書込み障害は停止。別データplaneの誤採用とjob入替えを拒否する。

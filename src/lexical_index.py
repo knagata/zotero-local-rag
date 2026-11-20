@@ -98,7 +98,15 @@ def upsert_chunks(
     connection = _connect(path)
     try:
         if replace:
-            connection.executemany("DELETE FROM chunks_fts WHERE chunk_id = ?", [(row[0],) for row in rows])
+            # FTS5 cannot index equality on UNINDEXED chunk_id. Delete one
+            # bounded set per scan instead of scanning the whole corpus per ID.
+            for start in range(0, len(rows), 900):
+                batch = rows[start:start + 900]
+                placeholders = ",".join("?" for _ in batch)
+                connection.execute(
+                    f"DELETE FROM chunks_fts WHERE chunk_id IN ({placeholders})",
+                    [row[0] for row in batch],
+                )
         connection.executemany(
             """INSERT INTO chunks_fts
                (chunk_id, item_key, lang, source_type, attachment_key, note_key,
