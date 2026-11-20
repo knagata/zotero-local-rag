@@ -1,6 +1,18 @@
 # Current development handoff
 
-Updated: 2026-11-20
+Updated: 2026-11-21
+
+## 2026-11-21 PDF差替え後の全DB監査・検索公開を完了
+
+- 読取不能だった資料は新しい書誌/添付として再登録されていた。208頁の正常PDFと本文/表紙を確認し、新添付だけ855chunkをローカル取込、構造/本文metadataを同期した。新たな除外タグや原本の書換え、有料OCR/LLM実行はない。
+- 対象限定更新では削除済み旧添付のmanifest記録が残るため、通常の全体差分更新でstale1件を整理。他資料はPDF502/HTML44/EPUB219・note48をskip、再抽出/再埋め込みなし。Zotero required/manifest765/765一致、未索引0。
+- 修復後の全DB監査がexit0。全740資料のgate合格、failed/global failures0。全原本照合は本文欠落・孤立本文・dangling・検索不能・原本読取不能すべて0。既存監査基準は維持。
+- 全体公開世代20261120T185831Z-c51c96cdを公開。765添付、本文724,225・要約9,320行、audit_passed=true/partial=false。前回修復資料14,902行と今回855行が検索コピーに存在することも確認。対象以外732,690行のID/本文SHA256一致（全vectorのbitwise比較は未実施）。
+- 管理画面向け状態はgate passed、監査completed、索引残り0/新規0/OCR待ち0/要確認0、writer lockなし。公開処理がサービスを再起動しMCP/Graph local/public health正常。実ブラウザ目視は未実施。
+- 監査済み現世代をbackup・SQLite/native検索/reopen検証し、復旧用1世代だけ保持。今回と前回の取込前backupを検証後に整理、空き約86GiB。検索世代は既存管理処理がcurrent/previousだけ保持。一次証拠はdata/quality/mekong-replacement-20261121/。
+- runtimeコード変更なし。前回0016409のFTS修正を使用。今回の検証は実DBの全監査、公開コピー/backupのnative検証、既存ID/本文照合、管理状態/health、文書参照検査。Herdr w1:t1M / w1:p1S・w1:p1T。
+
+現在地：全DB監査・検索公開は完了。除外/有料再送の確認は不要。新しい有料処理は開始していない。
 
 ## 2026-11-20 外部OCR済みPDFの取込復旧とFTS更新の高速化
 
@@ -13,7 +25,7 @@ Updated: 2026-11-20
 - 全体2,259passed/7skip/10deselected（83.19秒）、slow5passed（393.78秒）、関連38passed。coverage予算・compileall・fatal Ruff・src.cli import・diff検査合格。監査基準/予算は緩和していない。
 - 検証済み取込前backup1世代を保持し、旧世代・途中コピー・今回のderived repair用一時backupを検証後に整理。空き約87GiB。一次証拠はdata/quality/handbook-repair-20261120/。Herdr w1:t1M / w1:p1S・w1:p1T。MCP/Graph再起動後のlocal/public health正常。実ブラウザの目視確認は未実施。
 
-次の開始点：別資料の一時除外/原本差替えへの回答を確認し、解決後に全DB監査と検索公開を再実行する。旧OCR再送の確認は不要（外部OCR採用済み）。一時除外が承認されても、対象添付のMD5/版を再確認し、原本が改善済みなら除外せず取り込む。
+11月20日時点では別資料の扱いを保留していたが、11月21日に正常PDFの再登録を確認して全監査・公開を完了した。旧OCR再送や一時除外の確認は不要。
 
 ## 2026-11-19 OCR結果回収と部分監査の復旧
 
