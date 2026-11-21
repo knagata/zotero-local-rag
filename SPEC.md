@@ -256,3 +256,7 @@ mtime, size and pipeline identity agree, and the current file stat still matches
 A tag alone, unpublished extraction or an unaudited initial snapshot is insufficient.
 Resolved history must not recommend paid resubmission; this display classification
 never changes audit criteria, Batch reports or the paid-retry review guard.
+Processing and maintenance views do not render resolved Batch notices. A collected
+Batch with no unresolved issues or pending adoption is omitted from current metrics;
+active, unresolved and adoption-pending Batches remain visible. Historical records
+and the resolved_issues API field are retained.

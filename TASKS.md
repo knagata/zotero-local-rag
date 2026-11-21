@@ -1,5 +1,12 @@
 # Tasks
 
+## 2026-11-21 解決済みBatchを通常画面から非表示
+
+- 解決済み説明への置換だけでは通常画面に案内が残ったため、処理状況/メンテナンス共通rendererのresolved_issues描画を廃止。回収済み・未解決なし・採用待ちなしのBatchカードも非表示にした。実行中/未解決/採用待ちは表示を維持。
+- raw履歴・APIのresolved_issues・監査判定・課金guardは変更しない。静的assetはno-storeのFileResponseで配信されるため、画面再読込で反映。サービス再起動/DB処理/有料処理は実行しない。
+- Node DOMで案内文/不要カードの不在、採用待ち/実行中/未解決の表示維持、既存の工程選択/同意/旧server警告を検証して合格。文書参照検査7件、diff検査合格。JS/文書のみの変更につきPython全体/slowのローカル再実行は不要。
+- Herdr w1:t1N / w1:p1Vでpush後CIを確認する。実ブラウザ目視は未実施。
+
 ## 2026-11-21 解決済みBatch失敗の警告表示を修正
 
 - 過去のAPI失敗が、その後の取込・監査・公開と無関係に有料再送の警告として残っていた。管理APIは未解決issuesとresolved_issuesを分離し、Batch件数・reports・paid retryのreview guardは変更しない。旧frontendも次回pollで解決済み警告が消える。
